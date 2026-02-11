@@ -648,22 +648,8 @@ impl ClientDomain {
                 if let Some(local_window_id) = primary_window_id {
                     // Verify that the workspace is consistent between the local and remote
                     // windows
-                    if let Some(window) = mux.get_window(local_window_id) {
-                        if Some(window.get_workspace()) == workspace.as_deref() {
-                            // Yes! We can use this window
-                            log::debug!(
-                                "adding remote window {} as tab to local window {}",
-                                remote_window_id,
-                                local_window_id
-                            );
-                            inner.record_remote_to_local_window_mapping(
-                                remote_window_id,
-                                local_window_id,
-                            );
-                            mux.add_tab_to_window(&tab, local_window_id)?;
-                            primary_window_id.take();
-                            continue;
-                        }
+                    let workspace_matches = if let Some(window) = mux.get_window(local_window_id) {
+                        Some(window.get_workspace()) == workspace.as_deref()
                     } else {
                         log::warn!(
                             "domain: {} primary window {} vanished while syncing; \
@@ -672,6 +658,23 @@ impl ClientDomain {
                             local_window_id
                         );
                         primary_window_id.take();
+                        false
+                    };
+
+                    if workspace_matches {
+                        // Yes! We can use this window
+                        log::debug!(
+                            "adding remote window {} as tab to local window {}",
+                            remote_window_id,
+                            local_window_id
+                        );
+                        inner.record_remote_to_local_window_mapping(
+                            remote_window_id,
+                            local_window_id,
+                        );
+                        mux.add_tab_to_window(&tab, local_window_id)?;
+                        primary_window_id.take();
+                        continue;
                     }
                 }
                 log::debug!(
