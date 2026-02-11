@@ -994,14 +994,26 @@ impl Mux {
 
     pub fn add_tab_to_window(&self, tab: &Arc<Tab>, window_id: WindowId) -> anyhow::Result<()> {
         let tab_id = tab.tab_id();
+        let mut added = false;
         {
             let mut window = self
                 .get_window_mut(window_id)
                 .ok_or_else(|| anyhow!("add_tab_to_window: no such window_id {}", window_id))?;
-            window.push(tab);
+            if window.idx_by_id(tab_id).is_none() {
+                window.push(tab);
+                added = true;
+            } else {
+                log::trace!(
+                    "add_tab_to_window: tab {} is already present in window {}, skipping",
+                    tab_id,
+                    window_id
+                );
+            }
         }
-        self.recompute_pane_count();
-        self.notify(MuxNotification::TabAddedToWindow { tab_id, window_id });
+        if added {
+            self.recompute_pane_count();
+            self.notify(MuxNotification::TabAddedToWindow { tab_id, window_id });
+        }
         Ok(())
     }
 
