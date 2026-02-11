@@ -6,7 +6,7 @@ use codec::{ListPanesResponse, SpawnV2, SplitPane};
 use config::keyassignment::SpawnTabDomain;
 use config::{SshDomain, TlsDomainClient, UnixDomain};
 use mux::connui::{ConnectionUI, ConnectionUIParams};
-use mux::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
+use mux::domain::{Domain, DomainId, DomainState, SplitSource, alloc_domain_id};
 use mux::pane::{Pane, PaneId};
 use mux::tab::{SplitRequest, Tab, TabId};
 use mux::window::WindowId;
@@ -619,42 +619,59 @@ impl ClientDomain {
                 });
 
                 if let Some(local_window_id) = inner.remote_to_local_window(remote_window_id) {
-                    let mut window = mux
-                        .get_window_mut(local_window_id)
-                        .expect("no such window!?");
-                    log::debug!(
-                        "domain: {} adding tab to existing local window {}",
-                        inner.local_domain_id,
-                        local_window_id
-                    );
-                    if window.idx_by_id(tab.tab_id()).is_none() {
-                        window.push(&tab);
+                    if let Some(mut window) = mux.get_window_mut(local_window_id) {
+                        log::debug!(
+                            "domain: {} adding tab to existing local window {}",
+                            inner.local_domain_id,
+                            local_window_id
+                        );
+                        if window.idx_by_id(tab.tab_id()).is_none() {
+                            window.push(&tab);
+                        }
+                        continue;
+                    } else {
+                        log::warn!(
+                            "domain: {} had stale remote->local window mapping {} -> {}; \
+                             rebuilding mapping",
+                            inner.local_domain_id,
+                            remote_window_id,
+                            local_window_id
+                        );
+                        inner
+                            .remote_to_local_window
+                            .lock()
+                            .unwrap()
+                            .remove(&remote_window_id);
                     }
-                    continue;
                 }
 
                 if let Some(local_window_id) = primary_window_id {
                     // Verify that the workspace is consistent between the local and remote
                     // windows
-                    if Some(
-                        mux.get_window(local_window_id)
-                            .expect("primary window to be valid")
-                            .get_workspace(),
-                    ) == workspace.as_deref()
-                    {
-                        // Yes! We can use this window
-                        log::debug!(
-                            "adding remote window {} as tab to local window {}",
-                            remote_window_id,
+                    if let Some(window) = mux.get_window(local_window_id) {
+                        if Some(window.get_workspace()) == workspace.as_deref() {
+                            // Yes! We can use this window
+                            log::debug!(
+                                "adding remote window {} as tab to local window {}",
+                                remote_window_id,
+                                local_window_id
+                            );
+                            inner.record_remote_to_local_window_mapping(
+                                remote_window_id,
+                                local_window_id,
+                            );
+                            mux.add_tab_to_window(&tab, local_window_id)?;
+                            primary_window_id.take();
+                            continue;
+                        }
+                    } else {
+                        log::warn!(
+                            "domain: {} primary window {} vanished while syncing; \
+                             will create a replacement window",
+                            inner.local_domain_id,
                             local_window_id
                         );
-                        inner.record_remote_to_local_window_mapping(
-                            remote_window_id,
-                            local_window_id,
-                        );
-                        mux.add_tab_to_window(&tab, local_window_id)?;
                         primary_window_id.take();
-                        continue;
                     }
                 }
                 log::debug!(
@@ -671,10 +688,22 @@ impl ClientDomain {
 
         for (remote_window_id, window_title) in panes.window_titles {
             if let Some(local_window_id) = inner.remote_to_local_window(remote_window_id) {
-                let mut window = mux
-                    .get_window_mut(local_window_id)
-                    .expect("no such window!?");
-                window.set_title(&window_title);
+                if let Some(mut window) = mux.get_window_mut(local_window_id) {
+                    window.set_title(&window_title);
+                } else {
+                    log::warn!(
+                        "domain: {} had stale remote->local window mapping {} -> {} while \
+                         setting title; dropping mapping",
+                        inner.local_domain_id,
+                        remote_window_id,
+                        local_window_id
+                    );
+                    inner
+                        .remote_to_local_window
+                        .lock()
+                        .unwrap()
+                        .remove(&remote_window_id);
+                }
             }
         }
 
