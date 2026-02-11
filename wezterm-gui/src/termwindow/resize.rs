@@ -174,11 +174,23 @@ impl super::TermWindow {
         let (size, dims, ri_calc) = if let Some(cell_dims) = scale_changed_cells {
             // Scaling preserves existing terminal dimensions, yielding a new
             // overall set of window dimensions
+            let rows = cell_dims.rows.max(1);
+            let cols = cell_dims.cols.max(1);
+            if rows != cell_dims.rows || cols != cell_dims.cols {
+                log::warn!(
+                    "clamping scale_changed terminal geometry from {}x{} to {}x{}",
+                    cell_dims.cols,
+                    cell_dims.rows,
+                    cols,
+                    rows
+                );
+            }
+
             let size = TerminalSize {
-                rows: cell_dims.rows,
-                cols: cell_dims.cols,
-                pixel_height: cell_dims.rows * self.render_metrics.cell_size.height as usize,
-                pixel_width: cell_dims.cols * self.render_metrics.cell_size.width as usize,
+                rows,
+                cols,
+                pixel_height: rows * self.render_metrics.cell_size.height as usize,
+                pixel_width: cols * self.render_metrics.cell_size.width as usize,
                 dpi: dimensions.dpi as u32,
             };
 
@@ -259,8 +271,23 @@ impl super::TermWindow {
                 )
                 .saturating_sub(tab_bar_height as usize);
 
-            let rows = avail_height / self.render_metrics.cell_size.height as usize;
-            let cols = avail_width / self.render_metrics.cell_size.width as usize;
+            let raw_rows = avail_height / self.render_metrics.cell_size.height as usize;
+            let raw_cols = avail_width / self.render_metrics.cell_size.width as usize;
+            let rows = raw_rows.max(1);
+            let cols = raw_cols.max(1);
+            if rows != raw_rows || cols != raw_cols {
+                log::warn!(
+                    "clamping tiny window geometry from {}x{} to {}x{} \
+                     (dims={:?}, avail={}x{})",
+                    raw_cols,
+                    raw_rows,
+                    cols,
+                    rows,
+                    dimensions,
+                    avail_width,
+                    avail_height
+                );
+            }
 
             let size = TerminalSize {
                 rows,
