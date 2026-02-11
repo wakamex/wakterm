@@ -6,7 +6,7 @@ use codec::{ListPanesResponse, SpawnV2, SplitPane};
 use config::keyassignment::SpawnTabDomain;
 use config::{SshDomain, TlsDomainClient, UnixDomain};
 use mux::connui::{ConnectionUI, ConnectionUIParams};
-use mux::domain::{Domain, DomainId, DomainState, SplitSource, alloc_domain_id};
+use mux::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
 use mux::pane::{Pane, PaneId};
 use mux::tab::{SplitRequest, Tab, TabId};
 use mux::window::WindowId;
@@ -595,7 +595,14 @@ impl ClientDomain {
                                     entry.size,
                                     &entry.title,
                                 ));
-                                mux.add_pane(&pane).expect("failed to add pane to mux");
+                                if let Err(err) = mux.add_pane(&pane) {
+                                    log::error!(
+                                        "domain: {} failed to add recreated pane {}: {:#}",
+                                        inner.local_domain_id,
+                                        pane.pane_id(),
+                                        err
+                                    );
+                                }
                                 pane
                             }
                         }
@@ -613,7 +620,14 @@ impl ClientDomain {
                             entry,
                             pane.pane_id()
                         );
-                        mux.add_pane(&pane).expect("failed to add pane to mux");
+                        if let Err(err) = mux.add_pane(&pane) {
+                            log::error!(
+                                "domain: {} failed to add new pane {}: {:#}",
+                                inner.local_domain_id,
+                                pane.pane_id(),
+                                err
+                            );
+                        }
                         pane
                     }
                 });

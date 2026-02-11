@@ -65,10 +65,18 @@ impl Window {
         self.id
     }
 
-    fn check_that_tab_isnt_already_in_window(&self, tab: &Arc<Tab>) {
+    fn check_that_tab_isnt_already_in_window(&self, tab: &Arc<Tab>) -> bool {
         for t in &self.tabs {
-            assert_ne!(t.tab_id(), tab.tab_id(), "tab already added to this window");
+            if t.tab_id() == tab.tab_id() {
+                log::warn!(
+                    "window {} already contains tab {}, skipping duplicate insert",
+                    self.id,
+                    tab.tab_id()
+                );
+                return false;
+            }
         }
+        true
     }
 
     fn invalidate(&self) {
@@ -77,13 +85,17 @@ impl Window {
     }
 
     pub fn insert(&mut self, index: usize, tab: &Arc<Tab>) {
-        self.check_that_tab_isnt_already_in_window(tab);
+        if !self.check_that_tab_isnt_already_in_window(tab) {
+            return;
+        }
         self.tabs.insert(index, Arc::clone(tab));
         self.invalidate();
     }
 
     pub fn push(&mut self, tab: &Arc<Tab>) {
-        self.check_that_tab_isnt_already_in_window(tab);
+        if !self.check_that_tab_isnt_already_in_window(tab) {
+            return;
+        }
         self.tabs.push(Arc::clone(tab));
         self.invalidate();
     }
@@ -201,8 +213,25 @@ impl Window {
 
     /// Make `idx` the active tab position.
     /// The saved tab id is not changed.
-    pub fn set_active_without_saving(&mut self, idx: usize) {
-        assert!(idx < self.tabs.len());
+    pub fn set_active_without_saving(&mut self, mut idx: usize) {
+        if self.tabs.is_empty() {
+            log::warn!(
+                "set_active_without_saving called for empty window {}",
+                self.id
+            );
+            self.active = 0;
+            self.invalidate();
+            return;
+        }
+        if idx >= self.tabs.len() {
+            log::warn!(
+                "set_active_without_saving clamping idx {} to {} for window {}",
+                idx,
+                self.tabs.len().saturating_sub(1),
+                self.id
+            );
+            idx = self.tabs.len().saturating_sub(1);
+        }
         if self.active != idx {
             if let Some(tab) = self.tabs.get(self.active) {
                 if let Some(pane) = tab.get_active_pane() {
