@@ -148,7 +148,7 @@ async fn process_unilateral_inner_async(
         Some(p) => p,
         None => {
             log::debug!("got {decoded:?}, pane not found locally, resync");
-            client_domain.resync().await?;
+            client_domain.resync_coalesced().await?;
             client_domain
                 .remote_to_local_pane_id(pane_id)
                 .ok_or_else(|| {
@@ -161,7 +161,7 @@ async fn process_unilateral_inner_async(
         Some(p) => p,
         None => {
             log::debug!("got {decoded:?}, but local pane {local_pane_id} no longer exists; resync");
-            client_domain.resync().await?;
+            client_domain.resync_coalesced().await?;
 
             let local_pane_id =
                 client_domain
@@ -311,7 +311,7 @@ fn process_unilateral(
                             anyhow!("domain {} is not a ClientDomain instance", local_domain_id)
                         })?;
 
-                client_domain.resync().await
+                client_domain.resync_coalesced().await
             })
             .detach();
 

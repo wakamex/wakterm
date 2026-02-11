@@ -14,6 +14,7 @@ use mux::{Mux, MuxNotification};
 use portable_pty::CommandBuilder;
 use promise::spawn::spawn_into_new_thread;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use wezterm_term::TerminalSize;
 
@@ -254,6 +255,7 @@ pub struct ClientDomain {
     config: ClientDomainConfig,
     label: String,
     inner: Mutex<Option<Arc<ClientInner>>>,
+    resync_in_progress: AtomicBool,
     local_domain_id: DomainId,
 }
 
@@ -404,6 +406,7 @@ impl ClientDomain {
             config,
             label,
             inner: Mutex::new(None),
+            resync_in_progress: AtomicBool::new(false),
             local_domain_id,
         }
     }
@@ -479,6 +482,22 @@ impl ClientDomain {
             Self::process_pane_list(inner, panes, None)?;
         }
         Ok(())
+    }
+
+    /// Coalesce bursts of resync requests so that we don't run multiple
+    /// overlapping topology reconciliations at once.
+    pub async fn resync_coalesced(&self) -> anyhow::Result<()> {
+        if self.resync_in_progress.swap(true, Ordering::AcqRel) {
+            log::trace!(
+                "domain {} skipping overlapping resync request",
+                self.local_domain_id
+            );
+            return Ok(());
+        }
+
+        let result = self.resync().await;
+        self.resync_in_progress.store(false, Ordering::Release);
+        result
     }
 
     pub fn process_remote_window_title_change(&self, remote_window_id: WindowId, title: String) {
