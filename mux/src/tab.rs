@@ -502,6 +502,80 @@ fn apply_sizes_from_splits(tree: &Tree, size: &TerminalSize) {
     }
 }
 
+/// Top-down reconciliation pass that enforces parent-child size constraints.
+///
+/// After `rebuild_splits_sizes_from_contained_panes` back-propagates actual
+/// pane sizes into the tree, the tree may violate invariants — e.g. a
+/// horizontal split's children may report different row counts because
+/// per-pane resize PDUs from different events interleaved on the mux server.
+///
+/// This function walks the tree top-down and enforces:
+/// - Horizontal split: both children have `rows = allocated.rows`
+/// - Vertical split: both children have `cols = allocated.cols`
+/// - The second child's complementary dimension is computed as the remainder
+///   after subtracting the first child and the divider.
+///
+/// This preserves the first child's primary dimension (column width for
+/// horizontal splits, row height for vertical splits) and adjusts the second
+/// child to fit, matching the behavior of `apply_pane_size`.
+fn reconcile_tree_sizes(tree: &mut Tree, allocated: &TerminalSize) {
+    match tree {
+        Tree::Empty | Tree::Leaf(_) => {}
+        Tree::Node { data: None, .. } => {}
+        Tree::Node {
+            left,
+            right,
+            data: Some(data),
+        } => {
+            let cell_width = allocated.pixel_width.checked_div(allocated.cols).unwrap_or(1);
+            let cell_height = allocated.pixel_height.checked_div(allocated.rows).unwrap_or(1);
+
+            match data.direction {
+                SplitDirection::Horizontal => {
+                    // Both sides must have the same height as allocated
+                    data.first.rows = allocated.rows;
+                    data.second.rows = allocated.rows;
+
+                    // Clamp first.cols so it fits within allocated.cols
+                    // (leaving at least 1 col for divider + 1 for second)
+                    if data.first.cols + 2 > allocated.cols {
+                        data.first.cols = allocated.cols.saturating_sub(2);
+                    }
+                    data.second.cols = allocated.cols.saturating_sub(1 + data.first.cols);
+
+                    data.first.pixel_width = data.first.cols * cell_width;
+                    data.first.pixel_height = data.first.rows * cell_height;
+                    data.second.pixel_width = data.second.cols * cell_width;
+                    data.second.pixel_height = data.second.rows * cell_height;
+                    data.first.dpi = allocated.dpi;
+                    data.second.dpi = allocated.dpi;
+                }
+                SplitDirection::Vertical => {
+                    // Both sides must have the same width as allocated
+                    data.first.cols = allocated.cols;
+                    data.second.cols = allocated.cols;
+
+                    // Clamp first.rows so it fits within allocated.rows
+                    if data.first.rows + 2 > allocated.rows {
+                        data.first.rows = allocated.rows.saturating_sub(2);
+                    }
+                    data.second.rows = allocated.rows.saturating_sub(1 + data.first.rows);
+
+                    data.first.pixel_width = data.first.cols * cell_width;
+                    data.first.pixel_height = data.first.rows * cell_height;
+                    data.second.pixel_width = data.second.cols * cell_width;
+                    data.second.pixel_height = data.second.rows * cell_height;
+                    data.first.dpi = allocated.dpi;
+                    data.second.dpi = allocated.dpi;
+                }
+            }
+
+            reconcile_tree_sizes(left, &data.first);
+            reconcile_tree_sizes(right, &data.second);
+        }
+    }
+}
+
 fn cell_dimensions(size: &TerminalSize) -> TerminalSize {
     TerminalSize {
         rows: 1,
@@ -1259,6 +1333,10 @@ impl TabInner {
         if let Some(root) = self.pane.as_mut() {
             if let Some(size) = compute_size(root) {
                 self.size = size;
+                // After back-propagating pane sizes, enforce top-down
+                // parent-child constraints. This fixes inconsistencies caused
+                // by interleaved per-pane resize PDUs from different events.
+                reconcile_tree_sizes(root, &self.size);
             }
         }
         Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
@@ -2277,7 +2355,18 @@ mod test {
         }
 
         fn get_dimensions(&self) -> RenderableDimensions {
-            unimplemented!();
+            let size = self.size.lock();
+            RenderableDimensions {
+                cols: size.cols,
+                viewport_rows: size.rows,
+                scrollback_rows: size.rows,
+                physical_top: 0,
+                scrollback_top: 0,
+                dpi: size.dpi,
+                pixel_width: size.pixel_width,
+                pixel_height: size.pixel_height,
+                reverse_video: false,
+            }
         }
 
         fn get_title(&self) -> String {
@@ -2526,6 +2615,312 @@ mod test {
         assert_eq!(24, panes[2].height);
         assert_eq!(400, panes[2].pixel_width);
         assert_eq!(600, panes[2].pixel_height);
+    }
+
+    /// Helper: check that for every split node in the tree, the children's
+    /// sizes are consistent with the parent's allocation.
+    /// Returns a Vec of error strings (empty = all good).
+    fn check_tree_invariants(tree: &Tree, allocated: &TerminalSize) -> Vec<String> {
+        let mut errors = Vec::new();
+        match tree {
+            Tree::Empty | Tree::Leaf(_) => {}
+            Tree::Node { data: None, .. } => {}
+            Tree::Node {
+                left,
+                right,
+                data: Some(data),
+            } => {
+                match data.direction {
+                    SplitDirection::Horizontal => {
+                        // Both children must have the same height as allocated
+                        if data.first.rows != allocated.rows {
+                            errors.push(format!(
+                                "H-split first.rows={} != allocated.rows={}",
+                                data.first.rows, allocated.rows
+                            ));
+                        }
+                        if data.second.rows != allocated.rows {
+                            errors.push(format!(
+                                "H-split second.rows={} != allocated.rows={}",
+                                data.second.rows, allocated.rows
+                            ));
+                        }
+                        // Widths should sum: first.cols + 1 + second.cols == allocated.cols
+                        let total_cols = data.first.cols + 1 + data.second.cols;
+                        if total_cols != allocated.cols {
+                            errors.push(format!(
+                                "H-split cols: {} + 1 + {} = {} != allocated.cols={}",
+                                data.first.cols, data.second.cols, total_cols, allocated.cols
+                            ));
+                        }
+                    }
+                    SplitDirection::Vertical => {
+                        // Both children must have the same width as allocated
+                        if data.first.cols != allocated.cols {
+                            errors.push(format!(
+                                "V-split first.cols={} != allocated.cols={}",
+                                data.first.cols, allocated.cols
+                            ));
+                        }
+                        if data.second.cols != allocated.cols {
+                            errors.push(format!(
+                                "V-split second.cols={} != allocated.cols={}",
+                                data.second.cols, allocated.cols
+                            ));
+                        }
+                        // Rows should sum: first.rows + 1 + second.rows == allocated.rows
+                        let total_rows = data.first.rows + 1 + data.second.rows;
+                        if total_rows != allocated.rows {
+                            errors.push(format!(
+                                "V-split rows: {} + 1 + {} = {} != allocated.rows={}",
+                                data.first.rows, data.second.rows, total_rows, allocated.rows
+                            ));
+                        }
+                    }
+                }
+                errors.extend(check_tree_invariants(left, &data.first));
+                errors.extend(check_tree_invariants(right, &data.second));
+            }
+        }
+        errors
+    }
+
+    /// Build the L-shaped 3-pane layout from the bug report:
+    ///
+    /// ```text
+    /// +----------+----------+
+    /// |          |  pane 1  |
+    /// |  pane 0  +----------+
+    /// |          |  pane 2  |
+    /// +----------+----------+
+    /// ```
+    ///
+    /// Returns (tab, pane0, pane1, pane2) so callers can resize
+    /// individual panes to simulate mux server behavior.
+    fn make_l_shaped_tab(
+        size: TerminalSize,
+    ) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
+        let tab = Tab::new(&size);
+        let pane0 = FakePane::new(0, size);
+        tab.assign_pane(&pane0);
+
+        // Horizontal split: pane0 (left), pane1 (right)
+        let hsplit = tab
+            .compute_split_size(
+                0,
+                SplitRequest {
+                    direction: SplitDirection::Horizontal,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let pane1 = FakePane::new(1, hsplit.second);
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: SplitDirection::Horizontal,
+                ..Default::default()
+            },
+            pane1.clone(),
+        )
+        .unwrap();
+
+        // Vertical sub-split on the right pane (pane1 index=1):
+        // pane1 (top-right), pane2 (bottom-right)
+        let vsplit = tab
+            .compute_split_size(
+                1,
+                SplitRequest {
+                    direction: SplitDirection::Vertical,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let pane2 = FakePane::new(2, vsplit.second);
+        tab.split_and_insert(
+            1,
+            SplitRequest {
+                direction: SplitDirection::Vertical,
+                ..Default::default()
+            },
+            pane2.clone(),
+        )
+        .unwrap();
+
+        (tab, pane0, pane1, pane2)
+    }
+
+    /// Baseline: the normal single-client path (create layout → drag
+    /// divider → resize window → resize back) never breaks the invariant.
+    /// This is a regression guard — if this fails, the core resize logic
+    /// itself is broken, not just the mux interleaving path.
+    #[test]
+    fn nested_split_normal_resize_preserves_invariants() {
+        let size = TerminalSize {
+            rows: 80,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+        let (tab, _pane0, _pane1, _pane2) = make_l_shaped_tab(size);
+
+        let check = |label: &str, tab: &Tab| {
+            let inner = tab.inner.lock();
+            let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+            assert!(errors.is_empty(), "{}: {:?}", label, errors);
+        };
+
+        check("after creation", &tab);
+
+        tab.resize_split_by(1, 10);
+        check("after divider drag", &tab);
+
+        let bigger = TerminalSize {
+            rows: 90,
+            cols: 170,
+            pixel_width: 1700,
+            pixel_height: 2250,
+            dpi: 96,
+        };
+        tab.resize(bigger);
+        check("after resize up", &tab);
+
+        tab.resize(size);
+        check("after resize back", &tab);
+    }
+
+    /// Simulate the mux server state after interleaved per-pane resize PDUs
+    /// from two rapid resize events.
+    ///
+    /// When a client resizes its window, `apply_sizes_from_splits` calls
+    /// `pane.resize()` on each leaf, spawning independent async `Pdu::Resize`
+    /// tasks. If two resize events fire in quick succession, their PDUs can
+    /// interleave — leaving some panes at sizes from event 1 and others from
+    /// event 2.
+    ///
+    /// Returns (tab, pane0, pane1, pane2) with panes already set to the
+    /// inconsistent interleaved sizes.
+    fn make_interleaved_resize_state(
+    ) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
+        let size = TerminalSize {
+            rows: 80,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+        let (tab, pane0, pane1, pane2) = make_l_shaped_tab(size);
+
+        // Drag the vertical divider to create asymmetric right-side split
+        tab.resize_split_by(1, 10);
+
+        let panes_before = tab.iter_panes();
+        let p0_rows = panes_before[0].height;
+        let p1_rows = panes_before[1].height;
+        let p2_rows = panes_before[2].height;
+
+        // Verify precondition: right column sums correctly
+        assert_eq!(
+            p1_rows + 1 + p2_rows,
+            p0_rows,
+            "precondition: right column should sum to left pane height"
+        );
+
+        // Simulate two rapid resize events on the CLIENT side.
+        // We create temporary client-side tabs to compute what sizes
+        // each event would produce.
+
+        // Event 1: 80→90 rows
+        let size_e1 = TerminalSize {
+            rows: 90,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2250,
+            dpi: 96,
+        };
+        let (client_tab_e1, _, _, _) = make_l_shaped_tab(size);
+        client_tab_e1.resize_split_by(1, 10);
+        client_tab_e1.resize(size_e1);
+        let e1_panes = client_tab_e1.iter_panes();
+
+        // Event 2: 80→90→95 rows
+        let size_e2 = TerminalSize {
+            rows: 95,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2375,
+            dpi: 96,
+        };
+        let (client_tab_e2, _, _, _) = make_l_shaped_tab(size);
+        client_tab_e2.resize_split_by(1, 10);
+        client_tab_e2.resize(size_e1);
+        client_tab_e2.resize(size_e2);
+        let e2_panes = client_tab_e2.iter_panes();
+
+        // Helper to extract TerminalSize from a PositionedPane
+        let pane_size = |p: &PositionedPane| TerminalSize {
+            rows: p.height,
+            cols: p.width,
+            pixel_width: p.pixel_width,
+            pixel_height: p.pixel_height,
+            dpi: 96,
+        };
+
+        // Apply the interleaved final state to the server's panes:
+        // pane0 and pane1 got E2's sizes (latest), but pane2 got E1's
+        // STALE size because its E1 PDU arrived after its E2 PDU.
+        pane0.resize(pane_size(&e2_panes[0])).unwrap();
+        pane1.resize(pane_size(&e2_panes[1])).unwrap();
+        pane2.resize(pane_size(&e1_panes[2])).unwrap(); // stale!
+
+        (tab, pane0, pane1, pane2)
+    }
+
+    /// Prove that interleaved per-pane resize PDUs break the size invariant.
+    ///
+    /// After two rapid client resize events whose PDUs interleave, the
+    /// server's panes end up with sizes from different events. The right
+    /// column's children (pane1 + divider + pane2) no longer sum to the
+    /// left pane's height.
+    #[test]
+    fn interleaved_pdus_break_pane_size_invariant() {
+        let (_tab, pane0, pane1, pane2) = make_interleaved_resize_state();
+
+        let p0 = pane0.get_dimensions();
+        let p1 = pane1.get_dimensions();
+        let p2 = pane2.get_dimensions();
+
+        let left_rows = p0.viewport_rows;
+        let right_total = p1.viewport_rows + 1 + p2.viewport_rows;
+
+        assert_ne!(
+            right_total, left_rows,
+            "Raw pane sizes should be inconsistent after interleaving. \
+             left={}, top_right={}, bot_right={}, right_total={}",
+            left_rows,
+            p1.viewport_rows,
+            p2.viewport_rows,
+            right_total,
+        );
+    }
+
+    /// Prove that rebuild_splits_sizes_from_contained_panes (with
+    /// reconcile_tree_sizes) restores the tree invariant even when
+    /// panes report inconsistent sizes from interleaved PDUs.
+    #[test]
+    fn reconcile_fixes_interleaved_pdu_overflow() {
+        let (tab, _pane0, _pane1, _pane2) = make_interleaved_resize_state();
+
+        tab.rebuild_splits_sizes_from_contained_panes();
+
+        let inner = tab.inner.lock();
+        let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+        assert!(
+            errors.is_empty(),
+            "Tree invariants should hold after reconciliation, but got: {:?}",
+            errors,
+        );
     }
 
     fn is_send_and_sync<T: Send + Sync>() -> bool {
