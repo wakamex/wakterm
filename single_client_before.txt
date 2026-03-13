@@ -1,0 +1,59 @@
+Total: 23 panes across 10 tabs
+
+  window=0 tab=0 (scrape): 3 panes
+    bounding box: cols [0..239], rows [0..62]
+    pane   0 (uv                  ): pos=(  0,  0) size=114x52  end=(114, 52) px=798x780
+    pane   1 (uv                  ): pos=(115,  0) size=124x18  end=(239, 18) px=868x270
+    pane   2 (zsh                 ): pos=(115, 19) size=124x43  end=(239, 62) px=868x645
+    ** MISMATCH: panes at top_row=0 have different heights: {18, 52}
+
+  window=0 tab=2 (wez): 2 panes
+    bounding box: cols [0..239], rows [0..52]
+    pane   4 (✳ Layout overflow is): pos=(  0,  0) size=118x52  end=(118, 52) px=826x780
+    pane  35 (zsh                 ): pos=(119,  0) size=120x52  end=(239, 52) px=840x780
+
+  window=0 tab=3 (gitrep): 3 panes
+    bounding box: cols [0..239], rows [0..52]
+    pane   5 (⠂ scaling before obs): pos=(  0,  0) size=120x52  end=(120, 52) px=840x780
+    pane   6 (root@gitrep-origin: ): pos=(121,  0) size=118x17  end=(239, 17) px=826x255
+    pane  34 (zsh                 ): pos=(121, 18) size=118x18  end=(239, 36) px=826x270
+    ** MISMATCH: panes at top_row=0 have different heights: {17, 52}
+
+  window=0 tab=5 (veda): 2 panes
+    bounding box: cols [0..239], rows [0..52]
+    pane  10 (✳ Atomic Commits    ): pos=(  0,  0) size= 91x52  end=( 91, 52) px=637x780
+    pane  12 (zsh                 ): pos=( 92,  0) size=147x52  end=(239, 52) px=1029x780
+
+  window=0 tab=6 (lady): 2 panes
+    bounding box: cols [0..239], rows [0..52]
+    pane  11 (✳ Review Response Et): pos=(  0,  0) size=139x52  end=(139, 52) px=973x780
+    pane  13 (zsh                 ): pos=(140,  0) size= 99x52  end=(239, 52) px=693x780
+
+  window=0 tab=7 (investigate): 2 panes
+    bounding box: cols [0..239], rows [0..52]
+    pane  14 (✳ Event-based Return): pos=(  0,  0) size=121x52  end=(121, 52) px=847x780
+    pane  15 (zsh                 ): pos=(122,  0) size=117x52  end=(239, 52) px=819x780
+
+  window=0 tab=9 (frame): 2 panes
+    bounding box: cols [0..239], rows [0..52]
+    pane  18 (✳ Git Commit        ): pos=(  0,  0) size=151x52  end=(151, 52) px=1057x780
+    pane  19 (zsh                 ): pos=(152,  0) size= 87x52  end=(239, 52) px=609x780
+
+  window=0 tab=10 (panetone): 2 panes
+    bounding box: cols [0..239], rows [0..52]
+    pane  20 (✳ Empty Name Error  ): pos=(  0,  0) size=136x52  end=(136, 52) px=952x780
+    pane  21 (uv                  ): pos=(137,  0) size=102x52  end=(239, 52) px=714x780
+
+  window=0 tab=11 (collab): 3 panes
+    bounding box: cols [0..239], rows [0..52]
+    pane  22 (✳ Test Query        ): pos=(  0,  0) size=121x52  end=(121, 52) px=847x780
+    pane  23 (node                ): pos=(122,  0) size=117x16  end=(239, 16) px=819x240
+    pane  24 (zsh                 ): pos=(122, 17) size=117x13  end=(239, 30) px=819x195
+    ** MISMATCH: panes at top_row=0 have different heights: {16, 52}
+
+  window=0 tab=12 (human): 2 panes
+    bounding box: cols [0..239], rows [0..52]
+    pane  25 (✳ MoE LCB Benchmark ): pos=(  0,  0) size=127x52  end=(127, 52) px=889x780
+    pane  26 (zsh                 ): pos=(128,  0) size=111x52  end=(239, 52) px=777x780
+
+3 mismatch(es) found
