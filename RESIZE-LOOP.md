@@ -67,9 +67,14 @@ LOOP:
      - DISCARD: test still fails or introduces new failures → git reset
      - PARTIAL: test passes but live violations remain → keep, loop back to step 1
 
-  8. Update RESIZE-TASKS.md if the result changes a durable conclusion
+  8. Push on success
+     - after every KEEP commit: git push origin <branch>
+     - push target is always origin (wakamex fork), NEVER upstream (wezterm/wezterm)
+     - if push fails (network, auth), note it and continue — don't block the loop
 
-  9. Go to 1
+  9. Update RESIZE-TASKS.md if the result changes a durable conclusion
+
+  10. Go to 1
 ```
 
 ## Phase Commands
@@ -165,6 +170,12 @@ For every code change:
 For changes that touch `rebuild_splits_sizes_from_contained_panes` or `reconcile_tree_sizes`:
 4. Run `track-pane-sizes.py --once` against a live session if available
 5. Run `stress-resize.sh --rounds 50` if a mux server is accessible
+
+## Remotes
+
+- `origin` = `git@github.com:wakamex/wezterm.git` (your fork — push here)
+- `upstream` = `git@github.com:wezterm/wezterm.git` (upstream — NEVER push here)
+- Always `git push origin <branch>`. If you ever see `upstream` in a push command, STOP.
 
 ## Commit Rules
 
