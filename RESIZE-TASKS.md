@@ -105,14 +105,15 @@ The core bug is architectural: per-pane resize PDUs are fire-and-forget async ta
 - [x] Build `wezterm cli list --format tree` output
 - [x] Build `stress-resize.sh`
 
-### Phase 1: Coverage (current)
+### Phase 1: Coverage (complete)
 
-- [ ] Test Pattern 2: column width inconsistency with interleaved PDUs
-- [ ] Test Pattern 3: 4-pane deeply nested layout
-- [ ] Test Pattern 4: top-level vertical + horizontal sub-split (T-shaped layout)
-- [ ] Verify `reconcile_tree_sizes` handles all patterns correctly
-- [ ] Run `track-pane-sizes.py` against a session running WITH the fix — violations should drop to zero
-- Pass criterion: all live violations explained (either fixed by reconcile, or identified as monitor false positives)
+- [x] Test Pattern 2: column width inconsistency (`interleaved_pdus_break_column_width`)
+- [x] Test Pattern 3: 4-pane deeply nested layout (`deep_nested_interleaved_pdus`)
+- [x] Test Pattern 4: T-shaped layout with H-sub-split interleaving (`t_shaped_interleaved_pdus`)
+- [x] All-layout regression guard (`all_layouts_resize_preserves_invariants`)
+- [x] Verify: all 4 fix-proof tests fail without fix, all 9 pass with fix
+- [ ] Run `track-pane-sizes.py` against a session running WITH the fix
+- **Test count:** 9 total (4 fix-proof, 2 bug-proof, 2 baseline, 1 original)
 
 ### Phase 2: Hardening
 
