@@ -390,12 +390,14 @@ fn adjust_x_size(tree: &mut Tree, mut x_adjust: isize, cell_dimensions: &Termina
                     }
                     SplitDirection::Horizontal => {
                         // x_adjust is negative
+                        let mut made_progress = false;
                         if data.first.cols > 1 {
                             adjust_x_size(&mut *left, -1, cell_dimensions);
                             data.first.cols -= 1;
                             data.first.pixel_width =
                                 data.first.cols.saturating_mul(cell_dimensions.pixel_width);
                             x_adjust += 1;
+                            made_progress = true;
                         }
                         if x_adjust < 0 && data.second.cols > 1 {
                             adjust_x_size(&mut *right, -1, cell_dimensions);
@@ -403,6 +405,10 @@ fn adjust_x_size(tree: &mut Tree, mut x_adjust: isize, cell_dimensions: &Termina
                             data.second.pixel_width =
                                 data.second.cols.saturating_mul(cell_dimensions.pixel_width);
                             x_adjust += 1;
+                            made_progress = true;
+                        }
+                        if !made_progress {
+                            return;
                         }
                     }
                 }
@@ -461,12 +467,14 @@ fn adjust_y_size(tree: &mut Tree, mut y_adjust: isize, cell_dimensions: &Termina
                     }
                     SplitDirection::Vertical => {
                         // y_adjust is negative
+                        let mut made_progress = false;
                         if data.first.rows > 1 {
                             adjust_y_size(&mut *left, -1, cell_dimensions);
                             data.first.rows -= 1;
                             data.first.pixel_height =
                                 data.first.rows.saturating_mul(cell_dimensions.pixel_height);
                             y_adjust += 1;
+                            made_progress = true;
                         }
                         if y_adjust < 0 && data.second.rows > 1 {
                             adjust_y_size(&mut *right, -1, cell_dimensions);
@@ -476,6 +484,12 @@ fn adjust_y_size(tree: &mut Tree, mut y_adjust: isize, cell_dimensions: &Termina
                                 .rows
                                 .saturating_mul(cell_dimensions.pixel_height);
                             y_adjust += 1;
+                            made_progress = true;
+                        }
+                        // If both children are at minimum (1 row), we can't
+                        // shrink further — break to avoid an infinite loop.
+                        if !made_progress {
+                            return;
                         }
                     }
                 }
@@ -3845,6 +3859,69 @@ mod test {
     // test because toggle_zoom() requires the Mux singleton. The zoom path
     // is protected by resize() having reconcile_tree_sizes, which is called
     // when unzoom triggers resize().
+
+    /// Test extreme resize: shrink a nested layout to near-minimum size
+    /// and then grow it back. Exercises the clamping logic in
+    /// reconcile_tree_sizes and adjust_y_size/adjust_x_size.
+    ///
+    /// The primary assertion is that this does NOT hang (the infinite loop
+    /// bug in adjust_y_size/adjust_x_size that was #4878). Secondary: tree
+    /// invariants hold after growing back to a reasonable size.
+    #[test]
+    fn extreme_shrink_and_grow() {
+        let size = TerminalSize {
+            rows: 80,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+
+        let check = |label: &str, tab: &Tab| {
+            let inner = tab.inner.lock();
+            let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+            assert!(errors.is_empty(), "{}: {:?}", label, errors);
+        };
+
+        // L-shape: shrink to tiny, then grow back
+        let (tab, _pane0, _pane1, _pane2) = make_l_shaped_tab(size);
+        tab.resize_split_by(1, 10);
+        let tiny = TerminalSize {
+            rows: 5,
+            cols: 6,
+            pixel_width: 60,
+            pixel_height: 125,
+            dpi: 96,
+        };
+        tab.resize(tiny);
+        // Don't check invariants at tiny size — panes may be at minimum
+        // and the tree structure is degraded. The important thing is
+        // it didn't hang.
+        tab.resize(size);
+        check("L-shape after grow back from tiny", &tab);
+
+        // Deep nested: same pattern
+        let (tab, _, _, _, _) = make_deep_nested_tab(size);
+        tab.resize_split_by(1, 5);
+        tab.resize_split_by(2, 8);
+        let tiny_deep = TerminalSize {
+            rows: 8,
+            cols: 6,
+            pixel_width: 60,
+            pixel_height: 200,
+            dpi: 96,
+        };
+        tab.resize(tiny_deep);
+        tab.resize(size);
+        check("deep nested after grow back from tiny", &tab);
+
+        // Grid: same pattern
+        let (tab, _, _, _, _) = make_grid_tab(size);
+        tab.resize_split_by(1, 7);
+        tab.resize(tiny);
+        tab.resize(size);
+        check("grid after grow back from tiny", &tab);
+    }
 
     fn is_send_and_sync<T: Send + Sync>() -> bool {
         true
