@@ -3169,6 +3169,215 @@ mod test {
         );
     }
 
+    /// Build a T-shaped layout: top-level vertical split with a horizontal
+    /// sub-split on top and a full-width pane on the bottom:
+    ///
+    /// ```text
+    /// +----------+----------+
+    /// |  pane 0  |  pane 1  |
+    /// +----------+----------+
+    /// |       pane 2        |
+    /// +---------------------+
+    /// ```
+    fn make_t_shaped_tab(
+        size: TerminalSize,
+    ) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
+        let tab = Tab::new(&size);
+        let pane0 = FakePane::new(0, size);
+        tab.assign_pane(&pane0);
+
+        // Vertical split: pane0 (top), pane2 (bottom)
+        let vsplit = tab
+            .compute_split_size(
+                0,
+                SplitRequest {
+                    direction: SplitDirection::Vertical,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let pane2 = FakePane::new(2, vsplit.second);
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: SplitDirection::Vertical,
+                ..Default::default()
+            },
+            pane2.clone(),
+        )
+        .unwrap();
+
+        // Horizontal sub-split on the top pane (pane0): pane0 (left), pane1 (right)
+        let hsplit = tab
+            .compute_split_size(
+                0,
+                SplitRequest {
+                    direction: SplitDirection::Horizontal,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let pane1 = FakePane::new(1, hsplit.second);
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: SplitDirection::Horizontal,
+                ..Default::default()
+            },
+            pane1.clone(),
+        )
+        .unwrap();
+
+        (tab, pane0, pane1, pane2)
+    }
+
+    /// Pattern 4: T-shaped layout (vertical split with horizontal sub-split
+    /// on top, full-width pane on bottom). This is the "inverted L" — the
+    /// bottom pane spans both columns.
+    ///
+    /// Tests that reconcile_tree_sizes correctly handles the case where
+    /// the vertical split's children have different widths because the
+    /// top side is an H-split (width = left + 1 + right) while the bottom
+    /// is a single pane (width = allocated).
+    #[test]
+    fn t_shaped_interleaved_pdus() {
+        let size = TerminalSize {
+            rows: 80,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+        let (tab, pane0, pane1, pane2) = make_t_shaped_tab(size);
+
+        // Make dividers asymmetric
+        tab.resize_split_by(0, 5); // vertical divider
+        tab.resize_split_by(1, 8); // horizontal divider in top half
+
+        let check = |label: &str, tab: &Tab| {
+            let inner = tab.inner.lock();
+            let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+            assert!(errors.is_empty(), "{}: {:?}", label, errors);
+        };
+
+        check("t-shape after creation + divider drag", &tab);
+
+        // Event 1: resize rows 80→90
+        let size_e1 = TerminalSize {
+            rows: 90,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2250,
+            dpi: 96,
+        };
+        let (c1, _, _, _) = make_t_shaped_tab(size);
+        c1.resize_split_by(0, 5);
+        c1.resize_split_by(1, 8);
+        c1.resize(size_e1);
+        let e1 = c1.iter_panes();
+
+        // Event 2: resize rows 80→90→100
+        let size_e2 = TerminalSize {
+            rows: 100,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2500,
+            dpi: 96,
+        };
+        let (c2, _, _, _) = make_t_shaped_tab(size);
+        c2.resize_split_by(0, 5);
+        c2.resize_split_by(1, 8);
+        c2.resize(size_e1);
+        c2.resize(size_e2);
+        let e2 = c2.iter_panes();
+
+        let ps = |p: &PositionedPane| TerminalSize {
+            rows: p.height,
+            cols: p.width,
+            pixel_width: p.pixel_width,
+            pixel_height: p.pixel_height,
+            dpi: 96,
+        };
+
+        // Interleave WITHIN the H-sub-split: pane0 from E2, pane1 from E1
+        // (stale rows), pane2 from E2. This breaks the H-split constraint
+        // that first.rows == second.rows.
+        pane0.resize(ps(&e2[0])).unwrap();
+        pane1.resize(ps(&e1[1])).unwrap(); // stale: different row count
+        pane2.resize(ps(&e2[2])).unwrap();
+
+        // Prove the inconsistency: pane0 (E2) and pane1 (E1) have different
+        // row counts, violating the H-split constraint.
+        let p0 = pane0.get_dimensions();
+        let p1 = pane1.get_dimensions();
+        assert_ne!(
+            p0.viewport_rows, p1.viewport_rows,
+            "Top-left (E2) and top-right (E1) should have different heights. \
+             pane0.rows={}, pane1.rows={}",
+            p0.viewport_rows,
+            p1.viewport_rows,
+        );
+
+        // Prove reconciliation fixes it
+        tab.rebuild_splits_sizes_from_contained_panes();
+        let inner = tab.inner.lock();
+        let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+        assert!(
+            errors.is_empty(),
+            "T-shaped tree invariants should hold after reconciliation, but got: {:?}",
+            errors,
+        );
+    }
+
+    /// Verify that normal resize of all layout shapes preserves invariants.
+    /// This is a regression guard for all layout helpers.
+    #[test]
+    fn all_layouts_resize_preserves_invariants() {
+        let size = TerminalSize {
+            rows: 80,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+        let bigger = TerminalSize {
+            rows: 100,
+            cols: 200,
+            pixel_width: 2000,
+            pixel_height: 2500,
+            dpi: 96,
+        };
+
+        let check = |label: &str, tab: &Tab| {
+            let inner = tab.inner.lock();
+            let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+            assert!(errors.is_empty(), "{}: {:?}", label, errors);
+        };
+
+        // L-shaped
+        let (tab, _, _, _) = make_l_shaped_tab(size);
+        tab.resize_split_by(1, 10);
+        tab.resize(bigger);
+        tab.resize(size);
+        check("L-shape resize cycle", &tab);
+
+        // T-shaped
+        let (tab, _, _, _) = make_t_shaped_tab(size);
+        tab.resize_split_by(0, 5);
+        tab.resize_split_by(1, 8);
+        tab.resize(bigger);
+        tab.resize(size);
+        check("T-shape resize cycle", &tab);
+
+        // Deep nested (4-pane)
+        let (tab, _, _, _, _) = make_deep_nested_tab(size);
+        tab.resize_split_by(1, 5);
+        tab.resize_split_by(2, 8);
+        tab.resize(bigger);
+        tab.resize(size);
+        check("deep nested resize cycle", &tab);
+    }
+
     fn is_send_and_sync<T: Send + Sync>() -> bool {
         true
     }
