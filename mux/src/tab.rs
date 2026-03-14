@@ -3461,6 +3461,14 @@ mod test {
         tab.resize(bigger);
         tab.resize(size);
         check("deep nested resize cycle", &tab);
+
+        // 2x2 grid
+        let (tab, _, _, _, _) = make_grid_tab(size);
+        tab.resize_split_by(1, 7);
+        tab.resize_split_by(2, -5);
+        tab.resize(bigger);
+        tab.resize(size);
+        check("grid resize cycle", &tab);
     }
 
     /// Build a 2x2 grid: horizontal split, each side has a vertical sub-split.
