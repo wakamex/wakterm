@@ -1238,6 +1238,14 @@ impl Mux {
             pane.set_config(config);
         }
 
+        // Force all panes to match the tree allocation. The split may
+        // have changed the tree structure but individual pane PTYs might
+        // not have been resized if the resize was suppressed or batched.
+        if let Some(tab) = self.get_tab(tab_id) {
+            let tab_size = tab.get_size();
+            tab.resize(tab_size);
+        }
+
         // FIXME: clipboard
 
         let dims = pane.get_dimensions();
