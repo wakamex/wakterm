@@ -2186,6 +2186,13 @@ impl TabInner {
                         };
 
                         self.pane.replace(cursor.tree());
+                        // Restore tab size to the full split dimensions.
+                        // Before this, self.size was set to the first/second
+                        // half's size (for pre-resize of existing panes).
+                        // Without this, compute_split_size reads wrong
+                        // dimensions and closing the top-level pane doesn't
+                        // give back the full space. (#7654)
+                        self.size = split_info.size();
 
                         let pane_index = if request.target_is_second {
                             self.pane.as_ref().unwrap().num_leaves().saturating_sub(1)
