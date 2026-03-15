@@ -1302,7 +1302,10 @@ impl TermWindow {
                     self.update_title_post_status();
                 }
                 MuxNotification::TabResized(_) => {
-                    // Also handled by wezterm-client
+                    // Resize/topology changes need a full repaint so that
+                    // pane backgrounds and glyphs don't linger in regions
+                    // that now belong to a different pane.
+                    window.invalidate();
                     self.update_title_post_status();
                 }
                 MuxNotification::TabTitleChanged { .. } => {
