@@ -132,16 +132,17 @@ If the GUI render path holds `panes.read()` while waiting for `tab.inner` (or vi
 - [ ] H2 (detach deadlock #7661) — not yet investigated
 - [ ] Check if #5142 and #6666 are fixed by our resize reconciliation
 
-### Phase 1: Quick wins (in progress)
+### Phase 1: Quick wins (complete)
 
-- [x] Fix unbounded PDU allocation (#7527) — `fix/mux-pdu-hardening` branch
-- [ ] Fix tmux CC parser errors (#7656, #7117) — likely simple parser additions
+- [x] Fix unbounded PDU allocation (#7527) — MAX_PDU_SIZE check in decode_raw
+- [x] Fix tmux CC parser error on empty line (#7656) — early return for empty buffer
+- [x] #7117 (%unlinked-window-renamed) — already handled in current grammar
 - [ ] Verify #5142 is fixed by our resize work (needs build + live test)
 
-### Phase 2: Deeper bugs
+### Phase 2: Deeper bugs (in progress)
 
-- [ ] Investigate H2: detach deadlock (#7661) — need to trace lock ordering
-- [ ] Fix RotatePanes via mux (#6397) — needs new PDU type
+- [x] Fix detach deadlock (#7661) — collect tabs under read lock, release before operating
+- [ ] Fix RotatePanes via mux (#6397) — needs new PDU type (protocol change)
 - [ ] Fix RotatePanes via mux (#6397) — needs protocol addition or resync
 
 ### Phase 3: Protocol hardening
