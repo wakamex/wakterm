@@ -523,6 +523,13 @@ impl Window {
             let _: () = msg_send![*window, setTabbingMode:2 /* NSWindowTabbingModeDisallowed */];
             let _: () = msg_send![*window, setRestorable: NO];
 
+            // Let Cocoa remember the window position and size across restarts.
+            // setFrameAutosaveName makes NSWindow automatically save/restore
+            // the frame to NSUserDefaults — the standard macOS mechanism.
+            let autosave_name = cocoa::foundation::NSString::alloc(nil)
+                .init_str("WezTermMainWindow");
+            let _: () = msg_send![*window, setFrameAutosaveName: autosave_name];
+
             window.setReleasedWhenClosed_(NO);
             window.setBackgroundColor_(cocoa::appkit::NSColor::clearColor(nil));
 
