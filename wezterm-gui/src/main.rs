@@ -570,44 +570,28 @@ impl Publish {
                             );
                         }
 
-                        let window_id = if new_tab || config.prefer_to_spawn_tabs {
-                            if let Ok(pane_id) = client.resolve_pane_id(None).await {
-                                let panes = client.list_panes().await?;
-
-                                let mut window_id = None;
-                                'outer: for tabroot in panes.tabs {
-                                    let mut cursor = tabroot.into_tree().cursor();
-
-                                    loop {
-                                        if let Some(entry) = cursor.leaf_mut() {
-                                            if entry.pane_id == pane_id {
-                                                window_id.replace(entry.window_id);
-                                                break 'outer;
-                                            }
-                                        }
-                                        match cursor.preorder_next() {
-                                            Ok(c) => cursor = c,
-                                            Err(_) => break,
-                                        }
-                                    }
-                                }
-                                window_id
-
-                            } else {
-                                None
-                            }
+                        let pane_id = if new_tab || config.prefer_to_spawn_tabs {
+                            client.resolve_pane_id(None).await.ok()
                         } else {
                             None
                         };
+                        let panes = if pane_id.is_some() || attach {
+                            Some(client.list_panes().await?)
+                        } else {
+                            None
+                        };
+                        let (window_id, size) = panes
+                            .as_ref()
+                            .map(|panes| panes.resolve_spawn_context(pane_id, None))
+                            .unwrap_or((None, None));
 
                         // When --attach is set and the domain already has panes,
                         // just activate the existing window without spawning.
                         // This matches the documented behavior of --attach. (#7582)
                         if attach {
-                            let panes = client.list_panes().await?;
-                            let domain_has_panes = panes.tabs.iter().any(|tab| {
+                            let domain_has_panes = panes.as_ref().is_some_and(|panes| panes.tabs.iter().any(|tab| {
                                 tab.root_size().is_some()
-                            });
+                            }));
                             if domain_has_panes {
                                 log::info!(
                                     "Domain already has panes and --attach was specified; \
@@ -617,18 +601,19 @@ impl Publish {
                                     pane_id: 0,
                                     tab_id: 0,
                                     window_id: window_id.unwrap_or(0),
-                                    size: config.initial_size(0, None),
+                                    size: size.unwrap_or_else(|| config.initial_size(0, None)),
                                 });
                             }
                         }
 
+                        let size = size.unwrap_or_else(|| config.initial_size(0, None));
                         client
                             .spawn_v2(codec::SpawnV2 {
                                 domain,
                                 window_id,
                                 command,
                                 command_dir: None,
-                                size: config.initial_size(0, None),
+                                size,
                                 workspace: workspace.unwrap_or(
                                     config
                                         .default_workspace

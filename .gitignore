@@ -67,3 +67,4 @@ dhat-heap.json
 /nix/result
 responses/
 .upstream-show-keys-cache.txt
+/.claude/

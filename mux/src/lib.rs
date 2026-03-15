@@ -3,13 +3,13 @@ use crate::pane::{CachePolicy, Pane, PaneId};
 use crate::ssh_agent::AgentProxy;
 use crate::tab::{NotifyMux, SplitRequest, Tab, TabId};
 use crate::window::{Window, WindowId};
-use anyhow::{Context, Error, anyhow};
+use anyhow::{anyhow, Context, Error};
 use config::keyassignment::SpawnTabDomain;
-use config::{ExitBehavior, GuiPosition, configuration};
+use config::{configuration, ExitBehavior, GuiPosition};
 use domain::{Domain, DomainId, DomainState, SplitSource};
-use filedescriptor::{AsRawSocketDescriptor, FileDescriptor, POLLIN, poll, pollfd, socketpair};
+use filedescriptor::{poll, pollfd, socketpair, AsRawSocketDescriptor, FileDescriptor, POLLIN};
 #[cfg(unix)]
-use libc::{SO_RCVBUF, SO_SNDBUF, SOL_SOCKET, c_int};
+use libc::{c_int, SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
 use log::error;
 use metrics::histogram;
 use parking_lot::{
@@ -31,7 +31,7 @@ use termwiz::escape::{Action, CSI};
 use thiserror::*;
 use wezterm_term::{Clipboard, ClipboardSelection, DownloadHandler, TerminalSize};
 #[cfg(windows)]
-use winapi::um::winsock2::{SO_RCVBUF, SO_SNDBUF, SOL_SOCKET};
+use winapi::um::winsock2::{SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
 
 pub mod activity;
 pub mod client;
@@ -1350,7 +1350,12 @@ impl Mux {
                 .ok_or_else(|| anyhow!("active tab in window {} has no panes", window_id))?;
             term_config = pane.get_config();
 
-            let size = tab.get_size();
+            // Trust the caller's size for existing-window spawns so the new
+            // tab inherits the live client dimensions rather than a stale
+            // server-side tab size.
+            if tab.get_size() != size {
+                tab.resize(size);
+            }
 
             (window_id, size)
         } else {
@@ -1478,5 +1483,271 @@ impl wezterm_term::DownloadHandler for MuxDownloader {
                 data: Arc::new(data),
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::domain::{alloc_domain_id, Domain, DomainId, DomainState};
+    use crate::pane::{alloc_pane_id, CachePolicy, ForEachPaneLogicalLine, Pane, WithPaneLines};
+    use crate::renderable::{RenderableDimensions, StableCursorPosition};
+    use anyhow::Error;
+    use async_trait::async_trait;
+    use parking_lot::{MappedMutexGuard, Mutex};
+    use rangeset::RangeSet;
+    use std::ops::Range;
+    use termwiz::surface::SequenceNo;
+    use url::Url;
+    use wezterm_term::color::ColorPalette;
+    use wezterm_term::{KeyCode, KeyModifiers, Line, MouseEvent, StableRowIndex};
+
+    struct FakePane {
+        id: PaneId,
+        size: Mutex<TerminalSize>,
+        domain_id: DomainId,
+    }
+
+    impl FakePane {
+        fn new(id: PaneId, size: TerminalSize, domain_id: DomainId) -> Arc<dyn Pane> {
+            Arc::new(Self {
+                id,
+                size: Mutex::new(size),
+                domain_id,
+            })
+        }
+    }
+
+    impl Pane for FakePane {
+        fn pane_id(&self) -> PaneId {
+            self.id
+        }
+
+        fn get_cursor_position(&self) -> StableCursorPosition {
+            unimplemented!();
+        }
+
+        fn get_current_seqno(&self) -> SequenceNo {
+            unimplemented!();
+        }
+
+        fn get_changed_since(
+            &self,
+            _lines: Range<StableRowIndex>,
+            _seqno: SequenceNo,
+        ) -> RangeSet<StableRowIndex> {
+            unimplemented!();
+        }
+
+        fn get_lines(&self, _lines: Range<StableRowIndex>) -> (StableRowIndex, Vec<Line>) {
+            unimplemented!();
+        }
+
+        fn with_lines_mut(
+            &self,
+            _lines: Range<StableRowIndex>,
+            _with_lines: &mut dyn WithPaneLines,
+        ) {
+            unimplemented!();
+        }
+
+        fn for_each_logical_line_in_stable_range_mut(
+            &self,
+            _lines: Range<StableRowIndex>,
+            _for_line: &mut dyn ForEachPaneLogicalLine,
+        ) {
+            unimplemented!();
+        }
+
+        fn get_logical_lines(
+            &self,
+            _lines: Range<StableRowIndex>,
+        ) -> Vec<crate::pane::LogicalLine> {
+            unimplemented!();
+        }
+
+        fn get_dimensions(&self) -> RenderableDimensions {
+            let size = self.size.lock();
+            RenderableDimensions {
+                cols: size.cols,
+                viewport_rows: size.rows,
+                scrollback_rows: size.rows,
+                physical_top: 0,
+                scrollback_top: 0,
+                dpi: size.dpi,
+                pixel_width: size.pixel_width,
+                pixel_height: size.pixel_height,
+                reverse_video: false,
+            }
+        }
+
+        fn get_title(&self) -> String {
+            String::new()
+        }
+
+        fn send_paste(&self, _text: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn reader(&self) -> anyhow::Result<Option<Box<dyn std::io::Read + Send>>> {
+            Ok(None)
+        }
+
+        fn writer(&self) -> MappedMutexGuard<'_, dyn std::io::Write> {
+            unimplemented!();
+        }
+
+        fn resize(&self, size: TerminalSize) -> anyhow::Result<()> {
+            *self.size.lock() = size;
+            Ok(())
+        }
+
+        fn key_down(&self, _key: KeyCode, _mods: KeyModifiers) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn key_up(&self, _key: KeyCode, _mods: KeyModifiers) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn mouse_event(&self, _event: MouseEvent) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn is_dead(&self) -> bool {
+            false
+        }
+
+        fn palette(&self) -> ColorPalette {
+            unimplemented!()
+        }
+
+        fn domain_id(&self) -> DomainId {
+            self.domain_id
+        }
+
+        fn is_mouse_grabbed(&self) -> bool {
+            false
+        }
+
+        fn is_alt_screen_active(&self) -> bool {
+            false
+        }
+
+        fn get_current_working_dir(&self, _policy: CachePolicy) -> Option<Url> {
+            None
+        }
+    }
+
+    struct FakeDomain {
+        id: DomainId,
+        last_spawn_size: Mutex<Option<TerminalSize>>,
+    }
+
+    impl FakeDomain {
+        fn new() -> Self {
+            Self {
+                id: alloc_domain_id(),
+                last_spawn_size: Mutex::new(None),
+            }
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl Domain for FakeDomain {
+        async fn spawn_pane(
+            &self,
+            size: TerminalSize,
+            _command: Option<CommandBuilder>,
+            _command_dir: Option<String>,
+        ) -> anyhow::Result<Arc<dyn Pane>> {
+            self.last_spawn_size.lock().replace(size);
+            Ok(FakePane::new(alloc_pane_id(), size, self.id))
+        }
+
+        fn detachable(&self) -> bool {
+            false
+        }
+
+        fn domain_id(&self) -> DomainId {
+            self.id
+        }
+
+        fn domain_name(&self) -> &str {
+            "fake"
+        }
+
+        async fn attach(&self, _window_id: Option<WindowId>) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn detach(&self) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn state(&self) -> DomainState {
+            DomainState::Attached
+        }
+    }
+
+    struct MuxGuard;
+
+    impl Drop for MuxGuard {
+        fn drop(&mut self) {
+            Mux::shutdown();
+        }
+    }
+
+    #[test]
+    fn spawn_tab_in_existing_window_uses_provided_size() {
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        smol::block_on(async move {
+            let window_builder = mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+            let window_id = *window_builder;
+
+            let stale = TerminalSize {
+                rows: 1,
+                cols: 1,
+                pixel_width: 8,
+                pixel_height: 16,
+                dpi: 96,
+            };
+            let stale_tab = Arc::new(Tab::new(&stale));
+            stale_tab.assign_pane(&FakePane::new(1, stale, domain.id));
+            mux.add_tab_and_active_pane(&stale_tab).unwrap();
+            mux.add_tab_to_window(&stale_tab, window_id).unwrap();
+
+            let desired = TerminalSize {
+                rows: 40,
+                cols: 120,
+                pixel_width: 1200,
+                pixel_height: 800,
+                dpi: 96,
+            };
+
+            let (spawned_tab, _pane, spawned_window_id) = mux
+                .spawn_tab_or_window(
+                    Some(window_id),
+                    config::keyassignment::SpawnTabDomain::DefaultDomain,
+                    None,
+                    None,
+                    desired,
+                    None,
+                    DEFAULT_WORKSPACE.to_string(),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(spawned_window_id, window_id);
+            assert_eq!(*domain.last_spawn_size.lock(), Some(desired));
+            assert_eq!(stale_tab.get_size(), desired);
+            assert_eq!(spawned_tab.get_size(), desired);
+        });
     }
 }

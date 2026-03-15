@@ -271,7 +271,11 @@ fn decode_raw<R: std::io::Read>(mut r: R) -> anyhow::Result<Decoded> {
         anyhow::bail!(
             "PDU data_len {} exceeds MAX_PDU_SIZE {} \
             (len:{} serial:{} ident:{})",
-            data_len, MAX_PDU_SIZE, len, serial, ident
+            data_len,
+            MAX_PDU_SIZE,
+            len,
+            serial,
+            ident
         );
     }
 
@@ -458,7 +462,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 46;
+pub const CODEC_VERSION: usize = 47;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -673,6 +677,45 @@ pub struct ListPanesResponse {
     pub window_titles: HashMap<WindowId, String>,
 }
 
+impl ListPanesResponse {
+    pub fn resolve_spawn_context(
+        &self,
+        pane_id: Option<PaneId>,
+        window_id: Option<WindowId>,
+    ) -> (Option<WindowId>, Option<TerminalSize>) {
+        if let Some(pane_id) = pane_id {
+            for tabroot in &self.tabs {
+                let root_size = tabroot.root_size();
+                let mut cursor = tabroot.clone().into_tree().cursor();
+
+                loop {
+                    if let Some(entry) = cursor.leaf_mut() {
+                        if entry.pane_id == pane_id {
+                            return (Some(entry.window_id), root_size);
+                        }
+                    }
+                    match cursor.preorder_next() {
+                        Ok(c) => cursor = c,
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
+
+        if let Some(window_id) = window_id {
+            for tabroot in &self.tabs {
+                if let Some((tab_window_id, _tab_id)) = tabroot.window_and_tab_ids() {
+                    if tab_window_id == window_id {
+                        return (Some(window_id), tabroot.root_size());
+                    }
+                }
+            }
+        }
+
+        (None, None)
+    }
+}
+
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct SplitPane {
     pub pane_id: PaneId,
@@ -711,6 +754,10 @@ pub struct SpawnV2 {
     pub window_id: Option<WindowId>,
     pub command: Option<CommandBuilder>,
     pub command_dir: Option<String>,
+    /// The authoritative target tab size supplied by the caller.
+    /// For existing-window spawns this should be the current live
+    /// size of the source tab; for new-window spawns this is the
+    /// desired initial size of the new tab.
     pub size: TerminalSize,
     pub workspace: String,
 }
@@ -1189,6 +1236,43 @@ pub struct GetImageCellResponse {
 #[cfg(test)]
 mod test {
     use super::*;
+    use mux::tab::{PaneEntry, SplitDirection, SplitDirectionAndSize};
+    use std::collections::HashMap;
+
+    fn leaf(window_id: WindowId, tab_id: TabId, pane_id: PaneId, size: TerminalSize) -> PaneNode {
+        PaneNode::Leaf(PaneEntry {
+            window_id,
+            tab_id,
+            pane_id,
+            title: String::new(),
+            size,
+            working_dir: None,
+            is_active_pane: false,
+            is_zoomed_pane: false,
+            workspace: String::new(),
+            cursor_pos: Default::default(),
+            physical_top: 0,
+            top_row: 0,
+            left_col: 0,
+            tty_name: None,
+        })
+    }
+
+    fn split(left: PaneNode, right: PaneNode, node: SplitDirectionAndSize) -> PaneNode {
+        PaneNode::Split {
+            left: Box::new(left),
+            right: Box::new(right),
+            node,
+        }
+    }
+
+    fn panes_response(tabs: Vec<PaneNode>) -> ListPanesResponse {
+        ListPanesResponse {
+            tabs,
+            tab_titles: vec![],
+            window_titles: HashMap::new(),
+        }
+    }
 
     #[test]
     fn test_frame() {
@@ -1217,6 +1301,79 @@ mod test {
         }
     }
 
+    #[test]
+    fn resolve_spawn_context_prefers_tab_root_size_for_pane_matches() {
+        let left = TerminalSize {
+            rows: 40,
+            cols: 50,
+            pixel_width: 500,
+            pixel_height: 800,
+            dpi: 96,
+        };
+        let right = TerminalSize {
+            rows: 40,
+            cols: 69,
+            pixel_width: 690,
+            pixel_height: 800,
+            dpi: 96,
+        };
+        let root = TerminalSize {
+            rows: 40,
+            cols: 120,
+            pixel_width: 1200,
+            pixel_height: 800,
+            dpi: 96,
+        };
+        let panes = panes_response(vec![split(
+            leaf(7, 11, 13, left),
+            leaf(7, 11, 17, right),
+            SplitDirectionAndSize {
+                direction: SplitDirection::Horizontal,
+                first: left,
+                second: right,
+            },
+        )]);
+
+        assert_eq!(
+            panes.resolve_spawn_context(Some(13), None),
+            (Some(7), Some(root))
+        );
+    }
+
+    #[test]
+    fn resolve_spawn_context_falls_back_to_window_matches() {
+        let size = TerminalSize {
+            rows: 48,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 960,
+            dpi: 96,
+        };
+        let panes = panes_response(vec![leaf(9, 21, 34, size)]);
+
+        assert_eq!(
+            panes.resolve_spawn_context(None, Some(9)),
+            (Some(9), Some(size))
+        );
+    }
+
+    #[test]
+    fn resolve_spawn_context_returns_none_for_unknown_targets() {
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 640,
+            pixel_height: 384,
+            dpi: 96,
+        };
+        let panes = panes_response(vec![leaf(3, 5, 8, size)]);
+
+        assert_eq!(
+            panes.resolve_spawn_context(Some(99), Some(42)),
+            (None, None)
+        );
+    }
+
     /// Verify that PDUs with length exceeding MAX_PDU_SIZE are rejected
     /// before allocation. This prevents OOM from corrupted/malicious frames.
     #[test]
@@ -1227,7 +1384,8 @@ mod test {
         let fake_data_len: u64 = 128 * 1024 * 1024; // 128 MiB > MAX_PDU_SIZE (64 MiB)
         let serial: u64 = 1;
         let ident: u64 = 1;
-        let total_len = fake_data_len + encoded_length(serial) as u64 + encoded_length(ident) as u64;
+        let total_len =
+            fake_data_len + encoded_length(serial) as u64 + encoded_length(ident) as u64;
         leb128::write::unsigned(&mut frame, total_len).unwrap();
         leb128::write::unsigned(&mut frame, serial).unwrap();
         leb128::write::unsigned(&mut frame, ident).unwrap();

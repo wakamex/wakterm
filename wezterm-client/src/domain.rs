@@ -868,7 +868,6 @@ impl Domain for ClientDomain {
             .ok_or_else(|| anyhow!("domain is not attached"))?;
 
         let workspace = Mux::get().active_workspace();
-
         let result = inner
             .client
             .spawn_v2(SpawnV2 {

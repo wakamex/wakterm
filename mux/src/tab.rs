@@ -550,8 +550,14 @@ fn reconcile_tree_sizes(tree: &mut Tree, allocated: &TerminalSize) {
             right,
             data: Some(data),
         } => {
-            let cell_width = allocated.pixel_width.checked_div(allocated.cols).unwrap_or(1);
-            let cell_height = allocated.pixel_height.checked_div(allocated.rows).unwrap_or(1);
+            let cell_width = allocated
+                .pixel_width
+                .checked_div(allocated.cols)
+                .unwrap_or(1);
+            let cell_height = allocated
+                .pixel_height
+                .checked_div(allocated.rows)
+                .unwrap_or(1);
 
             match data.direction {
                 SplitDirection::Horizontal => {
@@ -598,30 +604,52 @@ fn debug_assert_tree_invariants(tree: &Tree, size: &TerminalSize) {
         match tree {
             Tree::Empty | Tree::Leaf(_) => {}
             Tree::Node { data: None, .. } => {}
-            Tree::Node { left, right, data: Some(data) } => {
+            Tree::Node {
+                left,
+                right,
+                data: Some(data),
+            } => {
                 match data.direction {
                     SplitDirection::Horizontal => {
                         if data.first.rows != allocated.rows {
-                            errors.push(format!("H first.rows={} != {}", data.first.rows, allocated.rows));
+                            errors.push(format!(
+                                "H first.rows={} != {}",
+                                data.first.rows, allocated.rows
+                            ));
                         }
                         if data.second.rows != allocated.rows {
-                            errors.push(format!("H second.rows={} != {}", data.second.rows, allocated.rows));
+                            errors.push(format!(
+                                "H second.rows={} != {}",
+                                data.second.rows, allocated.rows
+                            ));
                         }
                         let total = data.first.cols + 1 + data.second.cols;
                         if total != allocated.cols {
-                            errors.push(format!("H cols {}+1+{}={} != {}", data.first.cols, data.second.cols, total, allocated.cols));
+                            errors.push(format!(
+                                "H cols {}+1+{}={} != {}",
+                                data.first.cols, data.second.cols, total, allocated.cols
+                            ));
                         }
                     }
                     SplitDirection::Vertical => {
                         if data.first.cols != allocated.cols {
-                            errors.push(format!("V first.cols={} != {}", data.first.cols, allocated.cols));
+                            errors.push(format!(
+                                "V first.cols={} != {}",
+                                data.first.cols, allocated.cols
+                            ));
                         }
                         if data.second.cols != allocated.cols {
-                            errors.push(format!("V second.cols={} != {}", data.second.cols, allocated.cols));
+                            errors.push(format!(
+                                "V second.cols={} != {}",
+                                data.second.cols, allocated.cols
+                            ));
                         }
                         let total = data.first.rows + 1 + data.second.rows;
                         if total != allocated.rows {
-                            errors.push(format!("V rows {}+1+{}={} != {}", data.first.rows, data.second.rows, total, allocated.rows));
+                            errors.push(format!(
+                                "V rows {}+1+{}={} != {}",
+                                data.first.rows, data.second.rows, total, allocated.rows
+                            ));
                         }
                     }
                 }
@@ -632,7 +660,11 @@ fn debug_assert_tree_invariants(tree: &Tree, size: &TerminalSize) {
     }
     let mut errors = Vec::new();
     check(tree, size, &mut errors);
-    assert!(errors.is_empty(), "Split tree invariant violation: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Split tree invariant violation: {:?}",
+        errors
+    );
 }
 
 fn cell_dimensions(size: &TerminalSize) -> TerminalSize {
@@ -2496,7 +2528,7 @@ mod test {
         fn reader(&self) -> anyhow::Result<Option<Box<dyn std::io::Read + Send>>> {
             Ok(None)
         }
-        fn writer(&self) -> MappedMutexGuard<dyn std::io::Write> {
+        fn writer(&self) -> MappedMutexGuard<'_, dyn std::io::Write> {
             unimplemented!()
         }
         fn resize(&self, size: TerminalSize) -> anyhow::Result<()> {
@@ -2555,16 +2587,15 @@ mod test {
         assert_eq!(80, panes[0].width);
         assert_eq!(24, panes[0].height);
 
-        assert!(
-            tab.compute_split_size(
+        assert!(tab
+            .compute_split_size(
                 1,
                 SplitRequest {
                     direction: SplitDirection::Horizontal,
                     ..Default::default()
                 }
             )
-            .is_none()
-        );
+            .is_none());
 
         let horz_size = tab
             .compute_split_size(
@@ -2812,9 +2843,7 @@ mod test {
     ///
     /// Returns (tab, pane0, pane1, pane2) so callers can resize
     /// individual panes to simulate mux server behavior.
-    fn make_l_shaped_tab(
-        size: TerminalSize,
-    ) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
+    fn make_l_shaped_tab(size: TerminalSize) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
         let tab = Tab::new(&size);
         let pane0 = FakePane::new(0, size);
         tab.assign_pane(&pane0);
@@ -2916,8 +2945,7 @@ mod test {
     ///
     /// Returns (tab, pane0, pane1, pane2) with panes already set to the
     /// inconsistent interleaved sizes.
-    fn make_interleaved_resize_state(
-    ) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
+    fn make_interleaved_resize_state() -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
         let size = TerminalSize {
             rows: 80,
             cols: 160,
@@ -3013,10 +3041,7 @@ mod test {
             right_total, left_rows,
             "Raw pane sizes should be inconsistent after interleaving. \
              left={}, top_right={}, bot_right={}, right_total={}",
-            left_rows,
-            p1.viewport_rows,
-            p2.viewport_rows,
-            right_total,
+            left_rows, p1.viewport_rows, p2.viewport_rows, right_total,
         );
     }
 
@@ -3051,7 +3076,13 @@ mod test {
     /// ```
     fn make_deep_nested_tab(
         size: TerminalSize,
-    ) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
+    ) -> (
+        Tab,
+        Arc<dyn Pane>,
+        Arc<dyn Pane>,
+        Arc<dyn Pane>,
+        Arc<dyn Pane>,
+    ) {
         let tab = Tab::new(&size);
         let pane0 = FakePane::new(0, size);
         tab.assign_pane(&pane0);
@@ -3266,11 +3297,9 @@ mod test {
         let p3 = pane3.get_dimensions();
         let right_total = p1.viewport_rows + 1 + p2.viewport_rows + 1 + p3.viewport_rows;
         assert_ne!(
-            right_total,
-            p0.viewport_rows,
+            right_total, p0.viewport_rows,
             "Right column should be inconsistent. left={}, right_total={}",
-            p0.viewport_rows,
-            right_total,
+            p0.viewport_rows, right_total,
         );
 
         // Prove reconciliation fixes the deep nesting
@@ -3294,9 +3323,7 @@ mod test {
     /// |       pane 2        |
     /// +---------------------+
     /// ```
-    fn make_t_shaped_tab(
-        size: TerminalSize,
-    ) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
+    fn make_t_shaped_tab(size: TerminalSize) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
         let tab = Tab::new(&size);
         let pane0 = FakePane::new(0, size);
         tab.assign_pane(&pane0);
@@ -3429,8 +3456,7 @@ mod test {
             p0.viewport_rows, p1.viewport_rows,
             "Top-left (E2) and top-right (E1) should have different heights. \
              pane0.rows={}, pane1.rows={}",
-            p0.viewport_rows,
-            p1.viewport_rows,
+            p0.viewport_rows, p1.viewport_rows,
         );
 
         // Prove reconciliation fixes it
@@ -3512,7 +3538,13 @@ mod test {
     /// ```
     fn make_grid_tab(
         size: TerminalSize,
-    ) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
+    ) -> (
+        Tab,
+        Arc<dyn Pane>,
+        Arc<dyn Pane>,
+        Arc<dyn Pane>,
+        Arc<dyn Pane>,
+    ) {
         let tab = Tab::new(&size);
         let pane0 = FakePane::new(0, size);
         tab.assign_pane(&pane0);
@@ -3582,7 +3614,6 @@ mod test {
 
         (tab, pane0, pane1, pane2, pane3)
     }
-
     /// 2x2 grid with interleaved PDUs: left column from E2, right column
     /// from E1. Both vertical sub-splits get stale/fresh data, and the
     /// horizontal split's children may have different total heights.
@@ -4026,9 +4057,10 @@ mod test {
         );
     }
 
-    /// Verify that splitting a pane produces children with non-degenerate
-    /// sizes. This catches the race condition where split-pane produces
-    /// 1-row or 1-col panes because the server used a stale pane size.
+    /// Verify that split layout math produces children with non-degenerate
+    /// sizes when the tab already has the correct dimensions.
+    /// This exercises `Tab` sizing invariants only; it does not cover
+    /// client/server races or stale PTY sizes during spawn.
     #[test]
     fn split_produces_nondegenerate_panes() {
         let size = TerminalSize {
@@ -4232,4 +4264,3 @@ mod test {
         assert!(is_send_and_sync::<Tab>());
     }
 }
-
