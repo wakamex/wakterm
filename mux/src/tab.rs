@@ -510,6 +510,102 @@ fn apply_sizes_from_splits(tree: &Tree, size: &TerminalSize) {
     }
 }
 
+/// Top-down reconciliation pass that enforces parent-child size constraints.
+/// Prevents accumulated drift from interleaved per-pane resize PDUs.
+fn reconcile_tree_sizes(tree: &mut Tree, allocated: &TerminalSize) {
+    match tree {
+        Tree::Empty | Tree::Leaf(_) => {}
+        Tree::Node { data: None, .. } => {}
+        Tree::Node {
+            left,
+            right,
+            data: Some(data),
+        } => {
+            let cell_width = allocated.pixel_width.checked_div(allocated.cols).unwrap_or(1);
+            let cell_height = allocated.pixel_height.checked_div(allocated.rows).unwrap_or(1);
+
+            match data.direction {
+                SplitDirection::Horizontal => {
+                    data.first.rows = allocated.rows;
+                    data.second.rows = allocated.rows;
+                    if data.first.cols + 2 > allocated.cols {
+                        data.first.cols = allocated.cols.saturating_sub(2);
+                    }
+                    data.second.cols = allocated.cols.saturating_sub(1 + data.first.cols);
+
+                    data.first.pixel_width = data.first.cols * cell_width;
+                    data.first.pixel_height = data.first.rows * cell_height;
+                    data.second.pixel_width = data.second.cols * cell_width;
+                    data.second.pixel_height = data.second.rows * cell_height;
+                    data.first.dpi = allocated.dpi;
+                    data.second.dpi = allocated.dpi;
+                }
+                SplitDirection::Vertical => {
+                    data.first.cols = allocated.cols;
+                    data.second.cols = allocated.cols;
+                    if data.first.rows + 2 > allocated.rows {
+                        data.first.rows = allocated.rows.saturating_sub(2);
+                    }
+                    data.second.rows = allocated.rows.saturating_sub(1 + data.first.rows);
+
+                    data.first.pixel_width = data.first.cols * cell_width;
+                    data.first.pixel_height = data.first.rows * cell_height;
+                    data.second.pixel_width = data.second.cols * cell_width;
+                    data.second.pixel_height = data.second.rows * cell_height;
+                    data.first.dpi = allocated.dpi;
+                    data.second.dpi = allocated.dpi;
+                }
+            }
+
+            reconcile_tree_sizes(left, &data.first);
+            reconcile_tree_sizes(right, &data.second);
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+fn debug_assert_tree_invariants(tree: &Tree, size: &TerminalSize) {
+    fn check(tree: &Tree, allocated: &TerminalSize, errors: &mut Vec<String>) {
+        match tree {
+            Tree::Empty | Tree::Leaf(_) => {}
+            Tree::Node { data: None, .. } => {}
+            Tree::Node { left, right, data: Some(data) } => {
+                match data.direction {
+                    SplitDirection::Horizontal => {
+                        if data.first.rows != allocated.rows {
+                            errors.push(format!("H first.rows={} != {}", data.first.rows, allocated.rows));
+                        }
+                        if data.second.rows != allocated.rows {
+                            errors.push(format!("H second.rows={} != {}", data.second.rows, allocated.rows));
+                        }
+                        let total = data.first.cols + 1 + data.second.cols;
+                        if total != allocated.cols {
+                            errors.push(format!("H cols {}+1+{}={} != {}", data.first.cols, data.second.cols, total, allocated.cols));
+                        }
+                    }
+                    SplitDirection::Vertical => {
+                        if data.first.cols != allocated.cols {
+                            errors.push(format!("V first.cols={} != {}", data.first.cols, allocated.cols));
+                        }
+                        if data.second.cols != allocated.cols {
+                            errors.push(format!("V second.cols={} != {}", data.second.cols, allocated.cols));
+                        }
+                        let total = data.first.rows + 1 + data.second.rows;
+                        if total != allocated.rows {
+                            errors.push(format!("V rows {}+1+{}={} != {}", data.first.rows, data.second.rows, total, allocated.rows));
+                        }
+                    }
+                }
+                check(left, &data.first, errors);
+                check(right, &data.second, errors);
+            }
+        }
+    }
+    let mut errors = Vec::new();
+    check(tree, size, &mut errors);
+    assert!(errors.is_empty(), "Split tree invariant violation: {:?}", errors);
+}
+
 fn cell_dimensions(size: &TerminalSize) -> TerminalSize {
     TerminalSize {
         rows: 1,
@@ -1189,8 +1285,14 @@ impl TabInner {
 
             self.size = size;
 
+            // Enforce top-down constraints before applying sizes to panes.
+            reconcile_tree_sizes(self.pane.as_mut().unwrap(), &size);
+
             // And then resize the individual panes to match
             apply_sizes_from_splits(self.pane.as_mut().unwrap(), &size);
+
+            #[cfg(debug_assertions)]
+            debug_assert_tree_invariants(self.pane.as_ref().unwrap(), &self.size);
         }
 
         Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
@@ -1267,6 +1369,10 @@ impl TabInner {
         if let Some(root) = self.pane.as_mut() {
             if let Some(size) = compute_size(root) {
                 self.size = size;
+                reconcile_tree_sizes(root, &self.size);
+
+                #[cfg(debug_assertions)]
+                debug_assert_tree_invariants(root, &self.size);
             }
         }
         Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
@@ -2542,6 +2648,83 @@ mod test {
         assert_eq!(600, panes[2].pixel_height);
     }
 
+    fn check_tree_invariants(tree: &Tree, allocated: &TerminalSize) -> Vec<String> {
+        let mut errors = Vec::new();
+        match tree {
+            Tree::Empty | Tree::Leaf(_) => {}
+            Tree::Node { data: None, .. } => {}
+            Tree::Node {
+                left,
+                right,
+                data: Some(data),
+            } => {
+                match data.direction {
+                    SplitDirection::Horizontal => {
+                        // Both children must have the same height as allocated
+                        if data.first.rows != allocated.rows {
+                            errors.push(format!(
+                                "H-split first.rows={} != allocated.rows={}",
+                                data.first.rows, allocated.rows
+                            ));
+                        }
+                        if data.second.rows != allocated.rows {
+                            errors.push(format!(
+                                "H-split second.rows={} != allocated.rows={}",
+                                data.second.rows, allocated.rows
+                            ));
+                        }
+                        // Widths should sum: first.cols + 1 + second.cols == allocated.cols
+                        let total_cols = data.first.cols + 1 + data.second.cols;
+                        if total_cols != allocated.cols {
+                            errors.push(format!(
+                                "H-split cols: {} + 1 + {} = {} != allocated.cols={}",
+                                data.first.cols, data.second.cols, total_cols, allocated.cols
+                            ));
+                        }
+                    }
+                    SplitDirection::Vertical => {
+                        // Both children must have the same width as allocated
+                        if data.first.cols != allocated.cols {
+                            errors.push(format!(
+                                "V-split first.cols={} != allocated.cols={}",
+                                data.first.cols, allocated.cols
+                            ));
+                        }
+                        if data.second.cols != allocated.cols {
+                            errors.push(format!(
+                                "V-split second.cols={} != allocated.cols={}",
+                                data.second.cols, allocated.cols
+                            ));
+                        }
+                        // Rows should sum: first.rows + 1 + second.rows == allocated.rows
+                        let total_rows = data.first.rows + 1 + data.second.rows;
+                        if total_rows != allocated.rows {
+                            errors.push(format!(
+                                "V-split rows: {} + 1 + {} = {} != allocated.rows={}",
+                                data.first.rows, data.second.rows, total_rows, allocated.rows
+                            ));
+                        }
+                    }
+                }
+                errors.extend(check_tree_invariants(left, &data.first));
+                errors.extend(check_tree_invariants(right, &data.second));
+            }
+        }
+        errors
+    }
+
+    /// Build the L-shaped 3-pane layout from the bug report:
+    ///
+    /// ```text
+    /// +----------+----------+
+    /// |          |  pane 1  |
+    /// |  pane 0  +----------+
+    /// |          |  pane 2  |
+    /// +----------+----------+
+    /// ```
+    ///
+    /// Returns (tab, pane0, pane1, pane2) so callers can resize
+    /// individual panes to simulate mux server behavior.
     fn make_l_shaped_tab(
         size: TerminalSize,
     ) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
@@ -2549,54 +2732,1124 @@ mod test {
         let pane0 = FakePane::new(0, size);
         tab.assign_pane(&pane0);
 
+        // Horizontal split: pane0 (left), pane1 (right)
         let hsplit = tab
-            .compute_split_size(0, SplitRequest {
-                direction: SplitDirection::Horizontal,
-                ..Default::default()
-            })
+            .compute_split_size(
+                0,
+                SplitRequest {
+                    direction: SplitDirection::Horizontal,
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let pane1 = FakePane::new(1, hsplit.second);
-        tab.split_and_insert(0, SplitRequest {
-            direction: SplitDirection::Horizontal,
-            ..Default::default()
-        }, pane1.clone()).unwrap();
-
-        let vsplit = tab
-            .compute_split_size(1, SplitRequest {
-                direction: SplitDirection::Vertical,
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: SplitDirection::Horizontal,
                 ..Default::default()
-            })
+            },
+            pane1.clone(),
+        )
+        .unwrap();
+
+        // Vertical sub-split on the right pane (pane1 index=1):
+        // pane1 (top-right), pane2 (bottom-right)
+        let vsplit = tab
+            .compute_split_size(
+                1,
+                SplitRequest {
+                    direction: SplitDirection::Vertical,
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let pane2 = FakePane::new(2, vsplit.second);
-        tab.split_and_insert(1, SplitRequest {
-            direction: SplitDirection::Vertical,
-            ..Default::default()
-        }, pane2.clone()).unwrap();
+        tab.split_and_insert(
+            1,
+            SplitRequest {
+                direction: SplitDirection::Vertical,
+                ..Default::default()
+            },
+            pane2.clone(),
+        )
+        .unwrap();
 
         (tab, pane0, pane1, pane2)
     }
 
-    /// Test that extreme shrink does NOT hang (the infinite loop bug
-    /// in adjust_y_size/adjust_x_size, #4878). Shrink nested layouts
-    /// to near-minimum, verify no hang, grow back.
+    /// Baseline: the normal single-client path (create layout → drag
+    /// divider → resize window → resize back) never breaks the invariant.
+    /// This is a regression guard — if this fails, the core resize logic
+    /// itself is broken, not just the mux interleaving path.
+    #[test]
+    fn nested_split_normal_resize_preserves_invariants() {
+        let size = TerminalSize {
+            rows: 80,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+        let (tab, _pane0, _pane1, _pane2) = make_l_shaped_tab(size);
+
+        let check = |label: &str, tab: &Tab| {
+            let inner = tab.inner.lock();
+            let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+            assert!(errors.is_empty(), "{}: {:?}", label, errors);
+        };
+
+        check("after creation", &tab);
+
+        tab.resize_split_by(1, 10);
+        check("after divider drag", &tab);
+
+        let bigger = TerminalSize {
+            rows: 90,
+            cols: 170,
+            pixel_width: 1700,
+            pixel_height: 2250,
+            dpi: 96,
+        };
+        tab.resize(bigger);
+        check("after resize up", &tab);
+
+        tab.resize(size);
+        check("after resize back", &tab);
+    }
+
+    /// Simulate the mux server state after interleaved per-pane resize PDUs
+    /// from two rapid resize events.
+    ///
+    /// When a client resizes its window, `apply_sizes_from_splits` calls
+    /// `pane.resize()` on each leaf, spawning independent async `Pdu::Resize`
+    /// tasks. If two resize events fire in quick succession, their PDUs can
+    /// interleave — leaving some panes at sizes from event 1 and others from
+    /// event 2.
+    ///
+    /// Returns (tab, pane0, pane1, pane2) with panes already set to the
+    /// inconsistent interleaved sizes.
+    fn make_interleaved_resize_state(
+    ) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
+        let size = TerminalSize {
+            rows: 80,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+        let (tab, pane0, pane1, pane2) = make_l_shaped_tab(size);
+
+        // Drag the vertical divider to create asymmetric right-side split
+        tab.resize_split_by(1, 10);
+
+        let panes_before = tab.iter_panes();
+        let p0_rows = panes_before[0].height;
+        let p1_rows = panes_before[1].height;
+        let p2_rows = panes_before[2].height;
+
+        // Verify precondition: right column sums correctly
+        assert_eq!(
+            p1_rows + 1 + p2_rows,
+            p0_rows,
+            "precondition: right column should sum to left pane height"
+        );
+
+        // Simulate two rapid resize events on the CLIENT side.
+        // We create temporary client-side tabs to compute what sizes
+        // each event would produce.
+
+        // Event 1: 80→90 rows
+        let size_e1 = TerminalSize {
+            rows: 90,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2250,
+            dpi: 96,
+        };
+        let (client_tab_e1, _, _, _) = make_l_shaped_tab(size);
+        client_tab_e1.resize_split_by(1, 10);
+        client_tab_e1.resize(size_e1);
+        let e1_panes = client_tab_e1.iter_panes();
+
+        // Event 2: 80→90→95 rows
+        let size_e2 = TerminalSize {
+            rows: 95,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2375,
+            dpi: 96,
+        };
+        let (client_tab_e2, _, _, _) = make_l_shaped_tab(size);
+        client_tab_e2.resize_split_by(1, 10);
+        client_tab_e2.resize(size_e1);
+        client_tab_e2.resize(size_e2);
+        let e2_panes = client_tab_e2.iter_panes();
+
+        // Helper to extract TerminalSize from a PositionedPane
+        let pane_size = |p: &PositionedPane| TerminalSize {
+            rows: p.height,
+            cols: p.width,
+            pixel_width: p.pixel_width,
+            pixel_height: p.pixel_height,
+            dpi: 96,
+        };
+
+        // Apply the interleaved final state to the server's panes:
+        // pane0 and pane1 got E2's sizes (latest), but pane2 got E1's
+        // STALE size because its E1 PDU arrived after its E2 PDU.
+        pane0.resize(pane_size(&e2_panes[0])).unwrap();
+        pane1.resize(pane_size(&e2_panes[1])).unwrap();
+        pane2.resize(pane_size(&e1_panes[2])).unwrap(); // stale!
+
+        (tab, pane0, pane1, pane2)
+    }
+
+    /// Prove that interleaved per-pane resize PDUs break the size invariant.
+    ///
+    /// After two rapid client resize events whose PDUs interleave, the
+    /// server's panes end up with sizes from different events. The right
+    /// column's children (pane1 + divider + pane2) no longer sum to the
+    /// left pane's height.
+    #[test]
+    fn interleaved_pdus_break_pane_size_invariant() {
+        let (_tab, pane0, pane1, pane2) = make_interleaved_resize_state();
+
+        let p0 = pane0.get_dimensions();
+        let p1 = pane1.get_dimensions();
+        let p2 = pane2.get_dimensions();
+
+        let left_rows = p0.viewport_rows;
+        let right_total = p1.viewport_rows + 1 + p2.viewport_rows;
+
+        assert_ne!(
+            right_total, left_rows,
+            "Raw pane sizes should be inconsistent after interleaving. \
+             left={}, top_right={}, bot_right={}, right_total={}",
+            left_rows,
+            p1.viewport_rows,
+            p2.viewport_rows,
+            right_total,
+        );
+    }
+
+    /// Prove that rebuild_splits_sizes_from_contained_panes (with
+    /// reconcile_tree_sizes) restores the tree invariant even when
+    /// panes report inconsistent sizes from interleaved PDUs.
+    #[test]
+    fn reconcile_fixes_interleaved_pdu_overflow() {
+        let (tab, _pane0, _pane1, _pane2) = make_interleaved_resize_state();
+
+        tab.rebuild_splits_sizes_from_contained_panes();
+
+        let inner = tab.inner.lock();
+        let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+        assert!(
+            errors.is_empty(),
+            "Tree invariants should hold after reconciliation, but got: {:?}",
+            errors,
+        );
+    }
+
+    /// Build a 4-pane layout with 3 panes stacked in the right column:
+    ///
+    /// ```text
+    /// +---------+---------+
+    /// |         |  pane 1 |
+    /// |         +---------+
+    /// | pane 0  |  pane 2 |
+    /// |         +---------+
+    /// |         |  pane 3 |
+    /// +---------+---------+
+    /// ```
+    fn make_deep_nested_tab(
+        size: TerminalSize,
+    ) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
+        let tab = Tab::new(&size);
+        let pane0 = FakePane::new(0, size);
+        tab.assign_pane(&pane0);
+
+        // Horizontal split: pane0 (left), pane1 (right)
+        let hsplit = tab
+            .compute_split_size(
+                0,
+                SplitRequest {
+                    direction: SplitDirection::Horizontal,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let pane1 = FakePane::new(1, hsplit.second);
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: SplitDirection::Horizontal,
+                ..Default::default()
+            },
+            pane1.clone(),
+        )
+        .unwrap();
+
+        // First vertical sub-split on the right: pane1 (top), pane2 (middle)
+        let vsplit1 = tab
+            .compute_split_size(
+                1,
+                SplitRequest {
+                    direction: SplitDirection::Vertical,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let pane2 = FakePane::new(2, vsplit1.second);
+        tab.split_and_insert(
+            1,
+            SplitRequest {
+                direction: SplitDirection::Vertical,
+                ..Default::default()
+            },
+            pane2.clone(),
+        )
+        .unwrap();
+
+        // Second vertical sub-split: pane2 (middle), pane3 (bottom)
+        let vsplit2 = tab
+            .compute_split_size(
+                2,
+                SplitRequest {
+                    direction: SplitDirection::Vertical,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let pane3 = FakePane::new(3, vsplit2.second);
+        tab.split_and_insert(
+            2,
+            SplitRequest {
+                direction: SplitDirection::Vertical,
+                ..Default::default()
+            },
+            pane3.clone(),
+        )
+        .unwrap();
+
+        (tab, pane0, pane1, pane2, pane3)
+    }
+
+    /// Pattern 2: interleaved PDUs cause column width inconsistency.
+    /// Panes in the same vertical column end up with different widths
+    /// because their col-count PDUs came from different resize events.
+    #[test]
+    fn interleaved_pdus_break_column_width() {
+        let size = TerminalSize {
+            rows: 80,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+        let (tab, pane0, pane1, pane2) = make_l_shaped_tab(size);
+        tab.resize_split_by(1, 10);
+
+        // Event 1: resize cols 160→180
+        let size_e1 = TerminalSize {
+            rows: 80,
+            cols: 180,
+            pixel_width: 1800,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+        let (c1, _, _, _) = make_l_shaped_tab(size);
+        c1.resize_split_by(1, 10);
+        c1.resize(size_e1);
+        let e1 = c1.iter_panes();
+
+        // Event 2: resize cols 160→180→200
+        let size_e2 = TerminalSize {
+            rows: 80,
+            cols: 200,
+            pixel_width: 2000,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+        let (c2, _, _, _) = make_l_shaped_tab(size);
+        c2.resize_split_by(1, 10);
+        c2.resize(size_e1);
+        c2.resize(size_e2);
+        let e2 = c2.iter_panes();
+
+        let ps = |p: &PositionedPane| TerminalSize {
+            rows: p.height,
+            cols: p.width,
+            pixel_width: p.pixel_width,
+            pixel_height: p.pixel_height,
+            dpi: 96,
+        };
+
+        // Interleave: pane0 from E2, pane1 from E2, pane2 from E1 (stale cols)
+        pane0.resize(ps(&e2[0])).unwrap();
+        pane1.resize(ps(&e2[1])).unwrap();
+        pane2.resize(ps(&e1[2])).unwrap(); // stale!
+
+        // Prove the width inconsistency at the pane level
+        let p1_cols = pane1.get_dimensions().cols;
+        let p2_cols = pane2.get_dimensions().cols;
+        assert_ne!(
+            p1_cols, p2_cols,
+            "Panes in same vertical column should have inconsistent widths. \
+             pane1.cols={}, pane2.cols={}",
+            p1_cols, p2_cols,
+        );
+
+        // Prove reconciliation fixes it
+        tab.rebuild_splits_sizes_from_contained_panes();
+        let inner = tab.inner.lock();
+        let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+        assert!(
+            errors.is_empty(),
+            "Tree invariants should hold after reconciliation, but got: {:?}",
+            errors,
+        );
+    }
+
+    /// Pattern 3: deeply nested layout (4 panes, 3 stacked in right column).
+    /// Interleaved PDUs can cause multi-level inconsistencies that a single
+    /// reconciliation pass must fix through all nesting levels.
+    #[test]
+    fn deep_nested_interleaved_pdus() {
+        let size = TerminalSize {
+            rows: 90,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2250,
+            dpi: 96,
+        };
+        let (tab, pane0, pane1, pane2, pane3) = make_deep_nested_tab(size);
+
+        // Make it asymmetric
+        tab.resize_split_by(1, 5);
+        tab.resize_split_by(2, 8);
+
+        // Event 1: 90→100 rows
+        let size_e1 = TerminalSize {
+            rows: 100,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2500,
+            dpi: 96,
+        };
+        let (c1, _, _, _, _) = make_deep_nested_tab(size);
+        c1.resize_split_by(1, 5);
+        c1.resize_split_by(2, 8);
+        c1.resize(size_e1);
+        let e1 = c1.iter_panes();
+
+        // Event 2: 90→100→110 rows
+        let size_e2 = TerminalSize {
+            rows: 110,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2750,
+            dpi: 96,
+        };
+        let (c2, _, _, _, _) = make_deep_nested_tab(size);
+        c2.resize_split_by(1, 5);
+        c2.resize_split_by(2, 8);
+        c2.resize(size_e1);
+        c2.resize(size_e2);
+        let e2 = c2.iter_panes();
+
+        let ps = |p: &PositionedPane| TerminalSize {
+            rows: p.height,
+            cols: p.width,
+            pixel_width: p.pixel_width,
+            pixel_height: p.pixel_height,
+            dpi: 96,
+        };
+
+        // Interleave: pane0+pane1 from E2, pane2+pane3 from E1 (stale)
+        pane0.resize(ps(&e2[0])).unwrap();
+        pane1.resize(ps(&e2[1])).unwrap();
+        pane2.resize(ps(&e1[2])).unwrap(); // stale
+        pane3.resize(ps(&e1[3])).unwrap(); // stale
+
+        // Prove the invariant is broken at the pane level
+        let p0 = pane0.get_dimensions();
+        let p1 = pane1.get_dimensions();
+        let p2 = pane2.get_dimensions();
+        let p3 = pane3.get_dimensions();
+        let right_total = p1.viewport_rows + 1 + p2.viewport_rows + 1 + p3.viewport_rows;
+        assert_ne!(
+            right_total,
+            p0.viewport_rows,
+            "Right column should be inconsistent. left={}, right_total={}",
+            p0.viewport_rows,
+            right_total,
+        );
+
+        // Prove reconciliation fixes the deep nesting
+        tab.rebuild_splits_sizes_from_contained_panes();
+        let inner = tab.inner.lock();
+        let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+        assert!(
+            errors.is_empty(),
+            "Deep nested tree invariants should hold after reconciliation, but got: {:?}",
+            errors,
+        );
+    }
+
+    /// Build a T-shaped layout: top-level vertical split with a horizontal
+    /// sub-split on top and a full-width pane on the bottom:
+    ///
+    /// ```text
+    /// +----------+----------+
+    /// |  pane 0  |  pane 1  |
+    /// +----------+----------+
+    /// |       pane 2        |
+    /// +---------------------+
+    /// ```
+    fn make_t_shaped_tab(
+        size: TerminalSize,
+    ) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
+        let tab = Tab::new(&size);
+        let pane0 = FakePane::new(0, size);
+        tab.assign_pane(&pane0);
+
+        // Vertical split: pane0 (top), pane2 (bottom)
+        let vsplit = tab
+            .compute_split_size(
+                0,
+                SplitRequest {
+                    direction: SplitDirection::Vertical,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let pane2 = FakePane::new(2, vsplit.second);
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: SplitDirection::Vertical,
+                ..Default::default()
+            },
+            pane2.clone(),
+        )
+        .unwrap();
+
+        // Horizontal sub-split on the top pane (pane0): pane0 (left), pane1 (right)
+        let hsplit = tab
+            .compute_split_size(
+                0,
+                SplitRequest {
+                    direction: SplitDirection::Horizontal,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let pane1 = FakePane::new(1, hsplit.second);
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: SplitDirection::Horizontal,
+                ..Default::default()
+            },
+            pane1.clone(),
+        )
+        .unwrap();
+
+        (tab, pane0, pane1, pane2)
+    }
+
+    /// Pattern 4: T-shaped layout (vertical split with horizontal sub-split
+    /// on top, full-width pane on bottom). This is the "inverted L" — the
+    /// bottom pane spans both columns.
+    ///
+    /// Tests that reconcile_tree_sizes correctly handles the case where
+    /// the vertical split's children have different widths because the
+    /// top side is an H-split (width = left + 1 + right) while the bottom
+    /// is a single pane (width = allocated).
+    #[test]
+    fn t_shaped_interleaved_pdus() {
+        let size = TerminalSize {
+            rows: 80,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+        let (tab, pane0, pane1, pane2) = make_t_shaped_tab(size);
+
+        // Make dividers asymmetric
+        tab.resize_split_by(0, 5); // vertical divider
+        tab.resize_split_by(1, 8); // horizontal divider in top half
+
+        let check = |label: &str, tab: &Tab| {
+            let inner = tab.inner.lock();
+            let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+            assert!(errors.is_empty(), "{}: {:?}", label, errors);
+        };
+
+        check("t-shape after creation + divider drag", &tab);
+
+        // Event 1: resize rows 80→90
+        let size_e1 = TerminalSize {
+            rows: 90,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2250,
+            dpi: 96,
+        };
+        let (c1, _, _, _) = make_t_shaped_tab(size);
+        c1.resize_split_by(0, 5);
+        c1.resize_split_by(1, 8);
+        c1.resize(size_e1);
+        let e1 = c1.iter_panes();
+
+        // Event 2: resize rows 80→90→100
+        let size_e2 = TerminalSize {
+            rows: 100,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2500,
+            dpi: 96,
+        };
+        let (c2, _, _, _) = make_t_shaped_tab(size);
+        c2.resize_split_by(0, 5);
+        c2.resize_split_by(1, 8);
+        c2.resize(size_e1);
+        c2.resize(size_e2);
+        let e2 = c2.iter_panes();
+
+        let ps = |p: &PositionedPane| TerminalSize {
+            rows: p.height,
+            cols: p.width,
+            pixel_width: p.pixel_width,
+            pixel_height: p.pixel_height,
+            dpi: 96,
+        };
+
+        // Interleave WITHIN the H-sub-split: pane0 from E2, pane1 from E1
+        // (stale rows), pane2 from E2. This breaks the H-split constraint
+        // that first.rows == second.rows.
+        pane0.resize(ps(&e2[0])).unwrap();
+        pane1.resize(ps(&e1[1])).unwrap(); // stale: different row count
+        pane2.resize(ps(&e2[2])).unwrap();
+
+        // Prove the inconsistency: pane0 (E2) and pane1 (E1) have different
+        // row counts, violating the H-split constraint.
+        let p0 = pane0.get_dimensions();
+        let p1 = pane1.get_dimensions();
+        assert_ne!(
+            p0.viewport_rows, p1.viewport_rows,
+            "Top-left (E2) and top-right (E1) should have different heights. \
+             pane0.rows={}, pane1.rows={}",
+            p0.viewport_rows,
+            p1.viewport_rows,
+        );
+
+        // Prove reconciliation fixes it
+        tab.rebuild_splits_sizes_from_contained_panes();
+        let inner = tab.inner.lock();
+        let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+        assert!(
+            errors.is_empty(),
+            "T-shaped tree invariants should hold after reconciliation, but got: {:?}",
+            errors,
+        );
+    }
+
+    /// Verify that normal resize of all layout shapes preserves invariants.
+    /// This is a regression guard for all layout helpers.
+    #[test]
+    fn all_layouts_resize_preserves_invariants() {
+        let size = TerminalSize {
+            rows: 80,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+        let bigger = TerminalSize {
+            rows: 100,
+            cols: 200,
+            pixel_width: 2000,
+            pixel_height: 2500,
+            dpi: 96,
+        };
+
+        let check = |label: &str, tab: &Tab| {
+            let inner = tab.inner.lock();
+            let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+            assert!(errors.is_empty(), "{}: {:?}", label, errors);
+        };
+
+        // L-shaped
+        let (tab, _, _, _) = make_l_shaped_tab(size);
+        tab.resize_split_by(1, 10);
+        tab.resize(bigger);
+        tab.resize(size);
+        check("L-shape resize cycle", &tab);
+
+        // T-shaped
+        let (tab, _, _, _) = make_t_shaped_tab(size);
+        tab.resize_split_by(0, 5);
+        tab.resize_split_by(1, 8);
+        tab.resize(bigger);
+        tab.resize(size);
+        check("T-shape resize cycle", &tab);
+
+        // Deep nested (4-pane)
+        let (tab, _, _, _, _) = make_deep_nested_tab(size);
+        tab.resize_split_by(1, 5);
+        tab.resize_split_by(2, 8);
+        tab.resize(bigger);
+        tab.resize(size);
+        check("deep nested resize cycle", &tab);
+
+        // 2x2 grid
+        let (tab, _, _, _, _) = make_grid_tab(size);
+        tab.resize_split_by(1, 7);
+        tab.resize_split_by(2, -5);
+        tab.resize(bigger);
+        tab.resize(size);
+        check("grid resize cycle", &tab);
+    }
+
+    /// Build a 2x2 grid: horizontal split, each side has a vertical sub-split.
+    ///
+    /// ```text
+    /// +---------+---------+
+    /// | pane 0  | pane 1  |
+    /// +---------+---------+
+    /// | pane 2  | pane 3  |
+    /// +---------+---------+
+    /// ```
+    fn make_grid_tab(
+        size: TerminalSize,
+    ) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
+        let tab = Tab::new(&size);
+        let pane0 = FakePane::new(0, size);
+        tab.assign_pane(&pane0);
+
+        // Horizontal split: left | right
+        let hsplit = tab
+            .compute_split_size(
+                0,
+                SplitRequest {
+                    direction: SplitDirection::Horizontal,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let pane1 = FakePane::new(1, hsplit.second);
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: SplitDirection::Horizontal,
+                ..Default::default()
+            },
+            pane1.clone(),
+        )
+        .unwrap();
+
+        // Vertical sub-split on the LEFT: pane0 (top-left), pane2 (bottom-left)
+        let vsplit_l = tab
+            .compute_split_size(
+                0,
+                SplitRequest {
+                    direction: SplitDirection::Vertical,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let pane2 = FakePane::new(2, vsplit_l.second);
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: SplitDirection::Vertical,
+                ..Default::default()
+            },
+            pane2.clone(),
+        )
+        .unwrap();
+
+        // Vertical sub-split on the RIGHT: pane1 (top-right), pane3 (bottom-right)
+        let vsplit_r = tab
+            .compute_split_size(
+                2,
+                SplitRequest {
+                    direction: SplitDirection::Vertical,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let pane3 = FakePane::new(3, vsplit_r.second);
+        tab.split_and_insert(
+            2,
+            SplitRequest {
+                direction: SplitDirection::Vertical,
+                ..Default::default()
+            },
+            pane3.clone(),
+        )
+        .unwrap();
+
+        (tab, pane0, pane1, pane2, pane3)
+    }
+
+    /// 2x2 grid with interleaved PDUs: left column from E2, right column
+    /// from E1. Both vertical sub-splits get stale/fresh data, and the
+    /// horizontal split's children may have different total heights.
+    #[test]
+    fn grid_interleaved_pdus() {
+        let size = TerminalSize {
+            rows: 80,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+        let (tab, pane0, pane1, pane2, pane3) = make_grid_tab(size);
+
+        // Make both V-splits asymmetric
+        tab.resize_split_by(1, 7);
+        tab.resize_split_by(2, -5);
+
+        // Event 1: 80→90 rows
+        let size_e1 = TerminalSize {
+            rows: 90,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2250,
+            dpi: 96,
+        };
+        let (c1, _, _, _, _) = make_grid_tab(size);
+        c1.resize_split_by(1, 7);
+        c1.resize_split_by(2, -5);
+        c1.resize(size_e1);
+        let e1 = c1.iter_panes();
+
+        // Event 2: 80→90→100 rows
+        let size_e2 = TerminalSize {
+            rows: 100,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2500,
+            dpi: 96,
+        };
+        let (c2, _, _, _, _) = make_grid_tab(size);
+        c2.resize_split_by(1, 7);
+        c2.resize_split_by(2, -5);
+        c2.resize(size_e1);
+        c2.resize(size_e2);
+        let e2 = c2.iter_panes();
+
+        let ps = |p: &PositionedPane| TerminalSize {
+            rows: p.height,
+            cols: p.width,
+            pixel_width: p.pixel_width,
+            pixel_height: p.pixel_height,
+            dpi: 96,
+        };
+
+        // Interleave: left column (pane0, pane2) from E2,
+        // right column (pane1, pane3) from E1 (stale)
+        pane0.resize(ps(&e2[0])).unwrap();
+        pane2.resize(ps(&e2[1])).unwrap();
+        pane1.resize(ps(&e1[2])).unwrap(); // stale
+        pane3.resize(ps(&e1[3])).unwrap(); // stale
+
+        // Prove inconsistency: left and right columns have different
+        // total heights because they're from different events
+        let p0 = pane0.get_dimensions();
+        let p2 = pane2.get_dimensions();
+        let p1 = pane1.get_dimensions();
+        let p3 = pane3.get_dimensions();
+        let left_total = p0.viewport_rows + 1 + p2.viewport_rows;
+        let right_total = p1.viewport_rows + 1 + p3.viewport_rows;
+        assert_ne!(
+            left_total, right_total,
+            "Left and right columns should have different heights. \
+             left={}, right={}",
+            left_total, right_total,
+        );
+
+        // Prove reconciliation fixes it
+        tab.rebuild_splits_sizes_from_contained_panes();
+        let inner = tab.inner.lock();
+        let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+        assert!(
+            errors.is_empty(),
+            "Grid tree invariants should hold after reconciliation, but got: {:?}",
+            errors,
+        );
+    }
+
+    /// Verify that interleaving the FIRST pane as stale (not last) also
+    /// triggers and is fixed by reconciliation. Previous tests always made
+    /// the last pane stale — this ensures the fix works regardless of
+    /// which pane is out of date.
+    #[test]
+    fn first_pane_stale_interleaving() {
+        let size = TerminalSize {
+            rows: 80,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+        let (tab, pane0, pane1, pane2) = make_l_shaped_tab(size);
+        tab.resize_split_by(1, 10);
+
+        // Event 1: 80→90
+        let size_e1 = TerminalSize {
+            rows: 90,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2250,
+            dpi: 96,
+        };
+        let (c1, _, _, _) = make_l_shaped_tab(size);
+        c1.resize_split_by(1, 10);
+        c1.resize(size_e1);
+        let e1 = c1.iter_panes();
+
+        // Event 2: 80→90→100
+        let size_e2 = TerminalSize {
+            rows: 100,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2500,
+            dpi: 96,
+        };
+        let (c2, _, _, _) = make_l_shaped_tab(size);
+        c2.resize_split_by(1, 10);
+        c2.resize(size_e1);
+        c2.resize(size_e2);
+        let e2 = c2.iter_panes();
+
+        let ps = |p: &PositionedPane| TerminalSize {
+            rows: p.height,
+            cols: p.width,
+            pixel_width: p.pixel_width,
+            pixel_height: p.pixel_height,
+            dpi: 96,
+        };
+
+        // Interleave: pane0 from E1 (STALE — first pane!),
+        // pane1 and pane2 from E2
+        pane0.resize(ps(&e1[0])).unwrap(); // stale!
+        pane1.resize(ps(&e2[1])).unwrap();
+        pane2.resize(ps(&e2[2])).unwrap();
+
+        // Prove inconsistency: pane0 (left, from E1) has different height
+        // than the right column (from E2)
+        let p0 = pane0.get_dimensions();
+        let p1 = pane1.get_dimensions();
+        let p2 = pane2.get_dimensions();
+        assert_ne!(
+            p0.viewport_rows,
+            p1.viewport_rows + 1 + p2.viewport_rows,
+            "Left pane (E1) should differ from right column (E2). \
+             left={}, right={}",
+            p0.viewport_rows,
+            p1.viewport_rows + 1 + p2.viewport_rows,
+        );
+
+        // Prove reconciliation fixes it
+        tab.rebuild_splits_sizes_from_contained_panes();
+        let inner = tab.inner.lock();
+        let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+        assert!(
+            errors.is_empty(),
+            "First-pane-stale invariants should hold after reconciliation, but got: {:?}",
+            errors,
+        );
+    }
+
+    /// Verify that removing panes from various layouts preserves tree
+    /// invariants. Tests the `remove_pane_if` → `apply_pane_size` cascade.
+    #[test]
+    fn pane_removal_preserves_invariants() {
+        let size = TerminalSize {
+            rows: 80,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+
+        let check = |label: &str, tab: &Tab| {
+            let inner = tab.inner.lock();
+            if inner.pane.as_ref().map_or(true, |t| t.num_leaves() < 2) {
+                return; // single pane or empty — no split to check
+            }
+            let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+            assert!(errors.is_empty(), "{}: {:?}", label, errors);
+        };
+
+        // L-shaped: remove bottom-right pane (pane2), should leave 2-pane horizontal
+        let (tab, _pane0, _pane1, pane2) = make_l_shaped_tab(size);
+        tab.resize_split_by(1, 10);
+        check("L-shape before removal", &tab);
+        tab.remove_pane(pane2.pane_id());
+        check("L-shape after removing bottom-right", &tab);
+
+        // L-shaped: remove top-right pane (pane1), should leave 2-pane horizontal
+        let (tab, _pane0, pane1, _pane2) = make_l_shaped_tab(size);
+        tab.resize_split_by(1, 10);
+        tab.remove_pane(pane1.pane_id());
+        check("L-shape after removing top-right", &tab);
+
+        // L-shaped: remove left pane (pane0), should leave 2-pane vertical
+        let (tab, pane0, _pane1, _pane2) = make_l_shaped_tab(size);
+        tab.resize_split_by(1, 10);
+        tab.remove_pane(pane0.pane_id());
+        check("L-shape after removing left", &tab);
+
+        // Grid: remove one corner, leaving a T-shape
+        let (tab, _pane0, _pane1, _pane2, pane3) = make_grid_tab(size);
+        tab.resize_split_by(1, 7);
+        tab.resize_split_by(2, -5);
+        check("Grid before removal", &tab);
+        tab.remove_pane(pane3.pane_id());
+        check("Grid after removing bottom-right", &tab);
+
+        // T-shaped: remove bottom pane, leaving 2-pane horizontal
+        let (tab, _pane0, _pane1, pane2) = make_t_shaped_tab(size);
+        tab.resize_split_by(0, 5);
+        tab.resize_split_by(1, 8);
+        check("T-shape before removal", &tab);
+        tab.remove_pane(pane2.pane_id());
+        check("T-shape after removing bottom", &tab);
+    }
+
+    /// Verify that adding splits to an already-nested layout and then
+    /// resizing preserves invariants. Tests the split_and_insert path
+    /// combined with resize.
+    #[test]
+    fn split_then_resize_preserves_invariants() {
+        let size = TerminalSize {
+            rows: 80,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2000,
+            dpi: 96,
+        };
+
+        let check = |label: &str, tab: &Tab| {
+            let inner = tab.inner.lock();
+            let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+            assert!(errors.is_empty(), "{}: {:?}", label, errors);
+        };
+
+        // Start with L-shape, then add a 4th pane by splitting the left
+        let (tab, _pane0, _pane1, _pane2) = make_l_shaped_tab(size);
+        tab.resize_split_by(1, 10);
+
+        let vsplit = tab
+            .compute_split_size(
+                0,
+                SplitRequest {
+                    direction: SplitDirection::Vertical,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let pane3 = FakePane::new(3, vsplit.second);
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: SplitDirection::Vertical,
+                ..Default::default()
+            },
+            pane3,
+        )
+        .unwrap();
+
+        check("L-shape + extra split", &tab);
+
+        // Resize up
+        let bigger = TerminalSize {
+            rows: 100,
+            cols: 200,
+            pixel_width: 2000,
+            pixel_height: 2500,
+            dpi: 96,
+        };
+        tab.resize(bigger);
+        check("after resize up", &tab);
+
+        // Resize back down
+        tab.resize(size);
+        check("after resize back", &tab);
+    }
+
+    // Note: zoom/unzoom with interleaving cannot be tested as a pure unit
+    // test because toggle_zoom() requires the Mux singleton. The zoom path
+    // is protected by resize() having reconcile_tree_sizes, which is called
+    // when unzoom triggers resize().
+
+    /// Test extreme resize: shrink a nested layout to near-minimum size
+    /// and then grow it back. Exercises the clamping logic in
+    /// reconcile_tree_sizes and adjust_y_size/adjust_x_size.
+    ///
+    /// The primary assertion is that this does NOT hang (the infinite loop
+    /// bug in adjust_y_size/adjust_x_size that was #4878). Secondary: tree
+    /// invariants hold after growing back to a reasonable size.
     #[test]
     fn extreme_shrink_and_grow() {
         let size = TerminalSize {
-            rows: 80, cols: 160,
-            pixel_width: 1600, pixel_height: 2000, dpi: 96,
+            rows: 80,
+            cols: 160,
+            pixel_width: 1600,
+            pixel_height: 2000,
+            dpi: 96,
         };
-        let (tab, _, _, _) = make_l_shaped_tab(size);
+
+        let check = |label: &str, tab: &Tab| {
+            let inner = tab.inner.lock();
+            let errors = check_tree_invariants(inner.pane.as_ref().unwrap(), &inner.size);
+            assert!(errors.is_empty(), "{}: {:?}", label, errors);
+        };
+
+        // L-shape: shrink to tiny, then grow back
+        let (tab, _pane0, _pane1, _pane2) = make_l_shaped_tab(size);
         tab.resize_split_by(1, 10);
         let tiny = TerminalSize {
-            rows: 5, cols: 6,
-            pixel_width: 60, pixel_height: 125, dpi: 96,
+            rows: 5,
+            cols: 6,
+            pixel_width: 60,
+            pixel_height: 125,
+            dpi: 96,
         };
         tab.resize(tiny);
-        // If we get here without hanging, the fix works.
-        // Grow back and verify the tab is still functional.
+        // Don't check invariants at tiny size — panes may be at minimum
+        // and the tree structure is degraded. The important thing is
+        // it didn't hang.
         tab.resize(size);
-        let panes = tab.iter_panes();
-        assert_eq!(3, panes.len(), "should still have 3 panes after shrink/grow cycle");
+        check("L-shape after grow back from tiny", &tab);
+
+        // Deep nested: same pattern
+        let (tab, _, _, _, _) = make_deep_nested_tab(size);
+        tab.resize_split_by(1, 5);
+        tab.resize_split_by(2, 8);
+        let tiny_deep = TerminalSize {
+            rows: 8,
+            cols: 6,
+            pixel_width: 60,
+            pixel_height: 200,
+            dpi: 96,
+        };
+        tab.resize(tiny_deep);
+        tab.resize(size);
+        check("deep nested after grow back from tiny", &tab);
+
+        // Grid: same pattern
+        let (tab, _, _, _, _) = make_grid_tab(size);
+        tab.resize_split_by(1, 7);
+        tab.resize(tiny);
+        tab.resize(size);
+        check("grid after grow back from tiny", &tab);
     }
 
     fn is_send_and_sync<T: Send + Sync>() -> bool {
@@ -2608,3 +3861,4 @@ mod test {
         assert!(is_send_and_sync::<Tab>());
     }
 }
+
