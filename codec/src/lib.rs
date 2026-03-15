@@ -458,7 +458,10 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 46;
+// Keep at 45 for backwards compatibility with existing clients.
+// New PDU types (ResizeTab=63, RotatePanes=64) are additive —
+// unknown PDUs are handled gracefully by both sides.
+pub const CODEC_VERSION: usize = 45;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
