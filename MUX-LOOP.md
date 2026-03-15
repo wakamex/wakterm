@@ -91,9 +91,15 @@ LOOP:
      - push target is always origin (wakamex fork), NEVER upstream
      - if push fails, note it and continue
 
-  8. Update MUX-TASKS.md if the result changes a durable conclusion
+  8. Save response draft
+     - for every issue investigated (fixed or not), save a response in
+       responses/<issue>-<slug>.md (gitignored, not committed)
+     - include: status, root cause, fix description, suggested comment
+     - these are drafts for posting to upstream issues when ready
 
-  9. Go to 1
+  9. Update MUX-TASKS.md if the result changes a durable conclusion
+
+  10. Go to 1
 ```
 
 ## Investigation Protocol
