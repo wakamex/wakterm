@@ -326,15 +326,27 @@ async fn async_run(cmd: Option<CommandBuilder>) -> anyhow::Result<()> {
         .any(|p| p.domain_id() == domain.domain_id());
 
     if !have_panes_in_domain {
-        let workspace = None;
-        let position = None;
-        let window_id = mux.new_empty_window(workspace, position);
-        domain.attach(Some(*window_id)).await?;
+        // Try to restore a saved session first
+        let restored = match mux::session_persistence::restore_session(&domain).await {
+            Ok(n) => n,
+            Err(err) => {
+                log::warn!("Failed to restore session: {:#}", err);
+                0
+            }
+        };
 
-        let _tab = mux
-            .default_domain()
-            .spawn(config.initial_size(0, None), cmd, None, *window_id)
-            .await?;
+        if restored == 0 {
+            // No saved session or restore failed — create a fresh tab
+            let workspace = None;
+            let position = None;
+            let window_id = mux.new_empty_window(workspace, position);
+            domain.attach(Some(*window_id)).await?;
+
+            let _tab = mux
+                .default_domain()
+                .spawn(config.initial_size(0, None), cmd, None, *window_id)
+                .await?;
+        }
     }
     Ok(())
 }
