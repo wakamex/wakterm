@@ -1,7 +1,6 @@
 # Mux Tasks
 
 Execution loop and investigation protocol: [MUX-LOOP.md](./MUX-LOOP.md).
-Prior work on resize bugs: [RESIZE-LOOP.md](./RESIZE-LOOP.md), [RESIZE-TASKS.md](./RESIZE-TASKS.md).
 
 This file tracks hypotheses, findings, and durable conclusions for mux server bugs. Keep it concise — per-run detail goes in `experiments/`.
 
