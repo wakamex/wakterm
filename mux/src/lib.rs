@@ -1091,13 +1091,20 @@ impl Mux {
             }
         }
 
-        {
-            let mut windows = self.windows.write();
-            for (_, win) in windows.iter_mut() {
-                for tab in win.iter() {
-                    tab.kill_panes_in_domain(domain);
-                }
-            }
+        // Collect tabs while holding the windows lock, then release it
+        // before calling into tabs. This avoids a lock-ordering deadlock
+        // where windows.write() → tab.inner.lock() conflicts with the
+        // GUI render path that may hold tab.inner while waiting for
+        // windows or panes. (#7661)
+        let tabs: Vec<_> = {
+            let windows = self.windows.read();
+            windows
+                .values()
+                .flat_map(|win| win.iter().cloned())
+                .collect()
+        };
+        for tab in &tabs {
+            tab.kill_panes_in_domain(domain);
         }
 
         log::info!("domain detached panes: {:?}", dead_panes);
