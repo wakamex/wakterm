@@ -51,8 +51,8 @@ Full hotkey reference: [HOTKEYS.md](HOTKEYS.md)
 
 ### Compatibility
 
-- Codec version 45 (backwards compatible with upstream clients)
-- New PDU types (`ResizeTab`, `RotatePanes`) are additive — older clients ignore them gracefully
+- Codec version 46 (new `ResizeTab` and `RotatePanes` PDUs)
+- Both client and server should run this fork for full functionality
 
 ---
 
