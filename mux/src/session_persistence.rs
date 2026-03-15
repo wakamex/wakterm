@@ -225,8 +225,25 @@ async fn restore_tab(
 ) -> anyhow::Result<()> {
     let first_cwd = first_leaf_cwd(&saved_tab.tree);
 
+    // Use a generous size for spawning so split percentages produce
+    // usable pane sizes. The client will resize all tabs to its actual
+    // window size on connect. We can't know the client's window size
+    // at restore time (the server starts before any client connects).
+    let restore_size = {
+        let saved = saved_tab.tree.root_size().unwrap_or(default_size);
+        // Use the larger of saved size and a minimum (200x60) to ensure
+        // splits have room to work
+        wezterm_term::TerminalSize {
+            rows: saved.rows.max(60),
+            cols: saved.cols.max(200),
+            pixel_width: saved.pixel_width.max(200 * 10),
+            pixel_height: saved.pixel_height.max(60 * 20),
+            dpi: saved.dpi,
+        }
+    };
+
     let tab = domain
-        .spawn(default_size, None::<CommandBuilder>, first_cwd, window_id)
+        .spawn(restore_size, None::<CommandBuilder>, first_cwd, window_id)
         .await
         .context("spawning first pane for tab")?;
 
