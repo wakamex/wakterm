@@ -7,13 +7,13 @@ SRC="/code/wezterm/target/release"
 usage() {
     echo "Usage: ./deploy.sh [--restart] [--no-save] [--wipe-session]"
     echo ""
-    echo "  (no flags)  Build, save session, copy binaries"
+    echo "  (no flags)  Build, save manual layout snapshot, copy binaries"
     echo "  --restart   Also kill the mux server (Mac reconnect triggers new binary)"
-    echo "  --no-save   Skip wez-tabs save (use when session.json is known bad)"
+    echo "  --no-save   Skip wezterm cli save-layout (use when layout/session state is known bad)"
     echo "  --wipe-session  Remove runtime session.json after restart for a clean session"
     echo ""
     echo "After --restart, reconnect from Mac then run:"
-    echo "  cd /code/wezterm && python3 wez-tabs restore"
+    echo "  cd /code/wezterm && target/release/wezterm cli restore-layout"
 }
 
 RESTART=false
@@ -56,13 +56,13 @@ CCACHE_DISABLE=1 cargo build --release -p wezterm -p wezterm-gui -p wezterm-mux-
 echo ""
 
 if $SAVE_SESSION; then
-    echo "=== Step 2: Save current session ==="
+    echo "=== Step 2: Save manual layout snapshot ==="
     cd /code/wezterm
-    python3 wez-tabs save
+    "$SRC/wezterm" cli save-layout
     echo ""
 else
-    echo "=== Step 2: Skip session save ==="
-    echo "  Leaving current session.json untouched"
+    echo "=== Step 2: Skip manual layout snapshot ==="
+    echo "  Leaving layout.json/session.json untouched"
     echo ""
 fi
 
@@ -96,10 +96,7 @@ if $RESTART; then
         echo ""
         if $WIPE_SESSION; then
             echo "To restore tabs manually afterward:"
-            echo "  cd /code/wezterm && python3 wez-tabs restore"
-        else
-            echo "To also relaunch AI agents (claude, codex):"
-            echo "  cd /code/wezterm && python3 wez-tabs restore"
+            echo "  cd /code/wezterm && target/release/wezterm cli restore-layout"
         fi
     else
         echo "  No running mux server found"

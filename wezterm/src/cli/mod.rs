@@ -10,6 +10,7 @@ mod adjust_pane_size;
 mod get_pane_direction;
 mod get_text;
 mod kill_pane;
+mod layout;
 mod list;
 mod list_clients;
 mod move_pane_to_new_tab;
@@ -80,6 +81,16 @@ enum CliSubCommand {
 
     #[command(name = "list-clients", about = "list clients")]
     ListClients(list_clients::ListClientsCommand),
+
+    #[command(name = "save-layout", rename_all = "kebab", about = "Save the current mux layout")]
+    SaveLayout(layout::SaveLayout),
+
+    #[command(
+        name = "restore-layout",
+        rename_all = "kebab",
+        about = "Restore a saved mux layout"
+    )]
+    RestoreLayout(layout::RestoreLayout),
 
     #[command(name = "proxy", about = "start rpc proxy pipe")]
     Proxy(proxy::ProxyCommand),
@@ -182,6 +193,8 @@ async fn run_cli_async(opts: &crate::Opt, cli: CliCommand) -> anyhow::Result<()>
     match cli.sub {
         CliSubCommand::ListClients(cmd) => cmd.run(client).await,
         CliSubCommand::List(cmd) => cmd.run(client).await,
+        CliSubCommand::SaveLayout(cmd) => cmd.run(client).await,
+        CliSubCommand::RestoreLayout(cmd) => cmd.run(client).await,
         CliSubCommand::MovePaneToNewTab(cmd) => cmd.run(client).await,
         CliSubCommand::SplitPane(cmd) => cmd.run(client).await,
         CliSubCommand::SendText(cmd) => cmd.run(client).await,

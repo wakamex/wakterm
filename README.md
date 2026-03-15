@@ -26,7 +26,7 @@ This is an actively maintained fork of [wezterm/wezterm](https://github.com/wezt
 **Session persistence** — tabs survive server restarts:
 - Auto-saves tab layout, split tree structure, working directories, and titles every 60s and on SIGTERM
 - Auto-restores on startup with correct nested splits and proportional sizing
-- `wez-tabs save/restore/show` CLI for manual control and agent relaunching
+- `wezterm cli save-layout` / `wezterm cli restore-layout` for exact Rust-backed manual snapshots and replay
 
 **Window geometry** — macOS remembers window position and size across restarts via native `NSWindow` autosave
 
@@ -59,6 +59,7 @@ Full hotkey reference: [HOTKEYS.md](HOTKEYS.md)
 
 - Codec version 47
 - Both client and server should run this fork for full functionality
+- No backwards-compatibility shims for removed fork-only tooling such as `wez-tabs`
 
 ---
 
