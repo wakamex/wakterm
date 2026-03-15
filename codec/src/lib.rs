@@ -210,6 +210,15 @@ async fn decode_raw_async<R: Unpin + AsyncRead + std::fmt::Debug>(
             (data_len, false) => data_len,
         };
 
+    if data_len > MAX_PDU_SIZE {
+        return Err(CorruptResponse(format!(
+            "decode_raw_async: PDU data_len {} exceeds MAX_PDU_SIZE {} \
+            (len:{} serial:{} ident:{})",
+            data_len, MAX_PDU_SIZE, len, serial, ident
+        ))
+        .into());
+    }
+
     if is_compressed {
         metrics::histogram!("pdu.decode.compressed.size").record(data_len as f64);
     } else {
@@ -257,6 +266,14 @@ fn decode_raw<R: std::io::Read>(mut r: R) -> anyhow::Result<Decoded> {
             }
             (data_len, false) => data_len,
         };
+
+    if data_len > MAX_PDU_SIZE {
+        anyhow::bail!(
+            "PDU data_len {} exceeds MAX_PDU_SIZE {} \
+            (len:{} serial:{} ident:{})",
+            data_len, MAX_PDU_SIZE, len, serial, ident
+        );
+    }
 
     if is_compressed {
         metrics::histogram!("pdu.decode.compressed.size").record(data_len as f64);
@@ -442,6 +459,11 @@ macro_rules! pdu {
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
 pub const CODEC_VERSION: usize = 46;
+
+/// Maximum size of a single PDU in bytes (64 MiB).
+/// Rejects PDUs with a length field larger than this before allocating,
+/// defending against OOM from corrupted or malicious length fields.
+const MAX_PDU_SIZE: usize = 64 * 1024 * 1024;
 
 // Defines the Pdu enum.
 // Each struct has an explicit identifying number.
@@ -1180,6 +1202,48 @@ mod test {
             assert_eq!(decoded.data, payload);
             serial += 1;
         }
+    }
+
+    /// Verify that PDUs with length exceeding MAX_PDU_SIZE are rejected
+    /// before allocation. This prevents OOM from corrupted/malicious frames.
+    #[test]
+    fn reject_oversized_pdu() {
+        // Craft a frame header with a length field claiming 128 MiB of data.
+        // The decode should reject it before allocating.
+        let mut frame = Vec::new();
+        let fake_data_len: u64 = 128 * 1024 * 1024; // 128 MiB > MAX_PDU_SIZE (64 MiB)
+        let serial: u64 = 1;
+        let ident: u64 = 1;
+        let total_len = fake_data_len + encoded_length(serial) as u64 + encoded_length(ident) as u64;
+        leb128::write::unsigned(&mut frame, total_len).unwrap();
+        leb128::write::unsigned(&mut frame, serial).unwrap();
+        leb128::write::unsigned(&mut frame, ident).unwrap();
+        // Don't write actual data — the decode should reject before reading it.
+
+        let result = decode_raw(frame.as_slice());
+        assert!(
+            result.is_err(),
+            "should reject PDU with data_len {} > MAX_PDU_SIZE {}",
+            fake_data_len,
+            MAX_PDU_SIZE
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("MAX_PDU_SIZE"),
+            "error should mention MAX_PDU_SIZE, got: {}",
+            err
+        );
+    }
+
+    /// Verify that legitimate large PDUs (under the limit) still work.
+    #[test]
+    fn accept_large_but_valid_pdu() {
+        // 1 MiB payload — well under MAX_PDU_SIZE
+        let payload = vec![b'x'; 1024 * 1024];
+        let mut encoded = Vec::new();
+        encode_raw(0x42, 1, &payload, false, &mut encoded).unwrap();
+        let decoded = decode_raw(encoded.as_slice()).unwrap();
+        assert_eq!(decoded.data.len(), payload.len());
     }
 
     #[test]
