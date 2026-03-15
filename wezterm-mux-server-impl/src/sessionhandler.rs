@@ -655,6 +655,29 @@ impl SessionHandler {
                 .detach();
             }
 
+            Pdu::ResizeTab(ResizeTab { tab_id, pane_sizes }) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let mux = Mux::get();
+                            // Apply all pane sizes atomically, then rebuild once
+                            for (pane_id, size) in &pane_sizes {
+                                if let Some(pane) = mux.get_pane(*pane_id) {
+                                    pane.resize(*size)?;
+                                }
+                            }
+                            let tab = mux
+                                .get_tab(tab_id)
+                                .ok_or_else(|| anyhow!("no such tab {}", tab_id))?;
+                            tab.rebuild_splits_sizes_from_contained_panes();
+                            Ok(Pdu::UnitResponse(UnitResponse {}))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
+
             Pdu::SendKeyDown(SendKeyDown {
                 pane_id,
                 event,

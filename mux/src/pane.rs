@@ -1,5 +1,6 @@
 use crate::domain::DomainId;
 use crate::renderable::*;
+use crate::tab::TabId;
 use crate::ExitBehavior;
 use async_trait::async_trait;
 use config::keyassignment::{KeyAssignment, ScrollbackEraseMode};
@@ -239,6 +240,15 @@ pub trait Pane: Downcast + Send + Sync {
     fn reader(&self) -> anyhow::Result<Option<Box<dyn std::io::Read + Send>>>;
     fn writer(&self) -> MappedMutexGuard<'_, dyn std::io::Write>;
     fn resize(&self, size: TerminalSize) -> anyhow::Result<()>;
+    /// Send a batched resize with all sibling pane sizes for the
+    /// containing tab. Default is no-op (local panes don't need this).
+    /// ClientPane overrides to send a ResizeTab PDU.
+    fn send_resize_batch(
+        &self,
+        _tab_id: TabId,
+        _pane_sizes: Vec<(PaneId, TerminalSize)>,
+    ) {
+    }
     /// Called as a hint that the pane is being resized as part of
     /// a zoom-to-fill-all-the-tab-space operation.
     fn set_zoomed(&self, _zoomed: bool) {}
