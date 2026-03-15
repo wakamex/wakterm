@@ -6,6 +6,19 @@ All changes relative to upstream `wezterm/wezterm` main at `05343b387`.
 
 ### Resize / Split Tree
 
+- **Fix spawn sizing across entry points**
+  `wezterm cli spawn`, delegation into an already-running GUI instance, and existing-window mux spawns now use the live tab size instead of falling back to tiny server defaults.
+  Codec version bumped to 47.
+
+- **Fix client ResizeTab pane id mapping**
+  Batched resize messages now translate client-local pane ids back to remote mux pane ids before sending them to the server, fixing fresh-session tabs that stayed at `80x24` despite correct pane sizes.
+
+- **Add permanent mux observability for layout issues**
+  Always-on `size-trace` logging now covers spawn, split, tab resize, and client/server resize batches. The mux server also logs hard errors for `ResizeTab` pane-count mismatches, unknown pane ids, and split-tree invariant failures.
+
+- **Add `check-pane-layout.py` live layout validator**
+  Validates `wezterm cli list --format json` output against a legal split tree so offscreen panes, overlaps, gaps, and degenerate rectangles are easy to catch from a live session.
+
 - **Fix nested split pane sizes diverging after window resize** ([de54b07](https://github.com/wakamex/wezterm/commit/de54b07d2))
   Per-pane `Pdu::Resize` messages interleave during rapid resizing, causing the mux server's tree to diverge. Added `reconcile_tree_sizes()` — a top-down constraint enforcement pass after every tree mutation. 14 unit tests covering 6 layout patterns.
   Fixes #6052, #5011, #5117
@@ -53,7 +66,7 @@ All changes relative to upstream `wezterm/wezterm` main at `05343b387`.
 
 ## Codec Version
 
-Bumped from 45 to 46 for new PDU types (`ResizeTab`, `RotatePanes`).
+Bumped from 46 to 47 for the spawn sizing protocol changes.
 
 ## Test Coverage
 

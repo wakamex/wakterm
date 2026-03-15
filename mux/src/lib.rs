@@ -1261,6 +1261,7 @@ impl Mux {
         if let Some(tab) = self.get_tab(tab_id) {
             let tab_size = tab.get_size();
             tab.resize(tab_size);
+            tab.log_runtime_invariant_errors("mux.split_pane");
         }
 
         if trace_enabled {

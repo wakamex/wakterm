@@ -263,10 +263,29 @@ fn translate_resize_batch<F>(
 where
     F: FnMut(PaneId) -> Option<PaneId>,
 {
-    pane_sizes
+    let mut missing = Vec::new();
+    let translated = pane_sizes
         .into_iter()
-        .map(|(pane_id, size)| (resolve_remote_pane_id(pane_id).unwrap_or(pane_id), size))
-        .collect()
+        .map(|(pane_id, size)| {
+            let remote_pane_id = match resolve_remote_pane_id(pane_id) {
+                Some(remote_pane_id) => remote_pane_id,
+                None => {
+                    missing.push(pane_id);
+                    pane_id
+                }
+            };
+            (remote_pane_id, size)
+        })
+        .collect();
+
+    if !missing.is_empty() {
+        log::error!(
+            "size-trace client.resize_tab.unmapped_local_panes pane_ids={:?}",
+            missing
+        );
+    }
+
+    translated
 }
 
 fn format_resize_batch(pane_sizes: &[(PaneId, TerminalSize)]) -> String {

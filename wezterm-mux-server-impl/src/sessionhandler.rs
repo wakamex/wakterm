@@ -718,15 +718,45 @@ impl SessionHandler {
                             }
 
                             // Apply all pane sizes atomically, then rebuild once
-                            for (pane_id, size) in &pane_sizes {
-                                if let Some(pane) = mux.get_pane(*pane_id) {
-                                    pane.resize(*size)?;
-                                }
-                            }
                             let tab = mux
                                 .get_tab(tab_id)
                                 .ok_or_else(|| anyhow!("no such tab {}", tab_id))?;
+                            let tab_panes = tab.iter_panes();
+                            if pane_sizes.len() != tab_panes.len() {
+                                log::error!(
+                                    "size-trace server.resize_tab.pane_count_mismatch tab_id={} batch_panes={} tab_panes={} {}",
+                                    tab_id,
+                                    pane_sizes.len(),
+                                    tab_panes.len(),
+                                    tab.debug_size_snapshot()
+                                );
+                            }
+
+                            let tab_pane_ids = tab_panes
+                                .iter()
+                                .map(|pane| pane.pane.pane_id())
+                                .collect::<Vec<_>>();
+                            let mut missing_pane_ids = Vec::new();
+                            for (pane_id, size) in &pane_sizes {
+                                if !tab_pane_ids.contains(pane_id) {
+                                    missing_pane_ids.push(*pane_id);
+                                    continue;
+                                }
+                                match mux.get_pane(*pane_id) {
+                                    Some(pane) => pane.resize(*size)?,
+                                    None => missing_pane_ids.push(*pane_id),
+                                }
+                            }
+                            if !missing_pane_ids.is_empty() {
+                                log::error!(
+                                    "size-trace server.resize_tab.unknown_panes tab_id={} pane_ids={:?} {}",
+                                    tab_id,
+                                    missing_pane_ids,
+                                    tab.debug_size_snapshot()
+                                );
+                            }
                             tab.rebuild_splits_sizes_from_contained_panes();
+                            tab.log_runtime_invariant_errors("server.resize_tab");
                             if mux::tab::size_trace_enabled() {
                                 log::warn!(
                                     "size-trace server.resize_tab.done tab_id={} {}",

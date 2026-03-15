@@ -32,8 +32,14 @@ This is an actively maintained fork of [wezterm/wezterm](https://github.com/wezt
 
 **Resize stability:**
 - Batched `ResizeTab` PDU prevents per-pane interleaving
+- Spawn sizing now uses the live tab/window size across CLI spawn, GUI delegation, and mux server split flows
 - Server suppresses self-echo `TabResized` to break feedback loops while forwarding to other clients
 - Resync debounce queues instead of drops overlapping requests
+
+**Observability:**
+- Always-on `size-trace` logging for spawn, split, tab resize, and client/server `ResizeTab` traffic
+- Mux server logs hard errors for `ResizeTab` pane-count mismatches, unknown pane ids, and split-tree invariant failures
+- `check-pane-layout.py` validates live `wezterm cli list --format json` output against a legal split tree
 
 **Tab titles** — user-set titles (via Ctrl+Shift+<) are no longer overwritten by terminal escape sequences
 
@@ -51,7 +57,7 @@ Full hotkey reference: [HOTKEYS.md](HOTKEYS.md)
 
 ### Compatibility
 
-- Codec version 46 (new `ResizeTab` and `RotatePanes` PDUs)
+- Codec version 47
 - Both client and server should run this fork for full functionality
 
 ---

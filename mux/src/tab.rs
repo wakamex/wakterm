@@ -630,8 +630,7 @@ fn reconcile_tree_sizes(tree: &mut Tree, allocated: &TerminalSize) {
     }
 }
 
-#[cfg(debug_assertions)]
-fn debug_assert_tree_invariants(tree: &Tree, size: &TerminalSize) {
+fn collect_tree_invariant_errors(tree: &Tree, allocated: &TerminalSize) -> Vec<String> {
     fn check(tree: &Tree, allocated: &TerminalSize, errors: &mut Vec<String>) {
         match tree {
             Tree::Empty | Tree::Leaf(_) => {}
@@ -690,8 +689,15 @@ fn debug_assert_tree_invariants(tree: &Tree, size: &TerminalSize) {
             }
         }
     }
+
     let mut errors = Vec::new();
-    check(tree, size, &mut errors);
+    check(tree, allocated, &mut errors);
+    errors
+}
+
+#[cfg(debug_assertions)]
+fn debug_assert_tree_invariants(tree: &Tree, size: &TerminalSize) {
+    let errors = collect_tree_invariant_errors(tree, size);
     assert!(
         errors.is_empty(),
         "Split tree invariant violation: {:?}",
@@ -837,6 +843,25 @@ impl Tab {
 
     pub fn debug_size_snapshot(&self) -> String {
         self.inner.lock().debug_size_snapshot()
+    }
+
+    pub fn log_runtime_invariant_errors(&self, context: &str) -> bool {
+        let mut inner = self.inner.lock();
+        let Some(root) = inner.pane.as_ref() else {
+            return false;
+        };
+        let errors = collect_tree_invariant_errors(root, &inner.size);
+        if errors.is_empty() {
+            return false;
+        }
+
+        log::error!(
+            "size-trace invariant-fail context={} {} errors={:?}",
+            context,
+            inner.debug_size_snapshot(),
+            errors
+        );
+        true
     }
 
     /// Collect the current pane sizes from the split tree.
