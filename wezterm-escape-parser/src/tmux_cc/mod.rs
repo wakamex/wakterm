@@ -942,6 +942,12 @@ impl Parser {
         if self.buffer.last() == Some(&b'\r') {
             self.buffer.pop();
         }
+        // Empty lines are not valid CC protocol commands. During detach,
+        // tmux sends %exit\n and the trailing newline produces an empty
+        // buffer. Skip it rather than failing the PEG parser. (#7656)
+        if self.buffer.is_empty() {
+            return Ok(None);
+        }
         if self.begun.is_some() {
             return self.process_guarded_line();
         }
@@ -1172,5 +1178,28 @@ here
         assert!(matches!(&layout[0], WindowLayout::SplitHorizontal(_x)));
         assert!(matches!(&layout[1], WindowLayout::SplitVertical(_x)));
         assert!(matches!(&layout[2], WindowLayout::SplitHorizontal(_x)));
+    }
+
+    /// Empty lines during tmux CC detach should be silently ignored,
+    /// not cause a parser error. (#7656)
+    #[test]
+    fn test_empty_line_during_detach() {
+        let mut parser = Parser::new();
+        // %exit followed by trailing \n produces an empty buffer
+        let input = b"%exit\n\n";
+        let events = parser.advance_bytes(input).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0], Event::Exit { reason: None });
+    }
+
+    /// Lines with just \r\n should also be silently ignored.
+    #[test]
+    fn test_crlf_empty_line() {
+        let mut parser = Parser::new();
+        let input = b"%sessions-changed\r\n\r\n%sessions-changed\n";
+        let events = parser.advance_bytes(input).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0], Event::SessionsChanged);
+        assert_eq!(events[1], Event::SessionsChanged);
     }
 }
