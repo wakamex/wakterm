@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Generate HOTKEYS.md from wezterm show-keys output.
 
-Uses `wezterm show-keys` for the authoritative binding list (fork),
-and compares against upstream source if available.
+Uses `target/release/wezterm show-keys` for the fork's binding list,
+and compares against the system-installed `wezterm` as upstream reference.
+
+If no system wezterm is installed, upstream comparison is skipped.
+The system binary typically comes from the nightly package channel
+and represents the closest-to-upstream baseline.
 
 Usage:
     python3 generate-hotkeys.py > HOTKEYS.md
