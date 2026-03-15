@@ -58,48 +58,42 @@ LOOP:
        make_interleaved_resize_state pattern)
      - verify the test actually fails by temporarily reverting the fix
      - if you truly cannot write a test (e.g., deadlock requires threads):
-       document what you tried and why, commit investigation notes instead
+       document what you tried and why, explain in the commit message
      - the bar is: "could someone remove the fix and this test would catch it?"
 
-  4. Commit the failing test FIRST, then the fix SEPARATELY
-     - test commit: MUX: add test for <description>
-     - the test commit must compile but the test itself should fail
-       (or be marked #[ignore] with a comment explaining why)
-     - fix commit: MUX: fix <description> (#issue)
-     - this makes it trivially verifiable: cherry-pick test → fails,
-       cherry-pick fix → passes
-
-  5. Write the fix
-     - prefer the smallest change that addresses the root cause
+  4. Write the fix + test together
+     - one commit per fix, test included in the same commit
+     - do NOT split "add failing test" and "add fix" into separate commits
+       (the intermediate commit would have a failing test, breaking bisect)
+     - the "test fails without fix" property is verified by temporarily
+       reverting the fix lines and running the test during development
+     - commit message: MUX: fix <description> (#issue)
      - common fix patterns:
        a) add bounds/limits (max PDU size, max retries, timeout)
        b) add invariant enforcement (reconcile after mutation)
        c) make operations idempotent (tolerate duplicate/stale messages)
        d) add coordination (batch async operations, generation counters)
        e) add defensive early returns (skip invalid state instead of panicking)
-     - do not fix what isn't tested (exception: obvious one-line safety fixes)
 
-  6. Verify
+  5. Verify
      - cargo test -p mux (all mux tests)
      - cargo check -p wezterm -p wezterm-mux-server-impl (full compile)
      - if touching protocol: cargo check -p codec -p wezterm-client
      - if a live session is available: manual smoke test
 
-  7. Keep or discard
-     - KEEP: tests pass, no regressions → commit with prefix MUX: fix <description>
+  6. Keep or discard
+     - KEEP: tests pass, no regressions → commit on main, push
      - DISCARD: tests fail or regressions → git reset
-     - INCONCLUSIVE: can't reproduce but found useful information → commit notes
+     - INCONCLUSIVE: can't reproduce but found useful info → commit notes
 
-  8. Push on success
-     - after every KEEP: git push origin <branch>
+  7. Push
+     - after every KEEP: git push origin main
      - push target is always origin (wakamex fork), NEVER upstream
      - if push fails, note it and continue
 
-  9. Update MUX-TASKS.md
-     - record findings, durable conclusions, and state changes
-     - keep it concise — per-run detail goes in experiments/
+  8. Update MUX-TASKS.md if the result changes a durable conclusion
 
-  10. Go to 1
+  9. Go to 1
 ```
 
 ## Investigation Protocol
@@ -208,17 +202,26 @@ then check logs. Remove instrumentation before committing the fix.
 - `origin` = `git@github.com:wakamex/wezterm.git` (your fork — push here)
 - `upstream` = `git@github.com:wezterm/wezterm.git` (upstream — NEVER push here)
 
+## Branching
+
+All work happens on `main`. No feature branches unless a change requires
+a protocol version bump or is exploratory enough to warrant isolation.
+
+One commit per fix. Test and fix in the same commit. Every commit on
+main must leave all tests passing (`cargo test -p mux -p codec`).
+
 ## Commit Rules
 
-- Prefix mux-loop commits with `MUX:`.
-- One hypothesis per commit when investigating.
-- Include the issue number: `MUX: fix deadlock on detach (#7661)`.
-- Do not commit fixes without a test (unless it's a one-line defensive fix).
+- Prefix: `MUX: fix <description> (#issue)`.
+- One fix per commit, test included.
+- Do not commit fixes without a test (exception: one-line defensive fixes
+  like lock ordering changes where deadlocks can't be unit-tested).
+- For exceptions, explain in the commit message why no test is possible.
 
 ## Decision Rules
 
-- If a bug is reproducible → write the test, then the fix.
-- If a bug is not reproducible but the code is clearly wrong → fix it defensively, add a comment explaining why.
-- If a bug requires protocol changes → create a new branch, bump codec version.
+- If a bug is reproducible → write the fix+test, commit.
+- If a bug is not reproducible but the code is clearly wrong → fix it defensively, explain in commit message.
+- If a bug requires protocol changes → commit on main, bump codec version in the same commit.
 - If investigation is inconclusive after 30 minutes → document findings, move to next hypothesis.
 - If two bugs share a root cause → fix the root cause, test both symptoms.
