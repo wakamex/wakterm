@@ -384,12 +384,14 @@ fn adjust_x_size(tree: &mut Tree, mut x_adjust: isize, cell_dimensions: &Termina
                     }
                     SplitDirection::Horizontal => {
                         // x_adjust is negative
+                        let mut made_progress = false;
                         if data.first.cols > 1 {
                             adjust_x_size(&mut *left, -1, cell_dimensions);
                             data.first.cols -= 1;
                             data.first.pixel_width =
                                 data.first.cols.saturating_mul(cell_dimensions.pixel_width);
                             x_adjust += 1;
+                            made_progress = true;
                         }
                         if x_adjust < 0 && data.second.cols > 1 {
                             adjust_x_size(&mut *right, -1, cell_dimensions);
@@ -397,6 +399,10 @@ fn adjust_x_size(tree: &mut Tree, mut x_adjust: isize, cell_dimensions: &Termina
                             data.second.pixel_width =
                                 data.second.cols.saturating_mul(cell_dimensions.pixel_width);
                             x_adjust += 1;
+                            made_progress = true;
+                        }
+                        if !made_progress {
+                            return;
                         }
                     }
                 }
@@ -455,12 +461,14 @@ fn adjust_y_size(tree: &mut Tree, mut y_adjust: isize, cell_dimensions: &Termina
                     }
                     SplitDirection::Vertical => {
                         // y_adjust is negative
+                        let mut made_progress = false;
                         if data.first.rows > 1 {
                             adjust_y_size(&mut *left, -1, cell_dimensions);
                             data.first.rows -= 1;
                             data.first.pixel_height =
                                 data.first.rows.saturating_mul(cell_dimensions.pixel_height);
                             y_adjust += 1;
+                            made_progress = true;
                         }
                         if y_adjust < 0 && data.second.rows > 1 {
                             adjust_y_size(&mut *right, -1, cell_dimensions);
@@ -470,6 +478,12 @@ fn adjust_y_size(tree: &mut Tree, mut y_adjust: isize, cell_dimensions: &Termina
                                 .rows
                                 .saturating_mul(cell_dimensions.pixel_height);
                             y_adjust += 1;
+                            made_progress = true;
+                        }
+                        // If both children are at minimum (1 row), we can't
+                        // shrink further — break to avoid an infinite loop.
+                        if !made_progress {
+                            return;
                         }
                     }
                 }
@@ -2267,7 +2281,18 @@ mod test {
         }
 
         fn get_dimensions(&self) -> RenderableDimensions {
-            unimplemented!();
+            let size = self.size.lock();
+            RenderableDimensions {
+                cols: size.cols,
+                viewport_rows: size.rows,
+                scrollback_rows: size.rows,
+                physical_top: 0,
+                scrollback_top: 0,
+                dpi: size.dpi,
+                pixel_width: size.pixel_width,
+                pixel_height: size.pixel_height,
+                reverse_video: false,
+            }
         }
 
         fn get_title(&self) -> String {
@@ -2515,6 +2540,63 @@ mod test {
         assert_eq!(24, panes[2].height);
         assert_eq!(400, panes[2].pixel_width);
         assert_eq!(600, panes[2].pixel_height);
+    }
+
+    fn make_l_shaped_tab(
+        size: TerminalSize,
+    ) -> (Tab, Arc<dyn Pane>, Arc<dyn Pane>, Arc<dyn Pane>) {
+        let tab = Tab::new(&size);
+        let pane0 = FakePane::new(0, size);
+        tab.assign_pane(&pane0);
+
+        let hsplit = tab
+            .compute_split_size(0, SplitRequest {
+                direction: SplitDirection::Horizontal,
+                ..Default::default()
+            })
+            .unwrap();
+        let pane1 = FakePane::new(1, hsplit.second);
+        tab.split_and_insert(0, SplitRequest {
+            direction: SplitDirection::Horizontal,
+            ..Default::default()
+        }, pane1.clone()).unwrap();
+
+        let vsplit = tab
+            .compute_split_size(1, SplitRequest {
+                direction: SplitDirection::Vertical,
+                ..Default::default()
+            })
+            .unwrap();
+        let pane2 = FakePane::new(2, vsplit.second);
+        tab.split_and_insert(1, SplitRequest {
+            direction: SplitDirection::Vertical,
+            ..Default::default()
+        }, pane2.clone()).unwrap();
+
+        (tab, pane0, pane1, pane2)
+    }
+
+    /// Test that extreme shrink does NOT hang (the infinite loop bug
+    /// in adjust_y_size/adjust_x_size, #4878). Shrink nested layouts
+    /// to near-minimum, verify no hang, grow back.
+    #[test]
+    fn extreme_shrink_and_grow() {
+        let size = TerminalSize {
+            rows: 80, cols: 160,
+            pixel_width: 1600, pixel_height: 2000, dpi: 96,
+        };
+        let (tab, _, _, _) = make_l_shaped_tab(size);
+        tab.resize_split_by(1, 10);
+        let tiny = TerminalSize {
+            rows: 5, cols: 6,
+            pixel_width: 60, pixel_height: 125, dpi: 96,
+        };
+        tab.resize(tiny);
+        // If we get here without hanging, the fix works.
+        // Grow back and verify the tab is still functional.
+        tab.resize(size);
+        let panes = tab.iter_panes();
+        assert_eq!(3, panes.len(), "should still have 3 panes after shrink/grow cycle");
     }
 
     fn is_send_and_sync<T: Send + Sync>() -> bool {
