@@ -92,6 +92,36 @@ impl SplitPane {
             top_level: self.top_level,
         };
 
+        // Get the tab size from the server so the split uses the
+        // correct dimensions. This fixes a race where the server's
+        // pane size is stale (e.g., the client resized but the PDU
+        // hasn't arrived yet).
+        let tab_size = {
+            let panes = client.list_panes().await?;
+            let mut found = None;
+            for tabroot in &panes.tabs {
+                if let Some(size) = tabroot.root_size() {
+                    let mut cursor = tabroot.clone().into_tree().cursor();
+                    loop {
+                        if let Some(entry) = cursor.leaf_mut() {
+                            if entry.pane_id == pane_id {
+                                found = Some(size);
+                                break;
+                            }
+                        }
+                        match cursor.preorder_next() {
+                            Ok(c) => cursor = c,
+                            Err(_) => break,
+                        }
+                    }
+                    if found.is_some() {
+                        break;
+                    }
+                }
+            }
+            found
+        };
+
         let spawned = client
             .split_pane(codec::SplitPane {
                 pane_id,
@@ -105,6 +135,7 @@ impl SplitPane {
                 },
                 command_dir: resolve_relative_cwd(self.cwd)?,
                 move_pane_id: self.move_pane_id,
+                tab_size,
             })
             .await?;
 

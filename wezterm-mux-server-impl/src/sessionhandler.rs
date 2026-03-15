@@ -1127,6 +1127,16 @@ async fn split_pane(split: SplitPane, client_id: Option<Arc<ClientId>>) -> anyho
         .resolve_pane_id(split.pane_id)
         .ok_or_else(|| anyhow!("pane_id {} invalid", split.pane_id))?;
 
+    // If the client provided its tab size, resize the tab first so the
+    // split uses the client's actual dimensions rather than the server's
+    // potentially stale size. This fixes the race where split-pane runs
+    // before the client's resize PDU has been processed.
+    if let Some(tab_size) = split.tab_size {
+        if let Some(tab) = mux.get_tab(tab_id) {
+            tab.resize(tab_size);
+        }
+    }
+
     let source = if let Some(move_pane_id) = split.move_pane_id {
         SplitSource::MovePane(move_pane_id)
     } else {

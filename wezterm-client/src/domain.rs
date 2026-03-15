@@ -942,6 +942,10 @@ impl Domain for ClientDomain {
                 command,
                 command_dir,
                 move_pane_id,
+                // The GUI client always has up-to-date sizes (it controls
+                // the window), so tab_size isn't needed here — the server
+                // already has the correct size from the client's resizes.
+                tab_size: None,
             })
             .await?;
 

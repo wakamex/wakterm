@@ -683,6 +683,12 @@ pub struct SplitPane {
     /// Instead of spawning a command, move the specified
     /// pane into the new split target
     pub move_pane_id: Option<PaneId>,
+    /// The client's known size for the tab containing the pane.
+    /// If provided, the server resizes the tab to this size before
+    /// splitting, ensuring the split uses the client's actual
+    /// dimensions rather than the server's potentially stale size.
+    #[serde(default)]
+    pub tab_size: Option<TerminalSize>,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
