@@ -4,6 +4,7 @@ use codec::ListPanesResponse;
 use config::keyassignment::SpawnTabDomain;
 use config::ConfigHandle;
 use mux::pane::PaneId;
+use mux::tab::size_trace_enabled;
 use mux::window::WindowId;
 use portable_pty::cmdbuilder::CommandBuilder;
 use std::ffi::OsString;
@@ -132,6 +133,19 @@ impl SpawnCommand {
             .to_string();
 
         let size = resolved_size.unwrap_or_else(|| config.initial_size(0, None));
+
+        if size_trace_enabled() {
+            log::warn!(
+                "size-trace cli.spawn window_id={:?} pane_id={:?} requested_window_id={:?} resolved_window_id={:?} new_window={} resolved_size={:?} final_size={:?}",
+                window_id,
+                pane_id,
+                requested_window_id,
+                resolved_window_id,
+                new_window,
+                resolved_size,
+                size
+            );
+        }
 
         spawn_v2(codec::SpawnV2 {
             domain: domain_name.map_or(SpawnTabDomain::DefaultDomain, |name| {

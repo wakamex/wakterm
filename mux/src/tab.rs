@@ -10,6 +10,7 @@ use rangeset::intersects_range;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::TryInto;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use url::Url;
 use wezterm_term::{StableRowIndex, TerminalSize};
@@ -19,6 +20,10 @@ pub type Cursor = bintree::Cursor<Arc<dyn Pane>, SplitDirectionAndSize>;
 
 static TAB_ID: ::std::sync::atomic::AtomicUsize = ::std::sync::atomic::AtomicUsize::new(0);
 pub type TabId = usize;
+
+pub fn size_trace_enabled() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum NotifyMux {
@@ -195,6 +200,33 @@ impl SplitDirectionAndSize {
             pixel_width: cell_width * cols,
             dpi: self.first.dpi,
         }
+    }
+}
+
+fn format_terminal_size(size: TerminalSize) -> String {
+    format!(
+        "{}x{} px={}x{} dpi={}",
+        size.cols, size.rows, size.pixel_width, size.pixel_height, size.dpi
+    )
+}
+
+fn tree_root_size(tree: &Tree) -> Option<TerminalSize> {
+    match tree {
+        Tree::Empty => None,
+        Tree::Leaf(pane) => {
+            let dims = pane.get_dimensions();
+            Some(TerminalSize {
+                cols: dims.cols,
+                rows: dims.viewport_rows,
+                pixel_width: dims.pixel_width,
+                pixel_height: dims.pixel_height,
+                dpi: dims.dpi,
+            })
+        }
+        Tree::Node {
+            data: Some(data), ..
+        } => Some(data.size()),
+        Tree::Node { data: None, .. } => None,
     }
 }
 
@@ -803,6 +835,10 @@ impl Tab {
         self.inner.lock().resize(size)
     }
 
+    pub fn debug_size_snapshot(&self) -> String {
+        self.inner.lock().debug_size_snapshot()
+    }
+
     /// Collect the current pane sizes from the split tree.
     /// Returns (tab_id, vec of (pane_id, size)) suitable for building
     /// a batched ResizeTab PDU.
@@ -958,6 +994,44 @@ impl Tab {
 }
 
 impl TabInner {
+    fn debug_size_snapshot(&mut self) -> String {
+        let tree_root = self
+            .pane
+            .as_ref()
+            .and_then(tree_root_size)
+            .map(format_terminal_size)
+            .unwrap_or_else(|| "none".to_string());
+        let panes = self.iter_panes();
+        let mut panes_desc = String::new();
+        for (idx, pane) in panes.iter().enumerate() {
+            if idx > 0 {
+                panes_desc.push_str(", ");
+            }
+            let _ = write!(
+                panes_desc,
+                "#{}:{}@{},{} {}x{}{}{}",
+                pane.index,
+                pane.pane.pane_id(),
+                pane.left,
+                pane.top,
+                pane.width,
+                pane.height,
+                if pane.is_active { " active" } else { "" },
+                if pane.is_zoomed { " zoomed" } else { "" },
+            );
+        }
+
+        format!(
+            "tab_id={} tab_size={} tree_root={} active={} zoomed={} panes=[{}]",
+            self.id,
+            format_terminal_size(self.size),
+            tree_root,
+            self.active,
+            self.zoomed.is_some(),
+            panes_desc
+        )
+    }
+
     fn new(size: &TerminalSize) -> Self {
         Self {
             id: TAB_ID.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed),
@@ -1351,6 +1425,17 @@ impl TabInner {
             return;
         }
 
+        let trace_enabled = size_trace_enabled();
+        let before_snapshot = trace_enabled.then(|| self.debug_size_snapshot());
+        if let Some(before) = &before_snapshot {
+            log::warn!(
+                "size-trace tab.resize.begin requested={} current={} {}",
+                format_terminal_size(size),
+                format_terminal_size(self.size),
+                before
+            );
+        }
+
         if let Some(zoomed) = &self.zoomed {
             self.size = size;
             zoomed.resize(size).ok();
@@ -1400,6 +1485,14 @@ impl TabInner {
 
             #[cfg(debug_assertions)]
             debug_assert_tree_invariants(self.pane.as_ref().unwrap(), &self.size);
+        }
+
+        if trace_enabled {
+            log::warn!(
+                "size-trace tab.resize.end final={} {}",
+                format_terminal_size(self.size),
+                self.debug_size_snapshot()
+            );
         }
 
         Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
@@ -2198,12 +2291,26 @@ impl TabInner {
             anyhow::bail!("cannot split while zoomed");
         }
 
+        let trace_enabled = size_trace_enabled();
+        let before_snapshot = trace_enabled.then(|| self.debug_size_snapshot());
+
         {
             let split_info = self
                 .compute_split_size(pane_index, request)
                 .ok_or_else(|| {
                     anyhow::anyhow!("invalid pane_index {}; cannot split!", pane_index)
                 })?;
+
+            if let Some(before) = &before_snapshot {
+                log::warn!(
+                    "size-trace tab.split.begin pane_index={} new_pane_id={} request={:?} split_info={:?} {}",
+                    pane_index,
+                    pane.pane_id(),
+                    request,
+                    split_info,
+                    before
+                );
+            }
 
             let tab_size = self.size;
             if split_info.first.rows == 0
@@ -2273,6 +2380,16 @@ impl TabInner {
 
                         self.active = pane_index;
                         self.recency.tag(pane_index);
+                        if trace_enabled {
+                            let active = self.active;
+                            let snapshot = self.debug_size_snapshot();
+                            log::warn!(
+                                "size-trace tab.split.end pane_index={} active={} {}",
+                                pane_index,
+                                active,
+                                snapshot
+                            );
+                        }
                         return Ok(pane_index);
                     }
                     Err(cursor) => cursor,
@@ -2322,6 +2439,17 @@ impl TabInner {
 
         log::debug!("split info after split: {:#?}", self.iter_splits());
         log::debug!("pane info after split: {:#?}", self.iter_panes());
+
+        if trace_enabled {
+            let active = self.active;
+            let snapshot = self.debug_size_snapshot();
+            log::warn!(
+                "size-trace tab.split.end pane_index={} active={} {}",
+                pane_index,
+                active,
+                snapshot
+            );
+        }
 
         Ok(if request.target_is_second {
             pane_index + 1
