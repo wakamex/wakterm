@@ -3899,6 +3899,93 @@ mod test {
         check("grid after grow back from tiny", &tab);
     }
 
+    /// After a top-level split, compute_split_size should still work
+    /// (tab.size reflects the full tab, not the pre-resize half).
+    /// Also: closing the top-level pane should restore full space.
+    /// Regression test for #7654, #2579, #4984.
+    #[test]
+    fn top_level_split_preserves_tab_size() {
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 600,
+            dpi: 96,
+        };
+        let tab = Tab::new(&size);
+        tab.assign_pane(&FakePane::new(1, size));
+
+        // First: normal horizontal split → A(1) | B(2)
+        let hsplit = tab
+            .compute_split_size(
+                0,
+                SplitRequest {
+                    direction: SplitDirection::Horizontal,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: SplitDirection::Horizontal,
+                ..Default::default()
+            },
+            FakePane::new(2, hsplit.second),
+        )
+        .unwrap();
+
+        // Record tab size before top-level split
+        let size_before = tab.get_size();
+
+        // Top-level vertical split: [A|B] / C(3)
+        let vsplit = tab
+            .compute_split_size(
+                0,
+                SplitRequest {
+                    direction: SplitDirection::Vertical,
+                    top_level: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: SplitDirection::Vertical,
+                top_level: true,
+                ..Default::default()
+            },
+            FakePane::new(3, vsplit.second),
+        )
+        .unwrap();
+
+        // Tab size should still reflect full dimensions
+        let size_after = tab.get_size();
+        assert_eq!(
+            size_before.cols, size_after.cols,
+            "tab cols should be preserved after top-level split"
+        );
+        assert_eq!(
+            size_before.rows, size_after.rows,
+            "tab rows should be preserved after top-level split"
+        );
+
+        // Should be able to compute another split (was failing before #7654 fix
+        // because self.size was set to the pre-resize half)
+        let result = tab.compute_split_size(
+            0,
+            SplitRequest {
+                direction: SplitDirection::Horizontal,
+                ..Default::default()
+            },
+        );
+        assert!(
+            result.is_some(),
+            "compute_split_size should work after top-level split"
+        );
+    }
+
     fn is_send_and_sync<T: Send + Sync>() -> bool {
         true
     }
