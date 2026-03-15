@@ -243,16 +243,33 @@ fn restore_node<'a>(
 
                 Mux::get().add_pane(&pane)?;
 
+                // Use percentage-based splits so the proportions adapt
+                // to the actual tab size at restore time (which may differ
+                // from the saved size if the window is a different size).
+                let pct = match split_data.direction {
+                    crate::tab::SplitDirection::Horizontal => {
+                        let total = split_data.first.cols + 1 + split_data.second.cols;
+                        if total > 0 {
+                            ((split_data.second.cols as u64 * 100) / total as u64) as u8
+                        } else {
+                            50
+                        }
+                    }
+                    crate::tab::SplitDirection::Vertical => {
+                        let total = split_data.first.rows + 1 + split_data.second.rows;
+                        if total > 0 {
+                            ((split_data.second.rows as u64 * 100) / total as u64) as u8
+                        } else {
+                            50
+                        }
+                    }
+                };
+
                 let request = crate::tab::SplitRequest {
                     direction: split_data.direction,
                     target_is_second: true,
                     top_level: false,
-                    size: crate::tab::SplitSize::Cells(
-                        match split_data.direction {
-                            crate::tab::SplitDirection::Horizontal => split_data.second.cols,
-                            crate::tab::SplitDirection::Vertical => split_data.second.rows,
-                        }
-                    ),
+                    size: crate::tab::SplitSize::Percent(pct.max(5).min(95)),
                 };
 
                 if let Err(err) = tab.split_and_insert(split_pane_index, request, pane) {
