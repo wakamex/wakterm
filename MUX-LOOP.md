@@ -157,7 +157,7 @@ wezterm cli kill-pane --pane-id 2
 wezterm cli activate-pane-direction Up
 
 # Monitor state
-wezterm cli list --format json | python3 track-pane-sizes.py --once
+wezterm cli list --format json | python3 check-pane-layout.py
 wezterm cli list-clients
 ```
 
