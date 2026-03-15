@@ -1,5 +1,9 @@
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    // Always re-run when HEAD changes — this catches branch switches,
+    // pulls, and rebases that the ref-file heuristic below can miss.
+    println!("cargo:rerun-if-changed=../.git/HEAD");
+    println!("cargo:rerun-if-changed=../.git/refs/heads");
 
     // If a file named `.tag` is present, we'll take its contents for the
     // version number that we report in wezterm -h.
