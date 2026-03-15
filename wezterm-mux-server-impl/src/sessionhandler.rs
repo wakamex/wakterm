@@ -340,6 +340,12 @@ impl SessionHandler {
                             format!("{} (via proxy pid {})", client_id.hostname, proxy_id.pid);
                     }
 
+                    log::info!(
+                        "Client connected: {} from {} (pid {})",
+                        client_id.hostname,
+                        client_id.username,
+                        client_id.pid,
+                    );
                     let client_id = Arc::new(client_id);
                     self.client_id.replace(client_id.clone());
                     spawn_into_main_thread(async move {
@@ -899,6 +905,11 @@ impl SessionHandler {
             }
 
             Pdu::GetCodecVersion(_) => {
+                log::info!(
+                    "Client requested codec version; server is {} (codec {})",
+                    config::wezterm_version(),
+                    CODEC_VERSION,
+                );
                 match std::env::current_exe().context("resolving current_exe") {
                     Err(err) => send_response(Err(err)),
                     Ok(executable_path) => {
