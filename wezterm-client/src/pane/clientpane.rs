@@ -406,6 +406,10 @@ impl Pane for ClientPane {
             // Invalidate any cached rows on a resize
             inner.make_all_stale();
 
+            // Individual per-pane Pdu::Resize is still sent for backwards
+            // compatibility. The batched ResizeTab PDU (sent by the GUI
+            // after tab.resize()) provides atomic delivery; the individual
+            // PDU is a fallback for older servers.
             let client = Arc::clone(&self.client);
             let remote_pane_id = self.remote_pane_id;
             let remote_tab_id = self.remote_tab_id;
@@ -423,6 +427,25 @@ impl Pane for ClientPane {
             inner.update_last_send();
         }
         Ok(())
+    }
+
+    fn send_resize_batch(
+        &self,
+        _tab_id: mux::tab::TabId,
+        pane_sizes: Vec<(PaneId, TerminalSize)>,
+    ) {
+        let client = Arc::clone(&self.client);
+        let tab_id = self.remote_tab_id;
+        promise::spawn::spawn(async move {
+            client
+                .client
+                .resize_tab(ResizeTab {
+                    tab_id,
+                    pane_sizes,
+                })
+                .await
+        })
+        .detach();
     }
 
     async fn search(

@@ -492,6 +492,26 @@ fn adjust_y_size(tree: &mut Tree, mut y_adjust: isize, cell_dimensions: &Termina
     }
 }
 
+/// Collect all leaf pane sizes from the split tree into a vec.
+/// Used to build a batched resize PDU.
+fn collect_pane_sizes(tree: &Tree, size: &TerminalSize, out: &mut Vec<(PaneId, TerminalSize)>) {
+    match tree {
+        Tree::Empty => {}
+        Tree::Node { data: None, .. } => {}
+        Tree::Node {
+            left,
+            right,
+            data: Some(data),
+        } => {
+            collect_pane_sizes(&*left, &data.first, out);
+            collect_pane_sizes(&*right, &data.second, out);
+        }
+        Tree::Leaf(pane) => {
+            out.push((pane.pane_id(), *size));
+        }
+    }
+}
+
 fn apply_sizes_from_splits(tree: &Tree, size: &TerminalSize) {
     match tree {
         Tree::Empty => return,
@@ -719,6 +739,18 @@ impl Tab {
     /// the relative sizes of the elements in a split.
     pub fn resize(&self, size: TerminalSize) {
         self.inner.lock().resize(size)
+    }
+
+    /// Collect the current pane sizes from the split tree.
+    /// Returns (tab_id, vec of (pane_id, size)) suitable for building
+    /// a batched ResizeTab PDU.
+    pub fn collect_pane_sizes(&self) -> (TabId, Vec<(PaneId, TerminalSize)>) {
+        let inner = self.inner.lock();
+        let mut sizes = Vec::new();
+        if let Some(root) = inner.pane.as_ref() {
+            collect_pane_sizes(root, &inner.size, &mut sizes);
+        }
+        (inner.id, sizes)
     }
 
     /// Called when running in the mux server after an individual pane
@@ -1290,6 +1322,14 @@ impl TabInner {
 
             // And then resize the individual panes to match
             apply_sizes_from_splits(self.pane.as_mut().unwrap(), &size);
+
+            // Send a batched ResizeTab PDU with all pane sizes at once,
+            // preventing interleaving from individual per-pane PDUs.
+            let mut pane_sizes = Vec::new();
+            collect_pane_sizes(self.pane.as_ref().unwrap(), &size, &mut pane_sizes);
+            if let Some(first_pane) = self.get_active_pane() {
+                first_pane.send_resize_batch(self.id, pane_sizes);
+            }
 
             #[cfg(debug_assertions)]
             debug_assert_tree_invariants(self.pane.as_ref().unwrap(), &self.size);

@@ -441,7 +441,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 45;
+pub const CODEC_VERSION: usize = 46;
 
 // Defines the Pdu enum.
 // Each struct has an explicit identifying number.
@@ -502,6 +502,7 @@ pdu! {
     GetPaneDirection: 60,
     GetPaneDirectionResponse: 61,
     AdjustPaneSize: 62,
+    ResizeTab: 63,
 }
 
 impl Pdu {
@@ -854,6 +855,14 @@ pub struct Resize {
     pub containing_tab_id: TabId,
     pub pane_id: PaneId,
     pub size: TerminalSize,
+}
+
+/// Atomic batch resize: all pane sizes for a tab in one PDU.
+/// Prevents interleaving when multiple resize events fire rapidly.
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ResizeTab {
+    pub tab_id: TabId,
+    pub pane_sizes: Vec<(PaneId, TerminalSize)>,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
