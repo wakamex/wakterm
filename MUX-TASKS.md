@@ -79,7 +79,14 @@ Source: 200 most recently active open issues, filtered for ssh/mux/domain keywor
 
 **What would refute:** All lock acquisitions are in a consistent order, and the deadlock is elsewhere.
 
-**Fix pattern:** Establish a lock ordering protocol, or use `try_lock` with fallback.
+**Investigated:** `domain_was_detached` (lib.rs:1086) acquires locks in this order:
+1. `panes.read()` → released
+2. `windows.write()` → holds while calling `tab.kill_panes_in_domain()` → `tab.inner.lock()`
+3. `panes.write()` via `remove_pane_internal`
+
+If the GUI render path holds `panes.read()` while waiting for `tab.inner` (or vice versa), this deadlocks. The user's thread diagnostics confirm the main GUI thread is in `futex_do_wait` (blocked on a mutex).
+
+**Fix pattern:** Collect all work under `windows.write()` without calling into tabs, release the lock, then process tabs and panes. Or use `try_lock` with retry.
 
 ### H3: SSHMUX redraw storm is resize feedback (#7540)
 
