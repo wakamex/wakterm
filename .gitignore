@@ -66,3 +66,4 @@ dhat-heap.json
 /__pycache__/
 /nix/result
 responses/
+.upstream-show-keys-cache.txt

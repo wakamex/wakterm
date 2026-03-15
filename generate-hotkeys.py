@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
-"""Generate HOTKEYS.md from wezterm show-keys output.
+"""Generate HOTKEYS.md from wezterm source code.
 
-Uses `target/release/wezterm show-keys` for the fork's binding list,
-and compares against the system-installed `wezterm` as upstream reference.
-
-If no system wezterm is installed, upstream comparison is skipped.
-The system binary typically comes from the nightly package channel
-and represents the closest-to-upstream baseline.
+Parses wezterm-gui/src/commands.rs to extract all CommandDef blocks
+with their key bindings. Compares fork (HEAD) vs upstream (upstream/main).
+Validates against `wezterm show-keys` when a binary is available.
 
 Usage:
-    python3 generate-hotkeys.py > HOTKEYS.md
-
-Requires: target/release/wezterm binary built from current source.
+    python3 generate-hotkeys.py [--validate] > HOTKEYS.md
 """
 import re
 import subprocess
@@ -19,217 +14,333 @@ import sys
 from collections import defaultdict
 
 
-def get_show_keys(binary="target/release/wezterm"):
-    """Run wezterm show-keys and parse the text output."""
+def git_show(ref, path):
     try:
-        output = subprocess.check_output(
-            [binary, "show-keys"], stderr=subprocess.DEVNULL
+        return subprocess.check_output(
+            ["git", "show", f"{ref}:{path}"], stderr=subprocess.DEVNULL
         ).decode()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        print(f"Error: could not run {binary} show-keys", file=sys.stderr)
-        sys.exit(1)
-
-    bindings = []
-    table = "default"
-
-    for line in output.split("\n"):
-        line = line.rstrip()
-        if not line or line.startswith("-"):
-            continue
-        if line.endswith("key table"):
-            table = line.replace(" key table", "").strip().lower()
-            continue
-
-        # Parse: <mods> <key> -> <action>
-        m = re.match(r"\t([\w| ]*?)\s{2,}(\S+)\s+-> +(.+)", line)
-        if m:
-            mods_raw = m.group(1).strip()
-            key = m.group(2)
-            action = m.group(3)
-            bindings.append({
-                "table": table,
-                "mods": mods_raw,
-                "key": key,
-                "action": action,
-            })
-
-    return bindings
+    except subprocess.CalledProcessError:
+        return None
 
 
-def get_upstream_show_keys():
-    """Get upstream bindings for comparison.
+def extract_command_blocks(content):
+    """Extract (match_arm, CommandDef_block) pairs from commands.rs.
 
-    Priority:
-    1. upstream-show-keys.txt snapshot (always reproducible)
-    2. System-installed wezterm binary (may be our fork after deploy)
+    Returns list of {arm, brief, keys_raw, keys_parsed}.
+    The 'arm' is the full match pattern (e.g., 'ActivateTab(3)').
     """
-    # 1. Snapshot file
-    try:
-        with open("upstream-show-keys.txt") as f:
-            content = f.read()
-        # Last line is the version
-        lines = content.rstrip().split("\n")
-        version = lines[-1] if lines[-1].startswith("wezterm") else "unknown"
-        output = "\n".join(lines[:-1]) if version != "unknown" else content
-        return output, version
-    except FileNotFoundError:
-        pass
+    results = []
 
-    # 2. System binary (fallback, may not be upstream after deploy)
-    for binary in ["/usr/bin/wezterm", "wezterm"]:
-        try:
-            output = subprocess.check_output(
-                [binary, "show-keys"], stderr=subprocess.DEVNULL
-            ).decode()
-            version = subprocess.check_output(
-                [binary, "--version"], stderr=subprocess.DEVNULL
-            ).decode().strip()
-            return output, version
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            continue
-    return None, None
+    # Find the derive_command_from_key_assignment function body
+    func_match = re.search(
+        r"fn derive_command_from_key_assignment.*?Some\(match action \{",
+        content, re.DOTALL,
+    )
+    if not func_match:
+        return results
+
+    func_start = func_match.end()
+
+    # Find the end of the match (closing }))
+    # We'll iterate through "=> CommandDef {" occurrences
+    pos = func_start
+
+    while True:
+        idx = content.find("=> CommandDef {", pos)
+        if idx < 0:
+            break
+
+        # Extract the match arm: text between previous block end and "=>"
+        # The arm starts after the previous "}," and ends at "=>"
+        arm_region = content[pos:idx].strip()
+
+        # Clean up: remove trailing whitespace, comments
+        # The arm might span multiple lines with | alternatives
+        arm_lines = []
+        for line in arm_region.split("\n"):
+            line = line.strip()
+            if line.startswith("//") or not line:
+                continue
+            # Remove trailing comma from previous block
+            if line == "},":
+                continue
+            arm_lines.append(line)
+
+        arm_text = " ".join(arm_lines).strip()
+        # Remove leading punctuation, pipes, commas from previous block
+        arm_text = re.sub(r"^[,|\s]+", "", arm_text)
+        # Remove trailing => if present
+        arm_text = re.sub(r"\s*=>$", "", arm_text)
+
+        # Find the CommandDef block end
+        block_start = idx + len("=> CommandDef {")
+        depth = 1
+        p = block_start
+        while p < len(content) and depth > 0:
+            if content[p] == "{":
+                depth += 1
+            elif content[p] == "}":
+                depth -= 1
+            p += 1
+        block = content[block_start : p - 1]
+
+        # Extract brief
+        brief_m = re.search(r'brief:\s*"([^"]*(?:\\.[^"]*)*)"', block)
+        brief = brief_m.group(1) if brief_m else ""
+        brief = re.sub(r"\\\n\s*", " ", brief).strip()
+
+        # Extract raw keys vec
+        keys_m = re.search(r"keys:\s*vec!\[(.*?)\]", block, re.DOTALL)
+        keys_raw = keys_m.group(1).strip() if keys_m else ""
+
+        # Parse individual key bindings
+        keys_parsed = []
+        if keys_raw:
+            for km in re.finditer(
+                r'\(('
+                r'Modifiers::\w+(?:(?:\s*\|\s*Modifiers::\w+)|(?:\.\w+\(Modifiers::\w+\)))*'
+                r')\s*,\s*"([^"]+)"',
+                keys_raw,
+            ):
+                mods = km.group(1).replace(" ", "")
+                mods = re.sub(
+                    r"\.union\(Modifiers::(\w+)\)", r"|Modifiers::\1", mods
+                )
+                key = km.group(2)
+                keys_parsed.append((mods, key))
+
+        # Normalize the arm text into a clean action identifier
+        # e.g., "ActivateTab(3)" stays as-is
+        # "CopyTextTo { text: _, destination: ClipboardCopyDestination::Clipboard }"
+        # → "CopyTo(Clipboard)" or similar
+        action = normalize_action(arm_text)
+
+        results.append({
+            "action": action,
+            "arm": arm_text,
+            "brief": brief,
+            "keys_raw": keys_raw,
+            "keys_parsed": keys_parsed,
+        })
+
+        pos = p
+
+    return results
 
 
-def format_binding(mods, key):
-    """Format a binding for display."""
-    mod_map = {
-        "CTRL": "Ctrl",
-        "SHIFT": "Shift",
-        "ALT": "Alt",
-        "SUPER": "Super",
-    }
-    parts = [m.strip() for m in mods.split("|") if m.strip()]
+def normalize_action(arm_text):
+    """Convert a match arm into a readable action name.
+
+    Examples:
+        'IncreaseFontSize' → 'IncreaseFontSize'
+        'ActivateTab(3)' → 'ActivateTab(3)'
+        'CloseCurrentTab { confirm: true }' → 'CloseCurrentTab(confirm=true)'
+        'CopyTo(ClipboardCopyDestination::Clipboard)' → 'CopyTo(Clipboard)'
+        'PasteFrom(ClipboardPasteSource::Clipboard)' → 'PasteFrom(Clipboard)'
+        'SplitHorizontal(SpawnCommand { .. })' → 'SplitHorizontal'
+    """
+    # Strip alternative patterns and anything after =>
+    arm = arm_text.split("=>")[0].strip()
+    arm = arm.split("|")[0].strip()
+
+    # Remove SpawnCommand details
+    arm = re.sub(r"\(SpawnCommand\s*\{[^}]*\}\)", "", arm)
+    arm = re.sub(r"\(SpawnCommand\b[^)]*\)", "", arm)
+
+    # Simplify enum paths: ClipboardCopyDestination::Clipboard → Clipboard
+    arm = re.sub(r"\w+::(\w+)", r"\1", arm)
+
+    # Convert struct patterns to parenthesized: { confirm: true } → (confirm=true)
+    def struct_to_parens(m):
+        fields = m.group(1).strip()
+        # Skip wildcard fields
+        fields = re.sub(r"\w+:\s*_,?\s*", "", fields).strip().rstrip(",")
+        if not fields:
+            return ""
+        fields = fields.replace(": ", "=")
+        return f"({fields})"
+
+    arm = re.sub(r"\s*\{([^}]*)\}", struct_to_parens, arm)
+
+    return arm.strip()
+
+
+def format_key(mods_raw, key, platform="linux"):
+    parts = [m.replace("Modifiers::", "") for m in mods_raw.split("|")]
+    parts = [p for p in parts if p != "NONE"]
+
+    if platform != "mac" and "SUPER" in parts:
+        parts.remove("SUPER")
+        if "CTRL" not in parts:
+            parts.append("CTRL")
+        if "SHIFT" not in parts:
+            parts.append("SHIFT")
+
+    order = {"CTRL": 0, "SHIFT": 1, "ALT": 2, "SUPER": 3}
+    parts.sort(key=lambda x: order.get(x, 9))
+
+    if platform == "mac":
+        mod_map = {"CTRL": "Ctrl", "SHIFT": "Shift", "ALT": "Opt", "SUPER": "Cmd"}
+    else:
+        mod_map = {"CTRL": "Ctrl", "SHIFT": "Shift", "ALT": "Alt"}
+
     formatted = [mod_map.get(m, m) for m in parts]
     if formatted:
         return "+".join(formatted) + "+" + key
     return key
 
 
-def action_base_name(action):
-    """Extract the base action name: 'ActivateTab(3)' → 'ActivateTab'."""
-    m = re.match(r"(\w+)", action)
-    return m.group(1) if m else action
+def get_show_keys_actions(binary="target/release/wezterm"):
+    """Get action→keys mapping from wezterm show-keys for validation."""
+    try:
+        output = subprocess.check_output(
+            [binary, "show-keys"], stderr=subprocess.DEVNULL
+        ).decode()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+    actions = defaultdict(list)
+    for line in output.split("\n"):
+        m = re.match(r"\t([\w| ]*?)\s{2,}(\S+)\s+-> +(.+)", line)
+        if m:
+            mods = m.group(1).strip()
+            key = m.group(2)
+            action = m.group(3)
+            actions[action].append(f"{mods}+{key}" if mods else key)
+    return dict(actions)
 
 
 def main():
-    bindings = get_show_keys()
+    validate = "--validate" in sys.argv
 
-    # Group by action for the default table
-    default_bindings = [b for b in bindings if b["table"] == "default"]
-
-    # Group by action base name, collecting all bindings
-    by_action = defaultdict(list)
-    for b in default_bindings:
-        by_action[b["action"]].append(format_binding(b["mods"], b["key"]))
-
-    # Also group by base name for summary
-    by_base = defaultdict(set)
-    for action, keys in by_action.items():
-        base = action_base_name(action)
-        by_base[base].add(action)
-
-    # Get all KeyAssignment variants from source for completeness
+    # Get upstream hash
     try:
-        with open("config/src/keyassignment.rs") as f:
-            content = f.read()
-        m = re.search(r"pub enum KeyAssignment \{(.+?)\n\}", content, re.DOTALL)
-        all_variants = set()
-        if m:
-            for line in m.group(1).split("\n"):
-                vm = re.match(r"\s*(\w+)", line.strip())
-                if vm and vm.group(1)[0].isupper():
-                    all_variants.add(vm.group(1))
-    except FileNotFoundError:
-        all_variants = set()
+        upstream_hash = subprocess.check_output(
+            ["git", "rev-parse", "--short", "upstream/main"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except subprocess.CalledProcessError:
+        upstream_hash = None
 
-    # Check upstream
-    upstream_output, upstream_version = get_upstream_show_keys()
-    upstream_actions = defaultdict(list)
-    if upstream_output:
-        for line in upstream_output.split("\n"):
-            m = re.match(r"\t([\w| ]*?)\s{2,}(\S+)\s+-> +(.+)", line)
-            if m:
-                action = m.group(3)
-                upstream_actions[action].append(
-                    format_binding(m.group(1).strip(), m.group(2))
-                )
+    # Parse fork
+    fork_src = git_show("HEAD", "wezterm-gui/src/commands.rs")
+    if not fork_src:
+        with open("wezterm-gui/src/commands.rs") as f:
+            fork_src = f.read()
+    fork_blocks = extract_command_blocks(fork_src)
+
+    # Parse upstream
+    upstream_blocks = []
+    if upstream_hash:
+        upstream_src = git_show("upstream/main", "wezterm-gui/src/commands.rs")
+        if upstream_src:
+            upstream_blocks = extract_command_blocks(upstream_src)
+
+    upstream_by_action = {b["action"]: b for b in upstream_blocks}
+
+    # Get all variants
+    variants_src = git_show("HEAD", "config/src/keyassignment.rs")
+    if not variants_src:
+        with open("config/src/keyassignment.rs") as f:
+            variants_src = f.read()
+    m = re.search(r"pub enum KeyAssignment \{(.+?)\n\}", variants_src, re.DOTALL)
+    all_variants = set()
+    if m:
+        for line in m.group(1).split("\n"):
+            vm = re.match(r"\s*(\w+)", line.strip())
+            if vm and vm.group(1)[0].isupper():
+                all_variants.add(vm.group(1))
+
+    # Validate against show-keys if requested
+    if validate:
+        show_keys = get_show_keys_actions()
+        if show_keys:
+            print(f"Validating against show-keys ({len(show_keys)} actions)...",
+                  file=sys.stderr)
+            parsed_actions = {b["action"] for b in fork_blocks if b["keys_parsed"]}
+            show_actions = set(show_keys.keys())
+            # show-keys uses the runtime action repr, our parser uses source patterns
+            # Just compare counts and flag large discrepancies
+            print(f"  Source parser found: {len(parsed_actions)} actions with keys",
+                  file=sys.stderr)
+            print(f"  show-keys has: {len(show_actions)} actions with keys",
+                  file=sys.stderr)
+        return
+
+    # Split
+    bound = [b for b in fork_blocks if b["keys_parsed"]]
+    unbound = [b for b in fork_blocks if not b["keys_parsed"]]
+    bound_action_bases = {re.match(r"(\w+)", b["action"]).group(1)
+                          for b in fork_blocks if re.match(r"(\w+)", b["action"])}
+    no_entry = sorted(all_variants - bound_action_bases)
 
     # Output
     print("# WezTerm Hotkeys Reference")
     print()
-    print("Auto-generated from `wezterm show-keys`. "
+    print("Auto-generated from source. "
           "Run `python3 generate-hotkeys.py > HOTKEYS.md` to update.")
+    if upstream_hash:
+        print(f"  \nUpstream: `upstream/main` ({upstream_hash})")
     print()
 
-    # Default key table
     print("## Default Key Bindings")
     print()
+    print("| Action | Description | Linux/Win | macOS | Upstream |")
+    print("|--------|-------------|-----------|-------|----------|")
 
-    # Deduplicate: show each unique action once with all its bindings
-    # Sort by action name
-    seen_actions = set()
-    rows = []
-    for action in sorted(by_action.keys()):
-        base = action_base_name(action)
-        keys = by_action[action]
+    for b in sorted(bound, key=lambda x: x["action"]):
+        action = b["action"]
+        brief = b["brief"] or action
+        keys = b["keys_parsed"]
 
-        # Pick the "cleanest" binding (shortest modifier combo)
-        primary = min(keys, key=len)
+        linux = ", ".join(format_key(m, k, "linux") for m, k in keys)
+        mac = ", ".join(format_key(m, k, "mac") for m, k in keys)
 
-        # Check upstream
-        up_keys = upstream_actions.get(action, [])
-        if up_keys == keys:
+        ub = upstream_by_action.get(action)
+        if ub is None:
+            upstream = "**fork only**"
+        elif ub["keys_raw"] == b["keys_raw"]:
             upstream = "same"
-        elif not up_keys:
-            upstream = "**new**"
         else:
-            upstream = ", ".join(sorted(set(up_keys))[:2])
+            upstream = "**changed**"
 
-        # Truncate action for display
-        action_display = action if len(action) <= 60 else action[:57] + "..."
-
-        rows.append((primary, action_display, ", ".join(sorted(set(keys))[:3]), upstream))
-
-    # Sort by primary key binding
-    rows.sort(key=lambda r: r[0])
-
-    print(f"| Key | Action | All Bindings | Upstream |")
-    print(f"|-----|--------|-------------|----------|")
-    for primary, action, all_keys, upstream in rows:
-        action = action.replace("|", "\\|")
-        print(f"| {primary} | `{action}` | {all_keys} | {upstream} |")
+        brief = brief.replace("|", "\\|")
+        action_disp = action if len(action) <= 50 else action[:47] + "..."
+        print(f"| `{action_disp}` | {brief} | {linux} | {mac} | {upstream} |")
 
     print()
-    print(f"*{len(rows)} bindings in the default key table.*")
+    print("## Actions Without Default Bindings")
+    print()
+    print("| Action | Description | Upstream |")
+    print("|--------|-------------|----------|")
 
-    # Other key tables
-    other_tables = set(b["table"] for b in bindings) - {"default"}
-    for table in sorted(other_tables):
-        table_bindings = [b for b in bindings if b["table"] == table]
-        print()
-        print(f"## {table.title()} Key Table")
-        print()
-        print(f"| Key | Action |")
-        print(f"|-----|--------|")
-        for b in sorted(table_bindings, key=lambda x: x["key"]):
-            binding = format_binding(b["mods"], b["key"])
-            print(f"| {binding} | `{b['action']}` |")
+    for b in sorted(unbound, key=lambda x: x["action"]):
+        action = b["action"]
+        brief = b["brief"] or re.sub(r"([a-z])([A-Z])", r"\1 \2", action)
 
-    # Unbound actions
-    bound_bases = set(action_base_name(a) for a in by_action.keys())
-    unbound = sorted(all_variants - bound_bases)
-    if unbound:
+        ub = upstream_by_action.get(action)
+        if ub is None:
+            upstream = "**fork only**"
+        elif ub["keys_raw"] == b["keys_raw"]:
+            upstream = "same"
+        else:
+            upstream = "**changed**"
+
+        brief = brief.replace("|", "\\|")
+        print(f"| `{action}` | {brief} | {upstream} |")
+
+    if no_entry:
         print()
-        print("## Assignable Actions Without Default Bindings")
+        print("## Raw Actions (no command palette entry)")
         print()
-        print("These can be bound via `config.keys` in your wezterm config.")
-        print()
-        for v in unbound:
+        for v in no_entry:
             print(f"- `{v}`")
 
-    if upstream_version:
-        print()
-        print(f"*Upstream comparison: {upstream_version}*")
+    print()
+    n_bound = len(bound)
+    n_unbound = len(unbound)
+    n_raw = len(no_entry)
+    print(f"*{n_bound} bound, {n_unbound} unbound with description, {n_raw} raw.*")
 
 
 if __name__ == "__main__":

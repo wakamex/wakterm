@@ -1,158 +1,143 @@
 # WezTerm Hotkeys Reference
 
-Auto-generated from `wezterm show-keys`. Run `python3 generate-hotkeys.py > HOTKEYS.md` to update.
+Auto-generated from source. Run `python3 generate-hotkeys.py > HOTKEYS.md` to update.
+  
+Upstream: `upstream/main` (05343b387)
 
 ## Default Key Bindings
 
-| Key | Action | All Bindings | Upstream |
-|-----|--------|-------------|----------|
-| $ | `CopyMode(MoveToEndOfLineContent)` | $, End, Shift+$ | same |
-| , | `CopyMode(JumpReverse)` | , | same |
-| 0 | `CopyMode(MoveToStartOfLine)` | 0, Home | same |
-| ; | `CopyMode(JumpAgain)` | ; | same |
-| Alt+Ctrl+" | `SplitVertical(SpawnCommand domain=CurrentPaneDomain)` | Alt+Ctrl+", Shift+Alt+Ctrl+", Shift+Alt+Ctrl+' | same |
-| Alt+Ctrl+% | `SplitHorizontal(SpawnCommand domain=CurrentPaneDomain)` | Alt+Ctrl+%, Shift+Alt+Ctrl+%, Shift+Alt+Ctrl+5 | same |
-| Alt+Enter | `ToggleFullScreen` | Alt+Enter | same |
-| Copy | `CopyTo(Clipboard)` | Copy, Ctrl+C, Shift+Ctrl+C | same |
-| Ctrl+! | `ActivateTab(0)` | Ctrl+!, Shift+Ctrl+!, Shift+Ctrl+1 | same |
-| Ctrl+# | `ActivateTab(2)` | Ctrl+#, Shift+Ctrl+#, Shift+Ctrl+3 | same |
-| Ctrl+$ | `ActivateTab(3)` | Ctrl+$, Shift+Ctrl+$, Shift+Ctrl+4 | same |
-| Ctrl+% | `ActivateTab(4)` | Ctrl+%, Shift+Ctrl+%, Shift+Ctrl+5 | same |
-| Ctrl+& | `ActivateTab(6)` | Ctrl+&, Shift+Ctrl+&, Shift+Ctrl+7 | same |
-| Ctrl+( | `ActivateTab(-1)` | Ctrl+(, Shift+Ctrl+(, Shift+Ctrl+9 | same |
-| Ctrl+) | `ResetFontSize` | Ctrl+), Ctrl+0, Shift+Ctrl+) | same |
-| Ctrl+* | `ActivateTab(7)` | Ctrl+*, Shift+Ctrl+*, Shift+Ctrl+8 | same |
-| Ctrl++ | `IncreaseFontSize` | Ctrl++, Ctrl+=, Shift+Ctrl++ | same |
-| Ctrl+- | `DecreaseFontSize` | Ctrl+-, Ctrl+_, Shift+Ctrl+- | same |
-| Ctrl+@ | `ActivateTab(1)` | Ctrl+@, Shift+Ctrl+2, Shift+Ctrl+@ | same |
-| Ctrl+F | `Search(CurrentSelectionOrEmptyString)` | Ctrl+F, Shift+Ctrl+F, Shift+Ctrl+f | same |
-| Ctrl+Insert | `CopyTo(PrimarySelection)` | Ctrl+Insert | same |
-| Ctrl+K | `ClearScrollback(ScrollbackOnly)` | Ctrl+K, Shift+Ctrl+K, Shift+Ctrl+k | same |
-| Ctrl+L | `ShowDebugOverlay` | Ctrl+L, Shift+Ctrl+L, Shift+Ctrl+l | same |
-| Ctrl+M | `Hide` | Ctrl+M, Shift+Ctrl+M, Shift+Ctrl+m | same |
-| Ctrl+N | `SpawnWindow` | Ctrl+N, Shift+Ctrl+N, Shift+Ctrl+n | same |
-| Ctrl+P | `ActivateCommandPalette` | Ctrl+P, Shift+Ctrl+P, Shift+Ctrl+p | same |
-| Ctrl+R | `ReloadConfiguration` | Ctrl+R, Shift+Ctrl+R, Shift+Ctrl+r | same |
-| Ctrl+T | `SpawnTab(CurrentPaneDomain)` | Ctrl+T, Shift+Ctrl+T, Shift+Ctrl+t | same |
-| Ctrl+U | `CharSelect(CharSelectArguments { group: None, copy_on_sel...` | Ctrl+U, Shift+Ctrl+U, Shift+Ctrl+u | same |
-| Ctrl+W | `CloseCurrentTab { confirm: true }` | Ctrl+W, Shift+Ctrl+W, Shift+Ctrl+w | same |
-| Ctrl+X | `ActivateCopyMode` | Ctrl+X, Shift+Ctrl+X, Shift+Ctrl+x | same |
-| Ctrl+Z | `TogglePaneZoomState` | Ctrl+Z, Shift+Ctrl+Z, Shift+Ctrl+z | same |
-| Ctrl+^ | `ActivateTab(5)` | Ctrl+^, Shift+Ctrl+6, Shift+Ctrl+^ | same |
-| Ctrl+b | `CopyMode(PageUp)` | Ctrl+b, PageUp | same |
-| Ctrl+d | `CopyMode(MoveByPage(0.5))` | Ctrl+d | same |
-| Ctrl+f | `CopyMode(PageDown)` | Ctrl+f, PageDown | same |
-| Ctrl+n | `CopyMode(NextMatch)` | Ctrl+n, DownArrow | same |
-| Ctrl+r | `CopyMode(CycleMatchType)` | Ctrl+r | same |
-| Ctrl+u | `CopyMode(ClearPattern)` | Ctrl+u | same |
-| Ctrl+u | `CopyMode(MoveByPage(-0.5))` | Ctrl+u | same |
-| Ctrl+v | `CopyMode(SetSelectionMode(Some(Block)))` | Ctrl+v | same |
-| Enter | `CopyMode(MoveToStartOfNextLine)` | Enter | same |
-| Enter | `CopyMode(PriorMatch)` | Ctrl+p, Enter, UpArrow | same |
-| Escape | `CopyMode(Close)` | Escape | same |
-| F | `CopyMode(JumpBackward { prev_char: false })` | F, Shift+F | same |
-| G | `CopyMode(MoveToScrollbackBottom)` | G, Shift+G | same |
-| H | `CopyMode(MoveToViewportTop)` | H, Shift+H | same |
-| L | `CopyMode(MoveToViewportBottom)` | L, Shift+L | same |
-| M | `CopyMode(MoveToViewportMiddle)` | M, Shift+M | same |
-| O | `CopyMode(MoveToSelectionOtherEndHoriz)` | O, Shift+O | same |
-| PageDown | `CopyMode(NextMatchPage)` | PageDown | same |
-| PageUp | `CopyMode(PriorMatchPage)` | PageUp | same |
-| Paste | `PasteFrom(Clipboard)` | Ctrl+V, Paste, Shift+Ctrl+V | same |
-| Shift+Alt+Ctrl+DownArrow | `AdjustPaneSize(Down, 1)` | Shift+Alt+Ctrl+DownArrow | same |
-| Shift+Alt+Ctrl+LeftArrow | `AdjustPaneSize(Left, 1)` | Shift+Alt+Ctrl+LeftArrow | same |
-| Shift+Alt+Ctrl+RightArrow | `AdjustPaneSize(Right, 1)` | Shift+Alt+Ctrl+RightArrow | same |
-| Shift+Alt+Ctrl+UpArrow | `AdjustPaneSize(Up, 1)` | Shift+Alt+Ctrl+UpArrow | same |
-| Shift+Ctrl+DownArrow | `ActivatePaneDirection(Down)` | Shift+Ctrl+DownArrow | same |
-| Shift+Ctrl+LeftArrow | `ActivatePaneDirection(Left)` | Shift+Ctrl+LeftArrow | same |
-| Shift+Ctrl+PageDown | `MoveTabRelative(1)` | Shift+Ctrl+PageDown | same |
-| Shift+Ctrl+PageUp | `MoveTabRelative(-1)` | Shift+Ctrl+PageUp | same |
-| Shift+Ctrl+RightArrow | `ActivatePaneDirection(Right)` | Shift+Ctrl+RightArrow | same |
-| Shift+Ctrl+UpArrow | `ActivatePaneDirection(Up)` | Shift+Ctrl+UpArrow | same |
-| Shift+Insert | `PasteFrom(PrimarySelection)` | Shift+Insert | same |
-| Shift+PageDown | `ScrollByPage(1.0)` | Shift+PageDown | same |
-| Shift+PageUp | `ScrollByPage(-1.0)` | Shift+PageUp | same |
-| Super+{ | `ActivateTabRelative(-1)` | Ctrl+PageUp, Shift+Ctrl+Tab, Shift+Super+[ | same |
-| Super+} | `ActivateTabRelative(1)` | Ctrl+PageDown, Ctrl+Tab, Shift+Super+] | same |
-| T | `CopyMode(JumpBackward { prev_char: true })` | Shift+T, T | same |
-| V | `CopyMode(SetSelectionMode(Some(Line)))` | Shift+V, V | same |
-| ^ | `CopyMode(MoveToStartOfLineContent)` | Alt+m, Shift+^, ^ | same |
-| b | `CopyMode(MoveBackwardWord)` | Alt+LeftArrow, Alt+b, Shift+Tab | same |
-| e | `CopyMode(MoveForwardWordEnd)` | e | same |
-| f | `CopyMode(JumpForward { prev_char: false })` | f | same |
-| g | `CopyMode(MoveToScrollbackTop)` | g | same |
-| h | `CopyMode(MoveLeft)` | LeftArrow, h | same |
-| j | `CopyMode(MoveDown)` | DownArrow, j | same |
-| k | `CopyMode(MoveUp)` | UpArrow, k | same |
-| l | `CopyMode(MoveRight)` | RightArrow, l | same |
-| o | `CopyMode(MoveToSelectionOtherEnd)` | o | same |
-| q | `Multiple([ScrollToBottom, CopyMode(Close)])` | Ctrl+c, Ctrl+g, Escape | same |
-| t | `CopyMode(JumpForward { prev_char: true })` | t | same |
-| v | `CopyMode(SetSelectionMode(Some(Cell)))` | Space, v | same |
-| w | `CopyMode(MoveForwardWord)` | Alt+RightArrow, Alt+f, Tab | same |
-| y | `Multiple([CopyTo(ClipboardAndPrimarySelection), Multiple(...` | y | same |
+| Action | Description | Linux/Win | macOS | Upstream |
+|--------|-------------|-----------|-------|----------|
+| `ActivateCommandPalette` | Activate Command Palette | Ctrl+Shift+p | Ctrl+Shift+p | same |
+| `ActivateCopyMode` | Activate Copy Mode | Ctrl+Shift+x | Ctrl+Shift+x | same |
+| `ActivatePaneDirection(Down)` | Activate Pane Down | Ctrl+Shift+DownArrow | Ctrl+Shift+DownArrow | same |
+| `ActivatePaneDirection(Right)` | Activate Pane Right | Ctrl+Shift+RightArrow | Ctrl+Shift+RightArrow | same |
+| `ActivatePaneDirection(Up)` | Activate Pane Up | Ctrl+Shift+UpArrow | Ctrl+Shift+UpArrow | same |
+| `ActivateTab(-1)` | Activate right-most tab | Ctrl+Shift+9 | Cmd+9 | same |
+| `ActivateTabRelativeNoWrap(n)` | Reload configuration | Ctrl+Shift+r | Cmd+r | same |
+| `ActivateWindowRelativeNoWrap(n)` | Activate the tab to the left | Ctrl+Shift+[, Ctrl+Shift+Tab, Ctrl+PageUp | Shift+Cmd+[, Ctrl+Shift+Tab, Ctrl+PageUp | same |
+| `AdjustPaneSize(Next` | Activate Pane Left | Ctrl+Shift+LeftArrow | Ctrl+Shift+LeftArrow | same |
+| `CharSelect(_)` | Enter Emoji / Character selection mode | Ctrl+Shift+u | Ctrl+Shift+u | same |
+| `ClearScrollback(ScrollbackOnly)` | Clear scrollback | Ctrl+Shift+k | Cmd+k | same |
+| `CloseCurrentTab(confirm=true)` | Close current Tab | Ctrl+Shift+w | Cmd+w | same |
+| `CopyTextTo(destination=Clipboard)` | Copy to clipboard | Ctrl+Shift+c, Copy | Cmd+c, Copy | same |
+| `CopyTextTo(destination=ClipboardAndPrimarySelec...` | Copy to clipboard and primary selection | Ctrl+Insert | Ctrl+Insert | same |
+| `CopyTextTo(destination=PrimarySelection)` | Copy to primary selection | Ctrl+Insert | Ctrl+Insert | same |
+| `DecreaseFontSize` | Decrease font size | Ctrl+Shift+-, Ctrl+- | Cmd+-, Ctrl+- | same |
+| `Hide` | Hide/Minimize Window | Ctrl+Shift+m | Cmd+m | same |
+| `HideApplication` | Hide Application | Ctrl+Shift+h | Cmd+h | same |
+| `IncreaseFontSize` | Increase font size | Ctrl+Shift+=, Ctrl+= | Cmd+=, Ctrl+= | same |
+| `MoveTabRelative(-1)` | Move tab one place to the left | Ctrl+Shift+PageUp | Ctrl+Shift+PageUp | same |
+| `MoveTabRelative(1)` | Move tab one place to the right | Ctrl+Shift+PageDown | Ctrl+Shift+PageDown | same |
+| `PasteFrom(Clipboard)` | Paste from clipboard | Ctrl+Shift+v, Paste | Cmd+v, Paste | same |
+| `PasteFrom(PrimarySelection)` | Paste primary selection | Shift+Insert | Shift+Insert | same |
+| `QuickSelect` | Enter QuickSelect mode | Ctrl+Shift+Space | Ctrl+Shift+Space | same |
+| `QuitApplication` | Quit WezTerm | Ctrl+Shift+q | Cmd+q | same |
+| `ResetFontSize` | Reset font size | Ctrl+Shift+0, Ctrl+0 | Cmd+0, Ctrl+0 | same |
+| `Search(CurrentSelectionOrEmptyString)` | Search pane output | Ctrl+Shift+f | Cmd+f | same |
+| `ShowDebugOverlay` | Show debug overlay | Ctrl+Shift+l | Ctrl+Shift+l | same |
+| `SpawnTab(CurrentPaneDomain)` | New Tab | Ctrl+Shift+t | Cmd+t | same |
+| `SpawnWindow` | New Window | Ctrl+Shift+n | Cmd+n | same |
+| `ToggleFullScreen` | Toggle full screen mode | Alt+Return | Opt+Return | same |
+| `TogglePaneZoomState` | Toggle Pane Zoom | Ctrl+Shift+z | Ctrl+Shift+z | same |
 
-*85 bindings in the default key table.*
+## Actions Without Default Bindings
 
-## Assignable Actions Without Default Bindings
+| Action | Description | Upstream |
+|--------|-------------|----------|
+| `"https://github.com/wezterm/wezterm/discussions/"` | Discuss on GitHub | same |
+| `"https://github.com/wezterm/wezterm/issues/"` | Search or report issue on GitHub | same |
+| `ActivateLastTab` | Activate the last active tab | same |
+| `ActivateTab(n)` | Activate Tab(n) | same |
+| `ActivateTabRelative(1)` | Activate the tab to the right | same |
+| `ActivateTabRelative(n)` | Activate the tab to the left (no wrapping) | same |
+| `ActivateTabRelativeNoWrap(1)` | Activate the tab to the right (no wrapping) | same |
+| `ActivateWindow(n)` | Activate the preceeding window | same |
+| `ActivateWindowRelative(1)` | Activate the next window | same |
+| `ActivateWindowRelative(n)` | Activate the preceeding window | same |
+| `ActivateWindowRelativeNoWrap(1)` | Activate the next window | same |
+| `AdjustPaneSize(Down, amount)` | Adjust Pane Size(Down, amount) | same |
+| `AdjustPaneSize(Left, amount)` | Adjust Pane Size(Left, amount) | same |
+| `AdjustPaneSize(Right, amount)` | Adjust Pane Size(Right, amount) | same |
+| `AdjustPaneSize(Up, amount)` | Adjust Pane Size(Up, amount) | same |
+| `AttachDomain(name)` | Attach Domain(name) | same |
+| `ClearKeyTableStack` | Clear the key table stack | same |
+| `ClearScrollback(ScrollbackAndViewport)` | Clear the scrollback and viewport | same |
+| `ClearSelection` | Clears the selection in the current pane | same |
+| `CloseCurrentPane(confirm=false)` | Close current Pane | same |
+| `CloseCurrentPane(confirm=true)` | Close current Pane | same |
+| `CloseCurrentTab(confirm=false)` | Close current Tab | same |
+| `CompleteSelection(destination)` | Complete Selection(destination) | same |
+| `CompleteSelectionOrOpenLinkAtMouseCursor(destination)` | Complete Selection Or Open Link At Mouse Cursor(destination) | same |
+| `Confirmation(_)` | Prompt the user for confirmation | same |
+| `CopyMode(copy_mode)` | Copy Mode(copy_mode) | same |
+| `DetachDomain(CurrentPaneDomain)` | Detach the domain of the active pane | same |
+| `DetachDomain(DefaultDomain)` | Detach the default domain | same |
+| `DetachDomain(DomainId(id))` | Detach Domain(Domain Id(id)) | same |
+| `DetachDomain(DomainName(name))` | Detach Domain(Domain Name(name)) | same |
+| `DisableDefaultAssignment` | Disable Default Assignment | same |
+| `EmitEvent(name)` | Emit Event(name) | same |
+| `ExtendSelectionToMouseCursor(mode)` | Extend Selection To Mouse Cursor(mode) | same |
+| `InputSelector(_)` | Prompt the user to choose from a list | same |
+| `MoveTabRelative(n)` | Scrolls based on the mouse wheel position  in the current mouse event | same |
+| `Multiple(actions)` | Multiple(actions) | same |
+| `Nop` | Does nothing | same |
+| `OpenLinkAtMouseCursor` | Open link at mouse cursor | same |
+| `OpenUri(uri)` | Documentation | same |
+| `PaneSelect(PaneSelectArguments(mode=Activate, ..))` | Enter Pane selection mode | same |
+| `PaneSelect(PaneSelectArguments(mode=MoveToNewTab, ..))` | Move a pane into its own tab | same |
+| `PaneSelect(PaneSelectArguments(mode=MoveToNewWindow, ..))` | Move a pane into its own window | same |
+| `PaneSelect(PaneSelectArguments(mode=SwapWithActive, ..))` | Swap a pane with the active pane | same |
+| `PaneSelect(PaneSelectArguments(mode=SwapWithActiveKeepFocus, ..))` | Swap a pane with the active pane, keeping focus | same |
+| `PopKeyTable` | Pop the current key table | same |
+| `PromptInputLine(_)` | Prompt the user for a line of text | same |
+| `QuickSelectArgs(_)` | Enter QuickSelect mode | same |
+| `ResetFontAndWindowSize` | Reset the window and font size | same |
+| `RotatePanes(direction)` | Rotate Panes(direction) | same |
+| `ScrollToBottom` | Scroll to the bottom | same |
+| `ScrollToTop` | Scroll to the top | same |
+| `Search(_)` | Search pane output | same |
+| `SendKey(key)` | Send Key(key) | same |
+| `SendString(text)` | Send String(text) | same |
+| `SetPaneZoomState(false)` | Set Pane Zoom State(false) | same |
+| `SetWindowLevel(AlwaysOnBottom)` | Always on Bottom | same |
+| `SetWindowLevel(AlwaysOnTop)` | Always on Top | same |
+| `SetWindowLevel(Normal)` | Normal | same |
+| `Show` | Show/Restore Window | same |
+| `ShowLauncherArgs(_)` | Show the launcher | same |
+| `ShowTabNavigator` | Navigate tabs | same |
+| `SpawnCommandInNewTab(cmd)` | Spawn Command In New Tab(cmd) | same |
+| `SpawnCommandInNewWindow(cmd)` | Spawn Command In New Window(cmd) | same |
+| `SpawnTab(DefaultDomain)` | New Tab (Default Domain) | same |
+| `SpawnTab(DomainId(id))` | Spawn Tab(Domain Id(id)) | same |
+| `SpawnTab(DomainName(name))` | Spawn Tab(Domain Name(name)) | same |
+| `SplitHorizontal` | Split Horizontal | same |
+| `SplitHorizontal(_)` | Split Horizontal(_) | same |
+| `SplitPane(split)` | Reset the terminal emulation state in the current pane | same |
+| `SplitVertical` | Split Vertical | same |
+| `SplitVertical(_)` | Split Vertical(_) | same |
+| `StartWindowDrag` | Requests a window drag operation from  the window environment | same |
+| `SwitchToWorkspace(name=None, spawn=Some(prog))` | Switch To Workspace(name=None, spawn=Some(prog)) | same |
+| `SwitchToWorkspace(name=Some(name), spawn=None)` | Switch To Workspace(name=Some(name), spawn=None) | same |
+| `SwitchToWorkspace(name=Some(name), spawn=Some(prog))` | Switch To Workspace(name=Some(name), spawn=Some(prog)) | same |
+| `SwitchWorkspaceRelative(n)` | Switch Workspace Relative(n) | same |
+| `ToggleAlwaysOnBottom` | Toggle always on Bottom | same |
+| `ToggleAlwaysOnTop` | Toggle always on Top | same |
+| `_` | _ | same |
 
-These can be bound via `config.keys` in your wezterm config.
+## Raw Actions (no command palette entry)
 
 - `ActivateKeyTable`
-- `ActivateLastTab`
 - `ActivatePaneByIndex`
-- `ActivateTabRelativeNoWrap`
-- `ActivateWindow`
-- `ActivateWindowRelative`
-- `ActivateWindowRelativeNoWrap`
-- `AttachDomain`
-- `ClearKeyTableStack`
-- `ClearSelection`
-- `CloseCurrentPane`
-- `CompleteSelection`
-- `CompleteSelectionOrOpenLinkAtMouseCursor`
-- `Confirmation`
-- `CopyTextTo`
-- `DetachDomain`
-- `DisableDefaultAssignment`
-- `EmitEvent`
-- `ExtendSelectionToMouseCursor`
-- `HideApplication`
-- `InputSelector`
+- `CopyTo`
 - `MoveTab`
-- `Nop`
-- `OpenLinkAtMouseCursor`
-- `OpenUri`
-- `PaneSelect`
-- `PopKeyTable`
-- `PromptInputLine`
-- `QuickSelect`
-- `QuickSelectArgs`
-- `QuitApplication`
-- `ResetFontAndWindowSize`
+- `ReloadConfiguration`
 - `ResetTerminal`
-- `RotatePanes`
 - `ScrollByCurrentEventWheelDelta`
 - `ScrollByLine`
-- `ScrollToBottom`
+- `ScrollByPage`
 - `ScrollToPrompt`
-- `ScrollToTop`
 - `SelectTextAtMouseCursor`
-- `SendKey`
-- `SendString`
-- `SetPaneZoomState`
-- `SetWindowLevel`
-- `Show`
 - `ShowLauncher`
-- `ShowLauncherArgs`
-- `ShowTabNavigator`
-- `SpawnCommandInNewTab`
-- `SpawnCommandInNewWindow`
-- `SplitPane`
-- `StartWindowDrag`
-- `SwitchToWorkspace`
-- `SwitchWorkspaceRelative`
-- `ToggleAlwaysOnBottom`
-- `ToggleAlwaysOnTop`
 
-*Upstream comparison: wezterm 20260205_190134_4bf8878b*
+*32 bound, 79 unbound with description, 12 raw.*
