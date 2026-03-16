@@ -161,6 +161,7 @@ impl crate::TermWindow {
             params.pixel_width,
             cell_height,
         );
+        let visible_x_range = params.left_pixel_x..params.left_pixel_x + params.pixel_width;
 
         fn phys(x: usize, num_cols: usize, direction: Direction) -> usize {
             match direction {
@@ -592,8 +593,11 @@ impl crate::TermWindow {
                         let (la, lb, lc) = range3(&left, &selection_pixel_range);
                         let (ra, rb, rc) = range3(&right, &selection_pixel_range);
 
-                        // and render each of these strips
+                        // and render each of these strips, clipped to the
+                        // pane bounds so shrinking a pane width doesn't let
+                        // old glyph geometry spill into adjacent panes.
                         for range in [la, lb, lc, mid, ra, rb, rc] {
+                            let range = intersection(&range, &visible_x_range);
                             if range.is_empty() {
                                 continue;
                             }
