@@ -10,22 +10,11 @@ This is an actively maintained fork of [wezterm/wezterm](https://github.com/wezt
 
 ### What's changed
 
+See [CHANGELOG-FORK.md](CHANGELOG-FORK.md) for the detailed fork fix history.
+
 **Buildability:**
 
-- Builds again on current toolchains after fixing the missing `chrono` `clock` feature that broke `Utc::now()`
-
-**Bug fixes** — see [CHANGELOG-FORK.md](CHANGELOG-FORK.md) for details:
-
-- Nested split pane sizes diverging after window resize (#6052, #5011, #5117)
-- Infinite loop when shrinking window with splits (#4878)
-- OOM crash from oversized PDU allocation (#7527)
-- GUI deadlock on tmux CC domain detach (#7661)
-- Pane rotation not syncing to mux server (#6397)
-- `--attach` flag ignored when delegating to running instance (#7582)
-- Tab size wrong after top-level split (#7654, #2579, #4984)
-- tmux CC parser error on empty line during detach (#7656)
-- Resize feedback loop between client and server
-- GUI clamp for zero-dimension resize requests
+- Builds again on current toolchains after fixing the missing `chrono` `clock` feature required since [`chrono` `0.4.32`](https://github.com/chronotope/chrono/releases/tag/v0.4.32), when Chrono [`split clock into clock and now`](https://github.com/chronotope/chrono/commit/c0f418bbbfa83b1c8392099cec9fdf42657c1e51)
 
 **Session persistence** — tabs survive server restarts:
 - Auto-saves tab layout, split tree structure, working directories, and titles every 60s and on SIGTERM
@@ -68,27 +57,13 @@ Full hotkey reference: [HOTKEYS.md](HOTKEYS.md)
 
 ---
 
-![Screenshot](docs/screenshots/two.png)
-
-*Screenshot of wezterm on macOS, running vim*
-
 ## Installation
 
 https://wezterm.org/installation
 
 ## Getting help
 
-This is a spare time project, so please bear with me.  There are a couple of channels for support:
-
-* You can use the [GitHub issue tracker](https://github.com/wezterm/wezterm/issues) to see if someone else has a similar issue, or to file a new one.
-* Start or join a thread in our [GitHub Discussions](https://github.com/wezterm/wezterm/discussions); if you have general
-  questions or want to chat with other wezterm users, you're welcome here!
-* There is a [Matrix room via Element.io](https://app.element.io/#/room/#wezterm:matrix.org)
-  for (potentially!) real time discussions.
-
-The GitHub Discussions and Element/Gitter rooms are better suited for questions
-than bug reports, but don't be afraid to use whichever you are most comfortable
-using and we'll work it out.
+If you find any issues with this fork, just make a GitHub issue.
 
 ## Supporting the Project
 
