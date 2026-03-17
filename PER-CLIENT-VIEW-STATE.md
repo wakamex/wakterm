@@ -38,6 +38,7 @@ the protocol.
   different active tabs in the same window.
 - The solution works for both remote clients and a GUI running directly on the
   server host.
+- There is no shared active-tab fallback hidden in the mux model.
 - The protocol is explicit. No inference from redraw timing or focus side
   effects.
 - The design remains maintainable if we later move more state from "shared mux"
@@ -168,18 +169,26 @@ Key point:
 - `focused_pane_id` remains "currently focused pane overall"
 - `window_view_state` becomes "what this client considers active in each window"
 
-### 3. Keep global window active tab only as fallback
+### 3. Remove shared window active tab completely
 
-`Window.active` can remain for:
+Delete `Window.active` from the shared mux window model.
 
-- headless/default behavior
-- old code paths while refactoring
-- session persistence of the shared window model
+That is the cleanest model:
 
-But GUI and attached-client behavior should stop treating it as the only truth.
+- shared mux state no longer pretends there is one "real active tab"
+- a tab is active only relative to a client view
+- code that needs an active tab must either have a client identity or an
+  explicit target
 
-When a current identity is available, active-tab resolution should come from the
-client view state first.
+Consequences:
+
+- `get_active_tab_for_window(window_id)` should not survive as a convenience API
+- identity-less code paths must be made explicit
+- shared session persistence no longer stores "window active tab" because that
+  concept no longer exists globally
+
+This is stricter than a transitional fallback model, but it avoids years of
+"which active tab did this code actually mean?" bugs.
 
 ## Protocol Changes
 
@@ -210,7 +219,7 @@ pub struct ListPanesResponse {
 Semantics:
 
 - this snapshot is for the requesting client view only
-- it is not "global server active tab"
+- there is no "global server active tab"
 
 ### Add explicit client-view update PDUs
 
@@ -236,6 +245,23 @@ the only mechanism defining tab selection.
 
 Explicit protocol is easier to reason about and test.
 
+### Make client view identity explicit in handshake
+
+The connection handshake should include a stable `ClientViewId`.
+
+That is the server key for:
+
+- which tab this client is looking at in each window
+- which pane this client considers active in each window
+- restoring per-client view state on reconnect
+
+Do not infer view identity from:
+
+- process id
+- host/user pair
+- focused pane
+- SSH session lifetime
+
 ## Mux API Changes
 
 ### Identity-aware read path
@@ -246,10 +272,13 @@ Add new APIs and migrate GUI/client code to them:
 - `get_active_tab_for_window_for_current_identity(window_id)`
 - `get_active_pane_for_window_for_current_identity(window_id)` if needed
 
-The existing `get_active_tab_for_window(window_id)` should become:
+Delete `get_active_tab_for_window(window_id)`.
 
-- shared/global fallback
-- not the normal GUI read path
+Callers must choose one of:
+
+- identity-aware resolution
+- explicit `window_id + tab_id`
+- erroring out when no identity/target is available
 
 ### Identity-aware write path
 
@@ -260,6 +289,9 @@ Add:
 
 These should update per-client view state and emit a notification scoped to
 frontends that need to repaint.
+
+There should be no shared `window.set_active_*` equivalent left in the steady
+state design.
 
 ## Frontend Changes
 
@@ -279,12 +311,11 @@ hack".
 The local GUI must also participate as a first-class client view:
 
 - it needs a stable `ClientViewId`
-- tab switching must update that view state, not just `Window.active`
+- tab switching must update client view state
 - active-tab reads in `TermWindow`, spawn logic, pane selection, tab bar, and
   commands must be identity-aware
 
-If the server-host GUI keeps reading/writing only `Window.active`, it will still
-fight with remote clients.
+If the server-host GUI bypasses client view state, the feature is broken.
 
 ## Notifications
 
@@ -324,6 +355,12 @@ Recommended approach:
 That prevents the shared session file from becoming polluted by per-machine UI
 preferences.
 
+Also:
+
+- do not try to reconstruct active tabs from shared pane/tree state
+- restoring shared state and restoring client view state should be two separate
+  steps
+
 ## Implementation Plan
 
 ### Phase 1: Data model and protocol
@@ -339,6 +376,7 @@ preferences.
 ### Phase 2: Identity-aware reads and writes
 
 - Add identity-aware mux getters/setters
+- Delete shared active-tab getters/setters from the public mux API
 - Convert GUI tab switching to write per-client active tab
 - Convert GUI active-tab reads to use per-client resolution
 - Convert spawn/split context lookup to use per-client active tab
@@ -351,33 +389,150 @@ preferences.
 
 ### Phase 4: Cleanup
 
+- Remove `Window.active` from the window model
 - Remove call sites that assume one global active tab for GUI behavior
-- Restrict `Window.active` to fallback/shared semantics
 - Update tests and docs
 
 ## Test Plan
 
-### Unit tests
+The implementation should not proceed without a broad test matrix. This feature
+changes a core ownership boundary and has many subtle failure modes.
 
-- per-client window view-state resolution with fallback to global window state
-- switching tabs on client A does not change client B's active tab
-- reconnect with the same `ClientViewId` restores prior per-window active tab
-- reconnect with a different `ClientViewId` gets default fallback behavior
+## Failure-Point Test Matrix
 
-### Integration tests
+### 1. Data model and identity
 
-- desktop and laptop attached to the same window select different tabs
-- each client can spawn/split in its own selected tab without affecting the
-  other
-- local GUI and remote client stay independent
-- reconnect/resync does not overwrite client-local tab choice with server-global
-  tab choice
+- creating a new client view with no prior state yields no active tab until one
+  is explicitly chosen
+- per-client window view state stores separate active tabs for multiple windows
+  on the same client
+- two different `ClientViewId`s can store different active tabs for the same
+  window
+- reconnect with the same `ClientViewId` restores prior per-window active tabs
+- reconnect with a different `ClientViewId` does not inherit another client's
+  active tabs
+- unregistering a connection does not delete persistent client-view state unless
+  explicitly configured to do so
+- stale view-state entries for removed windows/tabs are cleaned up safely
 
-### Regression tests
+### 2. Protocol
 
+- handshake without a `ClientViewId` fails cleanly
+- `ListPanesResponse` returns only the requesting client's view state
+- `SetClientActiveTab` updates only the targeted client view
+- `SetClientActivePane` updates only the targeted client view
+- out-of-date `tab_id` or `window_id` in client-view PDUs fails loudly and does
+  not mutate unrelated state
+- reconnect after codec bump resyncs correctly with the new view-state snapshot
+
+### 3. Mux resolution semantics
+
+- identity-aware active-tab lookup resolves the correct tab for the current
+  client view
+- active-tab lookup without identity fails instead of silently picking a random
+  or first tab
+- explicit `window_id + tab_id` paths bypass client-view lookup correctly
+- deleting `Window.active` does not regress code that targets panes explicitly
+- active-pane resolution within a tab stays client-local and consistent with the
+  selected tab
+
+### 4. Remote reconcile
+
+- desktop and laptop attached to the same window select different tabs and stay
+  different after repeated reconciles
+- reconcile from client A does not overwrite client B's active tab
+- reconcile after server-side tab creation/removal remaps client-local active
+  tab correctly if the active tab still exists
+- reconcile after active tab deletion clears or reassigns the client's active
+  tab deterministically
+- out-of-order notifications followed by full reconcile converge correctly
+
+### 5. Local GUI behavior
+
+- server-host GUI can keep a different active tab from a remote client
+- tab bar highlight uses per-client active tab
+- window title formatting uses the current client's active tab and active pane
+- pane selection overlay operates on the current client's active tab only
+- keyboard tab activation changes only the current client view
+- mouse tab clicks change only the current client view
+
+### 6. Spawn, split, and pane targeting
+
+- spawn uses the current client's active tab in the selected window
+- split uses the current client's active tab in the selected window
+- two clients can spawn/split in different tabs of the same shared window
+  without switching each other
+- CLI commands with explicit pane IDs still behave identically
+- CLI commands that previously depended on implicit active tab now require
+  explicit target or client identity and fail cleanly otherwise
+
+### 7. Focus interactions
+
+- changing tabs updates per-client active pane/view state coherently
+- focusing a pane in a non-active tab either activates that tab for that client
+  or fails consistently, depending on chosen semantics
+- `SetFocusedPane` does not accidentally become the authoritative active-tab
+  source again
+- focus notifications from one client do not move another client's active tab
+
+### 8. Multi-window behavior
+
+- one client can have different active tabs in window A and window B
+- switching tabs in window A does not affect that client's window B
+- switching tabs in window A does not affect another client's window A
+- creating a new window initializes a fresh per-client active tab state
+
+### 9. Removal and cleanup cases
+
+- removing the active tab for one client leaves other clients' selections alone
+  where possible
+- closing the last tab in a window clears per-client view state for that window
+- removing a window deletes per-client view state for that window
+- deleting a pane that is active for one client reassigns active pane within the
+  same tab without touching other clients
+
+### 10. Persistence and restore
+
+- shared `session.json` restore rebuilds windows/tabs/panes correctly without
+  any client-view data mixed in
+- optional per-client view-state restore reapplies per-window active tabs after
+  shared session restore
+- restoring shared session state without any client-view snapshot leaves active
+  tab unset until the client chooses one
+- restoring two client snapshots does not cross-apply tabs between machines
+
+### 11. Notifications and repaint scoping
+
+- `ClientWindowViewStateChanged` only repaints the intended client
+- unrelated clients ignore another client's view-state notifications
+- shared mux mutations still notify all interested clients when required
+- repaint storms do not occur when two clients switch tabs rapidly
+
+### 12. Race and stress cases
+
+- two clients switching tabs rapidly in the same window never converge to a
+  shared state unless they explicitly choose the same tab
+- rapid switch/split/close cycles do not leave dangling client-view references
+- reconnect during active-tab churn converges correctly after full resync
+- suspend/resume or temporary disconnect does not cause another client's active
+  tab to overwrite the returning client's view state
+
+### 13. Error handling
+
+- corrupted persisted client-view snapshot is rejected without damaging shared
+  mux state
+- unknown `ClientViewId` in incoming updates is rejected cleanly
+- identity-less local code paths panic only in tests or return clear errors in
+  production, but never silently guess
+- stale tab ids in view-state snapshots are dropped with structured logging
+
+### 14. Regression coverage
+
+- single-client behavior remains unchanged from the user's perspective
 - session restore still restores shared windows/tabs/panes correctly
-- CLI actions that target explicit panes/windows still behave the same
-- single-client behavior remains unchanged
+- layout, spawn sizing, and resize tests still pass
+- active workspace behavior remains per-client and unaffected
+- existing focused-pane behavior remains correct under the new active-tab model
 
 ## Risks
 
@@ -389,14 +544,18 @@ of "selection/focus inside a tab" into per-client view state as well.
 This design leaves room for that by creating a `ClientWindowViewState` struct
 instead of adding yet another standalone map.
 
-### CLI semantics
+### Identity-less code paths
 
-Some CLI paths currently rely on "the active tab for a window" without an
-attached GUI identity. Those paths need explicit fallback rules:
+Some current APIs assume there is always a meaningful implicit active tab for a
+window. After removing `Window.active`, that assumption is invalid.
 
-- if there is a current client/view identity, use that
-- otherwise use shared/global window active tab
-- commands that accept explicit pane/window ids remain unambiguous
+Those paths must be rewritten to:
+
+- require current client identity
+- require explicit `tab_id` or `pane_id`
+- or fail explicitly
+
+That is good for correctness, but it will flush out a lot of lazy assumptions.
 
 ## Recommendation
 
@@ -409,6 +568,7 @@ That means:
 - explicit protocol
 - identity-aware mux APIs
 - local GUI and remote clients using the same model
+- no shared `Window.active` fallback anywhere in the steady-state design
 
 Anything smaller will either break on reconnect, fail for the server-host GUI,
 or turn into sync heuristics again.
