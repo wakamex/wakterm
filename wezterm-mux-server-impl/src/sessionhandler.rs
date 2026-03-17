@@ -1313,7 +1313,7 @@ async fn move_pane(
 #[cfg(test)]
 mod test {
     use super::*;
-    use mux::client::{ClientTabViewState, ClientViewId, ClientWindowViewState};
+    use mux::client::{ClientTabViewState, ClientViewId};
     use mux::pane::{alloc_pane_id, CachePolicy, Pane};
     use mux::pane::LogicalLine;
     use mux::renderable::RenderableDimensions;
@@ -1510,6 +1510,7 @@ mod test {
     struct TestLayout {
         window_id: WindowId,
         left_tab_id: TabId,
+        left_pane_id: PaneId,
         right_tab_id: TabId,
         right_pane_id: PaneId,
         split_tab_id: TabId,
@@ -1566,11 +1567,10 @@ mod test {
         mux.add_tab_and_active_pane(&split_tab).unwrap();
         mux.add_tab_to_window(&split_tab, window_id).unwrap();
 
-        let _ = left_pane_id;
-
         TestLayout {
             window_id,
             left_tab_id: left_tab.tab_id(),
+            left_pane_id,
             right_tab_id: right_tab.tab_id(),
             right_pane_id,
             split_tab_id: split_tab.tab_id(),
@@ -1716,30 +1716,53 @@ mod test {
             other => panic!("expected ListPanesResponse, got {:?}", other),
         };
 
+        let state_a = response_a
+            .client_window_view_state
+            .get(&layout.window_id)
+            .expect("client A to have view state");
+        assert_eq!(state_a.active_tab_id, Some(layout.right_tab_id));
+        assert_eq!(state_a.last_active_tab_id, Some(layout.left_tab_id));
         assert_eq!(
-            response_a.client_window_view_state.get(&layout.window_id),
-            Some(&ClientWindowViewState {
-                active_tab_id: Some(layout.right_tab_id),
-                last_active_tab_id: None,
-                tabs: HashMap::from([(
-                    layout.right_tab_id,
-                    ClientTabViewState {
-                        active_pane_id: Some(layout.right_pane_id),
-                    },
-                )]),
+            state_a.tabs.get(&layout.left_tab_id),
+            Some(&ClientTabViewState {
+                active_pane_id: Some(layout.left_pane_id),
             })
         );
         assert_eq!(
-            response_b.client_window_view_state.get(&layout.window_id),
-            Some(&ClientWindowViewState {
-                active_tab_id: Some(layout.split_tab_id),
-                last_active_tab_id: None,
-                tabs: HashMap::from([(
-                    layout.split_tab_id,
-                    ClientTabViewState {
-                        active_pane_id: Some(layout.split_right_pane_id),
-                    },
-                )]),
+            state_a.tabs.get(&layout.right_tab_id),
+            Some(&ClientTabViewState {
+                active_pane_id: Some(layout.right_pane_id),
+            })
+        );
+        assert_eq!(
+            state_a.tabs.get(&layout.split_tab_id),
+            Some(&ClientTabViewState {
+                active_pane_id: Some(layout.split_right_pane_id),
+            })
+        );
+
+        let state_b = response_b
+            .client_window_view_state
+            .get(&layout.window_id)
+            .expect("client B to have view state");
+        assert_eq!(state_b.active_tab_id, Some(layout.split_tab_id));
+        assert_eq!(state_b.last_active_tab_id, Some(layout.left_tab_id));
+        assert_eq!(
+            state_b.tabs.get(&layout.left_tab_id),
+            Some(&ClientTabViewState {
+                active_pane_id: Some(layout.left_pane_id),
+            })
+        );
+        assert_eq!(
+            state_b.tabs.get(&layout.right_tab_id),
+            Some(&ClientTabViewState {
+                active_pane_id: Some(layout.right_pane_id),
+            })
+        );
+        assert_eq!(
+            state_b.tabs.get(&layout.split_tab_id),
+            Some(&ClientTabViewState {
+                active_pane_id: Some(layout.split_right_pane_id),
             })
         );
     }
