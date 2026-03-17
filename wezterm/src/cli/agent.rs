@@ -1,13 +1,13 @@
-use crate::cli::{CliOutputFormatKind, resolve_relative_cwd};
-use anyhow::{Context, bail};
+use crate::cli::{resolve_relative_cwd, CliOutputFormatKind};
+use anyhow::{bail, Context};
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueHint};
 use codec::{ListPanesResponse, SpawnV2};
-use config::ConfigHandle;
 use config::keyassignment::SpawnTabDomain;
+use config::ConfigHandle;
 use mux::agent::{AgentMetadata, AgentSnapshot};
 use mux::pane::PaneId;
-use mux::tab::{SplitDirection, SplitRequest, SplitSize, size_trace_enabled};
+use mux::tab::{size_trace_enabled, SplitDirection, SplitRequest, SplitSize};
 use mux::window::WindowId;
 use portable_pty::cmdbuilder::CommandBuilder;
 use serde::Serialize;
@@ -15,7 +15,7 @@ use std::ffi::OsString;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
-use tabout::{Alignment, Column, tabulate_output};
+use tabout::{tabulate_output, Alignment, Column};
 use uuid::Uuid;
 use wezterm_client::client::Client;
 
@@ -29,6 +29,9 @@ pub struct AgentCommand {
 enum AgentSubCommand {
     #[command(name = "spawn", about = "spawn a new agent pane or tab")]
     Spawn(SpawnAgentCommand),
+
+    #[command(name = "adopt", about = "adopt an existing pane as a managed agent")]
+    Adopt(AdoptAgentCommand),
 
     #[command(name = "list", about = "list agent-tagged panes")]
     List(ListAgentsCommand),
@@ -47,6 +50,7 @@ impl AgentCommand {
     pub async fn run(&self, client: Client, config: &ConfigHandle) -> anyhow::Result<()> {
         match &self.sub {
             AgentSubCommand::Spawn(cmd) => cmd.run(client, config).await,
+            AgentSubCommand::Adopt(cmd) => cmd.run(client).await,
             AgentSubCommand::List(cmd) => cmd.run(client).await,
             AgentSubCommand::Inspect(cmd) => cmd.run(client).await,
             AgentSubCommand::Set(cmd) => cmd.run(client).await,
@@ -70,6 +74,7 @@ struct PreparedAgentLaunch {
     repo_root: Option<String>,
     worktree: Option<String>,
     branch: Option<String>,
+    managed_checkout: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -322,6 +327,7 @@ impl SpawnAgentCommand {
             repo_root: prepared.repo_root,
             worktree: prepared.worktree,
             branch: prepared.branch,
+            managed_checkout: prepared.managed_checkout,
         };
 
         if let Err(err) = set_agent_metadata(codec::SetAgentMetadata {
@@ -370,7 +376,7 @@ impl SpawnAgentCommand {
 
     fn prepare_launch(
         &self,
-        agents: &[AgentSnapshot],
+        _agents: &[AgentSnapshot],
         current_cwd: Option<String>,
     ) -> anyhow::Result<PreparedAgentLaunch> {
         let repo_root = self
@@ -393,12 +399,12 @@ impl SpawnAgentCommand {
             bail!("--branch requires --repo or --worktree");
         }
 
+        let mut managed_checkout = false;
         if let Some(worktree_path) = worktree_path.as_ref() {
-            ensure_worktree_available(agents, worktree_path)?;
             let repo_root = repo_root
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("--worktree requires --repo"))?;
-            ensure_worktree(repo_root, worktree_path, self.branch.as_deref())?;
+            managed_checkout = ensure_worktree(repo_root, worktree_path, self.branch.as_deref())?;
         } else if let (Some(repo_root), Some(branch)) = (repo_root.as_ref(), self.branch.as_deref())
         {
             ensure_branch_checkout(repo_root, branch)?;
@@ -422,6 +428,7 @@ impl SpawnAgentCommand {
             repo_root: repo_root.as_ref().map(|path| path_to_string(path)),
             worktree: worktree_path.as_ref().map(|path| path_to_string(path)),
             branch: self.branch.clone(),
+            managed_checkout,
         })
     }
 }
@@ -536,32 +543,11 @@ fn normalize_path(path: &Path) -> anyhow::Result<PathBuf> {
     }
 }
 
-fn ensure_worktree_available(
-    agents: &[AgentSnapshot],
-    requested_worktree: &Path,
-) -> anyhow::Result<()> {
-    let requested_worktree = normalize_path(requested_worktree)?;
-    for agent in agents {
-        let Some(existing_worktree) = agent.metadata.worktree.as_ref() else {
-            continue;
-        };
-        let existing_worktree = normalize_path(Path::new(existing_worktree))?;
-        if existing_worktree == requested_worktree {
-            bail!(
-                "worktree {} is already assigned to agent {}",
-                requested_worktree.display(),
-                agent.metadata.name
-            );
-        }
-    }
-    Ok(())
-}
-
 fn ensure_worktree(
     repo_root: &Path,
     worktree_path: &Path,
     branch: Option<&str>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let repo_root = normalize_path(repo_root)?;
     let worktree_path = normalize_path(worktree_path)?;
 
@@ -576,7 +562,7 @@ fn ensure_worktree(
         if let Some(branch) = branch {
             ensure_branch_checkout(&worktree_path, branch)?;
         }
-        return Ok(());
+        return Ok(false);
     }
 
     let parent = worktree_path.parent().ok_or_else(|| {
@@ -605,7 +591,7 @@ fn ensure_worktree(
         "git created {} but did not register it as a worktree",
         worktree_path.display()
     );
-    Ok(())
+    Ok(true)
 }
 
 fn ensure_branch_checkout(repo_or_worktree: &Path, branch: &str) -> anyhow::Result<()> {
@@ -765,6 +751,118 @@ impl InspectAgentCommand {
 }
 
 #[derive(Debug, Parser, Clone)]
+pub struct AdoptAgentCommand {
+    /// Specify the target pane. Defaults to WEZTERM_PANE.
+    #[arg(long)]
+    pane_id: Option<PaneId>,
+
+    /// Stable human-readable name for this agent
+    #[arg(long)]
+    name: String,
+
+    /// Launch command to use for restart and restore
+    #[arg(long)]
+    cmd: String,
+
+    /// Override the declared checkout/cwd for this agent
+    #[arg(long)]
+    cwd: Option<String>,
+
+    #[arg(long)]
+    repo_root: Option<String>,
+
+    #[arg(long)]
+    worktree: Option<String>,
+
+    #[arg(long)]
+    branch: Option<String>,
+}
+
+impl AdoptAgentCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        self.run_with(
+            || client.list_agents(),
+            || client.list_panes(),
+            || client.list_agents(),
+            |pane_id| client.resolve_pane_id(pane_id),
+            |request| client.set_agent_metadata(request),
+        )
+        .await
+    }
+
+    async fn run_with<
+        ListAgents,
+        ListAgentsFut,
+        ListPanes,
+        ListPanesFut,
+        ListAgentsAfterSet,
+        ListAgentsAfterSetFut,
+        ResolvePaneId,
+        ResolvePaneIdFut,
+        SetAgentMetadataFn,
+        SetAgentMetadataFut,
+    >(
+        &self,
+        list_agents: ListAgents,
+        list_panes: ListPanes,
+        list_agents_after_set: ListAgentsAfterSet,
+        resolve_pane_id: ResolvePaneId,
+        set_agent_metadata: SetAgentMetadataFn,
+    ) -> anyhow::Result<()>
+    where
+        ListAgents: FnOnce() -> ListAgentsFut,
+        ListAgentsFut: Future<Output = anyhow::Result<codec::ListAgentsResponse>>,
+        ListPanes: FnOnce() -> ListPanesFut,
+        ListPanesFut: Future<Output = anyhow::Result<ListPanesResponse>>,
+        ListAgentsAfterSet: FnOnce() -> ListAgentsAfterSetFut,
+        ListAgentsAfterSetFut: Future<Output = anyhow::Result<codec::ListAgentsResponse>>,
+        ResolvePaneId: FnOnce(Option<PaneId>) -> ResolvePaneIdFut,
+        ResolvePaneIdFut: Future<Output = anyhow::Result<PaneId>>,
+        SetAgentMetadataFn: FnOnce(codec::SetAgentMetadata) -> SetAgentMetadataFut,
+        SetAgentMetadataFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
+    {
+        let pane_id = resolve_pane_id(self.pane_id).await?;
+        let agents = list_agents().await?.agents;
+        let existing = agents.iter().find(|agent| agent.pane_id == pane_id);
+        if let Some(existing) = agents
+            .iter()
+            .find(|agent| agent.metadata.name == self.name && agent.pane_id != pane_id)
+        {
+            bail!(
+                "agent name {} is already assigned to pane {}",
+                self.name,
+                existing.pane_id
+            );
+        }
+        let panes = list_panes().await?;
+
+        let metadata = build_agent_metadata(
+            pane_id,
+            existing,
+            &panes,
+            &self.name,
+            Some(self.cmd.as_str()),
+            self.cwd.clone(),
+            self.repo_root.clone(),
+            self.worktree.clone(),
+            self.branch.clone(),
+            Some(false),
+        )?;
+
+        set_agent_metadata(codec::SetAgentMetadata { pane_id, metadata }).await?;
+
+        let updated = list_agents_after_set()
+            .await?
+            .agents
+            .into_iter()
+            .find(|agent| agent.pane_id == pane_id)
+            .ok_or_else(|| anyhow::anyhow!("agent metadata was set but could not be reloaded"))?;
+
+        write_json(&updated)
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
 pub struct SetAgentCommand {
     /// Specify the target pane. Defaults to WEZTERM_PANE.
     #[arg(long)]
@@ -790,6 +888,14 @@ pub struct SetAgentCommand {
 
     #[arg(long)]
     branch: Option<String>,
+
+    /// Mark the checkout as being provisioned by wezterm
+    #[arg(long, conflicts_with = "unmanaged_checkout")]
+    managed_checkout: bool,
+
+    /// Mark the checkout as not being provisioned by wezterm
+    #[arg(long, conflicts_with = "managed_checkout")]
+    unmanaged_checkout: bool,
 }
 
 impl SetAgentCommand {
@@ -841,42 +947,25 @@ impl SetAgentCommand {
         let existing = agents.iter().find(|agent| agent.pane_id == pane_id);
         let panes = list_panes().await?;
 
-        let metadata = AgentMetadata {
-            agent_id: existing
-                .map(|agent| agent.metadata.agent_id.clone())
-                .unwrap_or_else(|| Uuid::new_v4().to_string()),
-            name: self.name.clone(),
-            launch_cmd: self
-                .launch_cmd
-                .clone()
-                .or_else(|| existing.map(|agent| agent.metadata.launch_cmd.clone()))
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "--launch-cmd is required when tagging a pane for the first time"
-                    )
-                })?,
-            declared_cwd: self
-                .cwd
-                .clone()
-                .or_else(|| existing.map(|agent| agent.metadata.declared_cwd.clone()))
-                .or_else(|| find_pane_cwd(&panes, pane_id))
-                .ok_or_else(|| anyhow::anyhow!("unable to determine cwd; pass --cwd"))?,
-            created_at: existing
-                .map(|agent| agent.metadata.created_at)
-                .unwrap_or_else(Utc::now),
-            repo_root: self
-                .repo_root
-                .clone()
-                .or_else(|| existing.and_then(|agent| agent.metadata.repo_root.clone())),
-            worktree: self
-                .worktree
-                .clone()
-                .or_else(|| existing.and_then(|agent| agent.metadata.worktree.clone())),
-            branch: self
-                .branch
-                .clone()
-                .or_else(|| existing.and_then(|agent| agent.metadata.branch.clone())),
+        let managed_checkout = if self.managed_checkout {
+            Some(true)
+        } else if self.unmanaged_checkout {
+            Some(false)
+        } else {
+            None
         };
+        let metadata = build_agent_metadata(
+            pane_id,
+            existing,
+            &panes,
+            &self.name,
+            self.launch_cmd.as_deref(),
+            self.cwd.clone(),
+            self.repo_root.clone(),
+            self.worktree.clone(),
+            self.branch.clone(),
+            managed_checkout,
+        )?;
 
         set_agent_metadata(codec::SetAgentMetadata { pane_id, metadata }).await?;
 
@@ -915,6 +1004,48 @@ impl ClearAgentCommand {
 struct ClearAgentResult {
     pane_id: PaneId,
     cleared: bool,
+}
+
+fn build_agent_metadata(
+    pane_id: PaneId,
+    existing: Option<&AgentSnapshot>,
+    panes: &ListPanesResponse,
+    name: &str,
+    launch_cmd: Option<&str>,
+    cwd: Option<String>,
+    repo_root: Option<String>,
+    worktree: Option<String>,
+    branch: Option<String>,
+    managed_checkout: Option<bool>,
+) -> anyhow::Result<AgentMetadata> {
+    Ok(AgentMetadata {
+        agent_id: existing
+            .map(|agent| agent.metadata.agent_id.clone())
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        name: name.to_string(),
+        launch_cmd: launch_cmd
+            .map(str::to_string)
+            .or_else(|| existing.map(|agent| agent.metadata.launch_cmd.clone()))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--launch-cmd/--cmd is required when tagging a pane for the first time"
+                )
+            })?,
+        declared_cwd: cwd
+            .or_else(|| existing.map(|agent| agent.metadata.declared_cwd.clone()))
+            .or_else(|| find_pane_cwd(panes, pane_id))
+            .ok_or_else(|| anyhow::anyhow!("unable to determine cwd; pass --cwd"))?,
+        created_at: existing
+            .map(|agent| agent.metadata.created_at)
+            .unwrap_or_else(Utc::now),
+        repo_root: repo_root
+            .or_else(|| existing.and_then(|agent| agent.metadata.repo_root.clone())),
+        worktree: worktree.or_else(|| existing.and_then(|agent| agent.metadata.worktree.clone())),
+        branch: branch.or_else(|| existing.and_then(|agent| agent.metadata.branch.clone())),
+        managed_checkout: managed_checkout
+            .or_else(|| existing.map(|agent| agent.metadata.managed_checkout))
+            .unwrap_or(false),
+    })
 }
 
 fn write_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
@@ -1036,6 +1167,7 @@ mod test {
                 repo_root: None,
                 worktree: None,
                 branch: None,
+                managed_checkout: false,
             },
             pane_id,
             tab_id: 20,
@@ -1104,8 +1236,11 @@ mod test {
             repo_root: Some("/repo".to_string()),
             worktree: None,
             branch: Some("agent/reviewer".to_string()),
+            managed_checkout: false,
+            unmanaged_checkout: false,
         };
-        let existing = sample_agent(30, "old-name");
+        let mut existing = sample_agent(30, "old-name");
+        existing.metadata.managed_checkout = true;
         promise::spawn::block_on(command.run_with(
             || async {
                 Ok(ListAgentsResponse {
@@ -1146,6 +1281,44 @@ mod test {
         assert_eq!(call[0].metadata.name, "reviewer");
         assert_eq!(call[0].metadata.repo_root.as_deref(), Some("/repo"));
         assert_eq!(call[0].metadata.branch.as_deref(), Some("agent/reviewer"));
+        assert!(call[0].metadata.managed_checkout);
+    }
+
+    #[test]
+    fn adopt_uses_live_pane_cwd_and_marks_checkout_unmanaged() {
+        let calls = Rc::new(RefCell::new(vec![]));
+        let command = AdoptAgentCommand {
+            pane_id: Some(30),
+            name: "reviewer".to_string(),
+            cmd: "codex --profile fast".to_string(),
+            cwd: None,
+            repo_root: Some("/repo".to_string()),
+            worktree: None,
+            branch: Some("main".to_string()),
+        };
+
+        promise::spawn::block_on(command.run_with(
+            || async { Ok(ListAgentsResponse { agents: vec![] }) },
+            || async { Ok(panes_response(vec![leaf(10, 20, 30)])) },
+            || async {
+                Ok(ListAgentsResponse {
+                    agents: vec![sample_agent(30, "reviewer")],
+                })
+            },
+            |pane_id| async move { Ok(pane_id.expect("pane_id to be provided")) },
+            |request| {
+                calls.borrow_mut().push(request);
+                async { Ok(UnitResponse {}) }
+            },
+        ))
+        .unwrap();
+
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].metadata.name, "reviewer");
+        assert_eq!(calls[0].metadata.launch_cmd, "codex --profile fast");
+        assert_eq!(calls[0].metadata.declared_cwd, "/tmp/pane-30");
+        assert!(!calls[0].metadata.managed_checkout);
     }
 
     #[test]
@@ -1235,6 +1408,7 @@ mod test {
         assert_eq!(set_calls[0].metadata.name, "reviewer");
         assert_eq!(set_calls[0].metadata.declared_cwd, "/tmp/pane-30");
         assert_eq!(set_calls[0].metadata.launch_cmd, "codex --model gpt-5");
+        assert!(!set_calls[0].metadata.managed_checkout);
     }
 
     #[test]
@@ -1280,10 +1454,9 @@ mod test {
         ))
         .unwrap_err();
 
-        assert!(
-            err.to_string()
-                .contains("spawned pane but failed to attach agent metadata")
-        );
+        assert!(err
+            .to_string()
+            .contains("spawned pane but failed to attach agent metadata"));
         let kill_calls = kill_calls.borrow();
         assert_eq!(kill_calls.len(), 1);
         assert_eq!(kill_calls[0].pane_id, 77);
@@ -1373,10 +1546,11 @@ mod test {
             set_calls[0].metadata.branch.as_deref(),
             Some("agent/scrape-api")
         );
+        assert!(set_calls[0].metadata.managed_checkout);
     }
 
     #[test]
-    fn prepare_launch_rejects_worktree_owned_by_another_agent() {
+    fn prepare_launch_allows_shared_worktree_paths() {
         let (_temp, repo_root) = init_git_repo();
         let requested_worktree = auto_worktree_path(&repo_root, "alpha");
         let command = SpawnAgentCommand {
@@ -1401,10 +1575,10 @@ mod test {
         let mut owner = sample_agent(40, "alpha");
         owner.metadata.worktree = Some(requested_worktree.to_string_lossy().to_string());
 
-        let err = command.prepare_launch(&[owner], None).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("is already assigned to agent alpha")
+        let prepared = command.prepare_launch(&[owner], None).unwrap();
+        assert_eq!(
+            prepared.worktree.as_deref(),
+            Some(requested_worktree.to_string_lossy().as_ref())
         );
     }
 }
