@@ -443,6 +443,7 @@ impl SessionHandler {
                                 let window = mux.get_window(window_id).unwrap();
                                 window_titles.insert(window_id, window.get_title().to_string());
                                 for tab in window.iter() {
+                                    mux.refresh_agent_runtime_for_tab(tab.tab_id());
                                     let active_pane_id =
                                         view_state.get(&window_id).and_then(|window_state| {
                                             window_state
@@ -454,7 +455,7 @@ impl SessionHandler {
                                         tab.codec_pane_tree_with_active_pane_id(active_pane_id);
                                     mux.annotate_pane_tree_with_agent_metadata(&mut tree);
                                     tabs.push(tree);
-                                    tab_titles.push(tab.get_title());
+                                    tab_titles.push(mux.effective_tab_title(tab.tab_id()));
                                 }
                             }
                             log::trace!("ListPanes {tabs:#?} {tab_titles:?}");
@@ -1837,6 +1838,50 @@ mod test {
                 active_pane_id: Some(layout.split_right_pane_id),
             })
         );
+    }
+
+    #[test]
+    fn list_panes_decorates_titles_for_tabs_waiting_on_user() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = "/tmp/title-badge";
+        let project_dir = temp.path().join(cwd.replace('/', "-"));
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join("session.jsonl"),
+            concat!(
+                "{\"type\":\"user\",\"timestamp\":\"2026-03-17T12:00:00Z\"}\n",
+                "{\"type\":\"assistant\",\"timestamp\":\"2026-03-17T12:00:02Z\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n"
+            ),
+        )
+        .unwrap();
+        unsafe {
+            std::env::set_var("WEZTERM_AGENT_CLAUDE_DIR", temp.path());
+        }
+
+        let layout = build_test_layout(&mux);
+        mux.get_tab(layout.left_tab_id).unwrap().set_title("scrape");
+        let mut metadata = sample_agent_metadata("scrape");
+        metadata.launch_cmd = "claude".to_string();
+        metadata.declared_cwd = cwd.to_string();
+        mux.set_agent_metadata(layout.left_pane_id, metadata).unwrap();
+
+        let (_client, _view, mut handler) = register_test_client(&mux, "view-a");
+        let response = match handler.request(&executor, Pdu::ListPanes(ListPanes {})) {
+            Pdu::ListPanesResponse(response) => response,
+            other => panic!("expected ListPanesResponse, got {:?}", other),
+        };
+
+        unsafe {
+            std::env::remove_var("WEZTERM_AGENT_CLAUDE_DIR");
+        }
+
+        assert!(response.tab_titles.iter().any(|title| title == "🤖 scrape"));
     }
 
     #[test]

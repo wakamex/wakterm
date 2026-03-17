@@ -5,7 +5,9 @@ use clap::{Parser, Subcommand, ValueHint};
 use codec::{InputSerial, ListPanesResponse, SendKeyDown, SpawnV2};
 use config::keyassignment::SpawnTabDomain;
 use config::ConfigHandle;
-use mux::agent::{AgentHarness, AgentMetadata, AgentSnapshot, AgentStatus, AgentTransport};
+use mux::agent::{
+    AgentHarness, AgentMetadata, AgentSnapshot, AgentStatus, AgentTransport, AgentTurnState,
+};
 use mux::pane::PaneId;
 use mux::tab::{size_trace_enabled, SplitDirection, SplitRequest, SplitSize};
 use mux::window::WindowId;
@@ -716,6 +718,10 @@ impl ListAgentsCommand {
                         alignment: Alignment::Left,
                     },
                     Column {
+                        name: "TURN".to_string(),
+                        alignment: Alignment::Left,
+                    },
+                    Column {
                         name: "HARNESS".to_string(),
                         alignment: Alignment::Left,
                     },
@@ -746,6 +752,7 @@ impl ListAgentsCommand {
                             agent.window_id.to_string(),
                             agent.workspace.clone(),
                             runtime_status_label(&agent.runtime.status),
+                            turn_state_label(&agent.runtime.turn_state),
                             harness_label(&agent.runtime.harness),
                             transport_label(&agent.runtime.transport),
                             agent.metadata.declared_cwd.clone(),
@@ -1368,6 +1375,15 @@ fn runtime_status_label(status: &AgentStatus) -> String {
     .to_string()
 }
 
+fn turn_state_label(state: &AgentTurnState) -> String {
+    match state {
+        AgentTurnState::Unknown => "unknown",
+        AgentTurnState::WaitingOnAgent => "waiting-agent",
+        AgentTurnState::WaitingOnUser => "waiting-user",
+    }
+    .to_string()
+}
+
 fn harness_label(harness: &AgentHarness) -> String {
     match harness {
         AgentHarness::Unknown => "unknown",
@@ -1491,12 +1507,14 @@ mod test {
                 harness: mux::agent::AgentHarness::Codex,
                 transport: mux::agent::AgentTransport::PlainPty,
                 status: mux::agent::AgentStatus::Idle,
+                turn_state: mux::agent::AgentTurnState::Unknown,
                 alive: true,
                 foreground_process_name: Some("codex".to_string()),
                 tty_name: Some("/dev/pts/1".to_string()),
                 last_input_at: None,
                 last_output_at: None,
                 last_progress_at: None,
+                last_turn_completed_at: None,
                 observed_at: Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
                 session_path: None,
                 progress_summary: None,

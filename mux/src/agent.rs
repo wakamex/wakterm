@@ -47,16 +47,25 @@ pub enum AgentStatus {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AgentTurnState {
+    Unknown,
+    WaitingOnAgent,
+    WaitingOnUser,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentRuntimeSnapshot {
     pub harness: AgentHarness,
     pub transport: AgentTransport,
     pub status: AgentStatus,
+    pub turn_state: AgentTurnState,
     pub alive: bool,
     pub foreground_process_name: Option<String>,
     pub tty_name: Option<String>,
     pub last_input_at: Option<DateTime<Utc>>,
     pub last_output_at: Option<DateTime<Utc>>,
     pub last_progress_at: Option<DateTime<Utc>>,
+    pub last_turn_completed_at: Option<DateTime<Utc>>,
     pub observed_at: DateTime<Utc>,
     pub session_path: Option<String>,
     pub progress_summary: Option<String>,
@@ -72,12 +81,14 @@ impl AgentRuntimeSnapshot {
             harness,
             transport: AgentTransport::PlainPty,
             status: AgentStatus::Starting,
+            turn_state: AgentTurnState::Unknown,
             alive: true,
             foreground_process_name: None,
             tty_name: None,
             last_input_at: None,
             last_output_at: None,
             last_progress_at: None,
+            last_turn_completed_at: None,
             observed_at: now,
             session_path: None,
             progress_summary: None,
@@ -144,6 +155,29 @@ pub fn derive_runtime_status(runtime: &AgentRuntimeSnapshot) -> AgentStatus {
     }
 }
 
+fn derive_effective_turn_state(runtime: &AgentRuntimeSnapshot) -> AgentTurnState {
+    if !runtime.alive {
+        return AgentTurnState::Unknown;
+    }
+
+    if let Some(completed_at) = runtime.last_turn_completed_at {
+        if runtime
+            .last_input_at
+            .map(|input_at| input_at > completed_at)
+            .unwrap_or(false)
+        {
+            return AgentTurnState::WaitingOnAgent;
+        }
+        return AgentTurnState::WaitingOnUser;
+    }
+
+    if runtime.last_input_at.is_some() && !matches!(runtime.harness, AgentHarness::Unknown) {
+        return AgentTurnState::WaitingOnAgent;
+    }
+
+    runtime.turn_state.clone()
+}
+
 pub fn refresh_runtime_from_harness(
     runtime: &mut AgentRuntimeSnapshot,
     metadata: &AgentMetadata,
@@ -152,6 +186,8 @@ pub fn refresh_runtime_from_harness(
     let cwd = normalized_cwd.trim();
     if cwd.is_empty() {
         runtime.observed_at = Utc::now();
+        runtime.turn_state = AgentTurnState::Unknown;
+        runtime.last_turn_completed_at = None;
         runtime.status = derive_runtime_status(runtime);
         return;
     }
@@ -174,6 +210,8 @@ pub fn refresh_runtime_from_harness(
         Ok(Some(snapshot)) => {
             runtime.session_path = snapshot.session_path;
             runtime.progress_summary = snapshot.progress_summary;
+            runtime.turn_state = snapshot.turn_state;
+            runtime.last_turn_completed_at = snapshot.last_turn_completed_at;
             if let Some(ts) = snapshot.updated_at {
                 runtime.last_progress_at = Some(
                     runtime
@@ -187,6 +225,8 @@ pub fn refresh_runtime_from_harness(
             if !matches!(runtime.harness, AgentHarness::Unknown) {
                 runtime.session_path = None;
                 runtime.progress_summary = None;
+                runtime.turn_state = AgentTurnState::Unknown;
+                runtime.last_turn_completed_at = None;
             }
         }
         Err(err) => {
@@ -194,11 +234,17 @@ pub fn refresh_runtime_from_harness(
         }
     }
 
+    if matches!(runtime.harness, AgentHarness::Unknown) {
+        runtime.turn_state = AgentTurnState::Unknown;
+        runtime.last_turn_completed_at = None;
+    }
+
     runtime.transport = if runtime.session_path.is_some() {
         AgentTransport::ObservedPty
     } else {
         AgentTransport::PlainPty
     };
+    runtime.turn_state = derive_effective_turn_state(runtime);
     runtime.status = derive_runtime_status(runtime);
 }
 
@@ -207,6 +253,8 @@ struct HarnessObservation {
     session_path: Option<String>,
     progress_summary: Option<String>,
     updated_at: Option<DateTime<Utc>>,
+    turn_state: AgentTurnState,
+    last_turn_completed_at: Option<DateTime<Utc>>,
 }
 
 fn observe_claude(cwd: &str) -> anyhow::Result<Option<HarnessObservation>> {
@@ -238,10 +286,14 @@ fn observe_claude(cwd: &str) -> anyhow::Result<Option<HarnessObservation>> {
     let Some((session, mtime)) = latest else {
         return Ok(None);
     };
+    let (progress_summary, turn_state, last_turn_completed_at) =
+        read_last_claude_observation(&session)?;
     Ok(Some(HarnessObservation {
         session_path: Some(session.to_string_lossy().to_string()),
-        progress_summary: read_last_claude_summary(&session)?,
+        progress_summary,
         updated_at: Some(DateTime::<Utc>::from(mtime)),
+        turn_state,
+        last_turn_completed_at,
     }))
 }
 
@@ -286,10 +338,14 @@ fn observe_codex(cwd: &str) -> anyhow::Result<Option<HarnessObservation>> {
     let Some((session, mtime)) = latest else {
         return Ok(None);
     };
+    let (progress_summary, turn_state, last_turn_completed_at) =
+        read_last_codex_observation(&session)?;
     Ok(Some(HarnessObservation {
         session_path: Some(session.to_string_lossy().to_string()),
-        progress_summary: read_last_codex_summary(&session)?,
+        progress_summary,
         updated_at: Some(DateTime::<Utc>::from(mtime)),
+        turn_state,
+        last_turn_completed_at,
     }))
 }
 
@@ -339,17 +395,51 @@ fn codex_session_matches_cwd(path: &Path, cwd: &str) -> anyhow::Result<bool> {
         == Some(cwd))
 }
 
-fn read_last_claude_summary(path: &Path) -> anyhow::Result<Option<String>> {
+fn derive_turn_state(
+    last_user_at: Option<DateTime<Utc>>,
+    last_assistant_at: Option<DateTime<Utc>>,
+) -> (AgentTurnState, Option<DateTime<Utc>>) {
+    match (last_user_at, last_assistant_at) {
+        (Some(user_at), Some(assistant_at)) if assistant_at >= user_at => {
+            (AgentTurnState::WaitingOnUser, Some(assistant_at))
+        }
+        (Some(_), Some(_)) | (Some(_), None) => (AgentTurnState::WaitingOnAgent, None),
+        (None, Some(assistant_at)) => (AgentTurnState::WaitingOnUser, Some(assistant_at)),
+        (None, None) => (AgentTurnState::Unknown, None),
+    }
+}
+
+fn parse_record_timestamp(record: &Value) -> Option<DateTime<Utc>> {
+    record
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn read_last_claude_observation(
+    path: &Path,
+) -> anyhow::Result<(Option<String>, AgentTurnState, Option<DateTime<Utc>>)> {
     let reader = BufReader::new(fs::File::open(path)?);
     let mut summary = None;
+    let mut last_user_at = None;
+    let mut last_assistant_at = None;
     for line in reader.lines() {
         let line = line?;
         let Ok(record) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        match record.get("type").and_then(Value::as_str) {
+            Some("user") => {
+                last_user_at = parse_record_timestamp(&record).or(last_user_at);
+            }
+            Some("assistant") => {}
+            _ => continue,
+        }
         if record.get("type").and_then(Value::as_str) != Some("assistant") {
             continue;
         }
+        last_assistant_at = parse_record_timestamp(&record).or(last_assistant_at);
         let Some(content) = record
             .get("message")
             .and_then(|message| message.get("content"))
@@ -390,47 +480,71 @@ fn read_last_claude_summary(path: &Path) -> anyhow::Result<Option<String>> {
             summary = Some(truncate_summary(&parts.join("\n")));
         }
     }
-    Ok(summary)
+    let (turn_state, last_turn_completed_at) = derive_turn_state(last_user_at, last_assistant_at);
+    Ok((summary, turn_state, last_turn_completed_at))
 }
 
-fn read_last_codex_summary(path: &Path) -> anyhow::Result<Option<String>> {
+fn read_last_codex_observation(
+    path: &Path,
+) -> anyhow::Result<(Option<String>, AgentTurnState, Option<DateTime<Utc>>)> {
     let reader = BufReader::new(fs::File::open(path)?);
     let mut summary = None;
+    let mut last_user_at = None;
+    let mut last_assistant_at = None;
     for line in reader.lines() {
         let line = line?;
         let Ok(record) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
-        if record.get("type").and_then(Value::as_str) != Some("response_item") {
-            continue;
-        }
-        let Some(payload) = record.get("payload") else {
-            continue;
-        };
-        if payload.get("type").and_then(Value::as_str) != Some("message")
-            || payload.get("role").and_then(Value::as_str) != Some("assistant")
-        {
-            continue;
-        }
-        let Some(content) = payload.get("content").and_then(Value::as_array) else {
-            continue;
-        };
-        let mut parts = vec![];
-        for block in content {
-            if block.get("type").and_then(Value::as_str) == Some("output_text") {
-                if let Some(text) = block.get("text").and_then(Value::as_str) {
-                    let text = text.trim();
-                    if !text.is_empty() {
-                        parts.push(text.to_string());
+        match record.get("type").and_then(Value::as_str) {
+            Some("response_item") => {
+                let Some(payload) = record.get("payload") else {
+                    continue;
+                };
+                if payload.get("type").and_then(Value::as_str) != Some("message") {
+                    continue;
+                }
+                match payload.get("role").and_then(Value::as_str) {
+                    Some("assistant") => {
+                        last_assistant_at = parse_record_timestamp(&record).or(last_assistant_at);
+                        let Some(content) = payload.get("content").and_then(Value::as_array) else {
+                            continue;
+                        };
+                        let mut parts = vec![];
+                        for block in content {
+                            if block.get("type").and_then(Value::as_str) == Some("output_text") {
+                                if let Some(text) = block.get("text").and_then(Value::as_str) {
+                                    let text = text.trim();
+                                    if !text.is_empty() {
+                                        parts.push(text.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        if !parts.is_empty() {
+                            summary = Some(truncate_summary(&parts.join("\n")));
+                        }
                     }
+                    Some("user") => {
+                        last_user_at = parse_record_timestamp(&record).or(last_user_at);
+                    }
+                    _ => {}
                 }
             }
-        }
-        if !parts.is_empty() {
-            summary = Some(truncate_summary(&parts.join("\n")));
+            Some("event_msg")
+                if record
+                    .get("payload")
+                    .and_then(|payload| payload.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("user_message") =>
+            {
+                last_user_at = parse_record_timestamp(&record).or(last_user_at);
+            }
+            _ => {}
         }
     }
-    Ok(summary)
+    let (turn_state, last_turn_completed_at) = derive_turn_state(last_user_at, last_assistant_at);
+    Ok((summary, turn_state, last_turn_completed_at))
 }
 
 fn truncate_summary(summary: &str) -> String {
@@ -456,6 +570,7 @@ fn normalize_declared_cwd(cwd: &str) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
+    use chrono::TimeZone;
     use std::sync::Mutex;
     use tempfile::TempDir;
 
@@ -520,8 +635,8 @@ mod test {
         fs::write(
             &session,
             concat!(
-                "{\"type\":\"user\"}\n",
-                "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n"
+                "{\"type\":\"user\",\"timestamp\":\"2026-03-17T12:00:00Z\"}\n",
+                "{\"type\":\"assistant\",\"timestamp\":\"2026-03-17T12:00:02Z\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n"
             ),
         )
         .unwrap();
@@ -532,6 +647,11 @@ mod test {
 
         assert_eq!(observed.progress_summary.as_deref(), Some("done"));
         assert_eq!(observed.session_path.as_deref(), Some(session.to_string_lossy().as_ref()));
+        assert_eq!(observed.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(
+            observed.last_turn_completed_at,
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 2).unwrap())
+        );
     }
 
     #[test]
@@ -550,7 +670,8 @@ mod test {
             &session,
             concat!(
                 "{\"payload\":{\"cwd\":\"/tmp/project-b\"}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"all good\"}]}}\n"
+                "{\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[]}}\n",
+                "{\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:00:03Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"all good\"}]}}\n"
             ),
         )
         .unwrap();
@@ -561,5 +682,48 @@ mod test {
 
         assert_eq!(observed.progress_summary.as_deref(), Some("all good"));
         assert_eq!(observed.session_path.as_deref(), Some(session.to_string_lossy().as_ref()));
+        assert_eq!(observed.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(
+            observed.last_turn_completed_at,
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 3).unwrap())
+        );
+    }
+
+    #[test]
+    fn refresh_runtime_marks_waiting_on_agent_after_new_user_turn() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = "/tmp/project-c";
+        let project_dir = temp.path().join(cwd.replace('/', "-"));
+        fs::create_dir_all(&project_dir).unwrap();
+        let session = project_dir.join("session.jsonl");
+        fs::write(
+            &session,
+            concat!(
+                "{\"type\":\"assistant\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"first\"}]}}\n",
+                "{\"type\":\"user\",\"timestamp\":\"2026-03-17T12:00:05Z\"}\n"
+            ),
+        )
+        .unwrap();
+
+        set_env_path("WEZTERM_AGENT_CLAUDE_DIR", temp.path());
+        let metadata = AgentMetadata {
+            agent_id: "id".to_string(),
+            name: "alpha".to_string(),
+            launch_cmd: "claude".to_string(),
+            declared_cwd: cwd.to_string(),
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+        };
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        refresh_runtime_from_harness(&mut runtime, &metadata);
+        remove_env_var("WEZTERM_AGENT_CLAUDE_DIR");
+
+        assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnAgent);
+        assert_eq!(runtime.last_turn_completed_at, None);
+        assert_eq!(runtime.transport, AgentTransport::ObservedPty);
     }
 }

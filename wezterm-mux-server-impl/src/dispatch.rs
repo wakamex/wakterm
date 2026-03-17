@@ -184,7 +184,8 @@ where
                     stream.flush().await.context("flushing PDU to client")?;
                 }
             }
-            Ok(Item::Notif(MuxNotification::TabTitleChanged { tab_id, title })) => {
+            Ok(Item::Notif(MuxNotification::TabTitleChanged { tab_id, title: _ })) => {
+                let title = Mux::get().effective_tab_title(tab_id);
                 Pdu::TabTitleChanged(codec::TabTitleChanged { tab_id, title })
                     .encode_async(&mut stream, 0)
                     .await?;

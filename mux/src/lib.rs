@@ -563,6 +563,9 @@ impl Mux {
     ) -> anyhow::Result<()> {
         self.get_pane(pane_id)
             .ok_or_else(|| anyhow!("pane {} is invalid", pane_id))?;
+        let old_tab_title = self
+            .resolve_pane_id(pane_id)
+            .map(|(_, _, tab_id)| self.effective_tab_title(tab_id));
 
         let mut names = self.agent_panes_by_name.write();
         let mut metadata_by_pane = self.agent_metadata_by_pane.write();
@@ -588,14 +591,30 @@ impl Mux {
             .entry(pane_id)
             .or_insert_with(|| AgentRuntimeSnapshot::new(&metadata));
         metadata_by_pane.insert(pane_id, Arc::new(metadata));
+        drop(metadata_by_pane);
+        drop(names);
+
+        self.refresh_agent_runtime_for_pane(pane_id, true);
+        if let Some((_, _, tab_id)) = self.resolve_pane_id(pane_id) {
+            self.notify_tab_title_if_changed(tab_id, old_tab_title);
+        }
         Ok(())
     }
 
     pub fn clear_agent_metadata(&self, pane_id: PaneId) -> Option<Arc<AgentMetadata>> {
-        let mut metadata_by_pane = self.agent_metadata_by_pane.write();
-        let metadata = metadata_by_pane.remove(&pane_id)?;
+        let (tab_id, old_tab_title) = self
+            .resolve_pane_id(pane_id)
+            .map(|(_, _, tab_id)| (Some(tab_id), Some(self.effective_tab_title(tab_id))))
+            .unwrap_or((None, None));
+        let metadata = {
+            let mut metadata_by_pane = self.agent_metadata_by_pane.write();
+            metadata_by_pane.remove(&pane_id)?
+        };
         self.agent_panes_by_name.write().remove(&metadata.name);
         self.agent_runtime_by_pane.write().remove(&pane_id);
+        if let Some(tab_id) = tab_id {
+            self.notify_tab_title_if_changed(tab_id, old_tab_title);
+        }
         Some(metadata)
     }
 
@@ -604,39 +623,19 @@ impl Mux {
     }
 
     pub fn record_agent_input(&self, pane_id: PaneId) {
-        if self.get_agent_metadata_for_pane(pane_id).is_none() {
-            return;
-        }
-        let now = chrono::Utc::now();
-        let mut runtime_by_pane = self.agent_runtime_by_pane.write();
-        let runtime = runtime_by_pane.entry(pane_id).or_insert_with(|| {
-            AgentRuntimeSnapshot::new(
-                self.get_agent_metadata_for_pane(pane_id)
-                    .as_deref()
-                    .expect("agent metadata checked above"),
-            )
+        self.refresh_agent_runtime_for_pane_with_update(pane_id, true, |runtime| {
+            let now = chrono::Utc::now();
+            runtime.last_input_at = Some(now);
+            runtime.observed_at = now;
         });
-        runtime.last_input_at = Some(now);
-        runtime.observed_at = now;
-        runtime.status = derive_runtime_status(runtime);
     }
 
     pub fn record_agent_output(&self, pane_id: PaneId) {
-        if self.get_agent_metadata_for_pane(pane_id).is_none() {
-            return;
-        }
-        let now = chrono::Utc::now();
-        let mut runtime_by_pane = self.agent_runtime_by_pane.write();
-        let runtime = runtime_by_pane.entry(pane_id).or_insert_with(|| {
-            AgentRuntimeSnapshot::new(
-                self.get_agent_metadata_for_pane(pane_id)
-                    .as_deref()
-                    .expect("agent metadata checked above"),
-            )
+        self.refresh_agent_runtime_for_pane_with_update(pane_id, true, |runtime| {
+            let now = chrono::Utc::now();
+            runtime.last_output_at = Some(now);
+            runtime.observed_at = now;
         });
-        runtime.last_output_at = Some(now);
-        runtime.observed_at = now;
-        runtime.status = derive_runtime_status(runtime);
     }
 
     pub fn record_agent_terminal_progress(
@@ -644,36 +643,44 @@ impl Mux {
         pane_id: PaneId,
         progress: wezterm_term::Progress,
     ) {
-        if self.get_agent_metadata_for_pane(pane_id).is_none() {
-            return;
-        }
-        let now = chrono::Utc::now();
-        let mut runtime_by_pane = self.agent_runtime_by_pane.write();
-        let runtime = runtime_by_pane.entry(pane_id).or_insert_with(|| {
-            AgentRuntimeSnapshot::new(
-                self.get_agent_metadata_for_pane(pane_id)
-                    .as_deref()
-                    .expect("agent metadata checked above"),
-            )
+        self.refresh_agent_runtime_for_pane_with_update(pane_id, true, |runtime| {
+            let now = chrono::Utc::now();
+            runtime.terminal_progress = progress;
+            runtime.last_progress_at = Some(now);
+            runtime.observed_at = now;
         });
-        runtime.terminal_progress = progress;
-        runtime.last_progress_at = Some(now);
-        runtime.observed_at = now;
-        runtime.status = derive_runtime_status(runtime);
     }
 
-    fn runtime_snapshot_for_agent(
+    fn refresh_agent_runtime_for_pane(&self, pane_id: PaneId, notify_title: bool) {
+        self.refresh_agent_runtime_for_pane_with_update(pane_id, notify_title, |_| {});
+    }
+
+    fn refresh_agent_runtime_for_pane_with_update<F>(
         &self,
         pane_id: PaneId,
-        metadata: &AgentMetadata,
-        pane: &Arc<dyn Pane>,
-    ) -> AgentRuntimeSnapshot {
+        notify_title: bool,
+        update: F,
+    ) where
+        F: FnOnce(&mut AgentRuntimeSnapshot),
+    {
+        let Some(metadata) = self.get_agent_metadata_for_pane(pane_id) else {
+            return;
+        };
+        let Some(pane) = self.get_pane(pane_id) else {
+            return;
+        };
+        let Some((_, _, tab_id)) = self.resolve_pane_id(pane_id) else {
+            return;
+        };
+        let old_tab_title = notify_title.then(|| self.effective_tab_title(tab_id));
+
         let mut runtime = self
             .agent_runtime_by_pane
             .read()
             .get(&pane_id)
             .cloned()
-            .unwrap_or_else(|| AgentRuntimeSnapshot::new(metadata));
+            .unwrap_or_else(|| AgentRuntimeSnapshot::new(metadata.as_ref()));
+        update(&mut runtime);
         runtime.alive = !pane.is_dead();
         runtime.foreground_process_name = pane.get_foreground_process_name(CachePolicy::AllowStale);
         runtime.tty_name = pane.tty_name();
@@ -682,12 +689,111 @@ impl Mux {
             &metadata.launch_cmd,
             runtime.foreground_process_name.as_deref(),
         );
-        refresh_runtime_from_harness(&mut runtime, metadata);
+        refresh_runtime_from_harness(&mut runtime, metadata.as_ref());
         runtime.status = derive_runtime_status(&runtime);
+        self.agent_runtime_by_pane.write().insert(pane_id, runtime);
+
+        if notify_title {
+            self.notify_tab_title_if_changed(tab_id, old_tab_title);
+        }
+    }
+
+    pub fn refresh_agent_runtime_for_tab(&self, tab_id: TabId) {
+        let Some(tab) = self.get_tab(tab_id) else {
+            return;
+        };
+        let pane_ids = tab
+            .iter_panes_ignoring_zoom()
+            .into_iter()
+            .map(|p| p.pane.pane_id())
+            .collect::<Vec<_>>();
+        for pane_id in pane_ids {
+            self.refresh_agent_runtime_for_pane(pane_id, false);
+        }
+    }
+
+    fn notify_tab_title_if_changed(&self, tab_id: TabId, previous: Option<String>) {
+        let current = self.effective_tab_title(tab_id);
+        if previous.as_deref() != Some(current.as_str()) {
+            self.notify(MuxNotification::TabTitleChanged {
+                tab_id,
+                title: current,
+            });
+        }
+    }
+
+    fn agent_tab_badge_text() -> Option<String> {
+        let badge = std::env::var("WEZTERM_AGENT_TAB_BADGE").unwrap_or_else(|_| "🤖 ".to_string());
+        if badge.is_empty() {
+            None
+        } else {
+            Some(badge)
+        }
+    }
+
+    fn should_badge_tab_for_agents(&self, tab_id: TabId) -> bool {
+        let Some(tab) = self.get_tab(tab_id) else {
+            return false;
+        };
+        let runtime_by_pane = self.agent_runtime_by_pane.read();
+        for positioned in tab.iter_panes_ignoring_zoom() {
+            let pane_id = positioned.pane.pane_id();
+            if self.get_agent_metadata_for_pane(pane_id).is_none() {
+                continue;
+            }
+            if runtime_by_pane
+                .get(&pane_id)
+                .map(|runtime| {
+                    matches!(
+                        runtime.turn_state,
+                        crate::agent::AgentTurnState::WaitingOnUser
+                    )
+                })
+                .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn effective_tab_title(&self, tab_id: TabId) -> String {
+        let base_title = self
+            .get_tab(tab_id)
+            .map(|tab| tab.get_title())
+            .unwrap_or_default();
+        if self.should_badge_tab_for_agents(tab_id) {
+            if let Some(badge) = Self::agent_tab_badge_text() {
+                return format!("{badge}{base_title}");
+            }
+        }
+        base_title
+    }
+
+    fn runtime_snapshot_for_agent(
+        &self,
+        pane_id: PaneId,
+        metadata: &AgentMetadata,
+        pane: &Arc<dyn Pane>,
+    ) -> AgentRuntimeSnapshot {
+        self.refresh_agent_runtime_for_pane(pane_id, false);
         self.agent_runtime_by_pane
-            .write()
-            .insert(pane_id, runtime.clone());
-        runtime
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_else(|| {
+                let mut runtime = AgentRuntimeSnapshot::new(metadata);
+                runtime.alive = !pane.is_dead();
+                runtime.foreground_process_name =
+                    pane.get_foreground_process_name(CachePolicy::AllowStale);
+                runtime.tty_name = pane.tty_name();
+                runtime.terminal_progress = pane.get_progress();
+                runtime.harness =
+                    infer_harness(&metadata.launch_cmd, runtime.foreground_process_name.as_deref());
+                refresh_runtime_from_harness(&mut runtime, metadata);
+                runtime.status = derive_runtime_status(&runtime);
+                runtime
+            })
     }
 
     fn build_agent_snapshot(
@@ -2670,6 +2776,51 @@ mod test {
         assert!(runtime.last_input_at.is_some());
         assert!(runtime.last_output_at.is_some());
         assert_eq!(runtime.foreground_process_name, None);
+    }
+
+    #[test]
+    fn effective_tab_title_badges_tabs_waiting_on_user() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        tab.set_title("scrape");
+        let pane = FakePane::new(43, size, domain.id);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        mux.set_agent_metadata(pane_id, sample_agent_metadata("scraper"))
+            .unwrap();
+
+        {
+            let mut runtime_by_pane = mux.agent_runtime_by_pane.write();
+            let runtime = runtime_by_pane.get_mut(&pane_id).unwrap();
+            runtime.turn_state = crate::agent::AgentTurnState::WaitingOnUser;
+        }
+
+        assert_eq!(mux.effective_tab_title(tab.tab_id()), "🤖 scrape");
+
+        unsafe {
+            std::env::set_var("WEZTERM_AGENT_TAB_BADGE", "");
+        }
+        assert_eq!(mux.effective_tab_title(tab.tab_id()), "scrape");
+        unsafe {
+            std::env::remove_var("WEZTERM_AGENT_TAB_BADGE");
+        }
     }
 
     #[test]
