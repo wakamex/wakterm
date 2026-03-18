@@ -5,25 +5,31 @@ DEST="$HOME/wezterm-test"
 SRC="/code/wezterm/target/release"
 
 usage() {
-    echo "Usage: ./deploy.sh [--restart] [--no-save] [--wipe-session]"
+    echo "Usage: ./deploy.sh [--restart] [--no-save] [--wipe-session] [--clean]"
     echo ""
     echo "  (no flags)  Build, save manual layout snapshot, copy binaries"
     echo "  --restart   Also kill the mux server (Mac reconnect triggers new binary)"
     echo "  --no-save   Skip wezterm cli save-layout (use when layout/session state is known bad)"
     echo "  --wipe-session  Remove runtime session.json after restart for a clean session"
+    echo "  --clean     Run cargo clean for deployed crates before building"
     echo ""
     echo "After --restart, reconnect from Mac then run:"
     echo "  cd /code/wezterm && target/release/wezterm cli restore-layout"
+    echo ""
+    echo "To install the deployed binaries into /usr/local/bin:"
+    echo "  sudo ./install.sh"
 }
 
 RESTART=false
 SAVE_SESSION=true
 WIPE_SESSION=false
+CLEAN_BUILD=false
 for arg in "$@"; do
     case "$arg" in
         --restart) RESTART=true ;;
         --no-save) SAVE_SESSION=false ;;
         --wipe-session) WIPE_SESSION=true ;;
+        --clean) CLEAN_BUILD=true ;;
         --help|-h) usage; exit 0 ;;
         *) echo "Unknown arg: $arg"; usage; exit 1 ;;
     esac
@@ -52,6 +58,10 @@ wait_for_exit() {
 }
 
 echo "=== Step 1: Build ==="
+if $CLEAN_BUILD; then
+    echo "  Cleaning mux/client/server artifacts first"
+    cargo clean -p mux -p codec -p wezterm -p wezterm-gui -p wezterm-mux-server
+fi
 CCACHE_DISABLE=1 cargo build --release -p wezterm -p wezterm-gui -p wezterm-mux-server 2>&1 | tail -3
 echo ""
 
@@ -109,3 +119,7 @@ else
     echo "Binaries deployed. Run with --restart to kill the server."
     echo "Or manually: kill \$(pgrep -f 'wezterm-mux-server.*pid-file' | head -1)"
 fi
+
+echo ""
+echo "To install the deployed binaries into /usr/local/bin:"
+echo "  sudo ./install.sh"
