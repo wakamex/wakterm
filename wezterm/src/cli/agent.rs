@@ -105,6 +105,10 @@ pub struct SpawnAgentCommand {
     #[arg(long, conflicts_with_all = &["split", "new_window", "workspace", "horizontal", "left", "right", "top", "bottom", "cells", "percent"])]
     here: bool,
 
+    /// Replace the current shell process when used with --here.
+    #[arg(long, requires = "here")]
+    replace: bool,
+
     /// Stable human-readable name for this agent. Defaults to codex/claude with a numeric suffix.
     #[arg(long)]
     name: Option<String>,
@@ -333,6 +337,7 @@ impl SpawnAgentCommand {
                 pane_context.cwd.as_deref(),
                 &prepared.command_dir,
                 &self.cmd,
+                self.replace,
             )?;
 
             if let Err(err) = send_paste(codec::SendPaste {
@@ -630,14 +635,21 @@ fn build_in_place_launch_command(
     current_cwd: Option<&str>,
     target_cwd: &str,
     cmd: &str,
+    replace: bool,
 ) -> anyhow::Result<String> {
+    let launcher = if replace {
+        format!("exec {cmd}")
+    } else {
+        cmd.to_string()
+    };
+
     if current_cwd == Some(target_cwd) {
-        return Ok(format!("exec {cmd}"));
+        return Ok(launcher);
     }
 
     let quoted_dir =
         shlex::try_quote(target_cwd).map_err(|err| anyhow::anyhow!("invalid cwd: {err}"))?;
-    Ok(format!("cd {quoted_dir} && exec {cmd}"))
+    Ok(format!("cd {quoted_dir} && {launcher}"))
 }
 
 fn find_pane_context(panes: &ListPanesResponse, pane_id: PaneId) -> Option<PaneContext> {
@@ -2037,6 +2049,7 @@ mod test {
         let command = SpawnAgentCommand {
             name: Some("reviewer".to_string()),
             here: false,
+            replace: false,
             split: true,
             pane_id: Some(30),
             new_window: false,
@@ -2135,6 +2148,7 @@ mod test {
         let command = SpawnAgentCommand {
             name: Some("reviewer".to_string()),
             here: false,
+            replace: false,
             split: false,
             pane_id: Some(30),
             new_window: false,
@@ -2221,6 +2235,7 @@ mod test {
         let command = SpawnAgentCommand {
             name: Some("reviewer".to_string()),
             here: false,
+            replace: false,
             split: false,
             pane_id: None,
             new_window: true,
@@ -2279,6 +2294,7 @@ mod test {
         let command = SpawnAgentCommand {
             name: Some("reviewer".to_string()),
             here: false,
+            replace: false,
             split: false,
             pane_id: None,
             new_window: true,
@@ -2340,6 +2356,7 @@ mod test {
         let command = SpawnAgentCommand {
             name: Some("scrape-api".to_string()),
             here: false,
+            replace: false,
             split: false,
             pane_id: None,
             new_window: true,
@@ -2444,6 +2461,7 @@ mod test {
         let command = SpawnAgentCommand {
             name: Some("beta".to_string()),
             here: false,
+            replace: false,
             split: false,
             pane_id: None,
             new_window: true,
@@ -2476,6 +2494,7 @@ mod test {
         let command = SpawnAgentCommand {
             name: Some("shell".to_string()),
             here: false,
+            replace: false,
             split: false,
             pane_id: None,
             new_window: true,
@@ -2508,6 +2527,7 @@ mod test {
         let command = SpawnAgentCommand {
             name: None,
             here: false,
+            replace: false,
             split: false,
             pane_id: None,
             new_window: true,
@@ -2593,7 +2613,7 @@ mod test {
     }
 
     #[test]
-    fn start_here_injects_exec_into_existing_pane_and_sets_metadata() {
+    fn start_here_preserves_shell_and_sets_metadata() {
         let paste_calls = Rc::new(RefCell::new(vec![]));
         let key_calls = Rc::new(RefCell::new(vec![]));
         let title_calls = Rc::new(RefCell::new(vec![]));
@@ -2602,6 +2622,7 @@ mod test {
         let command = SpawnAgentCommand {
             name: None,
             here: true,
+            replace: false,
             split: false,
             pane_id: Some(30),
             new_window: false,
@@ -2694,7 +2715,7 @@ mod test {
         let paste_calls = paste_calls.borrow();
         assert_eq!(paste_calls.len(), 1);
         assert_eq!(paste_calls[0].pane_id, 30);
-        assert_eq!(paste_calls[0].data, "cd /tmp/agent-start && exec codex");
+        assert_eq!(paste_calls[0].data, "cd /tmp/agent-start && codex");
 
         let key_calls = key_calls.borrow();
         assert_eq!(key_calls.len(), 1);
@@ -2717,6 +2738,7 @@ mod test {
         let command = SpawnAgentCommand {
             name: Some("codex-here".to_string()),
             here: true,
+            replace: false,
             split: false,
             pane_id: Some(30),
             new_window: false,
@@ -2783,5 +2805,73 @@ mod test {
         let clear_calls = clear_calls.borrow();
         assert_eq!(clear_calls.len(), 1);
         assert_eq!(clear_calls[0].pane_id, 30);
+    }
+
+    #[test]
+    fn start_here_replace_injects_exec_into_existing_pane() {
+        let paste_calls = Rc::new(RefCell::new(vec![]));
+        let command = SpawnAgentCommand {
+            name: Some("codex-replace".to_string()),
+            here: true,
+            replace: true,
+            split: false,
+            pane_id: Some(30),
+            new_window: false,
+            workspace: None,
+            horizontal: false,
+            left: false,
+            right: false,
+            top: false,
+            bottom: false,
+            cells: None,
+            percent: None,
+            repo: None,
+            worktree: WorktreeMode::None,
+            branch: None,
+            cwd: Some("/tmp/agent-start".into()),
+            cmd: "codex".to_string(),
+        };
+
+        promise::spawn::block_on(command.run_with(
+            &ConfigHandle::default_config(),
+            || async { Ok(ListAgentsResponse { agents: vec![] }) },
+            || async {
+                Ok(ListPanesResponse {
+                    tabs: vec![leaf(10, 20, 30)],
+                    tab_titles: vec!["existing".into()],
+                    display_tab_titles: vec!["existing".into()],
+                    window_titles: HashMap::new(),
+                    client_window_view_state: HashMap::new(),
+                })
+            },
+            || async {
+                Ok(ListAgentsResponse {
+                    agents: vec![sample_agent(30, "codex-replace")],
+                })
+            },
+            |pane_id| async move { Ok(pane_id.expect("pane id")) },
+            |_| async { panic!("spawn_v2 should not be used for --here") },
+            |_| async { panic!("split_pane should not be used for --here") },
+            {
+                let paste_calls = Rc::clone(&paste_calls);
+                move |request| {
+                    paste_calls.borrow_mut().push(request);
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            |_| async { Ok(UnitResponse {}) },
+            |_| async { Ok(UnitResponse {}) },
+            |_| async { Ok(UnitResponse {}) },
+            |_| async { Ok(UnitResponse {}) },
+            |_| async { panic!("kill_pane should not be used for --here") },
+            |cmd, agent_name, agents, current_cwd| {
+                cmd.prepare_launch(agent_name, agents, current_cwd)
+            },
+        ))
+        .unwrap();
+
+        let paste_calls = paste_calls.borrow();
+        assert_eq!(paste_calls.len(), 1);
+        assert_eq!(paste_calls[0].data, "cd /tmp/agent-start && exec codex");
     }
 }
