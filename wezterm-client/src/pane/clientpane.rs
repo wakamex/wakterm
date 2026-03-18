@@ -1,6 +1,6 @@
 use crate::domain::ClientInner;
 use crate::pane::mousestate::MouseState;
-use crate::pane::renderable::{RenderableInner, RenderableState, hydrate_lines};
+use crate::pane::renderable::{hydrate_lines, RenderableInner, RenderableState};
 use anyhow::bail;
 use async_trait::async_trait;
 use codec::*;
@@ -8,8 +8,8 @@ use config::configuration;
 use config::keyassignment::ScrollbackEraseMode;
 use mux::domain::DomainId;
 use mux::pane::{
-    CachePolicy, CloseReason, ForEachPaneLogicalLine, LogicalLine, Pane, PaneId, Pattern,
-    SearchResult, WithPaneLines, alloc_pane_id,
+    alloc_pane_id, CachePolicy, CloseReason, ForEachPaneLogicalLine, LogicalLine, Pane, PaneId,
+    Pattern, SearchResult, WithPaneLines,
 };
 use mux::renderable::{RenderableDimensions, StableCursorPosition};
 use mux::tab::TabId;
@@ -19,7 +19,6 @@ use rangeset::RangeSet;
 use ratelim::RateLimiter;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
-use std::fmt::Write as _;
 use std::ops::Range;
 use std::sync::Arc;
 use termwiz::input::KeyEvent;
@@ -280,31 +279,12 @@ where
 
     if !missing.is_empty() {
         log::error!(
-            "size-trace client.resize_tab.unmapped_local_panes pane_ids={:?}",
+            "resize_tab could not map local pane ids to remote pane ids: pane_ids={:?}",
             missing
         );
     }
 
     translated
-}
-
-fn format_resize_batch(pane_sizes: &[(PaneId, TerminalSize)]) -> String {
-    let mut summary = String::new();
-    for (idx, (pane_id, size)) in pane_sizes.iter().enumerate() {
-        if idx > 0 {
-            summary.push_str(", ");
-        }
-        let _ = write!(
-            summary,
-            "{}:{}x{} px={}x{}",
-            pane_id,
-            size.cols,
-            size.rows,
-            size.pixel_width,
-            size.pixel_height
-        );
-    }
-    summary
 }
 
 #[async_trait(?Send)]
@@ -470,33 +450,21 @@ impl Pane for ClientPane {
         Ok(())
     }
 
-    fn send_resize_batch(
-        &self,
-        _tab_id: mux::tab::TabId,
-        pane_sizes: Vec<(PaneId, TerminalSize)>,
-    ) {
+    fn send_resize_batch(&self, _tab_id: mux::tab::TabId, pane_sizes: Vec<(PaneId, TerminalSize)>) {
         let client = Arc::clone(&self.client);
         let tab_id = self.remote_tab_id;
         let pane_sizes = translate_resize_batch(pane_sizes, |local_pane_id| {
             Mux::try_get()
                 .and_then(|mux| mux.get_pane(local_pane_id))
-                .and_then(|pane| pane.downcast_ref::<ClientPane>().map(|pane| pane.remote_pane_id()))
+                .and_then(|pane| {
+                    pane.downcast_ref::<ClientPane>()
+                        .map(|pane| pane.remote_pane_id())
+                })
         });
-        let trace = mux::tab::size_trace_enabled().then(|| format_resize_batch(&pane_sizes));
         promise::spawn::spawn(async move {
-            if let Some(summary) = trace {
-                log::warn!(
-                    "size-trace client.resize_tab.send remote_tab_id={} pane_sizes=[{}]",
-                    tab_id,
-                    summary
-                );
-            }
             client
                 .client
-                .resize_tab(ResizeTab {
-                    tab_id,
-                    pane_sizes,
-                })
+                .resize_tab(ResizeTab { tab_id, pane_sizes })
                 .await
         })
         .detach();
@@ -773,18 +741,16 @@ mod tests {
 
     #[test]
     fn resize_batch_uses_remote_pane_ids() {
-        let translated = translate_resize_batch(vec![(10, size(250, 68)), (11, size(124, 68))], |pane_id| {
-            match pane_id {
-                10 => Some(101 as PaneId),
-                11 => Some(202 as PaneId),
-                _ => None,
-            }
-        });
+        let translated =
+            translate_resize_batch(vec![(10, size(250, 68)), (11, size(124, 68))], |pane_id| {
+                match pane_id {
+                    10 => Some(101 as PaneId),
+                    11 => Some(202 as PaneId),
+                    _ => None,
+                }
+            });
 
-        assert_eq!(
-            translated,
-            vec![(101, size(250, 68)), (202, size(124, 68))]
-        );
+        assert_eq!(translated, vec![(101, size(250, 68)), (202, size(124, 68))]);
     }
 
     #[test]

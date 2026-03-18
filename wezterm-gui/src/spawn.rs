@@ -3,7 +3,7 @@ use config::keyassignment::SpawnCommand;
 use config::TermConfig;
 use mux::activity::Activity;
 use mux::domain::SplitSource;
-use mux::tab::{size_trace_enabled, SplitRequest};
+use mux::tab::SplitRequest;
 use mux::window::WindowId as MuxWindowId;
 use mux::Mux;
 use portable_pty::CommandBuilder;
@@ -47,10 +47,9 @@ pub async fn spawn_command_internal(
     let activity = Activity::new();
 
     let current_pane_id = match src_window_id {
-        Some(window_id) => {
-            mux.get_active_pane_for_window_for_current_identity(window_id)
-                .map(|p| p.pane_id())
-        }
+        Some(window_id) => mux
+            .get_active_pane_for_window_for_current_identity(window_id)
+            .map(|p| p.pane_id()),
         None => None,
     };
 
@@ -88,22 +87,6 @@ pub async fn spawn_command_internal(
     };
 
     let workspace = mux.active_workspace().clone();
-    let trace_enabled = size_trace_enabled();
-
-    if trace_enabled {
-        let active_before = src_window_id
-            .and_then(|window_id| mux.get_active_tab_for_window_for_current_identity(window_id))
-            .map(|tab| tab.debug_size_snapshot())
-            .unwrap_or_else(|| "none".to_string());
-        log::warn!(
-            "size-trace gui.spawn.begin where={:?} src_window_id={:?} current_pane_id={:?} requested_size={:?} active_before={}",
-            spawn_where,
-            src_window_id,
-            current_pane_id,
-            size,
-            active_before
-        );
-    }
 
     match spawn_where {
         SpawnWhere::SplitPane(direction) => {
@@ -134,26 +117,12 @@ pub async fn spawn_command_internal(
                     .await
                     .context("split_pane")?;
                 pane.set_config(term_config);
-                if trace_enabled {
-                    let after = mux
-                        .get_active_tab_for_window_for_current_identity(src_window_id)
-                        .map(|tab| tab.debug_size_snapshot())
-                        .unwrap_or_else(|| {
-                            format!("window_id={} missing active tab", src_window_id)
-                        });
-                    log::warn!(
-                        "size-trace gui.spawn.after_split window_id={} pane_id={} {}",
-                        src_window_id,
-                        pane.pane_id(),
-                        after
-                    );
-                }
             } else {
                 bail!("there is no active tab while splitting pane!?");
             }
         }
         _ => {
-            let (tab, pane, window_id) = mux
+            let (_tab, pane, window_id) = mux
                 .spawn_tab_or_window(
                     match spawn_where {
                         SpawnWhere::NewWindow => None,
@@ -175,19 +144,6 @@ pub async fn spawn_command_internal(
             // the new window being created.
             if Some(window_id) == src_window_id {
                 pane.set_config(term_config);
-            }
-            if trace_enabled {
-                let active_after = mux
-                    .get_active_tab_for_window_for_current_identity(window_id)
-                    .map(|active| active.debug_size_snapshot())
-                    .unwrap_or_else(|| format!("window_id={} missing active tab", window_id));
-                log::warn!(
-                    "size-trace gui.spawn.after_spawn window_id={} pane_id={} new_tab={} active_after={}",
-                    window_id,
-                    pane.pane_id(),
-                    tab.debug_size_snapshot(),
-                    active_after
-                );
             }
         }
     };

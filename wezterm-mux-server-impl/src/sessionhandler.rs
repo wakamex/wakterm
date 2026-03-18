@@ -1,5 +1,5 @@
 use crate::PKI;
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use codec::*;
 use config::TermConfig;
 use mux::client::ClientId;
@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use termwiz::surface::SequenceNo;
 use url::Url;
-use wezterm_term::terminal::Alert;
 use wezterm_term::StableRowIndex;
+use wezterm_term::terminal::Alert;
 
 #[derive(Clone)]
 pub struct PduSender {
@@ -753,33 +753,6 @@ impl SessionHandler {
                     catch(
                         move || {
                             let mux = Mux::get();
-                            if mux::tab::size_trace_enabled() {
-                                let before = mux
-                                    .get_tab(tab_id)
-                                    .map(|tab| tab.debug_size_snapshot())
-                                    .unwrap_or_else(|| format!("tab_id={} missing", tab_id));
-                                let summary = pane_sizes
-                                    .iter()
-                                    .map(|(pane_id, size)| {
-                                        format!(
-                                            "{}:{}x{} px={}x{}",
-                                            pane_id,
-                                            size.cols,
-                                            size.rows,
-                                            size.pixel_width,
-                                            size.pixel_height
-                                        )
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join(", ");
-                                log::warn!(
-                                    "size-trace server.resize_tab.recv tab_id={} pane_sizes=[{}] {}",
-                                    tab_id,
-                                    summary,
-                                    before
-                                );
-                            }
-
                             // Apply all pane sizes atomically, then rebuild once
                             let tab = mux
                                 .get_tab(tab_id)
@@ -787,7 +760,7 @@ impl SessionHandler {
                             let tab_panes = tab.iter_panes();
                             if pane_sizes.len() != tab_panes.len() {
                                 log::error!(
-                                    "size-trace server.resize_tab.pane_count_mismatch tab_id={} batch_panes={} tab_panes={} {}",
+                                    "resize_tab pane count mismatch: tab_id={} batch_panes={} tab_panes={} {}",
                                     tab_id,
                                     pane_sizes.len(),
                                     tab_panes.len(),
@@ -812,7 +785,7 @@ impl SessionHandler {
                             }
                             if !missing_pane_ids.is_empty() {
                                 log::error!(
-                                    "size-trace server.resize_tab.unknown_panes tab_id={} pane_ids={:?} {}",
+                                    "resize_tab referenced unknown panes: tab_id={} pane_ids={:?} {}",
                                     tab_id,
                                     missing_pane_ids,
                                     tab.debug_size_snapshot()
@@ -820,13 +793,6 @@ impl SessionHandler {
                             }
                             tab.rebuild_splits_sizes_from_contained_panes();
                             tab.log_runtime_invariant_errors("server.resize_tab");
-                            if mux::tab::size_trace_enabled() {
-                                log::warn!(
-                                    "size-trace server.resize_tab.done tab_id={} {}",
-                                    tab_id,
-                                    tab.debug_size_snapshot()
-                                );
-                            }
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
@@ -1262,24 +1228,7 @@ async fn split_pane(split: SplitPane, client_id: Option<Arc<ClientId>>) -> anyho
     // before the client's resize PDU has been processed.
     if let Some(tab_size) = split.tab_size {
         if let Some(tab) = mux.get_tab(tab_id) {
-            if mux::tab::size_trace_enabled() {
-                log::warn!(
-                    "size-trace server.split.tab_size.begin pane_id={} tab_id={} requested_tab_size={:?} {}",
-                    split.pane_id,
-                    tab_id,
-                    tab_size,
-                    tab.debug_size_snapshot()
-                );
-            }
             tab.resize(tab_size);
-            if mux::tab::size_trace_enabled() {
-                log::warn!(
-                    "size-trace server.split.tab_size.end pane_id={} tab_id={} {}",
-                    split.pane_id,
-                    tab_id,
-                    tab.debug_size_snapshot()
-                );
-            }
         }
     }
 
@@ -1368,7 +1317,7 @@ mod test {
     use mux::agent::AgentMetadata;
     use mux::client::{ClientTabViewState, ClientViewId};
     use mux::pane::LogicalLine;
-    use mux::pane::{alloc_pane_id, CachePolicy, Pane};
+    use mux::pane::{CachePolicy, Pane, alloc_pane_id};
     use mux::renderable::RenderableDimensions;
     use mux::tab::{SplitDirection, SplitRequest, SplitSize, Tab};
     use mux::window::WindowId;
@@ -1385,6 +1334,7 @@ mod test {
         id: PaneId,
         size: Mutex<TerminalSize>,
         title: String,
+        foreground_process_name: Option<String>,
     }
 
     impl TestPane {
@@ -1393,6 +1343,21 @@ mod test {
                 id,
                 size: Mutex::new(size),
                 title: title.to_string(),
+                foreground_process_name: None,
+            })
+        }
+
+        fn new_with_process(
+            id: PaneId,
+            size: TerminalSize,
+            title: &str,
+            foreground_process_name: &str,
+        ) -> Arc<dyn Pane> {
+            Arc::new(Self {
+                id,
+                size: Mutex::new(size),
+                title: title.to_string(),
+                foreground_process_name: Some(foreground_process_name.to_string()),
             })
         }
     }
@@ -1517,6 +1482,10 @@ mod test {
 
         fn get_current_working_dir(&self, _policy: CachePolicy) -> Option<Url> {
             None
+        }
+
+        fn get_foreground_process_name(&self, _policy: CachePolicy) -> Option<String> {
+            self.foreground_process_name.clone()
         }
     }
 
@@ -1867,12 +1836,25 @@ mod test {
             std::env::set_var("WEZTERM_AGENT_CLAUDE_DIR", temp.path());
         }
 
-        let layout = build_test_layout(&mux);
-        mux.get_tab(layout.left_tab_id).unwrap().set_title("scrape");
+        let tab_size = TerminalSize {
+            cols: 120,
+            rows: 40,
+            pixel_width: 960,
+            pixel_height: 720,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some("default".to_string()), None);
+        let tab = Arc::new(Tab::new(&tab_size));
+        let pane = TestPane::new_with_process(alloc_pane_id(), tab_size, "scrape-pane", "claude");
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        tab.set_title("scrape");
         let mut metadata = sample_agent_metadata("scrape");
         metadata.launch_cmd = "claude".to_string();
         metadata.declared_cwd = cwd.to_string();
-        mux.set_agent_metadata(layout.left_pane_id, metadata).unwrap();
+        mux.set_agent_metadata(pane_id, metadata).unwrap();
 
         let (_client, _view, mut handler) = register_test_client(&mux, "view-a");
         let response = match handler.request(&executor, Pdu::ListPanes(ListPanes {})) {

@@ -10,7 +10,7 @@ use mux::agent::{
     AgentTurnState,
 };
 use mux::pane::PaneId;
-use mux::tab::{size_trace_enabled, SplitDirection, SplitRequest, SplitSize};
+use mux::tab::{SplitDirection, SplitRequest, SplitSize};
 use mux::window::WindowId;
 use portable_pty::cmdbuilder::CommandBuilder;
 use serde::Serialize;
@@ -417,17 +417,6 @@ impl SpawnAgentCommand {
                     .unwrap_or(mux::DEFAULT_WORKSPACE)
                     .to_string()
             });
-
-            if size_trace_enabled() {
-                log::warn!(
-                    "size-trace cli.agent.spawn split={} window_id={:?} pane_id={:?} new_window={} size={:?}",
-                    self.split,
-                    window_id,
-                    context_pane_id,
-                    self.new_window,
-                    size
-                );
-            }
 
             spawn_v2(SpawnV2 {
                 domain: SpawnTabDomain::DefaultDomain,

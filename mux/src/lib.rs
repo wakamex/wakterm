@@ -5,7 +5,7 @@ use crate::agent::{
 use crate::client::{ClientId, ClientInfo, ClientViewId, ClientViewState, ClientWindowViewState};
 use crate::pane::{CachePolicy, Pane, PaneId};
 use crate::ssh_agent::AgentProxy;
-use crate::tab::{size_trace_enabled, NotifyMux, SplitRequest, Tab, TabId};
+use crate::tab::{NotifyMux, SplitRequest, Tab, TabId};
 use crate::window::{Window, WindowId};
 use anyhow::{anyhow, Context, Error};
 use config::keyassignment::SpawnTabDomain;
@@ -1996,23 +1996,6 @@ impl Mux {
             .get_pane(pane_id)
             .ok_or_else(|| anyhow!("pane_id {} is invalid", pane_id))?;
         let term_config = current_pane.get_config();
-        let trace_enabled = size_trace_enabled();
-
-        if trace_enabled {
-            let before = self
-                .get_tab(tab_id)
-                .map(|tab| tab.debug_size_snapshot())
-                .unwrap_or_else(|| format!("tab_id={} missing", tab_id));
-            log::warn!(
-                "size-trace mux.split.begin window_id={} tab_id={} pane_id={} request={:?} source={:?} {}",
-                window_id,
-                tab_id,
-                pane_id,
-                request,
-                source,
-                before
-            );
-        }
 
         let source = match source {
             SplitSource::Spawn {
@@ -2042,21 +2025,6 @@ impl Mux {
             let tab_size = tab.get_size();
             tab.resize(tab_size);
             tab.log_runtime_invariant_errors("mux.split_pane");
-        }
-
-        if trace_enabled {
-            let after = self
-                .get_tab(tab_id)
-                .map(|tab| tab.debug_size_snapshot())
-                .unwrap_or_else(|| format!("tab_id={} missing", tab_id));
-            log::warn!(
-                "size-trace mux.split.end tab_id={} pane_id={} new_pane_id={} new_pane_dims={:?} {}",
-                tab_id,
-                pane_id,
-                pane.pane_id(),
-                pane.get_dimensions(),
-                after
-            );
         }
 
         // FIXME: clipboard
@@ -2144,34 +2112,6 @@ impl Mux {
         workspace_for_new_window: String,
         window_position: Option<GuiPosition>,
     ) -> anyhow::Result<(Arc<Tab>, Arc<dyn Pane>, WindowId)> {
-        let trace_enabled = size_trace_enabled();
-        if trace_enabled {
-            let existing = if let Some(id) = window_id {
-                current_pane_id
-                    .and_then(|pane_id| {
-                        let (_, pane_window_id, tab_id) = self.resolve_pane_id(pane_id)?;
-                        if pane_window_id != id {
-                            return None;
-                        }
-                        Some(tab_id)
-                    })
-                    .and_then(|tab_id| self.get_tab(tab_id))
-                    .map(|tab| tab.debug_size_snapshot())
-                    .unwrap_or_else(|| "none".to_string())
-            } else {
-                "none".to_string()
-            };
-            log::warn!(
-                "size-trace mux.spawn.begin window_id={:?} domain={:?} current_pane_id={:?} requested_size={:?} workspace={} existing_active={}",
-                window_id,
-                domain,
-                current_pane_id,
-                size,
-                workspace_for_new_window,
-                existing
-            );
-        }
-
         let domain = self
             .resolve_spawn_tab_domain(current_pane_id, &domain)
             .context("resolve_spawn_tab_domain")?;
@@ -2268,16 +2208,6 @@ impl Mux {
 
         self.set_active_tab_for_current_identity(window_id, tab.tab_id())
             .ok();
-
-        if trace_enabled {
-            log::warn!(
-                "size-trace mux.spawn.end window_id={} new_tab={} new_pane_id={} new_pane_dims={:?}",
-                window_id,
-                tab.debug_size_snapshot(),
-                pane.pane_id(),
-                pane.get_dimensions()
-            );
-        }
 
         Ok((tab, pane, window_id))
     }
