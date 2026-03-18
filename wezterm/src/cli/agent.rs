@@ -2,7 +2,7 @@ use crate::cli::{resolve_relative_cwd, CliOutputFormatKind};
 use anyhow::{bail, Context};
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueHint};
-use codec::{InputSerial, ListPanesResponse, SendKeyDown, SpawnV2};
+use codec::{InputSerial, ListPanesResponse, SendKeyDown, SpawnV2, TabTitleChanged};
 use config::keyassignment::SpawnTabDomain;
 use config::ConfigHandle;
 use mux::agent::{
@@ -176,6 +176,7 @@ impl SpawnAgentCommand {
                 |pane_id| client.resolve_pane_id(pane_id),
                 |request| client.spawn_v2(request),
                 |request| client.split_pane(request),
+                |request| client.set_tab_title(request),
                 |request| client.set_agent_metadata(request),
                 |request| client.kill_pane(request),
                 |cmd, agents, current_cwd| cmd.prepare_launch(agents, current_cwd),
@@ -197,6 +198,8 @@ impl SpawnAgentCommand {
         SpawnV2Fut,
         SplitPaneFn,
         SplitPaneFut,
+        SetTabTitleFn,
+        SetTabTitleFut,
         SetAgentMetadataFn,
         SetAgentMetadataFut,
         KillPaneFn,
@@ -211,6 +214,7 @@ impl SpawnAgentCommand {
         resolve_pane_id: ResolvePaneId,
         spawn_v2: SpawnV2Fn,
         split_pane: SplitPaneFn,
+        set_tab_title: SetTabTitleFn,
         set_agent_metadata: SetAgentMetadataFn,
         kill_pane: KillPaneFn,
         prepare_launch: PrepareLaunchFn,
@@ -228,6 +232,8 @@ impl SpawnAgentCommand {
         SpawnV2Fut: Future<Output = anyhow::Result<codec::SpawnResponse>>,
         SplitPaneFn: FnOnce(codec::SplitPane) -> SplitPaneFut,
         SplitPaneFut: Future<Output = anyhow::Result<codec::SpawnResponse>>,
+        SetTabTitleFn: FnOnce(codec::TabTitleChanged) -> SetTabTitleFut,
+        SetTabTitleFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
         SetAgentMetadataFn: FnOnce(codec::SetAgentMetadata) -> SetAgentMetadataFut,
         SetAgentMetadataFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
         KillPaneFn: FnOnce(codec::KillPane) -> KillPaneFut,
@@ -328,6 +334,21 @@ impl SpawnAgentCommand {
             })
             .await?
         };
+
+        if !self.split {
+            if let Err(err) = set_tab_title(TabTitleChanged {
+                tab_id: spawned.tab_id,
+                title: self.name.clone(),
+            })
+            .await
+            {
+                let _ = kill_pane(codec::KillPane {
+                    pane_id: spawned.pane_id,
+                })
+                .await;
+                return Err(err.context("spawned pane but failed to set initial tab title"));
+            }
+        }
 
         let metadata = AgentMetadata {
             agent_id: Uuid::new_v4().to_string(),
@@ -1906,6 +1927,7 @@ mod test {
                     async { Ok(sample_spawn_response(44, 20)) }
                 }
             },
+            |_| async { panic!("set_tab_title should not be used for split agent spawn") },
             {
                 let set_calls = Rc::clone(&set_calls);
                 move |request| {
@@ -1944,6 +1966,7 @@ mod test {
     #[test]
     fn spawn_new_tab_in_existing_window_sends_current_pane_context() {
         let spawn_calls = Rc::new(RefCell::new(vec![]));
+        let title_calls = Rc::new(RefCell::new(vec![]));
         let set_calls = Rc::new(RefCell::new(vec![]));
         let command = SpawnAgentCommand {
             name: "reviewer".to_string(),
@@ -1985,6 +2008,13 @@ mod test {
             },
             |_| async { panic!("split_pane should not be used for new-tab agent spawn") },
             {
+                let title_calls = Rc::clone(&title_calls);
+                move |request| {
+                    title_calls.borrow_mut().push(request);
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            {
                 let set_calls = Rc::clone(&set_calls);
                 move |request| {
                     set_calls.borrow_mut().push(request);
@@ -2004,6 +2034,11 @@ mod test {
         assert_eq!(spawn_calls[0].current_pane_id, Some(30));
         assert_eq!(spawn_calls[0].size, root_size);
         assert_eq!(spawn_calls[0].command_dir.as_deref(), Some("/tmp/pane-30"));
+
+        let title_calls = title_calls.borrow();
+        assert_eq!(title_calls.len(), 1);
+        assert_eq!(title_calls[0].tab_id, 20);
+        assert_eq!(title_calls[0].title, "reviewer");
 
         let set_calls = set_calls.borrow();
         assert_eq!(set_calls.len(), 1);
@@ -2041,6 +2076,7 @@ mod test {
             |_| async { panic!("resolve_pane_id should not be called") },
             |_| async { Ok(sample_spawn_response(77, 22)) },
             |_| async { panic!("split_pane should not be used") },
+            |_| async { Ok(UnitResponse {}) },
             |_| async { Err(anyhow::anyhow!("metadata attach failed")) },
             {
                 let kill_calls = Rc::clone(&kill_calls);
@@ -2062,9 +2098,62 @@ mod test {
     }
 
     #[test]
+    fn spawn_cleans_up_spawned_pane_when_initial_tab_title_fails() {
+        let kill_calls = Rc::new(RefCell::new(vec![]));
+        let command = SpawnAgentCommand {
+            name: "reviewer".to_string(),
+            split: false,
+            pane_id: None,
+            new_window: true,
+            workspace: Some("agents".to_string()),
+            horizontal: false,
+            left: false,
+            right: false,
+            top: false,
+            bottom: false,
+            cells: None,
+            percent: None,
+            repo: None,
+            worktree: WorktreeMode::None,
+            branch: None,
+            cwd: None,
+            cmd: "codex".to_string(),
+        };
+
+        let err = promise::spawn::block_on(command.run_with(
+            &ConfigHandle::default_config(),
+            || async { Ok(ListAgentsResponse { agents: vec![] }) },
+            || async { panic!("list_panes should not be used for new-window agent spawn") },
+            || async { panic!("list_agents_after_set should not be used on failure") },
+            |_| async { panic!("resolve_pane_id should not be called") },
+            |_| async { Ok(sample_spawn_response(77, 22)) },
+            |_| async { panic!("split_pane should not be used") },
+            |_| async { Err(anyhow::anyhow!("title set failed")) },
+            |_| async { panic!("set_agent_metadata should not be used on title failure") },
+            {
+                let kill_calls = Rc::clone(&kill_calls);
+                move |request| {
+                    kill_calls.borrow_mut().push(request);
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            |cmd, agents, current_cwd| cmd.prepare_launch(agents, current_cwd),
+        ))
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("spawned pane but failed to set initial tab title"));
+        let kill_calls = kill_calls.borrow();
+        assert_eq!(kill_calls.len(), 1);
+        assert_eq!(kill_calls[0].pane_id, 77);
+    }
+
+    #[test]
     fn spawn_with_auto_worktree_creates_and_registers_worktree() {
         let (_temp, repo_root) = init_git_repo();
         let spawn_calls = Rc::new(RefCell::new(vec![]));
+        let title_calls = Rc::new(RefCell::new(vec![]));
         let set_calls = Rc::new(RefCell::new(vec![]));
         let command = SpawnAgentCommand {
             name: "scrape-api".to_string(),
@@ -2106,6 +2195,13 @@ mod test {
             },
             |_| async { panic!("split_pane should not be used") },
             {
+                let title_calls = Rc::clone(&title_calls);
+                move |request| {
+                    title_calls.borrow_mut().push(request);
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            {
                 let set_calls = Rc::clone(&set_calls);
                 move |request| {
                     set_calls.borrow_mut().push(request);
@@ -2130,6 +2226,11 @@ mod test {
             spawn_calls[0].command_dir.as_deref(),
             Some(worktree_string.as_str())
         );
+
+        let title_calls = title_calls.borrow();
+        assert_eq!(title_calls.len(), 1);
+        assert_eq!(title_calls[0].tab_id, 30);
+        assert_eq!(title_calls[0].title, "scrape-api");
 
         let set_calls = set_calls.borrow();
         assert_eq!(set_calls.len(), 1);
