@@ -50,6 +50,13 @@ for bin in wezterm wezterm-gui wezterm-mux-server; do
     echo "  $bin -> $prefix/$bin"
 done
 
+cat >"$prefix/agent" <<EOF
+#!/usr/bin/env bash
+exec "$prefix/wezterm" cli agent "\$@"
+EOF
+chmod 755 "$prefix/agent"
+echo "  agent -> $prefix/agent"
+
 echo ""
 echo "Installed versions:"
 "$prefix/wezterm" --version
