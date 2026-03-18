@@ -1312,7 +1312,7 @@ async fn domain_spawn_v2(spawn: SpawnV2, client_id: Option<Arc<ClientId>>) -> an
             spawn.command,
             spawn.command_dir,
             spawn.size,
-            None, // optional current pane_id
+            spawn.current_pane_id,
             spawn.workspace,
             None, // optional gui window position
         )

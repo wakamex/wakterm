@@ -463,7 +463,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 55;
+pub const CODEC_VERSION: usize = 56;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -780,6 +780,9 @@ pub struct SpawnV2 {
     pub domain: config::keyassignment::SpawnTabDomain,
     /// If None, create a new window for this new tab
     pub window_id: Option<WindowId>,
+    /// Optional explicit source pane for resolving existing-window
+    /// context when the caller does not have per-client view state.
+    pub current_pane_id: Option<PaneId>,
     pub command: Option<CommandBuilder>,
     pub command_dir: Option<String>,
     /// The authoritative target tab size supplied by the caller.

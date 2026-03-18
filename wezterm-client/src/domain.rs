@@ -913,6 +913,7 @@ impl Domain for ClientDomain {
             .spawn_v2(SpawnV2 {
                 domain: SpawnTabDomain::DefaultDomain,
                 window_id: inner.local_to_remote_window(window),
+                current_pane_id: None,
                 size,
                 command,
                 command_dir,

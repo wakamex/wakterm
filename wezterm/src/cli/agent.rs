@@ -319,6 +319,7 @@ impl SpawnAgentCommand {
             spawn_v2(SpawnV2 {
                 domain: SpawnTabDomain::DefaultDomain,
                 window_id,
+                current_pane_id: context_pane_id,
                 command: Some(prepared.command.clone()),
                 command_dir: Some(prepared.command_dir.clone()),
                 size,
@@ -1930,6 +1931,75 @@ mod test {
         assert_eq!(set_calls[0].metadata.declared_cwd, "/tmp/pane-30");
         assert_eq!(set_calls[0].metadata.launch_cmd, "codex --model gpt-5");
         assert!(!set_calls[0].metadata.managed_checkout);
+    }
+
+    #[test]
+    fn spawn_new_tab_in_existing_window_sends_current_pane_context() {
+        let spawn_calls = Rc::new(RefCell::new(vec![]));
+        let set_calls = Rc::new(RefCell::new(vec![]));
+        let command = SpawnAgentCommand {
+            name: "reviewer".to_string(),
+            split: false,
+            pane_id: Some(30),
+            new_window: false,
+            workspace: None,
+            horizontal: false,
+            left: false,
+            right: false,
+            top: false,
+            bottom: false,
+            cells: None,
+            percent: None,
+            repo: None,
+            worktree: WorktreeMode::None,
+            branch: None,
+            cwd: None,
+            cmd: "codex".to_string(),
+        };
+        let root_size = size(80, 24);
+
+        let agent = promise::spawn::block_on(command.run_with(
+            &ConfigHandle::default_config(),
+            || async { Ok(ListAgentsResponse { agents: vec![] }) },
+            || async { Ok(panes_response(vec![leaf(10, 20, 30)])) },
+            || async {
+                Ok(ListAgentsResponse {
+                    agents: vec![sample_agent(44, "reviewer")],
+                })
+            },
+            |pane_id| async move { Ok(pane_id.expect("pane id")) },
+            {
+                let spawn_calls = Rc::clone(&spawn_calls);
+                move |request| {
+                    spawn_calls.borrow_mut().push(request);
+                    async { Ok(sample_spawn_response(44, 20)) }
+                }
+            },
+            |_| async { panic!("split_pane should not be used for new-tab agent spawn") },
+            {
+                let set_calls = Rc::clone(&set_calls);
+                move |request| {
+                    set_calls.borrow_mut().push(request);
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            |_| async { panic!("kill_pane should not be called on success") },
+            |cmd, agents, current_cwd| cmd.prepare_launch(agents, current_cwd),
+        ))
+        .unwrap();
+
+        assert_eq!(agent.pane_id, 44);
+
+        let spawn_calls = spawn_calls.borrow();
+        assert_eq!(spawn_calls.len(), 1);
+        assert_eq!(spawn_calls[0].window_id, Some(10));
+        assert_eq!(spawn_calls[0].current_pane_id, Some(30));
+        assert_eq!(spawn_calls[0].size, root_size);
+        assert_eq!(spawn_calls[0].command_dir.as_deref(), Some("/tmp/pane-30"));
+
+        let set_calls = set_calls.borrow();
+        assert_eq!(set_calls.len(), 1);
+        assert_eq!(set_calls[0].pane_id, 44);
     }
 
     #[test]
