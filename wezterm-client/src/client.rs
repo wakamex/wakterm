@@ -78,6 +78,62 @@ pub struct IncompatibleVersionError {
     pub codec_vers: usize,
 }
 
+fn is_likely_version_probe_decode_mismatch(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        let text = cause.to_string();
+        text.contains("Invalid Bool Encoding")
+            || text.contains("InvalidTagEncoding")
+            || text.contains("invalid value")
+            || text.contains("invalid type")
+            || text.contains("invalid length")
+            || text.contains("missing field")
+            || text.contains("unknown variant")
+    })
+}
+
+fn format_version_probe_error(err: &anyhow::Error) -> String {
+    if err.root_cause().is::<Timeout>() {
+        "Timed out while parsing the response from the server. \
+        This may be due to network connectivity issues"
+            .to_string()
+    } else if err.root_cause().is::<CorruptResponse>() {
+        "Received an implausible and likely corrupt response from \
+        the server. This can happen if the remote host outputs \
+        to stdout prior to running commands. \
+        Check your shell startup!"
+            .to_string()
+    } else if err.root_cause().is::<ChannelSendError>() {
+        "Internal channel was closed prior to sending request. \
+        This may indicate that the remote host output invalid data \
+        to stdout prior to running the requested command. \
+        Check your shell startup!"
+            .to_string()
+    } else if is_likely_version_probe_decode_mismatch(err) {
+        format!(
+            "Please install the same version of wezterm on both the client and server!\n\
+             This client is {} (codec version {}).\n\
+             While asking the server for its version, the first protocol reply \
+             could not be decoded: {err:#}\n\
+             This usually means that an older or otherwise mismatched mux server \
+             is still running. Restart or redeploy the mux server and try again.\n\
+             It can also happen if the remote host outputs to stdout prior to \
+             running commands; check your shell startup.",
+            config::wezterm_version(),
+            CODEC_VERSION,
+        )
+    } else {
+        format!(
+            "Please install the same version of wezterm on both \
+             the client and server! \
+             The server reported error '{err}' while being asked for its \
+             version.  This likely means that the server is older \
+             than the client, but it could also happen if the remote \
+             host outputs to stdout prior to running commands. \
+             Check your shell startup!",
+        )
+    }
+}
+
 macro_rules! rpc {
     ($method_name:ident, $request_type:ident, $response_type:ident) => {
         pub async fn $method_name(&self, pdu: $request_type) -> anyhow::Result<$response_type> {
@@ -1213,33 +1269,7 @@ impl Client {
             }
             Err(err) => {
                 log::trace!("{:?}", err);
-                let msg = if err.root_cause().is::<Timeout>() {
-                    "Timed out while parsing the response from the server. \
-                    This may be due to network connectivity issues"
-                        .to_string()
-                } else if err.root_cause().is::<CorruptResponse>() {
-                    "Received an implausible and likely corrupt response from \
-                    the server. This can happen if the remote host outputs \
-                    to stdout prior to running commands. \
-                    Check your shell startup!"
-                        .to_string()
-                } else if err.root_cause().is::<ChannelSendError>() {
-                    "Internal channel was closed prior to sending request. \
-                    This may indicate that the remote host output invalid data \
-                    to stdout prior to running the requested command. \
-                    Check your shell startup!"
-                        .to_string()
-                } else {
-                    format!(
-                        "Please install the same version of wezterm on both \
-                     the client and server! \
-                     The server reported error '{err}' while being asked for its \
-                     version.  This likely means that the server is older \
-                     than the client, but it could also happen if the remote \
-                     host outputs to stdout prior to running commands. \
-                     Check your shell startup!",
-                    )
-                };
+                let msg = format_version_probe_error(&err);
                 ui.output_str(&msg);
                 bail!("{}", msg);
             }
@@ -1446,5 +1476,25 @@ impl Client {
             is_reconnectable: false,
             is_local: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_decode_mismatch_on_version_probe() {
+        let err = anyhow!("Error while decoding response pdu: Invalid Bool Encoding");
+        assert!(is_likely_version_probe_decode_mismatch(&err));
+    }
+
+    #[test]
+    fn version_probe_message_mentions_stale_mux_server() {
+        let err = anyhow!("Error while decoding response pdu: Invalid Bool Encoding");
+        let msg = format_version_probe_error(&err);
+        assert!(msg.contains("could not be decoded"));
+        assert!(msg.contains("mismatched mux server"));
+        assert!(msg.contains("Restart or redeploy the mux server"));
     }
 }
