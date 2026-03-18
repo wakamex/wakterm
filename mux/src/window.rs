@@ -45,6 +45,14 @@ impl Window {
         }
     }
 
+    /// Update the window title from mirrored remote state without
+    /// notifying the mux as though it were a local change.
+    pub fn set_title_from_remote(&mut self, title: &str) {
+        if self.title != title {
+            self.title = title.to_string();
+        }
+    }
+
     pub fn get_title(&self) -> &str {
         &self.title
     }

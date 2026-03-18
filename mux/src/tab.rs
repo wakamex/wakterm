@@ -750,6 +750,16 @@ impl Tab {
         }
     }
 
+    /// Update the tab title from mirrored remote state without echoing it back
+    /// into the mux as a local user action.
+    pub fn set_title_from_remote(&self, title: &str) {
+        let mut inner = self.inner.lock();
+        inner.title_is_user_set = true;
+        if inner.title != title {
+            inner.title = title.to_string();
+        }
+    }
+
     /// Set the tab title from a terminal escape sequence (OSC).
     /// Ignored if the user has explicitly set a title.
     pub fn set_title_from_terminal(&self, title: &str) {
@@ -2832,15 +2842,16 @@ mod test {
         assert_eq!(80, panes[0].width);
         assert_eq!(24, panes[0].height);
 
-        assert!(tab
-            .compute_split_size(
+        assert!(
+            tab.compute_split_size(
                 1,
                 SplitRequest {
                     direction: SplitDirection::Horizontal,
                     ..Default::default()
                 }
             )
-            .is_none());
+            .is_none()
+        );
 
         let horz_size = tab
             .compute_split_size(

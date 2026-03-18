@@ -53,6 +53,12 @@ pub enum AgentTurnState {
     WaitingOnUser,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentTabBadgeState {
+    pub waiting_on_user: bool,
+    pub needs_attention: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentRuntimeSnapshot {
     pub harness: AgentHarness,

@@ -368,6 +368,7 @@ impl SpawnAgentCommand {
                 let _ = set_tab_title(TabTitleChanged {
                     tab_id: pane_context.tab_id,
                     title: agent_name.clone(),
+                    badge: Default::default(),
                 })
                 .await;
             }
@@ -434,6 +435,7 @@ impl SpawnAgentCommand {
             if let Err(err) = set_tab_title(TabTitleChanged {
                 tab_id: spawned.tab_id,
                 title: agent_name.clone(),
+                badge: Default::default(),
             })
             .await
             {
@@ -1668,7 +1670,7 @@ mod test {
         ListPanesResponse {
             tabs: panes,
             tab_titles: vec!["tab".to_string()],
-            display_tab_titles: vec!["tab".to_string()],
+            tab_badges: vec![Default::default()],
             window_titles: HashMap::new(),
             client_window_view_state: HashMap::<mux::window::WindowId, ClientWindowViewState>::new(
             ),
@@ -2637,7 +2639,7 @@ mod test {
                 Ok(ListPanesResponse {
                     tabs: vec![leaf(10, 20, 30)],
                     tab_titles: vec!["".into()],
-                    display_tab_titles: vec!["".into()],
+                    tab_badges: vec![Default::default()],
                     window_titles: HashMap::new(),
                     client_window_view_state: HashMap::new(),
                 })
@@ -2753,7 +2755,7 @@ mod test {
                 Ok(ListPanesResponse {
                     tabs: vec![leaf(10, 20, 30)],
                     tab_titles: vec!["existing".into()],
-                    display_tab_titles: vec!["existing".into()],
+                    tab_badges: vec![Default::default()],
                     window_titles: HashMap::new(),
                     client_window_view_state: HashMap::new(),
                 })
@@ -2828,7 +2830,7 @@ mod test {
                 Ok(ListPanesResponse {
                     tabs: vec![leaf(10, 20, 30)],
                     tab_titles: vec!["existing".into()],
-                    display_tab_titles: vec!["existing".into()],
+                    tab_badges: vec![Default::default()],
                     window_titles: HashMap::new(),
                     client_window_view_state: HashMap::new(),
                 })

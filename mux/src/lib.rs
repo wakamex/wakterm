@@ -1,6 +1,6 @@
 use crate::agent::{
-    AgentMetadata, AgentRuntimeSnapshot, AgentSnapshot, derive_runtime_status, infer_harness,
-    prime_runtime_for_new_agent, refresh_runtime_from_harness,
+    AgentMetadata, AgentRuntimeSnapshot, AgentSnapshot, AgentTabBadgeState, derive_runtime_status,
+    infer_harness, prime_runtime_for_new_agent, refresh_runtime_from_harness,
 };
 use crate::client::{ClientId, ClientInfo, ClientViewId, ClientViewState, ClientWindowViewState};
 use crate::pane::{CachePolicy, Pane, PaneId};
@@ -574,9 +574,6 @@ impl Mux {
         let pane = self
             .get_pane(pane_id)
             .ok_or_else(|| anyhow!("pane {} is invalid", pane_id))?;
-        let old_tab_title = self
-            .resolve_pane_id(pane_id)
-            .map(|(_, _, tab_id)| self.effective_tab_title(tab_id));
         let foreground_process_name = pane.get_foreground_process_name(CachePolicy::AllowStale);
         let tty_name = pane.tty_name();
         let terminal_progress = pane.get_progress();
@@ -620,17 +617,11 @@ impl Mux {
         drop(names);
 
         self.refresh_agent_runtime_for_pane(pane_id, true);
-        if let Some((_, _, tab_id)) = self.resolve_pane_id(pane_id) {
-            self.notify_tab_title_if_changed(tab_id, old_tab_title);
-        }
         Ok(())
     }
 
     pub fn clear_agent_metadata(&self, pane_id: PaneId) -> Option<Arc<AgentMetadata>> {
-        let (tab_id, old_tab_title) = self
-            .resolve_pane_id(pane_id)
-            .map(|(_, _, tab_id)| (Some(tab_id), Some(self.effective_tab_title(tab_id))))
-            .unwrap_or((None, None));
+        let tab_id = self.resolve_pane_id(pane_id).map(|(_, _, tab_id)| tab_id);
         let metadata = {
             let mut metadata_by_pane = self.agent_metadata_by_pane.write();
             metadata_by_pane.remove(&pane_id)?
@@ -641,7 +632,7 @@ impl Mux {
             seen.remove(&pane_id);
         }
         if let Some(tab_id) = tab_id {
-            self.notify_tab_title_if_changed(tab_id, old_tab_title);
+            self.notify_tab_title_changed(tab_id);
         }
         Some(metadata)
     }
@@ -700,8 +691,6 @@ impl Mux {
         let Some((_, _, tab_id)) = self.resolve_pane_id(pane_id) else {
             return;
         };
-        let old_tab_title = notify_title.then(|| self.effective_tab_title(tab_id));
-
         let mut runtime = self
             .agent_runtime_by_pane
             .read()
@@ -722,7 +711,7 @@ impl Mux {
         self.agent_runtime_by_pane.write().insert(pane_id, runtime);
 
         if notify_title {
-            self.notify_tab_title_if_changed(tab_id, old_tab_title);
+            self.notify_tab_title_changed(tab_id);
         }
     }
 
@@ -740,14 +729,11 @@ impl Mux {
         }
     }
 
-    fn notify_tab_title_if_changed(&self, tab_id: TabId, previous: Option<String>) {
-        let current = self.effective_tab_title(tab_id);
-        if previous.as_deref() != Some(current.as_str()) {
-            self.notify(MuxNotification::TabTitleChanged {
-                tab_id,
-                title: current,
-            });
-        }
+    fn notify_tab_title_changed(&self, tab_id: TabId) {
+        self.notify(MuxNotification::TabTitleChanged {
+            tab_id,
+            title: self.raw_tab_title(tab_id),
+        });
     }
 
     fn agent_attention_seen_at_for_view(
@@ -774,19 +760,12 @@ impl Mux {
             return;
         };
 
-        let previous = self.effective_tab_title_for_view(view_id, tab_id);
         self.agent_attention_seen_by_view
             .write()
             .entry(view_id.clone())
             .or_default()
             .insert(pane_id, completed_at);
-        let current = self.effective_tab_title_for_view(view_id, tab_id);
-        if previous != current {
-            self.notify(MuxNotification::TabTitleChanged {
-                tab_id,
-                title: current,
-            });
-        }
+        self.notify_tab_title_changed(tab_id);
     }
 
     fn agent_turn_needs_attention_for_view(
@@ -862,38 +841,68 @@ impl Mux {
             .unwrap_or_default()
     }
 
-    fn should_badge_tab_for_agents(&self, tab_id: TabId, view_id: Option<&ClientViewId>) -> bool {
+    fn tab_badge_state_for_agents(
+        &self,
+        tab_id: TabId,
+        view_id: Option<&ClientViewId>,
+    ) -> AgentTabBadgeState {
         let Some(tab) = self.get_tab(tab_id) else {
-            return false;
+            return AgentTabBadgeState::default();
         };
-        let badge_mode = Self::agent_tab_badge_mode();
-        if matches!(badge_mode, AgentTabBadgeMode::Off) {
-            return false;
-        }
         let runtime_by_pane = self.agent_runtime_by_pane.read();
+        let mut badge = AgentTabBadgeState::default();
         for positioned in tab.iter_panes_ignoring_zoom() {
             let pane_id = positioned.pane.pane_id();
             if self.get_agent_metadata_for_pane(pane_id).is_none() {
                 continue;
             }
-            if runtime_by_pane
-                .get(&pane_id)
-                .map(|runtime| match badge_mode {
-                    AgentTabBadgeMode::Off => false,
-                    AgentTabBadgeMode::Turn => Self::agent_waiting_on_user(runtime),
-                    AgentTabBadgeMode::Attention => match view_id {
-                        Some(view_id) => {
-                            self.agent_turn_needs_attention_for_view(view_id, pane_id, runtime)
-                        }
-                        None => Self::agent_waiting_on_user(runtime),
-                    },
-                })
-                .unwrap_or(false)
-            {
-                return true;
+            if let Some(runtime) = runtime_by_pane.get(&pane_id) {
+                if Self::agent_waiting_on_user(runtime) {
+                    badge.waiting_on_user = true;
+                }
+                let needs_attention = match view_id {
+                    Some(view_id) => {
+                        self.agent_turn_needs_attention_for_view(view_id, pane_id, runtime)
+                    }
+                    None => Self::agent_waiting_on_user(runtime),
+                };
+                if needs_attention {
+                    badge.needs_attention = true;
+                }
+                if badge.waiting_on_user && badge.needs_attention {
+                    break;
+                }
             }
         }
-        false
+        badge
+    }
+
+    pub fn tab_badge_state_for_view(
+        &self,
+        view_id: &ClientViewId,
+        tab_id: TabId,
+    ) -> AgentTabBadgeState {
+        self.tab_badge_state_for_agents(tab_id, Some(view_id))
+    }
+
+    pub fn tab_badge_state_for_current_identity(&self, tab_id: TabId) -> AgentTabBadgeState {
+        match self.active_view_id() {
+            Some(view_id) => self.tab_badge_state_for_view(view_id.as_ref(), tab_id),
+            None => self.tab_badge_state_for_agents(tab_id, None),
+        }
+    }
+
+    fn should_badge_tab_for_agents(&self, tab_id: TabId, view_id: Option<&ClientViewId>) -> bool {
+        let badge_mode = Self::agent_tab_badge_mode();
+        if matches!(badge_mode, AgentTabBadgeMode::Off) {
+            return false;
+        }
+        let badge = self.tab_badge_state_for_agents(tab_id, view_id);
+        match badge_mode {
+            AgentTabBadgeMode::Off => false,
+            AgentTabBadgeMode::Turn => badge.waiting_on_user,
+            AgentTabBadgeMode::Attention => badge.needs_attention,
+        }
     }
 
     pub fn effective_tab_title_for_view(&self, view_id: &ClientViewId, tab_id: TabId) -> String {

@@ -245,10 +245,14 @@ impl SessionHandler {
         false
     }
 
-    pub fn tab_title_for_client(&self, tab_id: TabId) -> String {
+    pub fn tab_title_for_client(&self, tab_id: TabId) -> codec::TabTitleChanged {
         let mux = Mux::get();
         let _identity = mux.with_identity(self.client_id.clone());
-        mux.effective_tab_title(tab_id)
+        codec::TabTitleChanged {
+            tab_id,
+            title: mux.raw_tab_title(tab_id),
+            badge: mux.tab_badge_state_for_current_identity(tab_id),
+        }
     }
 
     pub(crate) fn per_pane(&mut self, pane_id: PaneId) -> Arc<Mutex<PerPane>> {
@@ -444,7 +448,7 @@ impl SessionHandler {
                             let view_state = mux.client_window_view_state_for_current_identity();
                             let mut tabs = vec![];
                             let mut tab_titles = vec![];
-                            let mut display_tab_titles = vec![];
+                            let mut tab_badges = vec![];
                             let mut window_titles = HashMap::new();
                             for window_id in mux.iter_windows().into_iter() {
                                 let window = mux.get_window(window_id).unwrap();
@@ -463,14 +467,16 @@ impl SessionHandler {
                                     mux.annotate_pane_tree_with_agent_metadata(&mut tree);
                                     tabs.push(tree);
                                     tab_titles.push(mux.raw_tab_title(tab.tab_id()));
-                                    display_tab_titles.push(mux.effective_tab_title(tab.tab_id()));
+                                    tab_badges.push(
+                                        mux.tab_badge_state_for_current_identity(tab.tab_id()),
+                                    );
                                 }
                             }
-                            log::trace!("ListPanes {tabs:#?} {display_tab_titles:?}");
+                            log::trace!("ListPanes {tabs:#?} {tab_badges:?}");
                             Ok(Pdu::ListPanesResponse(ListPanesResponse {
                                 tabs,
                                 tab_titles,
-                                display_tab_titles,
+                                tab_badges,
                                 window_titles,
                                 client_window_view_state: view_state,
                             }))
@@ -1055,7 +1061,7 @@ impl SessionHandler {
                 })
                 .detach();
             }
-            Pdu::TabTitleChanged(TabTitleChanged { tab_id, title }) => {
+            Pdu::TabTitleChanged(TabTitleChanged { tab_id, title, .. }) => {
                 spawn_into_main_thread(async move {
                     catch(
                         move || {
@@ -1875,9 +1881,9 @@ mod test {
         assert!(response.tab_titles.iter().any(|title| title == "scrape"));
         assert!(
             response
-                .display_tab_titles
+                .tab_badges
                 .iter()
-                .any(|title| title == "🤖 scrape")
+                .any(|badge| badge.waiting_on_user && badge.needs_attention)
         );
     }
 
