@@ -3483,6 +3483,7 @@ dependencies = [
  "procinfo",
  "promise",
  "rangeset",
+ "rusqlite",
  "serde",
  "serde_json",
  "serial2",

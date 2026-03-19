@@ -2,7 +2,8 @@ use crate::domain::DomainId;
 use crate::pane::PaneId;
 use crate::tab::TabId;
 use crate::window::WindowId;
-use chrono::{DateTime, Datelike, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -299,7 +300,16 @@ pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata
             runtime.session_path.as_deref(),
             runtime.observer_started_at,
         ),
-        AgentHarness::Gemini | AgentHarness::Opencode => Ok(None),
+        AgentHarness::Gemini => observe_gemini(
+            cwd,
+            runtime.session_path.as_deref(),
+            runtime.observer_started_at,
+        ),
+        AgentHarness::Opencode => observe_opencode(
+            cwd,
+            runtime.session_path.as_deref(),
+            runtime.observer_started_at,
+        ),
         AgentHarness::Unknown => Ok(None),
     };
 
@@ -374,6 +384,7 @@ struct HarnessObservationDetails {
     progress_summary: Option<String>,
     harness_mode: Option<String>,
     turn_phase: Option<String>,
+    updated_at: Option<DateTime<Utc>>,
     turn_state: AgentTurnState,
     last_turn_completed_at: Option<DateTime<Utc>>,
 }
@@ -405,7 +416,7 @@ fn observe_claude(
                     progress_summary: details.progress_summary,
                     harness_mode: details.harness_mode,
                     turn_phase: details.turn_phase,
-                    updated_at: Some(modified_at),
+                    updated_at: details.updated_at.or(Some(modified_at)),
                     turn_state: details.turn_state,
                     last_turn_completed_at: details.last_turn_completed_at,
                 }));
@@ -448,7 +459,7 @@ fn observe_claude(
         progress_summary: details.progress_summary,
         harness_mode: details.harness_mode,
         turn_phase: details.turn_phase,
-        updated_at: Some(modified_at),
+        updated_at: details.updated_at.or(Some(modified_at)),
         turn_state: details.turn_state,
         last_turn_completed_at: details.last_turn_completed_at,
     }))
@@ -477,7 +488,7 @@ fn observe_codex(
                     progress_summary: details.progress_summary,
                     harness_mode: details.harness_mode,
                     turn_phase: details.turn_phase,
-                    updated_at: Some(modified_at),
+                    updated_at: details.updated_at.or(Some(modified_at)),
                     turn_state: details.turn_state,
                     last_turn_completed_at: details.last_turn_completed_at,
                 }));
@@ -536,10 +547,130 @@ fn observe_codex(
         progress_summary: details.progress_summary,
         harness_mode: details.harness_mode,
         turn_phase: details.turn_phase,
-        updated_at: Some(modified_at),
+        updated_at: details.updated_at.or(Some(modified_at)),
         turn_state: details.turn_state,
         last_turn_completed_at: details.last_turn_completed_at,
     }))
+}
+
+fn observe_gemini(
+    cwd: &str,
+    preferred_session: Option<&str>,
+    updated_after: Option<DateTime<Utc>>,
+) -> anyhow::Result<Option<HarnessObservation>> {
+    let Some(root) = gemini_root() else {
+        return Ok(None);
+    };
+    let Some(project_id) = gemini_project_id(&root, cwd)? else {
+        return Ok(None);
+    };
+    let chats_dir = root.join("tmp").join(project_id).join("chats");
+    if !chats_dir.is_dir() {
+        return Ok(None);
+    }
+
+    if let Some(preferred_session) = preferred_session {
+        let preferred_path = Path::new(preferred_session);
+        if preferred_path.is_file() {
+            let modified_at = DateTime::<Utc>::from(fs::metadata(preferred_path)?.modified()?);
+            if updated_after
+                .map(|cutoff| modified_at >= cutoff)
+                .unwrap_or(true)
+            {
+                let details = read_last_gemini_observation(preferred_path)?;
+                return Ok(Some(HarnessObservation {
+                    session_path: Some(preferred_path.to_string_lossy().to_string()),
+                    progress_summary: details.progress_summary,
+                    harness_mode: details.harness_mode,
+                    turn_phase: details.turn_phase,
+                    updated_at: details.updated_at.or(Some(modified_at)),
+                    turn_state: details.turn_state,
+                    last_turn_completed_at: details.last_turn_completed_at,
+                }));
+            }
+        }
+    }
+
+    let prefer_earliest = updated_after.is_some();
+    let mut selected: Option<(PathBuf, DateTime<Utc>)> = None;
+    for entry in fs::read_dir(&chats_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.starts_with("session-") && name.ends_with(".json"))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let modified_at = DateTime::<Utc>::from(entry.metadata()?.modified()?);
+        if updated_after
+            .map(|cutoff| modified_at < cutoff)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        match &selected {
+            Some((_, existing_modified))
+                if (prefer_earliest && *existing_modified <= modified_at)
+                    || (!prefer_earliest && *existing_modified >= modified_at) => {}
+            _ => selected = Some((path, modified_at)),
+        }
+    }
+
+    let Some((session, modified_at)) = selected else {
+        return Ok(None);
+    };
+    let details = read_last_gemini_observation(&session)?;
+    Ok(Some(HarnessObservation {
+        session_path: Some(session.to_string_lossy().to_string()),
+        progress_summary: details.progress_summary,
+        harness_mode: details.harness_mode,
+        turn_phase: details.turn_phase,
+        updated_at: details.updated_at.or(Some(modified_at)),
+        turn_state: details.turn_state,
+        last_turn_completed_at: details.last_turn_completed_at,
+    }))
+}
+
+fn observe_opencode(
+    cwd: &str,
+    preferred_session: Option<&str>,
+    updated_after: Option<DateTime<Utc>>,
+) -> anyhow::Result<Option<HarnessObservation>> {
+    let Some(db_path) = opencode_db_path() else {
+        return Ok(None);
+    };
+    if !db_path.is_file() {
+        return Ok(None);
+    }
+
+    let connection =
+        Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(std::time::Duration::from_secs(2))?;
+
+    if let Some(preferred_session) = preferred_session {
+        if let Some((preferred_db_path, preferred_session_id)) =
+            parse_opencode_session_path(preferred_session)
+        {
+            if preferred_db_path == db_path {
+                if let Some(observed) = read_last_opencode_observation(
+                    &connection,
+                    &db_path,
+                    &preferred_session_id,
+                    updated_after,
+                )? {
+                    return Ok(Some(observed));
+                }
+            }
+        }
+    }
+
+    let Some((session_id, _)) = select_opencode_session(&connection, cwd, updated_after)? else {
+        return Ok(None);
+    };
+    read_last_opencode_observation(&connection, &db_path, &session_id, updated_after)
 }
 
 fn claude_sessions_root() -> Option<PathBuf> {
@@ -552,6 +683,25 @@ fn codex_sessions_root() -> Option<PathBuf> {
     std::env::var_os("WEZTERM_AGENT_CODEX_DIR")
         .map(PathBuf::from)
         .or_else(|| home_dir().map(|home| home.join(".codex").join("sessions")))
+}
+
+fn gemini_root() -> Option<PathBuf> {
+    std::env::var_os("WEZTERM_AGENT_GEMINI_DIR")
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|home| home.join(".gemini")))
+}
+
+fn opencode_db_path() -> Option<PathBuf> {
+    std::env::var_os("WEZTERM_AGENT_OPENCODE_DB")
+        .map(PathBuf::from)
+        .or_else(|| {
+            home_dir().map(|home| {
+                home.join(".local")
+                    .join("share")
+                    .join("opencode")
+                    .join("opencode.db")
+            })
+        })
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -606,8 +756,299 @@ fn parse_record_timestamp(record: &Value) -> Option<DateTime<Utc>> {
     record
         .get("timestamp")
         .and_then(Value::as_str)
-        .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
+        .and_then(parse_rfc3339_timestamp)
+}
+
+fn parse_rfc3339_timestamp(ts: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(ts)
+        .ok()
         .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn parse_unix_millis(millis: i64) -> Option<DateTime<Utc>> {
+    Utc.timestamp_millis_opt(millis).single()
+}
+
+fn cwd_lookup_variants(cwd: &str) -> Vec<String> {
+    let mut candidates = vec![cwd.to_string()];
+    if cwd != "/" {
+        let trimmed = cwd.trim_end_matches('/');
+        if !trimmed.is_empty() && trimmed != cwd {
+            candidates.push(trimmed.to_string());
+        }
+    }
+    candidates
+}
+
+fn gemini_project_id(root: &Path, cwd: &str) -> anyhow::Result<Option<String>> {
+    let registry_path = root.join("projects.json");
+    if !registry_path.is_file() {
+        return Ok(None);
+    }
+
+    let registry: Value = serde_json::from_reader(fs::File::open(registry_path)?)?;
+    let Some(projects) = registry.get("projects").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+
+    for candidate in cwd_lookup_variants(cwd) {
+        if let Some(project_id) = projects.get(&candidate).and_then(Value::as_str) {
+            let project_id = project_id.trim();
+            if !project_id.is_empty() {
+                return Ok(Some(project_id.to_string()));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn extract_message_text(content: &Value) -> Option<String> {
+    if let Some(text) = content.as_str() {
+        let text = text.trim();
+        if !text.is_empty() {
+            return Some(text.to_string());
+        }
+        return None;
+    }
+
+    let Some(blocks) = content.as_array() else {
+        return None;
+    };
+    let mut parts = vec![];
+    for block in blocks {
+        if let Some(text) = block.get("text").and_then(Value::as_str) {
+            let text = text.trim();
+            if !text.is_empty() {
+                parts.push(text.to_string());
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
+fn read_last_gemini_observation(path: &Path) -> anyhow::Result<HarnessObservationDetails> {
+    let record: Value = serde_json::from_reader(fs::File::open(path)?)?;
+    let mut summary = None;
+    let mut last_user_at = None;
+    let mut last_assistant_at = None;
+    let updated_at = record
+        .get("lastUpdated")
+        .and_then(Value::as_str)
+        .and_then(parse_rfc3339_timestamp);
+
+    if let Some(messages) = record.get("messages").and_then(Value::as_array) {
+        for message in messages {
+            let timestamp = message
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_rfc3339_timestamp);
+            match message.get("type").and_then(Value::as_str) {
+                Some("user") => {
+                    last_user_at = timestamp.or(last_user_at);
+                }
+                Some("gemini") => {
+                    last_assistant_at = timestamp.or(last_assistant_at);
+                    if let Some(content) = message.get("content").and_then(extract_message_text) {
+                        summary = Some(truncate_summary(&content));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let (turn_state, last_turn_completed_at) = derive_turn_state(last_user_at, last_assistant_at);
+    Ok(HarnessObservationDetails {
+        progress_summary: summary,
+        harness_mode: None,
+        turn_phase: None,
+        updated_at: updated_at.or(last_assistant_at).or(last_user_at),
+        turn_state,
+        last_turn_completed_at,
+    })
+}
+
+fn encode_opencode_session_path(db_path: &Path, session_id: &str) -> String {
+    let mut url = Url::parse("opencode://session").expect("static opencode url is valid");
+    url.query_pairs_mut()
+        .append_pair("db", &db_path.to_string_lossy())
+        .append_pair("id", session_id);
+    url.to_string()
+}
+
+fn parse_opencode_session_path(value: &str) -> Option<(PathBuf, String)> {
+    let url = Url::parse(value).ok()?;
+    if url.scheme() != "opencode" {
+        return None;
+    }
+
+    let mut db_path = None;
+    let mut session_id = None;
+    for (key, value) in url.query_pairs() {
+        match key.as_ref() {
+            "db" => db_path = Some(PathBuf::from(value.into_owned())),
+            "id" => session_id = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+    Some((db_path?, session_id?))
+}
+
+fn select_opencode_session(
+    connection: &Connection,
+    cwd: &str,
+    updated_after: Option<DateTime<Utc>>,
+) -> anyhow::Result<Option<(String, i64)>> {
+    let prefer_earliest = updated_after.is_some();
+    let mut selected = None;
+
+    for candidate in cwd_lookup_variants(cwd) {
+        let row = if let Some(cutoff) = updated_after {
+            let cutoff_millis = cutoff.timestamp_millis();
+            let sql = if prefer_earliest {
+                "SELECT id, time_updated FROM session \
+                 WHERE directory = ?1 AND time_updated >= ?2 \
+                 ORDER BY time_updated ASC LIMIT 1"
+            } else {
+                "SELECT id, time_updated FROM session \
+                 WHERE directory = ?1 AND time_updated >= ?2 \
+                 ORDER BY time_updated DESC LIMIT 1"
+            };
+            connection
+                .query_row(sql, params![candidate, cutoff_millis], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .optional()?
+        } else {
+            let sql = if prefer_earliest {
+                "SELECT id, time_updated FROM session \
+                 WHERE directory = ?1 ORDER BY time_updated ASC LIMIT 1"
+            } else {
+                "SELECT id, time_updated FROM session \
+                 WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 1"
+            };
+            connection
+                .query_row(sql, params![candidate], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .optional()?
+        };
+
+        let Some((session_id, updated_millis)) = row else {
+            continue;
+        };
+        match &selected {
+            Some((_, existing_updated_millis))
+                if (prefer_earliest && *existing_updated_millis <= updated_millis)
+                    || (!prefer_earliest && *existing_updated_millis >= updated_millis) => {}
+            _ => selected = Some((session_id, updated_millis)),
+        }
+    }
+
+    Ok(selected)
+}
+
+fn read_last_opencode_observation(
+    connection: &Connection,
+    db_path: &Path,
+    session_id: &str,
+    updated_after: Option<DateTime<Utc>>,
+) -> anyhow::Result<Option<HarnessObservation>> {
+    let Some(updated_millis) = connection
+        .query_row(
+            "SELECT time_updated FROM session WHERE id = ?1",
+            params![session_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+
+    if updated_after
+        .map(|cutoff| updated_millis < cutoff.timestamp_millis())
+        .unwrap_or(false)
+    {
+        return Ok(None);
+    }
+
+    let mut last_user_at = None;
+    let mut last_assistant_at = None;
+    let mut message_stmt = connection.prepare(
+        "SELECT time_created, data \
+         FROM message \
+         WHERE session_id = ?1 \
+         ORDER BY time_created DESC, rowid DESC",
+    )?;
+    let mut message_rows = message_stmt.query(params![session_id])?;
+    while let Some(row) = message_rows.next()? {
+        let time_created = row.get::<_, i64>(0)?;
+        let message_data = row.get::<_, String>(1)?;
+        let Ok(message) = serde_json::from_str::<Value>(&message_data) else {
+            continue;
+        };
+        let Some(role) = message.get("role").and_then(Value::as_str) else {
+            continue;
+        };
+        let timestamp = parse_unix_millis(time_created);
+        match role {
+            "user" if last_user_at.is_none() => last_user_at = timestamp,
+            "assistant" if last_assistant_at.is_none() => last_assistant_at = timestamp,
+            _ => {}
+        }
+        if last_user_at.is_some() && last_assistant_at.is_some() {
+            break;
+        }
+    }
+
+    let mut summary = None;
+    let mut part_stmt = connection.prepare(
+        "SELECT p.data, m.data \
+         FROM part p \
+         JOIN message m ON p.message_id = m.id \
+         WHERE p.session_id = ?1 \
+         ORDER BY p.rowid DESC",
+    )?;
+    let mut part_rows = part_stmt.query(params![session_id])?;
+    while let Some(row) = part_rows.next()? {
+        let part_data = row.get::<_, String>(0)?;
+        let message_data = row.get::<_, String>(1)?;
+        let Ok(part) = serde_json::from_str::<Value>(&part_data) else {
+            continue;
+        };
+        let Ok(message) = serde_json::from_str::<Value>(&message_data) else {
+            continue;
+        };
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        if part.get("type").and_then(Value::as_str) != Some("text") {
+            continue;
+        }
+        if let Some(text) = part.get("text").and_then(Value::as_str) {
+            let text = text.trim();
+            if !text.is_empty() {
+                summary = Some(truncate_summary(text));
+                break;
+            }
+        }
+    }
+
+    let (turn_state, last_turn_completed_at) = derive_turn_state(last_user_at, last_assistant_at);
+    Ok(Some(HarnessObservation {
+        session_path: Some(encode_opencode_session_path(db_path, session_id)),
+        progress_summary: summary,
+        harness_mode: None,
+        turn_phase: None,
+        updated_at: parse_unix_millis(updated_millis),
+        turn_state,
+        last_turn_completed_at,
+    }))
 }
 
 fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservationDetails> {
@@ -678,6 +1119,7 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
         progress_summary: summary,
         harness_mode,
         turn_phase: None,
+        updated_at: None,
         turn_state,
         last_turn_completed_at,
     })
@@ -831,6 +1273,7 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
         progress_summary: summary,
         harness_mode,
         turn_phase,
+        updated_at: None,
         turn_state,
         last_turn_completed_at,
     })
@@ -875,6 +1318,35 @@ mod test {
         unsafe {
             std::env::remove_var(key);
         }
+    }
+
+    fn create_opencode_test_db(path: &Path) -> Connection {
+        let connection = Connection::open(path).unwrap();
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    directory TEXT NOT NULL,
+                    time_updated INTEGER NOT NULL
+                );
+                CREATE TABLE message (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    time_created INTEGER NOT NULL,
+                    data TEXT NOT NULL
+                );
+                CREATE TABLE part (
+                    id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    time_created INTEGER NOT NULL,
+                    data TEXT NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+        connection
     }
 
     #[test]
@@ -1122,6 +1594,248 @@ mod test {
             observed.last_turn_completed_at,
             Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 3).unwrap())
         );
+    }
+
+    #[test]
+    fn observes_latest_gemini_session_summary() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let cwd = "/tmp/project-i";
+        let chats_dir = temp.path().join("tmp").join("project-i").join("chats");
+        fs::create_dir_all(&chats_dir).unwrap();
+        fs::write(
+            temp.path().join("projects.json"),
+            r#"{"projects":{"/tmp/project-i":"project-i"}}"#,
+        )
+        .unwrap();
+        let session = chats_dir.join("session-2026-03-17.json");
+        fs::write(
+            &session,
+            concat!(
+                "{\"lastUpdated\":\"2026-03-17T12:00:03Z\",\"messages\":[",
+                "{\"type\":\"user\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"content\":[{\"text\":\"hello\"}]},",
+                "{\"type\":\"gemini\",\"timestamp\":\"2026-03-17T12:00:03Z\",\"content\":\"all good\"}",
+                "]}"
+            ),
+        )
+        .unwrap();
+
+        set_env_path("WEZTERM_AGENT_GEMINI_DIR", temp.path());
+        let observed = observe_gemini(cwd, None, None).unwrap().unwrap();
+        remove_env_var("WEZTERM_AGENT_GEMINI_DIR");
+
+        assert_eq!(observed.progress_summary.as_deref(), Some("all good"));
+        assert_eq!(
+            observed.session_path.as_deref(),
+            Some(session.to_string_lossy().as_ref())
+        );
+        assert_eq!(observed.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(
+            observed.last_turn_completed_at,
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 3).unwrap())
+        );
+        assert_eq!(
+            observed.updated_at,
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 3).unwrap())
+        );
+    }
+
+    #[test]
+    fn observes_latest_opencode_session_summary() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("opencode.db");
+        let connection = create_opencode_test_db(&db_path);
+        connection
+            .execute(
+                "INSERT INTO session (id, directory, time_updated) VALUES (?1, ?2, ?3)",
+                params!["session-1", "/tmp/project-j", 1_773_711_603_000_i64],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    "message-user",
+                    "session-1",
+                    1_773_711_600_000_i64,
+                    r#"{"role":"user"}"#
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    "part-user",
+                    "message-user",
+                    "session-1",
+                    1_773_711_600_000_i64,
+                    r#"{"type":"text","text":"hello"}"#
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    "message-assistant",
+                    "session-1",
+                    1_773_711_603_000_i64,
+                    r#"{"role":"assistant"}"#
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    "part-assistant",
+                    "message-assistant",
+                    "session-1",
+                    1_773_711_603_000_i64,
+                    r#"{"type":"text","text":"all good"}"#
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        set_env_path("WEZTERM_AGENT_OPENCODE_DB", &db_path);
+        let observed = observe_opencode("/tmp/project-j", None, None)
+            .unwrap()
+            .unwrap();
+        remove_env_var("WEZTERM_AGENT_OPENCODE_DB");
+
+        assert_eq!(observed.progress_summary.as_deref(), Some("all good"));
+        assert_eq!(observed.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(
+            observed.last_turn_completed_at,
+            Some(
+                Utc.timestamp_millis_opt(1_773_711_603_000_i64)
+                    .single()
+                    .unwrap()
+            )
+        );
+        let (session_db_path, session_id) =
+            parse_opencode_session_path(observed.session_path.as_deref().unwrap()).unwrap();
+        assert_eq!(session_db_path, db_path);
+        assert_eq!(session_id, "session-1");
+    }
+
+    #[test]
+    fn refresh_runtime_observes_gemini_and_opencode_sessions() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+
+        let gemini_temp = TempDir::new().unwrap();
+        let gemini_cwd = "/tmp/project-k";
+        let gemini_chats = gemini_temp
+            .path()
+            .join("tmp")
+            .join("project-k")
+            .join("chats");
+        fs::create_dir_all(&gemini_chats).unwrap();
+        fs::write(
+            gemini_temp.path().join("projects.json"),
+            r#"{"projects":{"/tmp/project-k":"project-k"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            gemini_chats.join("session-2026-03-17.json"),
+            concat!(
+                "{\"messages\":[",
+                "{\"type\":\"user\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"content\":[{\"text\":\"hello\"}]},",
+                "{\"type\":\"gemini\",\"timestamp\":\"2026-03-17T12:00:02Z\",\"content\":\"reply\"}",
+                "]}"
+            ),
+        )
+        .unwrap();
+
+        set_env_path("WEZTERM_AGENT_GEMINI_DIR", gemini_temp.path());
+        let gemini_metadata = AgentMetadata {
+            agent_id: "id-gemini".to_string(),
+            name: "gemini".to_string(),
+            launch_cmd: "gemini".to_string(),
+            declared_cwd: gemini_cwd.to_string(),
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+        };
+        let mut gemini_runtime = AgentRuntimeSnapshot::new(&gemini_metadata);
+        gemini_runtime.foreground_process_name = Some("gemini".to_string());
+        refresh_runtime_from_harness(&mut gemini_runtime, &gemini_metadata);
+        remove_env_var("WEZTERM_AGENT_GEMINI_DIR");
+
+        assert_eq!(gemini_runtime.transport, AgentTransport::ObservedPty);
+        assert_eq!(gemini_runtime.harness, AgentHarness::Gemini);
+        assert_eq!(gemini_runtime.turn_state, AgentTurnState::WaitingOnUser);
+
+        let opencode_temp = TempDir::new().unwrap();
+        let opencode_db = opencode_temp.path().join("opencode.db");
+        let connection = create_opencode_test_db(&opencode_db);
+        connection
+            .execute(
+                "INSERT INTO session (id, directory, time_updated) VALUES (?1, ?2, ?3)",
+                params!["session-2", "/tmp/project-l", 1_773_711_605_000_i64],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    "message-user-2",
+                    "session-2",
+                    1_773_711_600_000_i64,
+                    r#"{"role":"user"}"#
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    "message-assistant-2",
+                    "session-2",
+                    1_773_711_605_000_i64,
+                    r#"{"role":"assistant"}"#
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    "part-assistant-2",
+                    "message-assistant-2",
+                    "session-2",
+                    1_773_711_605_000_i64,
+                    r#"{"type":"text","text":"reply"}"#
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        set_env_path("WEZTERM_AGENT_OPENCODE_DB", &opencode_db);
+        let opencode_metadata = AgentMetadata {
+            agent_id: "id-opencode".to_string(),
+            name: "opencode".to_string(),
+            launch_cmd: "opencode".to_string(),
+            declared_cwd: "/tmp/project-l".to_string(),
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+        };
+        let mut opencode_runtime = AgentRuntimeSnapshot::new(&opencode_metadata);
+        opencode_runtime.foreground_process_name = Some("opencode".to_string());
+        refresh_runtime_from_harness(&mut opencode_runtime, &opencode_metadata);
+        remove_env_var("WEZTERM_AGENT_OPENCODE_DB");
+
+        assert_eq!(opencode_runtime.transport, AgentTransport::ObservedPty);
+        assert_eq!(opencode_runtime.harness, AgentHarness::Opencode);
+        assert_eq!(opencode_runtime.turn_state, AgentTurnState::WaitingOnUser);
     }
 
     #[test]
