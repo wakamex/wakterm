@@ -26,14 +26,7 @@ shown in the tab.
 -- or `wakterm cli set-tab-title`, but falls back to the
 -- title of the active pane in that tab.
 function tab_title(tab_info)
-  local title = tab_info.tab_title
-  -- if the tab title is explicitly set, take that
-  if title and #title > 0 then
-    return title
-  end
-  -- Otherwise, use the title from the active pane
-  -- in that tab
-  return tab_info.active_pane.title
+  return tab_info.effective_title
 end
 
 wakterm.on(
@@ -103,14 +96,7 @@ local SOLID_RIGHT_ARROW = wakterm.nerdfonts.pl_left_hard_divider
 -- or `wakterm cli set-tab-title`, but falls back to the
 -- title of the active pane in that tab.
 function tab_title(tab_info)
-  local title = tab_info.tab_title
-  -- if the tab title is explicitly set, take that
-  if title and #title > 0 then
-    return title
-  end
-  -- Otherwise, use the title from the active pane
-  -- in that tab
-  return tab_info.active_pane.title
+  return tab_info.effective_title
 end
 
 wakterm.on(

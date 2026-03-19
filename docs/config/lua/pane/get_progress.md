@@ -37,14 +37,7 @@ error progress:
 local wakterm = require 'wakterm'
 
 local function tab_title(tab_info)
-  local title = tab_info.tab_title
-  -- if the tab title is explicitly set, take that
-  if title and #title > 0 then
-    return title
-  end
-  -- Otherwise, use the title from the active pane
-  -- in that tab
-  return tab_info.active_pane.title
+  return tab_info.effective_title
 end
 
 local PCT_GLYPHS = {
@@ -65,7 +58,8 @@ end
 wakterm.on(
   'format-tab-title',
   function(tab, tabs, panes, config, hover, max_width)
-    local progress = tab.active_pane.progress or 'None'
+    local pane = tab.active_pane
+    local progress = pane and pane.progress or 'None'
     local title = tab_title(tab)
     local elements = {
       { Text = string.format('%d: ', tab.tab_index + 1) },

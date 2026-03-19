@@ -21,7 +21,7 @@ making your own title text:
 ```lua
 wakterm.on('format-window-title', function(tab, pane, tabs, panes, config)
   local zoomed = ''
-  if tab.active_pane.is_zoomed then
+  if pane.is_zoomed then
     zoomed = '[Z] '
   end
 
@@ -30,7 +30,7 @@ wakterm.on('format-window-title', function(tab, pane, tabs, panes, config)
     index = string.format('[%d/%d] ', tab.tab_index + 1, #tabs)
   end
 
-  return zoomed .. index .. tab.active_pane.title
+  return zoomed .. index .. pane.title
 end)
 ```
 
@@ -51,4 +51,3 @@ then the default window title text will be computed and used instead.
 Only the first `format-window-title` event will be executed; it doesn't make
 sense to define multiple instances of the event with multiple
 `wakterm.on("format-window-title", ...)` calls.
-

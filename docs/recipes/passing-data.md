@@ -88,8 +88,12 @@ Then on the wakterm side, this information can be used when formatting the tab t
 local wakterm = require 'wakterm'
 
 wakterm.on('format-tab-title', function(tab)
-  local prog = tab.active_pane.user_vars.PROG
-  return tab.active_pane.title .. ' [' .. (prog or '') .. ']'
+  local pane = tab.active_pane
+  if not pane then
+    return tab.effective_title
+  end
+  local prog = pane.user_vars.PROG
+  return pane.title .. ' [' .. (prog or '') .. ']'
 end)
 
 return {}
