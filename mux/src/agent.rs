@@ -177,6 +177,35 @@ pub fn infer_harness(launch_cmd: &str, foreground_process_name: Option<&str>) ->
     AgentHarness::Unknown
 }
 
+fn harness_process_is_compatible(
+    configured_harness: &AgentHarness,
+    process_harness: &AgentHarness,
+    foreground_process_name: Option<&str>,
+) -> bool {
+    if matches!(configured_harness, AgentHarness::Unknown) {
+        return !matches!(process_harness, AgentHarness::Unknown);
+    }
+
+    if configured_harness == process_harness {
+        return true;
+    }
+
+    match configured_harness {
+        // Gemini launches via a node wrapper, so the foreground process
+        // name is typically just `node` rather than `gemini`.
+        AgentHarness::Gemini => foreground_process_name
+            .and_then(|name| Path::new(name).file_name().and_then(|name| name.to_str()))
+            .map(|name| {
+                matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "node" | "node.exe" | "bun" | "bun.exe"
+                )
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
 pub fn derive_runtime_status(runtime: &AgentRuntimeSnapshot) -> AgentStatus {
     if !runtime.alive {
         return AgentStatus::Exited;
@@ -271,22 +300,27 @@ pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata
         _ => configured_harness.clone(),
     };
 
-    let observing_harness = match configured_harness {
-        AgentHarness::Unknown => process_harness.clone(),
-        _ if process_harness == configured_harness => configured_harness.clone(),
-        _ => {
-            runtime.session_path = None;
-            runtime.progress_summary = None;
-            runtime.harness_mode = None;
-            runtime.turn_phase = None;
-            runtime.attention_reason = None;
-            runtime.turn_state = AgentTurnState::Unknown;
-            runtime.last_turn_completed_at = None;
-            runtime.transport = AgentTransport::PlainPty;
-            runtime.status = derive_runtime_status(runtime);
-            runtime.attention_reason = derive_attention_reason(runtime);
-            return;
+    let observing_harness = if harness_process_is_compatible(
+        &configured_harness,
+        &process_harness,
+        runtime.foreground_process_name.as_deref(),
+    ) {
+        match configured_harness {
+            AgentHarness::Unknown => process_harness.clone(),
+            _ => configured_harness.clone(),
         }
+    } else {
+        runtime.session_path = None;
+        runtime.progress_summary = None;
+        runtime.harness_mode = None;
+        runtime.turn_phase = None;
+        runtime.attention_reason = None;
+        runtime.turn_state = AgentTurnState::Unknown;
+        runtime.last_turn_completed_at = None;
+        runtime.transport = AgentTransport::PlainPty;
+        runtime.status = derive_runtime_status(runtime);
+        runtime.attention_reason = derive_attention_reason(runtime);
+        return;
     };
 
     let observed = match observing_harness {
@@ -1371,6 +1405,20 @@ mod test {
     }
 
     #[test]
+    fn treats_gemini_node_wrapper_as_compatible_foreground_process() {
+        assert!(harness_process_is_compatible(
+            &AgentHarness::Gemini,
+            &AgentHarness::Unknown,
+            Some("/home/mihai/.nvm/versions/node/v22.14.0/bin/node"),
+        ));
+        assert!(!harness_process_is_compatible(
+            &AgentHarness::Codex,
+            &AgentHarness::Unknown,
+            Some("/home/mihai/.nvm/versions/node/v22.14.0/bin/node"),
+        ));
+    }
+
+    #[test]
     fn derives_runtime_status_from_liveness_progress_and_recent_activity() {
         let metadata = AgentMetadata {
             agent_id: "id".to_string(),
@@ -1763,7 +1811,8 @@ mod test {
             managed_checkout: false,
         };
         let mut gemini_runtime = AgentRuntimeSnapshot::new(&gemini_metadata);
-        gemini_runtime.foreground_process_name = Some("gemini".to_string());
+        gemini_runtime.foreground_process_name =
+            Some("/home/mihai/.nvm/versions/node/v22.14.0/bin/node".to_string());
         refresh_runtime_from_harness(&mut gemini_runtime, &gemini_metadata);
         remove_env_var("WEZTERM_AGENT_GEMINI_DIR");
 
