@@ -1202,20 +1202,18 @@ impl SendAgentCommand {
 
         let submitted = !self.no_submit;
         if submitted {
-            // Native harnesses reliably accept a raw carriage return after the
-            // prompt text; synthetic Enter key events were leaving Claude and
-            // Gemini prompts unsubmitted.
-            std::thread::sleep(Duration::from_millis(200));
-            write_to_pane(codec::WriteToPane {
-                pane_id: agent.pane_id,
-                data: b"\r".to_vec(),
-            })
-            .await?;
+            submit_native_harness_prompt(agent.pane_id, &write_to_pane).await?;
         }
 
-        let acknowledgement = self
+        let mut acknowledgement = self
             .wait_for_acknowledgement(&mut list_agents, &agent, &baseline)
             .await?;
+        if submitted && should_retry_submit(&agent, &baseline, &acknowledgement) {
+            submit_native_harness_prompt(agent.pane_id, &write_to_pane).await?;
+            acknowledgement = self
+                .wait_for_acknowledgement(&mut list_agents, &agent, &baseline)
+                .await?;
+        }
 
         Ok(AgentSendResult {
             agent_id: agent.metadata.agent_id.clone(),
@@ -1260,16 +1258,15 @@ impl SendAgentCommand {
             });
         }
 
-        if !matches!(
-            baseline_agent.runtime.transport,
-            AgentTransport::ObservedPty
-        ) {
+        if !supports_observer_ack(&baseline_agent.runtime.harness) {
             return Ok(AgentSendAcknowledgement {
                 kind: AgentAckKind::Unavailable,
                 acknowledged: false,
                 latency_ms: None,
                 session_path: baseline.session_path.clone(),
-                detail: Some("agent has no observer-backed session path".to_string()),
+                detail: Some(
+                    "agent has no supported observer-backed acknowledgement path".to_string(),
+                ),
             });
         }
 
@@ -1282,6 +1279,26 @@ impl SendAgentCommand {
         )
         .await
     }
+}
+
+async fn submit_native_harness_prompt<WriteToPaneFn, WriteToPaneFut>(
+    pane_id: PaneId,
+    write_to_pane: &WriteToPaneFn,
+) -> anyhow::Result<()>
+where
+    WriteToPaneFn: Fn(codec::WriteToPane) -> WriteToPaneFut,
+    WriteToPaneFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
+{
+    // Native harnesses reliably accept a raw carriage return after the prompt
+    // text; synthetic Enter key events were leaving Claude and Gemini prompts
+    // unsubmitted.
+    std::thread::sleep(Duration::from_millis(200));
+    write_to_pane(codec::WriteToPane {
+        pane_id,
+        data: b"\r".to_vec(),
+    })
+    .await?;
+    Ok(())
 }
 
 #[derive(Debug, Parser, Clone)]
@@ -1693,6 +1710,22 @@ impl AgentAckBaseline {
     }
 }
 
+fn supports_observer_ack(harness: &AgentHarness) -> bool {
+    !matches!(harness, AgentHarness::Unknown)
+}
+
+fn should_retry_submit(
+    agent: &AgentSnapshot,
+    baseline: &AgentAckBaseline,
+    acknowledgement: &AgentSendAcknowledgement,
+) -> bool {
+    acknowledgement.kind == AgentAckKind::TimedOut
+        && !acknowledgement.acknowledged
+        && supports_observer_ack(&agent.runtime.harness)
+        && !matches!(agent.runtime.transport, AgentTransport::ObservedPty)
+        && baseline.session_path.is_none()
+}
+
 async fn wait_for_observer_acknowledgement<ListAgents, ListAgentsFut>(
     list_agents: &mut ListAgents,
     baseline_agent: &AgentSnapshot,
@@ -1737,12 +1770,25 @@ where
                 acknowledged: false,
                 latency_ms: Some(started.elapsed().as_millis() as u64),
                 session_path: agent.runtime.session_path.clone(),
-                detail: inline_progress_detail(&agent),
+                detail: inline_progress_detail(&agent)
+                    .or_else(|| observer_timeout_detail(&agent, baseline)),
             });
         }
 
         smol::Timer::after(poll).await;
     }
+}
+
+fn observer_timeout_detail(agent: &AgentSnapshot, baseline: &AgentAckBaseline) -> Option<String> {
+    if baseline.session_path.is_none() && agent.runtime.session_path.is_none() {
+        return Some("observer session did not appear before timeout".to_string());
+    }
+
+    if agent.runtime.session_path == baseline.session_path {
+        return Some("observer session did not advance before timeout".to_string());
+    }
+
+    None
 }
 
 fn build_agent_metadata(
@@ -2489,7 +2535,74 @@ mod test {
     }
 
     #[test]
-    fn send_uses_plain_transport_without_observer_ack() {
+    fn send_plain_transport_waits_for_first_observer_session() {
+        let write_calls = Rc::new(RefCell::new(vec![]));
+        let list_calls = Rc::new(RefCell::new(0usize));
+        let command = SendAgentCommand {
+            target: "reviewer".to_string(),
+            no_paste: true,
+            no_submit: false,
+            ack_timeout_ms: 0,
+            ack_poll_ms: 0,
+            text: Some("raw".to_string()),
+        };
+
+        let baseline = sample_agent(30, "reviewer");
+        let mut acknowledged = baseline.clone();
+        acknowledged.runtime.transport = mux::agent::AgentTransport::ObservedPty;
+        acknowledged.runtime.session_path = Some("/tmp/reviewer.jsonl".to_string());
+        acknowledged.runtime.last_progress_at =
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 1).unwrap());
+        acknowledged.runtime.progress_summary = Some("accepted".to_string());
+
+        let result = promise::spawn::block_on(command.run_with(
+            {
+                let list_calls = Rc::clone(&list_calls);
+                move || {
+                    let list_calls = Rc::clone(&list_calls);
+                    let baseline = baseline.clone();
+                    let acknowledged = acknowledged.clone();
+                    async move {
+                        let idx = {
+                            let mut calls = list_calls.borrow_mut();
+                            *calls += 1;
+                            *calls
+                        };
+                        Ok(ListAgentsResponse {
+                            agents: vec![if idx == 1 { baseline } else { acknowledged }],
+                        })
+                    }
+                }
+            },
+            {
+                let write_calls = Rc::clone(&write_calls);
+                move |request: WriteToPane| {
+                    write_calls.borrow_mut().push(request);
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            |_| async { panic!("send_paste should not be used") },
+        ))
+        .unwrap();
+
+        assert_eq!(result.transport, mux::agent::AgentTransport::PlainPty);
+        assert_eq!(result.acknowledgement.kind, AgentAckKind::SessionObserver);
+        assert!(result.acknowledgement.acknowledged);
+        assert_eq!(
+            result.acknowledgement.session_path.as_deref(),
+            Some("/tmp/reviewer.jsonl")
+        );
+
+        let write_calls = write_calls.borrow();
+        assert_eq!(write_calls.len(), 2);
+        assert_eq!(write_calls[0].pane_id, 30);
+        assert_eq!(write_calls[0].data, b"raw");
+        assert_eq!(write_calls[1].pane_id, 30);
+        assert_eq!(write_calls[1].data, b"\r");
+    }
+
+    #[test]
+    fn send_plain_transport_retries_submit_when_no_observer_ack_arrives() {
         let write_calls = Rc::new(RefCell::new(vec![]));
         let command = SendAgentCommand {
             target: "reviewer".to_string(),
@@ -2518,15 +2631,21 @@ mod test {
         .unwrap();
 
         assert_eq!(result.transport, mux::agent::AgentTransport::PlainPty);
-        assert_eq!(result.acknowledgement.kind, AgentAckKind::Unavailable);
+        assert_eq!(result.acknowledgement.kind, AgentAckKind::TimedOut);
         assert!(!result.acknowledgement.acknowledged);
+        assert_eq!(
+            result.acknowledgement.detail.as_deref(),
+            Some("observer session did not appear before timeout")
+        );
 
         let write_calls = write_calls.borrow();
-        assert_eq!(write_calls.len(), 2);
+        assert_eq!(write_calls.len(), 3);
         assert_eq!(write_calls[0].pane_id, 30);
         assert_eq!(write_calls[0].data, b"raw");
         assert_eq!(write_calls[1].pane_id, 30);
         assert_eq!(write_calls[1].data, b"\r");
+        assert_eq!(write_calls[2].pane_id, 30);
+        assert_eq!(write_calls[2].data, b"\r");
     }
 
     #[test]
