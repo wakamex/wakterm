@@ -35,6 +35,7 @@ portable-pty = { workspace=true, features = ["serde_support"]}
 procinfo.workspace = true
 promise.workspace = true
 rangeset.workspace = true
+rusqlite = { workspace = true, features = ["bundled"] }
 serde = {workspace=true, features = ["rc", "derive"]}
 serde_json.workspace = true
 serial2.workspace = true
