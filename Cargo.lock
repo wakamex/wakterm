@@ -6660,6 +6660,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shell-words",
+ "shlex",
  "smol",
  "tabout",
  "tempfile",

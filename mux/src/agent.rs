@@ -15,6 +15,7 @@ pub struct AgentMetadata {
     pub repo_root: Option<String>,
     pub worktree: Option<String>,
     pub branch: Option<String>,
+    pub managed_checkout: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -5,9 +5,9 @@ use wezterm_client::client::Client;
 
 mod activate_pane;
 mod activate_pane_direction;
-mod agent;
 mod activate_tab;
 mod adjust_pane_size;
+mod agent;
 mod get_pane_direction;
 mod get_text;
 mod kill_pane;
@@ -86,7 +86,11 @@ enum CliSubCommand {
     #[command(name = "list-clients", about = "list clients")]
     ListClients(list_clients::ListClientsCommand),
 
-    #[command(name = "save-layout", rename_all = "kebab", about = "Save the current mux layout")]
+    #[command(
+        name = "save-layout",
+        rename_all = "kebab",
+        about = "Save the current mux layout"
+    )]
     SaveLayout(layout::SaveLayout),
 
     #[command(
@@ -195,7 +199,7 @@ async fn run_cli_async(opts: &crate::Opt, cli: CliCommand) -> anyhow::Result<()>
     )?;
 
     match cli.sub {
-        CliSubCommand::Agent(cmd) => cmd.run(client).await,
+        CliSubCommand::Agent(cmd) => cmd.run(client, &crate::init_config(opts)?).await,
         CliSubCommand::ListClients(cmd) => cmd.run(client).await,
         CliSubCommand::List(cmd) => cmd.run(client).await,
         CliSubCommand::SaveLayout(cmd) => cmd.run(client).await,

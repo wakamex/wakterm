@@ -1,5 +1,5 @@
-use crate::client::{ClientId, ClientInfo, ClientViewId, ClientViewState, ClientWindowViewState};
 use crate::agent::{AgentMetadata, AgentSnapshot};
+use crate::client::{ClientId, ClientInfo, ClientViewId, ClientViewState, ClientWindowViewState};
 use crate::pane::{CachePolicy, Pane, PaneId};
 use crate::ssh_agent::AgentProxy;
 use crate::tab::{size_trace_enabled, NotifyMux, SplitRequest, Tab, TabId};
@@ -551,7 +551,11 @@ impl Mux {
             .unwrap_or_default()
     }
 
-    pub fn set_agent_metadata(&self, pane_id: PaneId, metadata: AgentMetadata) -> anyhow::Result<()> {
+    pub fn set_agent_metadata(
+        &self,
+        pane_id: PaneId,
+        metadata: AgentMetadata,
+    ) -> anyhow::Result<()> {
         self.get_pane(pane_id)
             .ok_or_else(|| anyhow!("pane {} is invalid", pane_id))?;
 
@@ -696,7 +700,8 @@ impl Mux {
         window_id: WindowId,
     ) -> Option<usize> {
         let view_id = self.active_view_id()?;
-        let tab_id = self.get_last_active_tab_id_for_window_for_client(view_id.as_ref(), window_id)?;
+        let tab_id =
+            self.get_last_active_tab_id_for_window_for_client(view_id.as_ref(), window_id)?;
         let window = self.get_window(window_id)?;
         window.idx_by_id(tab_id)
     }
@@ -763,7 +768,8 @@ impl Mux {
         if let (Some(view_id), Some((_domain_id, window_id, tab_id))) =
             (view_id, self.resolve_pane_id(pane_id))
         {
-            let _ = self.set_active_pane_for_client_view(view_id.as_ref(), window_id, tab_id, pane_id);
+            let _ =
+                self.set_active_pane_for_client_view(view_id.as_ref(), window_id, tab_id, pane_id);
         }
 
         if prior == Some(pane_id) {
@@ -2292,10 +2298,7 @@ mod test {
         }
     }
 
-    fn register_test_client(
-        mux: &Arc<Mux>,
-        view_name: &str,
-    ) -> (Arc<ClientId>, Arc<ClientViewId>) {
+    fn register_test_client(mux: &Arc<Mux>, view_name: &str) -> (Arc<ClientId>, Arc<ClientViewId>) {
         let client_id = Arc::new(ClientId::new());
         let view_id = Arc::new(ClientViewId(view_name.to_string()));
         mux.register_client(client_id.clone(), view_id.clone());
@@ -2387,7 +2390,10 @@ mod test {
 
         let (client_id, view_id) = register_test_client(&mux, "non-empty-workspace");
 
-        assert_eq!(mux.active_workspace_for_client(&client_id), "alt".to_string());
+        assert_eq!(
+            mux.active_workspace_for_client(&client_id),
+            "alt".to_string()
+        );
         assert_eq!(
             mux.get_active_tab_for_window_for_client(view_id.as_ref(), window_id)
                 .map(|tab| tab.tab_id()),
@@ -2437,8 +2443,13 @@ mod test {
         mux.register_client(client_a.clone(), view_id.clone());
         mux.set_active_tab_for_client_view(view_id.as_ref(), window_a, tab_b.tab_id())
             .unwrap();
-        mux.set_active_pane_for_client_view(view_id.as_ref(), window_a, tab_b.tab_id(), pane_b.pane_id())
-            .unwrap();
+        mux.set_active_pane_for_client_view(
+            view_id.as_ref(),
+            window_a,
+            tab_b.tab_id(),
+            pane_b.pane_id(),
+        )
+        .unwrap();
         mux.record_focus_for_client(client_a.as_ref(), pane_b.pane_id());
         mux.unregister_client(client_a.as_ref());
 
@@ -2489,6 +2500,7 @@ mod test {
             repo_root: None,
             worktree: None,
             branch: None,
+            managed_checkout: false,
         }
     }
 

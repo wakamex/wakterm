@@ -35,7 +35,7 @@ pub struct SavedSession {
     pub windows: Vec<SavedWindow>,
 }
 
-const SESSION_VERSION: u32 = 4;
+const SESSION_VERSION: u32 = 5;
 
 fn session_path() -> PathBuf {
     config::RUNTIME_DIR.join("session.json")
@@ -73,7 +73,12 @@ fn build_saved_session(mux: &Mux) -> SavedSession {
 /// If a split has one side < 3 cols or rows, rebalance to 50/50.
 /// This prevents broken layouts from being persisted and restored.
 fn heal_tree(node: &mut PaneNode) {
-    if let PaneNode::Split { left, right, node: split_data } = node {
+    if let PaneNode::Split {
+        left,
+        right,
+        node: split_data,
+    } = node
+    {
         let min_dim = 3;
         match split_data.direction {
             crate::tab::SplitDirection::Horizontal => {
@@ -82,7 +87,12 @@ fn heal_tree(node: &mut PaneNode) {
                     let half = total.saturating_sub(1) / 2;
                     split_data.first.cols = half;
                     split_data.second.cols = total.saturating_sub(1 + half);
-                    log::debug!("Healed H-split: {}+1+{} = {}", half, total.saturating_sub(1+half), total);
+                    log::debug!(
+                        "Healed H-split: {}+1+{} = {}",
+                        half,
+                        total.saturating_sub(1 + half),
+                        total
+                    );
                 }
             }
             crate::tab::SplitDirection::Vertical => {
@@ -91,7 +101,12 @@ fn heal_tree(node: &mut PaneNode) {
                     let half = total.saturating_sub(1) / 2;
                     split_data.first.rows = half;
                     split_data.second.rows = total.saturating_sub(1 + half);
-                    log::debug!("Healed V-split: {}+1+{} = {}", half, total.saturating_sub(1+half), total);
+                    log::debug!(
+                        "Healed V-split: {}+1+{} = {}",
+                        half,
+                        total.saturating_sub(1 + half),
+                        total
+                    );
                 }
             }
         }
@@ -106,8 +121,7 @@ pub fn save_session() -> anyhow::Result<PathBuf> {
     let session = build_saved_session(&mux);
 
     let path = session_path();
-    let json = serde_json::to_string_pretty(&session)
-        .context("serializing session")?;
+    let json = serde_json::to_string_pretty(&session).context("serializing session")?;
 
     std::fs::write(&path, &json)
         .with_context(|| format!("writing session to {}", path.display()))?;
@@ -170,9 +184,7 @@ pub fn clear_session() -> anyhow::Result<()> {
 /// and recreating the split tree structure.
 ///
 /// Returns the number of tabs restored.
-pub async fn restore_session(
-    domain: &Arc<dyn crate::domain::Domain>,
-) -> anyhow::Result<usize> {
+pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow::Result<usize> {
     let session = match load_session()? {
         Some(s) => s,
         None => return Ok(0),
@@ -194,11 +206,7 @@ pub async fn restore_session(
                     total_tabs += 1;
                 }
                 Err(err) => {
-                    log::error!(
-                        "Failed to restore tab '{}': {:#}",
-                        saved_tab.title,
-                        err
-                    );
+                    log::error!("Failed to restore tab '{}': {:#}", saved_tab.title, err);
                 }
             }
         }
@@ -293,7 +301,11 @@ fn restore_node<'a>(
                 // This leaf already exists — advance the index
                 *leaf_index += 1;
             }
-            PaneNode::Split { left, right, node: split_data } => {
+            PaneNode::Split {
+                left,
+                right,
+                node: split_data,
+            } => {
                 // First, recursively restore the left subtree.
                 // After this, all left-side leaves exist in the tab.
                 restore_node(domain, tab, left, leaf_index).await?;
@@ -375,13 +387,14 @@ fn first_leaf_cwd(node: &PaneNode) -> Option<String> {
 
 #[cfg(test)]
 mod test {
-    use crate::agent::AgentMetadata;
     use super::*;
+    use crate::agent::AgentMetadata;
     use crate::client::{ClientId, ClientViewId};
     use crate::pane::{alloc_pane_id, CachePolicy, LogicalLine, Pane};
     use crate::renderable::RenderableDimensions;
     use crate::tab::{SplitDirection, SplitRequest, SplitSize, Tab};
     use crate::Mux;
+    use chrono::{TimeZone, Utc};
     use rangeset::RangeSet;
     use std::io::Write;
     use std::ops::Range;
@@ -390,7 +403,6 @@ mod test {
     use url::Url;
     use wezterm_term::color::ColorPalette;
     use wezterm_term::{KeyCode, KeyModifiers, MouseEvent, StableRowIndex, TerminalSize};
-    use chrono::{TimeZone, Utc};
 
     struct TestPane {
         id: crate::pane::PaneId,
@@ -549,6 +561,7 @@ mod test {
             repo_root: None,
             worktree: None,
             branch: None,
+            managed_checkout: false,
         }
     }
 
@@ -589,8 +602,13 @@ mod test {
         mux.add_tab_to_window(&tab, window_id).unwrap();
         mux.set_active_tab_for_client_view(view_id.as_ref(), window_id, tab.tab_id())
             .unwrap();
-        mux.set_active_pane_for_client_view(view_id.as_ref(), window_id, tab.tab_id(), right_pane_id)
-            .unwrap();
+        mux.set_active_pane_for_client_view(
+            view_id.as_ref(),
+            window_id,
+            tab.tab_id(),
+            right_pane_id,
+        )
+        .unwrap();
 
         let session = build_saved_session(&mux);
         let json = serde_json::to_string(&session).unwrap();

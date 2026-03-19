@@ -1,5 +1,5 @@
 use crate::PKI;
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use codec::*;
 use config::TermConfig;
 use mux::client::ClientId;
@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use termwiz::surface::SequenceNo;
 use url::Url;
-use wezterm_term::StableRowIndex;
 use wezterm_term::terminal::Alert;
+use wezterm_term::StableRowIndex;
 
 #[derive(Clone)]
 pub struct PduSender {
@@ -229,7 +229,8 @@ impl SessionHandler {
 
     /// Record that this session just processed a resize for a tab.
     pub fn note_resize_tab(&mut self, tab_id: TabId) {
-        self.recent_resizes.insert(tab_id, std::time::Instant::now());
+        self.recent_resizes
+            .insert(tab_id, std::time::Instant::now());
     }
 
     /// Check if this session recently resized the given tab (within 2 seconds).
@@ -442,9 +443,8 @@ impl SessionHandler {
                                 let window = mux.get_window(window_id).unwrap();
                                 window_titles.insert(window_id, window.get_title().to_string());
                                 for tab in window.iter() {
-                                    let active_pane_id = view_state
-                                        .get(&window_id)
-                                        .and_then(|window_state| {
+                                    let active_pane_id =
+                                        view_state.get(&window_id).and_then(|window_state| {
                                             window_state
                                                 .tabs
                                                 .get(&tab.tab_id())
@@ -1539,7 +1539,10 @@ mod test {
             });
             let mut handler = SessionHandler::new(sender);
             handler.client_id = Some(client_id);
-            Self { handler, responses: rx }
+            Self {
+                handler,
+                responses: rx,
+            }
         }
 
         fn request(&mut self, executor: &SimpleExecutor, pdu: Pdu) -> Pdu {
@@ -1646,6 +1649,7 @@ mod test {
             repo_root: None,
             worktree: None,
             branch: None,
+            managed_checkout: false,
         }
     }
 
@@ -1667,10 +1671,13 @@ mod test {
             .unwrap();
 
         assert!(matches!(
-            handler_a.request(&executor, Pdu::SetClientActiveTab(SetClientActiveTab {
-                window_id: layout.window_id,
-                tab_id: layout.right_tab_id,
-            })),
+            handler_a.request(
+                &executor,
+                Pdu::SetClientActiveTab(SetClientActiveTab {
+                    window_id: layout.window_id,
+                    tab_id: layout.right_tab_id,
+                })
+            ),
             Pdu::UnitResponse(_)
         ));
 
@@ -1718,9 +1725,12 @@ mod test {
         .unwrap();
 
         assert!(matches!(
-            handler_a.request(&executor, Pdu::SetFocusedPane(SetFocusedPane {
-                pane_id: layout.split_right_pane_id,
-            })),
+            handler_a.request(
+                &executor,
+                Pdu::SetFocusedPane(SetFocusedPane {
+                    pane_id: layout.split_right_pane_id,
+                })
+            ),
             Pdu::UnitResponse(_)
         ));
 

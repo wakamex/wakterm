@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use wezterm_client::client::Client;
 use wezterm_term::TerminalSize;
 
-const LAYOUT_VERSION: usize = 3;
+const LAYOUT_VERSION: usize = 4;
 
 fn default_layout_path() -> PathBuf {
     config::CONFIG_DIRS
@@ -135,7 +135,9 @@ impl SavedPaneTree {
     fn contains_active(&self) -> bool {
         match self {
             Self::Pane { is_active, .. } => *is_active,
-            Self::Split { first, second, .. } => first.contains_active() || second.contains_active(),
+            Self::Split { first, second, .. } => {
+                first.contains_active() || second.contains_active()
+            }
         }
     }
 }
@@ -218,12 +220,15 @@ impl SaveLayout {
 
         let path = self.file.unwrap_or_else(default_layout_path);
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
         fs::write(&path, serialized).with_context(|| format!("writing {}", path.display()))?;
 
-        let tab_count = layout.windows.iter().map(|window| window.tabs.len()).sum::<usize>();
+        let tab_count = layout
+            .windows
+            .iter()
+            .map(|window| window.tabs.len())
+            .sum::<usize>();
         let pane_count = layout
             .windows
             .iter()
@@ -399,12 +404,16 @@ fn restore_tree<'a>(
                 // Replay the subtree containing the saved active pane last, because
                 // split-and-insert makes the newly created branch active.
                 let (first_state, second_state) = if first.contains_active() {
-                    let second_state = restore_tree(client, _tab_id, tab_size, split.pane_id, second).await?;
-                    let first_state = restore_tree(client, _tab_id, tab_size, pane_id, first).await?;
+                    let second_state =
+                        restore_tree(client, _tab_id, tab_size, split.pane_id, second).await?;
+                    let first_state =
+                        restore_tree(client, _tab_id, tab_size, pane_id, first).await?;
                     (first_state, second_state)
                 } else {
-                    let first_state = restore_tree(client, _tab_id, tab_size, pane_id, first).await?;
-                    let second_state = restore_tree(client, _tab_id, tab_size, split.pane_id, second).await?;
+                    let first_state =
+                        restore_tree(client, _tab_id, tab_size, pane_id, first).await?;
+                    let second_state =
+                        restore_tree(client, _tab_id, tab_size, split.pane_id, second).await?;
                     (first_state, second_state)
                 };
 
@@ -445,8 +454,8 @@ mod test {
     use super::*;
     use chrono::{TimeZone, Utc};
     use mux::agent::AgentMetadata;
-    use mux::tab::{PaneEntry, PaneNode, SplitDirectionAndSize};
     use mux::renderable::StableCursorPosition;
+    use mux::tab::{PaneEntry, PaneNode, SplitDirectionAndSize};
     use termwiz::surface::{CursorShape, CursorVisibility};
 
     fn size(cols: usize, rows: usize) -> TerminalSize {
@@ -514,6 +523,7 @@ mod test {
             repo_root: None,
             worktree: None,
             branch: None,
+            managed_checkout: false,
         }
     }
 
@@ -624,7 +634,9 @@ mod test {
             } => {
                 assert_eq!(cwd.as_deref(), Some("/tmp/agent"));
                 assert_eq!(
-                    agent_metadata.as_ref().map(|metadata| metadata.name.as_str()),
+                    agent_metadata
+                        .as_ref()
+                        .map(|metadata| metadata.name.as_str()),
                     Some("reviewer")
                 );
                 assert!(is_active);
