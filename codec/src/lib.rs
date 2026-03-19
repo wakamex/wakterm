@@ -11,9 +11,9 @@
 #![allow(dead_code)]
 #![allow(clippy::range_plus_one)]
 
-use anyhow::{bail, Context as _, Error};
+use anyhow::{Context as _, Error, bail};
 use config::keyassignment::{PaneDirection, ScrollbackEraseMode};
-use mux::agent::{AgentMetadata, AgentSnapshot};
+use mux::agent::{AgentMetadata, AgentSnapshot, AgentTabBadgeState};
 use mux::client::{ClientId, ClientInfo, ClientViewId, ClientWindowViewState};
 use mux::pane::PaneId;
 use mux::renderable::{RenderableDimensions, StableCursorPosition};
@@ -463,7 +463,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 52;
+pub const CODEC_VERSION: usize = 58;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -690,6 +690,7 @@ pub struct ListAgentsResponse {
 pub struct ListPanesResponse {
     pub tabs: Vec<PaneNode>,
     pub tab_titles: Vec<String>,
+    pub tab_badges: Vec<AgentTabBadgeState>,
     pub window_titles: HashMap<WindowId, String>,
     pub client_window_view_state: HashMap<WindowId, ClientWindowViewState>,
 }
@@ -919,6 +920,7 @@ pub struct TabResized {
 pub struct TabTitleChanged {
     pub tab_id: TabId,
     pub title: String,
+    pub badge: AgentTabBadgeState,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
@@ -1309,6 +1311,7 @@ mod test {
         ListPanesResponse {
             tabs,
             tab_titles: vec![],
+            tab_badges: vec![],
             window_titles: HashMap::new(),
             client_window_view_state: HashMap::new(),
         }

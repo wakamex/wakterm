@@ -5,38 +5,25 @@ use clap::{Parser, Subcommand, ValueHint};
 use codec::{InputSerial, ListPanesResponse, SendKeyDown, SpawnV2, TabTitleChanged};
 use config::keyassignment::SpawnTabDomain;
 use config::ConfigHandle;
-use mux::agent::{AgentMetadata, AgentSnapshot};
+use mux::agent::{
+    infer_harness, AgentHarness, AgentMetadata, AgentSnapshot, AgentStatus, AgentTransport,
+    AgentTurnState,
+};
 use mux::pane::PaneId;
-use mux::tab::{size_trace_enabled, SplitDirection, SplitRequest, SplitSize};
+use mux::tab::{SplitDirection, SplitRequest, SplitSize};
 use mux::window::WindowId;
 use portable_pty::cmdbuilder::CommandBuilder;
 use serde::Serialize;
 use std::ffi::OsString;
 use std::future::Future;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+use std::time::{Duration, Instant};
 use tabout::{tabulate_output, Alignment, Column};
 use termwiz::input::{KeyCode, KeyEvent, Modifiers};
 use uuid::Uuid;
 use wezterm_client::client::Client;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentHarness {
-    Unknown,
-    Claude,
-    Codex,
-}
-
-fn infer_harness(cmd: &str) -> AgentHarness {
-    let candidate = cmd.to_ascii_lowercase();
-    if candidate.contains("claude") {
-        AgentHarness::Claude
-    } else if candidate.contains("codex") {
-        AgentHarness::Codex
-    } else {
-        AgentHarness::Unknown
-    }
-}
 
 #[derive(Debug, Parser, Clone)]
 pub struct AgentCommand {
@@ -46,7 +33,10 @@ pub struct AgentCommand {
 
 #[derive(Debug, Subcommand, Clone)]
 enum AgentSubCommand {
-    #[command(name = "start", about = "start a managed agent in the current pane, a split, a new tab, or a new window")]
+    #[command(
+        name = "start",
+        about = "start a managed agent in the current pane, a split, a new tab, or a new window"
+    )]
     Start(SpawnAgentCommand),
 
     #[command(name = "adopt", about = "adopt an existing pane as a managed agent")]
@@ -57,6 +47,9 @@ enum AgentSubCommand {
 
     #[command(name = "inspect", about = "inspect a single agent by name or id")]
     Inspect(InspectAgentCommand),
+
+    #[command(name = "send", about = "send a message to an agent pane")]
+    Send(SendAgentCommand),
 
     #[command(name = "set", about = "attach agent metadata to a pane")]
     Set(SetAgentCommand),
@@ -72,6 +65,7 @@ impl AgentCommand {
             AgentSubCommand::Adopt(cmd) => cmd.run(client).await,
             AgentSubCommand::List(cmd) => cmd.run(client).await,
             AgentSubCommand::Inspect(cmd) => cmd.run(client).await,
+            AgentSubCommand::Send(cmd) => cmd.run(client).await,
             AgentSubCommand::Set(cmd) => cmd.run(client).await,
             AgentSubCommand::Clear(cmd) => cmd.run(client).await,
         }
@@ -284,11 +278,12 @@ impl SpawnAgentCommand {
             Option<String>,
         ) -> anyhow::Result<PreparedAgentLaunch>,
     {
-        let context_pane_id = if self.here || self.split || self.pane_id.is_some() || !self.new_window {
-            Some(resolve_pane_id(self.pane_id).await?)
-        } else {
-            None
-        };
+        let context_pane_id =
+            if self.here || self.split || self.pane_id.is_some() || !self.new_window {
+                Some(resolve_pane_id(self.pane_id).await?)
+            } else {
+                None
+            };
 
         let panes = if context_pane_id.is_some() {
             Some(list_panes().await?)
@@ -373,6 +368,7 @@ impl SpawnAgentCommand {
                 let _ = set_tab_title(TabTitleChanged {
                     tab_id: pane_context.tab_id,
                     title: agent_name.clone(),
+                    badge: Default::default(),
                 })
                 .await;
             }
@@ -423,17 +419,6 @@ impl SpawnAgentCommand {
                     .to_string()
             });
 
-            if size_trace_enabled() {
-                log::warn!(
-                    "size-trace cli.agent.spawn split={} window_id={:?} pane_id={:?} new_window={} size={:?}",
-                    self.split,
-                    window_id,
-                    context_pane_id,
-                    self.new_window,
-                    size
-                );
-            }
-
             spawn_v2(SpawnV2 {
                 domain: SpawnTabDomain::DefaultDomain,
                 window_id,
@@ -450,6 +435,7 @@ impl SpawnAgentCommand {
             if let Err(err) = set_tab_title(TabTitleChanged {
                 tab_id: spawned.tab_id,
                 title: agent_name.clone(),
+                badge: Default::default(),
             })
             .await
             {
@@ -513,7 +499,7 @@ impl SpawnAgentCommand {
         _agents: &[AgentSnapshot],
         current_cwd: Option<String>,
     ) -> anyhow::Result<PreparedAgentLaunch> {
-        let harness = infer_harness(&self.cmd);
+        let harness = infer_harness(&self.cmd, None);
         anyhow::ensure!(
             !matches!(harness, AgentHarness::Unknown),
             "agent start requires a recognized harness command (currently: codex, claude); use agent adopt for generic panes"
@@ -599,20 +585,14 @@ fn ensure_agent_name_available(
 }
 
 fn next_available_agent_name(agents: &[AgentSnapshot], base_name: &str) -> String {
-    if !agents
-        .iter()
-        .any(|agent| agent.metadata.name == base_name)
-    {
+    if !agents.iter().any(|agent| agent.metadata.name == base_name) {
         return base_name.to_string();
     }
 
     let mut suffix = 2usize;
     loop {
         let candidate = format!("{base_name}{suffix}");
-        if !agents
-            .iter()
-            .any(|agent| agent.metadata.name == candidate)
-        {
+        if !agents.iter().any(|agent| agent.metadata.name == candidate) {
             return candidate;
         }
         suffix += 1;
@@ -629,15 +609,15 @@ fn resolve_spawn_agent_name(
         return Ok(name.to_string());
     }
 
-        let base_name = match infer_harness(cmd) {
-            AgentHarness::Codex => "codex",
-            AgentHarness::Claude => "claude",
-            AgentHarness::Unknown => {
-                bail!(
+    let base_name = match infer_harness(cmd, None) {
+        AgentHarness::Codex => "codex",
+        AgentHarness::Claude => "claude",
+        AgentHarness::Unknown => {
+            bail!(
                 "agent start requires a recognized harness command (currently: codex, claude); use agent adopt for generic panes"
             )
-            }
-        };
+        }
+    };
 
     Ok(next_available_agent_name(agents, base_name))
 }
@@ -912,7 +892,27 @@ impl ListAgentsCommand {
                         alignment: Alignment::Left,
                     },
                     Column {
+                        name: "STATUS".to_string(),
+                        alignment: Alignment::Left,
+                    },
+                    Column {
+                        name: "TURN".to_string(),
+                        alignment: Alignment::Left,
+                    },
+                    Column {
+                        name: "HARNESS".to_string(),
+                        alignment: Alignment::Left,
+                    },
+                    Column {
+                        name: "TRANSPORT".to_string(),
+                        alignment: Alignment::Left,
+                    },
+                    Column {
                         name: "CWD".to_string(),
+                        alignment: Alignment::Left,
+                    },
+                    Column {
+                        name: "PROGRESS".to_string(),
                         alignment: Alignment::Left,
                     },
                     Column {
@@ -929,7 +929,12 @@ impl ListAgentsCommand {
                             agent.tab_id.to_string(),
                             agent.window_id.to_string(),
                             agent.workspace.clone(),
+                            runtime_status_label(&agent.runtime.status),
+                            turn_state_label(&agent.runtime.turn_state),
+                            harness_label(&agent.runtime.harness),
+                            transport_label(&agent.runtime.transport),
                             agent.metadata.declared_cwd.clone(),
+                            inline_progress_summary(agent),
                             agent.metadata.launch_cmd.clone(),
                         ]
                     })
@@ -954,6 +959,206 @@ impl InspectAgentCommand {
             .cloned()
             .with_context(|| format!("no agent named or identified by {}", self.target))?;
         write_json(&agent)
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
+pub struct SendAgentCommand {
+    /// Agent name or stable id
+    target: String,
+
+    /// Send the text directly, rather than as a bracketed paste
+    #[arg(long)]
+    no_paste: bool,
+
+    /// Do not press Enter after sending the text
+    #[arg(long)]
+    no_submit: bool,
+
+    /// Maximum time to wait for observer-backed acknowledgement
+    #[arg(long, default_value_t = 2000)]
+    ack_timeout_ms: u64,
+
+    /// Poll interval while waiting for acknowledgement
+    #[arg(long, default_value_t = 50)]
+    ack_poll_ms: u64,
+
+    /// The text to send. If omitted, reads from stdin
+    text: Option<String>,
+}
+
+impl SendAgentCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        let result = self
+            .run_with(
+                || client.list_agents(),
+                |request| client.write_to_pane(request),
+                |request| client.send_paste(request),
+                |request| client.key_down(request),
+            )
+            .await?;
+        write_json(&result)
+    }
+
+    async fn run_with<
+        ListAgents,
+        ListAgentsFut,
+        WriteToPaneFn,
+        WriteToPaneFut,
+        SendPasteFn,
+        SendPasteFut,
+        KeyDownFn,
+        KeyDownFut,
+    >(
+        &self,
+        mut list_agents: ListAgents,
+        write_to_pane: WriteToPaneFn,
+        send_paste: SendPasteFn,
+        key_down: KeyDownFn,
+    ) -> anyhow::Result<AgentSendResult>
+    where
+        ListAgents: FnMut() -> ListAgentsFut,
+        ListAgentsFut: Future<Output = anyhow::Result<codec::ListAgentsResponse>>,
+        WriteToPaneFn: Fn(codec::WriteToPane) -> WriteToPaneFut,
+        WriteToPaneFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
+        SendPasteFn: Fn(codec::SendPaste) -> SendPasteFut,
+        SendPasteFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
+        KeyDownFn: Fn(SendKeyDown) -> KeyDownFut,
+        KeyDownFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
+    {
+        let agents = list_agents().await?.agents;
+        let agent = find_agent(&agents, &self.target)
+            .cloned()
+            .with_context(|| format!("no agent named or identified by {}", self.target))?;
+        let text = self.read_text()?;
+        let baseline = AgentAckBaseline::from_agent(&agent);
+
+        if self.no_paste {
+            write_to_pane(codec::WriteToPane {
+                pane_id: agent.pane_id,
+                data: text.into_bytes(),
+            })
+            .await?;
+        } else {
+            send_paste(codec::SendPaste {
+                pane_id: agent.pane_id,
+                data: text,
+            })
+            .await?;
+        }
+
+        let submitted = !self.no_submit;
+        if submitted {
+            key_down(SendKeyDown {
+                pane_id: agent.pane_id,
+                event: KeyEvent {
+                    key: KeyCode::Enter,
+                    modifiers: Modifiers::NONE,
+                },
+                input_serial: InputSerial::now(),
+            })
+            .await?;
+        }
+
+        let acknowledgement = self
+            .wait_for_acknowledgement(&mut list_agents, &agent, &baseline)
+            .await?;
+
+        Ok(AgentSendResult {
+            agent_id: agent.metadata.agent_id.clone(),
+            agent_name: agent.metadata.name.clone(),
+            pane_id: agent.pane_id,
+            transport: agent.runtime.transport,
+            submitted,
+            acknowledgement,
+        })
+    }
+
+    fn read_text(&self) -> anyhow::Result<String> {
+        match &self.text {
+            Some(text) => Ok(text.clone()),
+            None => {
+                let mut text = String::new();
+                std::io::stdin()
+                    .read_to_string(&mut text)
+                    .context("reading stdin")?;
+                Ok(text)
+            }
+        }
+    }
+
+    async fn wait_for_acknowledgement<ListAgents, ListAgentsFut>(
+        &self,
+        list_agents: &mut ListAgents,
+        baseline_agent: &AgentSnapshot,
+        baseline: &AgentAckBaseline,
+    ) -> anyhow::Result<AgentSendAcknowledgement>
+    where
+        ListAgents: FnMut() -> ListAgentsFut,
+        ListAgentsFut: Future<Output = anyhow::Result<codec::ListAgentsResponse>>,
+    {
+        if self.no_submit {
+            return Ok(AgentSendAcknowledgement {
+                kind: AgentAckKind::NotRequested,
+                acknowledged: false,
+                latency_ms: None,
+                session_path: baseline.session_path.clone(),
+                detail: Some("submit skipped by --no-submit".to_string()),
+            });
+        }
+
+        if !matches!(
+            baseline_agent.runtime.transport,
+            AgentTransport::ObservedPty
+        ) {
+            return Ok(AgentSendAcknowledgement {
+                kind: AgentAckKind::Unavailable,
+                acknowledged: false,
+                latency_ms: None,
+                session_path: baseline.session_path.clone(),
+                detail: Some("agent has no observer-backed session path".to_string()),
+            });
+        }
+
+        let started = Instant::now();
+        let timeout = Duration::from_millis(self.ack_timeout_ms);
+        let poll = Duration::from_millis(self.ack_poll_ms);
+
+        loop {
+            let agent = list_agents()
+                .await?
+                .agents
+                .into_iter()
+                .find(|agent| agent.metadata.agent_id == baseline_agent.metadata.agent_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "agent {} disappeared while waiting for acknowledgement",
+                        baseline_agent.metadata.name
+                    )
+                })?;
+
+            if baseline.is_acknowledged_by(&agent) {
+                return Ok(AgentSendAcknowledgement {
+                    kind: AgentAckKind::SessionObserver,
+                    acknowledged: true,
+                    latency_ms: Some(started.elapsed().as_millis() as u64),
+                    session_path: agent.runtime.session_path.clone(),
+                    detail: agent.runtime.progress_summary.clone(),
+                });
+            }
+
+            if started.elapsed() >= timeout {
+                return Ok(AgentSendAcknowledgement {
+                    kind: AgentAckKind::TimedOut,
+                    acknowledged: false,
+                    latency_ms: Some(started.elapsed().as_millis() as u64),
+                    session_path: agent.runtime.session_path.clone(),
+                    detail: agent.runtime.progress_summary.clone(),
+                });
+            }
+
+            smol::Timer::after(poll).await;
+        }
     }
 }
 
@@ -1213,6 +1418,64 @@ struct ClearAgentResult {
     cleared: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum AgentAckKind {
+    SessionObserver,
+    TimedOut,
+    Unavailable,
+    NotRequested,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentSendAcknowledgement {
+    kind: AgentAckKind,
+    acknowledged: bool,
+    latency_ms: Option<u64>,
+    session_path: Option<String>,
+    detail: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentSendResult {
+    agent_id: String,
+    agent_name: String,
+    pane_id: PaneId,
+    transport: AgentTransport,
+    submitted: bool,
+    acknowledgement: AgentSendAcknowledgement,
+}
+
+#[derive(Debug, Clone)]
+struct AgentAckBaseline {
+    session_path: Option<String>,
+    last_progress_at: Option<chrono::DateTime<Utc>>,
+    progress_summary: Option<String>,
+}
+
+impl AgentAckBaseline {
+    fn from_agent(agent: &AgentSnapshot) -> Self {
+        Self {
+            session_path: agent.runtime.session_path.clone(),
+            last_progress_at: agent.runtime.last_progress_at,
+            progress_summary: agent.runtime.progress_summary.clone(),
+        }
+    }
+
+    fn is_acknowledged_by(&self, agent: &AgentSnapshot) -> bool {
+        if agent.runtime.session_path != self.session_path && agent.runtime.session_path.is_some() {
+            return true;
+        }
+
+        if agent.runtime.last_progress_at > self.last_progress_at {
+            return true;
+        }
+
+        agent.runtime.progress_summary != self.progress_summary
+            && agent.runtime.progress_summary.is_some()
+    }
+}
+
 fn build_agent_metadata(
     pane_id: PaneId,
     existing: Option<&AgentSnapshot>,
@@ -1287,11 +1550,61 @@ fn find_pane_cwd(panes: &ListPanesResponse, pane_id: PaneId) -> Option<String> {
     None
 }
 
+fn runtime_status_label(status: &AgentStatus) -> String {
+    match status {
+        AgentStatus::Starting => "starting",
+        AgentStatus::Busy => "busy",
+        AgentStatus::Idle => "idle",
+        AgentStatus::Errored => "errored",
+        AgentStatus::Exited => "exited",
+    }
+    .to_string()
+}
+
+fn turn_state_label(state: &AgentTurnState) -> String {
+    match state {
+        AgentTurnState::Unknown => "unknown",
+        AgentTurnState::WaitingOnAgent => "waiting-agent",
+        AgentTurnState::WaitingOnUser => "waiting-user",
+    }
+    .to_string()
+}
+
+fn harness_label(harness: &AgentHarness) -> String {
+    match harness {
+        AgentHarness::Unknown => "unknown",
+        AgentHarness::Claude => "claude",
+        AgentHarness::Codex => "codex",
+    }
+    .to_string()
+}
+
+fn transport_label(transport: &AgentTransport) -> String {
+    match transport {
+        AgentTransport::PlainPty => "pty",
+        AgentTransport::ObservedPty => "observed-pty",
+    }
+    .to_string()
+}
+
+fn inline_progress_summary(agent: &AgentSnapshot) -> String {
+    agent
+        .runtime
+        .progress_summary
+        .as_deref()
+        .or(agent.runtime.observer_error.as_deref())
+        .map(|summary| summary.replace('\n', " "))
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     use chrono::TimeZone;
-    use codec::{ListAgentsResponse, ListPanesResponse, SpawnResponse, UnitResponse};
+    use codec::{
+        ListAgentsResponse, ListPanesResponse, SendKeyDown, SendPaste, SpawnResponse, UnitResponse,
+        WriteToPane,
+    };
     use mux::agent::AgentMetadata;
     use mux::client::ClientWindowViewState;
     use mux::renderable::StableCursorPosition;
@@ -1357,6 +1670,7 @@ mod test {
         ListPanesResponse {
             tabs: panes,
             tab_titles: vec!["tab".to_string()],
+            tab_badges: vec![Default::default()],
             window_titles: HashMap::new(),
             client_window_view_state: HashMap::<mux::window::WindowId, ClientWindowViewState>::new(
             ),
@@ -1375,6 +1689,25 @@ mod test {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+            },
+            runtime: mux::agent::AgentRuntimeSnapshot {
+                harness: mux::agent::AgentHarness::Codex,
+                transport: mux::agent::AgentTransport::PlainPty,
+                status: mux::agent::AgentStatus::Idle,
+                turn_state: mux::agent::AgentTurnState::Unknown,
+                alive: true,
+                foreground_process_name: Some("codex".to_string()),
+                tty_name: Some("/dev/pts/1".to_string()),
+                last_input_at: None,
+                last_output_at: None,
+                last_progress_at: None,
+                last_turn_completed_at: None,
+                observed_at: Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
+                session_path: None,
+                progress_summary: None,
+                terminal_progress: wezterm_term::Progress::None,
+                observer_error: None,
+                observer_started_at: None,
             },
             pane_id,
             tab_id: 20,
@@ -1430,6 +1763,178 @@ mod test {
         assert_eq!(find_agent(&agents, "alpha"), Some(&alpha));
         assert_eq!(find_agent(&agents, "id-beta"), Some(&beta));
         assert_eq!(find_agent(&agents, "missing"), None);
+    }
+
+    #[test]
+    fn send_uses_observed_transport_and_waits_for_ack() {
+        let paste_calls = Rc::new(RefCell::new(vec![]));
+        let key_calls = Rc::new(RefCell::new(vec![]));
+        let list_calls = Rc::new(RefCell::new(0usize));
+        let command = SendAgentCommand {
+            target: "reviewer".to_string(),
+            no_paste: false,
+            no_submit: false,
+            ack_timeout_ms: 0,
+            ack_poll_ms: 0,
+            text: Some("fix this".to_string()),
+        };
+
+        let mut baseline = sample_agent(30, "reviewer");
+        baseline.runtime.transport = mux::agent::AgentTransport::ObservedPty;
+        baseline.runtime.session_path = Some("/tmp/reviewer.jsonl".to_string());
+        baseline.runtime.last_progress_at =
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap());
+
+        let mut acknowledged = baseline.clone();
+        acknowledged.runtime.last_progress_at =
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 1).unwrap());
+        acknowledged.runtime.progress_summary = Some("accepted".to_string());
+
+        let result = promise::spawn::block_on(command.run_with(
+            {
+                let list_calls = Rc::clone(&list_calls);
+                move || {
+                    let list_calls = Rc::clone(&list_calls);
+                    let baseline = baseline.clone();
+                    let acknowledged = acknowledged.clone();
+                    async move {
+                        let idx = {
+                            let mut calls = list_calls.borrow_mut();
+                            *calls += 1;
+                            *calls
+                        };
+                        Ok(ListAgentsResponse {
+                            agents: vec![if idx == 1 { baseline } else { acknowledged }],
+                        })
+                    }
+                }
+            },
+            |_| async { panic!("write_to_pane should not be used") },
+            {
+                let paste_calls = Rc::clone(&paste_calls);
+                move |request: SendPaste| {
+                    paste_calls.borrow_mut().push(request);
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            {
+                let key_calls = Rc::clone(&key_calls);
+                move |request: SendKeyDown| {
+                    key_calls.borrow_mut().push(request);
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(result.agent_name, "reviewer");
+        assert_eq!(result.transport, mux::agent::AgentTransport::ObservedPty);
+        assert!(result.submitted);
+        assert_eq!(result.acknowledgement.kind, AgentAckKind::SessionObserver);
+        assert!(result.acknowledgement.acknowledged);
+
+        let paste_calls = paste_calls.borrow();
+        assert_eq!(paste_calls.len(), 1);
+        assert_eq!(paste_calls[0].pane_id, 30);
+        assert_eq!(paste_calls[0].data, "fix this");
+
+        let key_calls = key_calls.borrow();
+        assert_eq!(key_calls.len(), 1);
+        assert_eq!(key_calls[0].pane_id, 30);
+        assert_eq!(key_calls[0].event.key, KeyCode::Enter);
+        assert_eq!(key_calls[0].event.modifiers, Modifiers::NONE);
+    }
+
+    #[test]
+    fn send_uses_plain_transport_without_observer_ack() {
+        let write_calls = Rc::new(RefCell::new(vec![]));
+        let key_calls = Rc::new(RefCell::new(vec![]));
+        let command = SendAgentCommand {
+            target: "reviewer".to_string(),
+            no_paste: true,
+            no_submit: false,
+            ack_timeout_ms: 0,
+            ack_poll_ms: 0,
+            text: Some("raw".to_string()),
+        };
+
+        let result = promise::spawn::block_on(command.run_with(
+            || async {
+                Ok(ListAgentsResponse {
+                    agents: vec![sample_agent(30, "reviewer")],
+                })
+            },
+            {
+                let write_calls = Rc::clone(&write_calls);
+                move |request: WriteToPane| {
+                    write_calls.borrow_mut().push(request);
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            |_| async { panic!("send_paste should not be used") },
+            {
+                let key_calls = Rc::clone(&key_calls);
+                move |request: SendKeyDown| {
+                    key_calls.borrow_mut().push(request);
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(result.transport, mux::agent::AgentTransport::PlainPty);
+        assert_eq!(result.acknowledgement.kind, AgentAckKind::Unavailable);
+        assert!(!result.acknowledgement.acknowledged);
+
+        let write_calls = write_calls.borrow();
+        assert_eq!(write_calls.len(), 1);
+        assert_eq!(write_calls[0].pane_id, 30);
+        assert_eq!(write_calls[0].data, b"raw");
+
+        let key_calls = key_calls.borrow();
+        assert_eq!(key_calls.len(), 1);
+    }
+
+    #[test]
+    fn send_no_submit_skips_keydown_and_ack_wait() {
+        let paste_calls = Rc::new(RefCell::new(vec![]));
+        let command = SendAgentCommand {
+            target: "reviewer".to_string(),
+            no_paste: false,
+            no_submit: true,
+            ack_timeout_ms: 1000,
+            ack_poll_ms: 0,
+            text: Some("draft".to_string()),
+        };
+
+        let result = promise::spawn::block_on(command.run_with(
+            || async {
+                let mut agent = sample_agent(30, "reviewer");
+                agent.runtime.transport = mux::agent::AgentTransport::ObservedPty;
+                agent.runtime.session_path = Some("/tmp/reviewer.jsonl".to_string());
+                Ok(ListAgentsResponse {
+                    agents: vec![agent],
+                })
+            },
+            |_| async { panic!("write_to_pane should not be used") },
+            {
+                let paste_calls = Rc::clone(&paste_calls);
+                move |request: SendPaste| {
+                    paste_calls.borrow_mut().push(request);
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            |_| async { panic!("key_down should not be used") },
+        ))
+        .unwrap();
+
+        assert!(!result.submitted);
+        assert_eq!(result.acknowledgement.kind, AgentAckKind::NotRequested);
+        assert!(!result.acknowledgement.acknowledged);
+
+        let paste_calls = paste_calls.borrow();
+        assert_eq!(paste_calls.len(), 1);
+        assert_eq!(paste_calls[0].data, "draft");
     }
 
     #[test]
@@ -2134,6 +2639,7 @@ mod test {
                 Ok(ListPanesResponse {
                     tabs: vec![leaf(10, 20, 30)],
                     tab_titles: vec!["".into()],
+                    tab_badges: vec![Default::default()],
                     window_titles: HashMap::new(),
                     client_window_view_state: HashMap::new(),
                 })
@@ -2249,6 +2755,7 @@ mod test {
                 Ok(ListPanesResponse {
                     tabs: vec![leaf(10, 20, 30)],
                     tab_titles: vec!["existing".into()],
+                    tab_badges: vec![Default::default()],
                     window_titles: HashMap::new(),
                     client_window_view_state: HashMap::new(),
                 })
@@ -2323,6 +2830,7 @@ mod test {
                 Ok(ListPanesResponse {
                     tabs: vec![leaf(10, 20, 30)],
                     tab_titles: vec!["existing".into()],
+                    tab_badges: vec![Default::default()],
                     window_titles: HashMap::new(),
                     client_window_view_state: HashMap::new(),
                 })

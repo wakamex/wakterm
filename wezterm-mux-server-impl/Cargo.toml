@@ -37,3 +37,4 @@ winapi = { workspace=true, features = [ "winuser" ]}
 [dev-dependencies]
 chrono.workspace = true
 parking_lot.workspace = true
+tempfile.workspace = true

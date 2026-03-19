@@ -147,6 +147,7 @@ impl SavedLayout {
         let ListPanesResponse {
             tabs,
             tab_titles,
+            tab_badges: _,
             window_titles,
             client_window_view_state,
         } = response;
@@ -319,7 +320,8 @@ async fn restore_window(client: &Client, window: SavedWindow) -> anyhow::Result<
             client
                 .set_tab_title(TabTitleChanged {
                     tab_id: spawned.tab_id,
-                    title: tab.title.clone(),
+                    title: mux::Mux::sanitize_tab_title_text(&tab.title),
+                    badge: Default::default(),
                 })
                 .await?;
         }
@@ -576,6 +578,7 @@ mod test {
         let response = ListPanesResponse {
             tabs: vec![tab0, tab1, tab2],
             tab_titles: vec!["one".into(), "two".into(), "three".into()],
+            tab_badges: vec![Default::default(), Default::default(), Default::default()],
             window_titles: std::collections::HashMap::from([
                 (1, "win-a".into()),
                 (9, "win-b".into()),
@@ -644,5 +647,29 @@ mod test {
             }
             other => panic!("expected pane, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn layout_uses_raw_tab_titles_not_display_titles() {
+        let tab0 = leaf(1, 2, 10, 0, 0, size(250, 68), "/tmp/a", true, false);
+        let response = ListPanesResponse {
+            tabs: vec![tab0],
+            tab_titles: vec!["scrape".into()],
+            tab_badges: vec![mux::agent::AgentTabBadgeState {
+                waiting_on_user: true,
+                needs_attention: true,
+            }],
+            window_titles: std::collections::HashMap::from([(1, "win-a".into())]),
+            client_window_view_state: std::collections::HashMap::from([(
+                1,
+                mux::client::ClientWindowViewState {
+                    active_tab_id: Some(2),
+                    ..Default::default()
+                },
+            )]),
+        };
+
+        let layout = SavedLayout::from_list_panes(response).unwrap();
+        assert_eq!(layout.windows[0].tabs[0].title, "scrape");
     }
 }

@@ -4,7 +4,8 @@ use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use codec::{ListPanesResponse, SpawnV2, SplitPane};
 use config::keyassignment::SpawnTabDomain;
-use config::{SshDomain, TlsDomainClient, UnixDomain};
+use config::{SshDomain, TlsDomainClient, UnixDomain, configuration};
+use mux::agent::AgentTabBadgeState;
 use mux::connui::{ConnectionUI, ConnectionUIParams};
 use mux::domain::{Domain, DomainId, DomainState, SplitSource, alloc_domain_id};
 use mux::pane::{Pane, PaneId};
@@ -173,6 +174,35 @@ impl ClientInner {
 
     pub fn is_local(&self) -> bool {
         self.client.is_local
+    }
+
+    fn decorate_tab_title(raw_title: &str, badge: &AgentTabBadgeState) -> String {
+        let raw_title = Mux::sanitize_tab_title_text(raw_title);
+        let config = configuration();
+        let should_badge = match config.agent_tab_badge_mode.as_str() {
+            "off" => false,
+            "turn" => badge.waiting_on_user,
+            "attention" => badge.needs_attention,
+            _ => badge.needs_attention,
+        };
+        if should_badge && !config.agent_tab_badge.is_empty() {
+            format!("{}{}", config.agent_tab_badge, raw_title)
+        } else {
+            raw_title
+        }
+    }
+
+    fn apply_remote_tab_title(
+        &self,
+        remote_tab_id: TabId,
+        raw_title: &str,
+        badge: &AgentTabBadgeState,
+    ) {
+        if let Some(local_tab_id) = self.remote_to_local_tab_id(remote_tab_id) {
+            if let Some(tab) = Mux::get().get_tab(local_tab_id) {
+                tab.set_title_from_remote(&Self::decorate_tab_title(raw_title, badge));
+            }
+        }
     }
 }
 
@@ -350,6 +380,7 @@ fn mux_notify_client_domain(local_domain_id: DomainId, notif: MuxNotification) -
                             .set_tab_title(codec::TabTitleChanged {
                                 tab_id: remote_tab_id,
                                 title,
+                                badge: AgentTabBadgeState::default(),
                             })
                             .await
                     })
@@ -545,19 +576,20 @@ impl ClientDomain {
         if let Some(inner) = self.inner() {
             if let Some(local_window_id) = inner.remote_to_local_window(remote_window_id) {
                 if let Some(mut window) = Mux::get().get_window_mut(local_window_id) {
-                    window.set_title(&title);
+                    window.set_title_from_remote(&title);
                 }
             }
         }
     }
 
-    pub fn process_remote_tab_title_change(&self, remote_tab_id: TabId, title: String) {
+    pub fn process_remote_tab_title_change(
+        &self,
+        remote_tab_id: TabId,
+        title: String,
+        badge: AgentTabBadgeState,
+    ) {
         if let Some(inner) = self.inner() {
-            if let Some(local_tab_id) = inner.remote_to_local_tab_id(remote_tab_id) {
-                if let Some(tab) = Mux::get().get_tab(local_tab_id) {
-                    tab.set_title(&title);
-                }
-            }
+            inner.apply_remote_tab_title(remote_tab_id, &title, &badge);
         }
     }
 
@@ -599,7 +631,12 @@ impl ClientDomain {
 
         let client_window_view_state = panes.client_window_view_state.clone();
 
-        for (tabroot, tab_title) in panes.tabs.into_iter().zip(panes.tab_titles.iter()) {
+        for ((tabroot, tab_title), tab_badge) in panes
+            .tabs
+            .into_iter()
+            .zip(panes.tab_titles.iter())
+            .zip(panes.tab_badges.iter())
+        {
             let root_size = match tabroot.root_size() {
                 Some(size) => size,
                 None => continue,
@@ -635,7 +672,7 @@ impl ClientDomain {
                     inner.record_remote_to_local_tab_mapping(remote_tab_id, tab.tab_id());
                 }
 
-                tab.set_title(tab_title);
+                inner.apply_remote_tab_title(remote_tab_id, tab_title, tab_badge);
 
                 log::debug!("domain: {} tree: {:#?}", inner.local_domain_id, tabroot);
                 let mut workspace = None;
@@ -736,7 +773,7 @@ impl ClientDomain {
                 let mut window = mux
                     .get_window_mut(local_window_id)
                     .expect("no such window!?");
-                window.set_title(&window_title);
+                window.set_title_from_remote(&window_title);
             }
         }
 
@@ -1211,6 +1248,7 @@ mod test {
                     _ => "tab".to_string(),
                 })
                 .collect(),
+            tab_badges: tabs.iter().map(|_| AgentTabBadgeState::default()).collect(),
             tabs,
             window_titles: HashMap::from([(1, "remote-window".to_string())]),
             client_window_view_state: HashMap::from([(

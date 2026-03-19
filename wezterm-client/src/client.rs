@@ -1,24 +1,24 @@
 use crate::domain::{ClientDomain, ClientDomainConfig};
 use crate::pane::ClientPane;
-use anyhow::{anyhow, bail, Context};
+use anyhow::{Context, anyhow, bail};
 use async_ossl::AsyncSslStream;
 use async_trait::async_trait;
 use codec::*;
-use config::{configuration, SshDomain, TlsDomainClient, UnixDomain, UnixTarget};
+use config::{SshDomain, TlsDomainClient, UnixDomain, UnixTarget, configuration};
 use filedescriptor::FileDescriptor;
 use futures::FutureExt;
+use mux::Mux;
 use mux::client::{ClientId, ClientViewId};
 use mux::connui::ConnectionUI;
 use mux::domain::DomainId;
 use mux::pane::PaneId;
 use mux::ssh::ssh_connect_with_ui;
-use mux::Mux;
 use openssl::ssl::{SslConnector, SslFiletype, SslMethod};
 use openssl::x509::X509;
 use portable_pty::Child;
-use smol::channel::{bounded, unbounded, Receiver, Sender};
+use smol::channel::{Receiver, Sender, bounded, unbounded};
 use smol::prelude::*;
-use smol::{block_on, Async};
+use smol::{Async, block_on};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::marker::Unpin;
@@ -277,9 +277,14 @@ fn process_unilateral(
             .detach();
             return Ok(());
         }
-        Pdu::TabTitleChanged(TabTitleChanged { tab_id, title }) => {
+        Pdu::TabTitleChanged(TabTitleChanged {
+            tab_id,
+            title,
+            badge,
+        }) => {
             let title = title.to_string();
             let tab_id = *tab_id;
+            let badge = badge.clone();
             promise::spawn::spawn_into_main_thread(async move {
                 let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
                 let client_domain = mux
@@ -292,7 +297,7 @@ fn process_unilateral(
                             anyhow!("domain {} is not a ClientDomain instance", local_domain_id)
                         })?;
 
-                client_domain.process_remote_tab_title_change(tab_id, title);
+                client_domain.process_remote_tab_title_change(tab_id, title, badge);
                 anyhow::Result::<()>::Ok(())
             })
             .detach();

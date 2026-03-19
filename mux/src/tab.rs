@@ -22,10 +22,6 @@ pub type Cursor = bintree::Cursor<Arc<dyn Pane>, SplitDirectionAndSize>;
 static TAB_ID: ::std::sync::atomic::AtomicUsize = ::std::sync::atomic::AtomicUsize::new(0);
 pub type TabId = usize;
 
-pub fn size_trace_enabled() -> bool {
-    true
-}
-
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum NotifyMux {
     Yes,
@@ -754,6 +750,16 @@ impl Tab {
         }
     }
 
+    /// Update the tab title from mirrored remote state without echoing it back
+    /// into the mux as a local user action.
+    pub fn set_title_from_remote(&self, title: &str) {
+        let mut inner = self.inner.lock();
+        inner.title_is_user_set = true;
+        if inner.title != title {
+            inner.title = title.to_string();
+        }
+    }
+
     /// Set the tab title from a terminal escape sequence (OSC).
     /// Ignored if the user has explicitly set a title.
     pub fn set_title_from_terminal(&self, title: &str) {
@@ -871,7 +877,7 @@ impl Tab {
         }
 
         log::error!(
-            "size-trace invariant-fail context={} {} errors={:?}",
+            "tab invariant failure: context={} {} errors={:?}",
             context,
             inner.debug_size_snapshot(),
             errors
@@ -1469,17 +1475,6 @@ impl TabInner {
             return;
         }
 
-        let trace_enabled = size_trace_enabled();
-        let before_snapshot = trace_enabled.then(|| self.debug_size_snapshot());
-        if let Some(before) = &before_snapshot {
-            log::warn!(
-                "size-trace tab.resize.begin requested={} current={} {}",
-                format_terminal_size(size),
-                format_terminal_size(self.size),
-                before
-            );
-        }
-
         if let Some(zoomed) = &self.zoomed {
             self.size = size;
             zoomed.resize(size).ok();
@@ -1529,14 +1524,6 @@ impl TabInner {
 
             #[cfg(debug_assertions)]
             debug_assert_tree_invariants(self.pane.as_ref().unwrap(), &self.size);
-        }
-
-        if trace_enabled {
-            log::warn!(
-                "size-trace tab.resize.end final={} {}",
-                format_terminal_size(self.size),
-                self.debug_size_snapshot()
-            );
         }
 
         Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
@@ -2340,26 +2327,12 @@ impl TabInner {
             anyhow::bail!("cannot split while zoomed");
         }
 
-        let trace_enabled = size_trace_enabled();
-        let before_snapshot = trace_enabled.then(|| self.debug_size_snapshot());
-
         {
             let split_info = self
                 .compute_split_size(pane_index, request)
                 .ok_or_else(|| {
                     anyhow::anyhow!("invalid pane_index {}; cannot split!", pane_index)
                 })?;
-
-            if let Some(before) = &before_snapshot {
-                log::warn!(
-                    "size-trace tab.split.begin pane_index={} new_pane_id={} request={:?} split_info={:?} {}",
-                    pane_index,
-                    pane.pane_id(),
-                    request,
-                    split_info,
-                    before
-                );
-            }
 
             let tab_size = self.size;
             if split_info.first.rows == 0
@@ -2429,16 +2402,6 @@ impl TabInner {
 
                         self.active = pane_index;
                         self.recency.tag(pane_index);
-                        if trace_enabled {
-                            let active = self.active;
-                            let snapshot = self.debug_size_snapshot();
-                            log::warn!(
-                                "size-trace tab.split.end pane_index={} active={} {}",
-                                pane_index,
-                                active,
-                                snapshot
-                            );
-                        }
                         return Ok(pane_index);
                     }
                     Err(cursor) => cursor,
@@ -2488,17 +2451,6 @@ impl TabInner {
 
         log::debug!("split info after split: {:#?}", self.iter_splits());
         log::debug!("pane info after split: {:#?}", self.iter_panes());
-
-        if trace_enabled {
-            let active = self.active;
-            let snapshot = self.debug_size_snapshot();
-            log::warn!(
-                "size-trace tab.split.end pane_index={} active={} {}",
-                pane_index,
-                active,
-                snapshot
-            );
-        }
 
         Ok(if request.target_is_second {
             pane_index + 1
@@ -2890,15 +2842,16 @@ mod test {
         assert_eq!(80, panes[0].width);
         assert_eq!(24, panes[0].height);
 
-        assert!(tab
-            .compute_split_size(
+        assert!(
+            tab.compute_split_size(
                 1,
                 SplitRequest {
                     direction: SplitDirection::Horizontal,
                     ..Default::default()
                 }
             )
-            .is_none());
+            .is_none()
+        );
 
         let horz_size = tab
             .compute_split_size(

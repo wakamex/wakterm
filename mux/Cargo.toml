@@ -63,3 +63,4 @@ winapi = { workspace=true, features = [
 
 [dev-dependencies]
 k9.workspace = true
+tempfile.workspace = true

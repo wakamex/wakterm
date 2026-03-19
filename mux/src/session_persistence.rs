@@ -49,7 +49,7 @@ fn build_saved_session(mux: &Mux) -> SavedSession {
             let workspace = window.get_workspace().to_string();
             let mut tabs = Vec::new();
             for tab in window.iter() {
-                let title = tab.get_title();
+                let title = mux.raw_tab_title(tab.tab_id());
                 let mut tree = tab.codec_pane_tree_with_active_pane_id(None);
                 mux.annotate_pane_tree_with_agent_metadata(&mut tree);
                 // Fix any degenerate splits (< 3 cols/rows on one side)
@@ -260,7 +260,7 @@ async fn restore_tab(
         .await
         .context("spawning first pane for tab")?;
 
-    tab.set_title(&saved_tab.title);
+    tab.set_title(&Mux::sanitize_tab_title_text(&saved_tab.title));
 
     // The first leaf is pane index 0. Now recursively split to create
     // the rest of the tree. leaf_index tracks which pane index in the
@@ -675,5 +675,27 @@ mod test {
             }
             other => panic!("expected single leaf, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn saved_session_sanitizes_badged_tab_titles() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = crate::TestMuxGuard;
+
+        let window_id = *mux.new_empty_window(Some("default".to_string()), None);
+        let tab_size = size(120, 40);
+
+        let tab = Arc::new(Tab::new(&tab_size));
+        let pane = TestPane::new(alloc_pane_id(), tab_size);
+        tab.assign_pane(&pane);
+        tab.set_title("🤖 🤖 scrape");
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let session = build_saved_session(&mux);
+        assert_eq!(session.windows[0].tabs[0].title, "scrape");
     }
 }

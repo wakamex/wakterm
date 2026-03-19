@@ -21,11 +21,11 @@ use crate::units::Dimension;
 use crate::unix::UnixDomain;
 use crate::wsl::WslDomain;
 use crate::{
-    default_config_with_overrides_applied, default_one_point_oh, default_one_point_oh_f64,
-    default_true, default_win32_acrylic_accent_color, CellWidth, GpuInfo,
+    CONFIG_DIRS, CONFIG_FILE_OVERRIDE, CONFIG_OVERRIDES, CONFIG_SKIP, CellWidth, GpuInfo, HOME_DIR,
     IntegratedTitleButtonColor, KeyMapPreference, LoadedConfig, MouseEventTriggerMods, RgbaColor,
-    SerialDomain, SystemBackdrop, WebGpuPowerPreference, CONFIG_DIRS, CONFIG_FILE_OVERRIDE,
-    CONFIG_OVERRIDES, CONFIG_SKIP, HOME_DIR,
+    SerialDomain, SystemBackdrop, WebGpuPowerPreference, default_config_with_overrides_applied,
+    default_one_point_oh, default_one_point_oh_f64, default_true,
+    default_win32_acrylic_accent_color,
 };
 use anyhow::Context;
 use luahelper::impl_lua_conversion_dynamic;
@@ -184,6 +184,16 @@ pub struct Config {
 
     #[dynamic(default)]
     pub tab_bar_style: TabBarStyle,
+
+    /// Controls agent tab badge behavior.
+    /// Valid values are "attention", "turn", and "off".
+    #[dynamic(default = "default_agent_tab_badge_mode")]
+    pub agent_tab_badge_mode: String,
+
+    /// Prefix shown in tab titles when an agent badge is active.
+    /// Set to the empty string to suppress the visual badge.
+    #[dynamic(default = "default_agent_tab_badge")]
+    pub agent_tab_badge: String,
 
     #[dynamic(default)]
     pub resolved_palette: Palette,
@@ -941,7 +951,7 @@ impl Config {
     pub fn update_ulimit(&self) -> anyhow::Result<()> {
         #[cfg(unix)]
         {
-            use nix::sys::resource::{getrlimit, rlim_t, setrlimit, Resource};
+            use nix::sys::resource::{Resource, getrlimit, rlim_t, setrlimit};
             use std::convert::TryInto;
 
             let (no_file_soft, no_file_hard) = getrlimit(Resource::RLIMIT_NOFILE)?;
@@ -970,7 +980,7 @@ impl Config {
 
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            use nix::sys::resource::{getrlimit, rlim_t, setrlimit, Resource};
+            use nix::sys::resource::{Resource, getrlimit, rlim_t, setrlimit};
             use std::convert::TryInto;
 
             let (nproc_soft, nproc_hard) = getrlimit(Resource::RLIMIT_NPROC)?;
@@ -1048,7 +1058,7 @@ impl Config {
                         file_name: Some(path_item.path.clone()),
                         lua: None,
                         warnings: vec![],
-                    }
+                    };
                 }
                 Ok(None) => continue,
                 Ok(Some(loaded)) => return loaded,
@@ -1727,6 +1737,14 @@ fn default_harfbuzz_features() -> Vec<String> {
         .iter()
         .map(|&s| s.to_string())
         .collect()
+}
+
+fn default_agent_tab_badge_mode() -> String {
+    "attention".into()
+}
+
+fn default_agent_tab_badge() -> String {
+    "🤖 ".into()
 }
 
 fn default_term() -> String {

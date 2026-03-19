@@ -56,6 +56,7 @@ impl SetTabTitle {
             .set_tab_title(codec::TabTitleChanged {
                 tab_id,
                 title: self.title,
+                badge: Default::default(),
             })
             .await?;
         Ok(())

@@ -274,17 +274,24 @@ mod test {
                 |_| async move { panic!("explicit --tab-id should not resolve pane ids") },
                 || async {
                     Ok(ListPanesResponse {
-                        tabs: vec![leaf(3, 7, 21, size(120, 40), true), leaf(3, 9, 42, size(120, 40), true)],
+                        tabs: vec![
+                            leaf(3, 7, 21, size(120, 40), true),
+                            leaf(3, 9, 42, size(120, 40), true),
+                        ],
                         tab_titles: vec!["one".into(), "two".into()],
+                        tab_badges: vec![Default::default(), Default::default()],
                         window_titles: HashMap::from([(3, "win".into())]),
                         client_window_view_state: HashMap::from([(
                             3,
                             ClientWindowViewState {
                                 active_tab_id: Some(7),
                                 last_active_tab_id: None,
-                                tabs: HashMap::from([(9, ClientTabViewState {
-                                    active_pane_id: Some(42),
-                                })]),
+                                tabs: HashMap::from([(
+                                    9,
+                                    ClientTabViewState {
+                                        active_pane_id: Some(42),
+                                    },
+                                )]),
                             },
                         )]),
                     })
@@ -355,6 +362,7 @@ mod test {
                             },
                         )],
                         tab_titles: vec!["target".into()],
+                        tab_badges: vec![Default::default()],
                         window_titles: HashMap::from([(5, "win".into())]),
                         client_window_view_state: HashMap::from([(
                             5,
