@@ -11,9 +11,9 @@ The `TabInformation` struct contains the following fields:
 * `tab_index` - the logical tab position within its containing window, with 0 indicating the leftmost tab
 * `is_active` - is true if this tab is the active tab
 * `is_last_active` - is true if this tab is the previously active tab. {{since('nightly', inline=True)}}
-* `active_pane` - the [PaneInformation](PaneInformation.md) for the active pane in this tab
+* `active_pane` - the [PaneInformation](PaneInformation.md) for the active pane in this tab, or `nil` if unavailable
 * `window_id` - the ID of the window that contains this tab {{since('20220807-113146-c2fee766', inline=True)}}
 * `window_title` - the title of the window that contains this tab {{since('20220807-113146-c2fee766', inline=True)}}
 * `tab_title` - the title of the tab {{since('20220807-113146-c2fee766', inline=True)}}
-
+* `effective_title` - the tab title if it was explicitly set, otherwise the active pane title if available, otherwise an empty string
 

@@ -218,6 +218,19 @@ pub struct TabInformation {
     pub tab_title: String,
 }
 
+impl TabInformation {
+    pub fn effective_title(&self) -> String {
+        if !self.tab_title.is_empty() {
+            self.tab_title.clone()
+        } else {
+            self.active_pane
+                .as_ref()
+                .map(|pane| pane.title.clone())
+                .unwrap_or_default()
+        }
+    }
+}
+
 impl UserData for TabInformation {
     fn add_fields<'lua, F: UserDataFields<'lua, Self>>(fields: &mut F) {
         fields.add_field_method_get("tab_id", |_, this| Ok(this.tab_id));
@@ -231,6 +244,7 @@ impl UserData for TabInformation {
                 Ok(None)
             }
         });
+        fields.add_field_method_get("effective_title", |_, this| Ok(this.effective_title()));
         fields.add_field_method_get("panes", |_, this| {
             let mux = Mux::get();
             let mut panes = vec![];

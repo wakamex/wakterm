@@ -47,6 +47,9 @@ wakterm.on(
   'format-tab-title',
   function(tab, tabs, panes, config, hover, max_width)
     local pane = tab.active_pane
+    if not pane then
+      return tab.effective_title
+    end
     local title = basename(pane.foreground_process_name)
       .. ' '
       .. pane.pane_id
@@ -79,10 +82,11 @@ local config = {}
 wakterm.on(
   'format-tab-title',
   function(tab, tabs, panes, config, hover, max_width)
+    local title = tab.effective_title
     if tab.is_active then
       return {
         { Background = { Color = 'blue' } },
-        { Text = ' ' .. tab.active_pane.title .. ' ' },
+        { Text = ' ' .. title .. ' ' },
       }
     end
     local has_unseen_output = false
@@ -95,10 +99,10 @@ wakterm.on(
     if has_unseen_output then
       return {
         { Background = { Color = 'Orange' } },
-        { Text = ' ' .. tab.active_pane.title .. ' ' },
+        { Text = ' ' .. title .. ' ' },
       }
     end
-    return tab.active_pane.title
+    return title
   end
 )
 
@@ -117,6 +121,9 @@ local config = {}
 
 wakterm.on('format-tab-title', function(tab)
   local pane = tab.active_pane
+  if not pane then
+    return tab.effective_title
+  end
   local title = pane.title
   if pane.domain_name then
     title = title .. ' - (' .. pane.domain_name .. ')'
