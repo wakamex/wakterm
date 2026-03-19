@@ -14,24 +14,18 @@ class Page(object):
         self.filename = filename
         self.children = children or []
 
-    def render(self, output, depth=0, mode="mdbook"):
+    def render(self, output, depth=0):
         indent = "  " * depth
         bullet = "- " if depth > 0 else ""
-        if mode == "mdbook":
-            if self.filename:
-                output.write(f"{indent}{bullet}[{self.title}]({self.filename})\n")
-        elif mode == "mkdocs":
-            if depth > 0:
-                if len(self.children) == 0:
-                    output.write(f'{indent}{bullet}"{self.title}": {self.filename}\n')
-                else:
-                    output.write(f'{indent}{bullet}"{self.title}":\n')
-                    if self.filename:
-                        output.write(
-                            f'{indent}  {bullet}"{self.title}": {self.filename}\n'
-                        )
+        if depth > 0:
+            if len(self.children) == 0:
+                output.write(f'{indent}{bullet}"{self.title}": {self.filename}\n')
+            else:
+                output.write(f'{indent}{bullet}"{self.title}":\n')
+                if self.filename:
+                    output.write(f'{indent}  {bullet}"{self.title}": {self.filename}\n')
         for kid in self.children:
-            kid.render(output, depth + 1, mode)
+            kid.render(output, depth + 1)
 
 
 # autogenerate an index page from the contents of a directory
@@ -42,7 +36,7 @@ class Gen(object):
         self.index = index
         self.extract_title = extract_title
 
-    def render(self, output, depth=0, mode="mdbook"):
+    def render(self, output, depth=0):
         names = sorted(glob.glob(f"{self.dirname}/*.md"))
         children = []
         for filename in names:
@@ -58,7 +52,7 @@ class Gen(object):
 
         index_filename = f"{self.dirname}/index.md"
         index_page = Page(self.title, index_filename, children=children)
-        index_page.render(output, depth, mode)
+        index_page.render(output, depth)
         with open(f"{self.dirname}/index.md", "w") as idx:
             if self.index:
                 idx.write(self.index)
@@ -200,7 +194,7 @@ class GenColorScheme(object):
         self.dirname = dirname
         self.index = index
 
-    def render(self, output, depth=0, mode="mdbook"):
+    def render(self, output, depth=0):
         with open("colorschemes/data.json") as f:
             scheme_data = json.load(f)
         by_prefix = {}
@@ -313,7 +307,7 @@ document.addEventListener("DOMContentLoaded", function() {{
 
         index_filename = f"{self.dirname}/index.md"
         index_page = Page(self.title, index_filename, children=children)
-        index_page.render(output, depth, mode)
+        index_page.render(output, depth)
 
         with open(f"{self.dirname}/index.md", "w") as idx:
             idx.write(f"{len(scheme_data)} Color schemes listed by first letter\n\n")
@@ -504,10 +498,4 @@ with open("../mkdocs.yml", "w") as f:
     f.write("INHERIT: docs/mkdocs-base.yml\n")
     f.write("nav:\n")
     for page in TOC:
-        page.render(f, depth=1, mode="mkdocs")
-
-
-with open("SUMMARY.md", "w") as f:
-    f.write("[root](index.md)\n")
-    for page in TOC:
-        page.render(f, depth=1, mode="mdbook")
+        page.render(f, depth=1)

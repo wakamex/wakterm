@@ -63,21 +63,11 @@ plugins:
       glob:
         - "**/_index.md"
         - "**/*.markdown"
-        - "generate_toc.py"
-        - "README.markdown"
-        - "build.sh"
-        - "SUMMARY.md"
-        - "book.toml"
         - "overrides/**"
 
 exclude_docs: |
   **/_index.md
   **/*.markdown
-  generate_toc.py
-  README.markdown
-  build.sh
-  SUMMARY.md
-  book.toml
   overrides/**
 
 not_in_nav: |
