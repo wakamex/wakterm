@@ -16,18 +16,18 @@ information on this key assignment.
 
 ### Log Files
 
-You can find log files in `$XDG_RUNTIME_DIR/wezterm` on unix systems,
-or `$HOME/.local/share/wezterm` on macOS and Windows systems.
+You can find log files in `$XDG_RUNTIME_DIR/wakterm` on unix systems,
+or `$HOME/.local/share/wakterm` on macOS and Windows systems.
 
 ### Increasing Log Verbosity
 
-The `WEZTERM_LOG` environment variable can be used to adjust the level
-of logging for different modules within wezterm.
+The `WAKTERM_LOG` environment variable can be used to adjust the level
+of logging for different modules within wakterm.
 
-To see maximum verbosity, you can start wezterm like this:
+To see maximum verbosity, you can start wakterm like this:
 
 ```
-WEZTERM_LOG=debug wezterm
+WAKTERM_LOG=debug wakterm
 ```
 
 to see debug level logs for everything on stdout.
@@ -37,47 +37,47 @@ On Windows systems you'll usually need to set the environment variable separatel
 Using `cmd.exe`:
 
 ```
-C:\> set WEZTERM_LOG=debug
-C:\> wezterm
+C:\> set WAKTERM_LOG=debug
+C:\> wakterm
 ```
 
 Using powershell:
 
 ```
-PS C:\> $env:WEZTERM_LOG="debug"
-PS C:\> wezterm
+PS C:\> $env:WAKTERM_LOG="debug"
+PS C:\> wakterm
 ```
 
 When using a flatpak you must first enter the flatpak container by running:
 
 ```
-flatpak run --command=sh --devel org.wezfurlong.wezterm
+flatpak run --command=sh --devel org.wezfurlong.wakterm
 ```
 
-Before then running `wezterm`.
+Before then running `wakterm`.
 
 Each log line will include the module name, which is a colon separated
 namespace; in the output below the modules are `config`,
-`wezterm_gui::frontend`, `wezterm_font::ftwrap` and `wezterm_gui::termwindow`:
+`wakterm_gui::frontend`, `wakterm_font::ftwrap` and `wakterm_gui::termwindow`:
 
 ```
 10:29:24.451  DEBUG  config                    > Reloaded configuration! generation=2
-10:29:24.452  DEBUG  wezterm_gui::frontend     > workspace is default, fixup windows
-10:29:24.459  DEBUG  wezterm_font::ftwrap      > set_char_size computing 12 dpi=124 (pixel height=20.666666666666668)
-10:29:24.461  DEBUG  wezterm_font::ftwrap      > set_char_size computing 12 dpi=124 (pixel height=20.666666666666668)
-10:29:24.494  DEBUG  wezterm_gui::termwindow   > FocusChanged(true)
-10:29:24.495  DEBUG  wezterm_gui::termwindow   > FocusChanged(false)
+10:29:24.452  DEBUG  wakterm_gui::frontend     > workspace is default, fixup windows
+10:29:24.459  DEBUG  wakterm_font::ftwrap      > set_char_size computing 12 dpi=124 (pixel height=20.666666666666668)
+10:29:24.461  DEBUG  wakterm_font::ftwrap      > set_char_size computing 12 dpi=124 (pixel height=20.666666666666668)
+10:29:24.494  DEBUG  wakterm_gui::termwindow   > FocusChanged(true)
+10:29:24.495  DEBUG  wakterm_gui::termwindow   > FocusChanged(false)
 ```
 
 Those modules generally match up to directories and file names within the
-wezterm source code, or to external modules that wezterm depends upon.
+wakterm source code, or to external modules that wakterm depends upon.
 
 You can set a more restrictive filter to focus in on just the things you want.
 For example, if you wanted to debug only configuration related things you might
 set:
 
 ```
-WEZTERM_LOG=config=debug,info
+WAKTERM_LOG=config=debug,info
 ```
 
 which says:
@@ -88,7 +88,7 @@ which says:
 You can add more comma-separated items:
 
 ```
-WEZTERM_LOG=config=debug,wezterm_font=debug,info
+WAKTERM_LOG=config=debug,wakterm_font=debug,info
 ```
 
 See Rust's [env_logger
@@ -100,7 +100,7 @@ for more details on the syntax/possibilities.
 Turn on [debug_key_events](config/lua/config/debug_key_events.md) to log
 information about key presses.
 
-Use [wezterm show-keys](cli/show-keys.md) or `wezterm show-keys --lua` to show
+Use [wakterm show-keys](cli/show-keys.md) or `wakterm show-keys --lua` to show
 the effective set of key and mouse assignments defined by your config.
 
 Consider changing [use_ime](config/lua/config/use_ime.md) to see that is
@@ -112,13 +112,13 @@ trying to use.
 
 ## Debugging Font Display
 
-Use `wezterm ls-fonts` to explain which fonts will be used for different styles
+Use `wakterm ls-fonts` to explain which fonts will be used for different styles
 of text.
 
-Use `wezterm ls-fonts --list-system` to get a list of fonts available on your
+Use `wakterm ls-fonts --list-system` to get a list of fonts available on your
 system, in a form that you can use in your config file.
 
-Use `wezterm ls-fonts --text foo` to explain how wezterm will render the text
-`foo`, and `wezterm ls-fonts --text foo --rasterize-ascii` to show an ascii art
+Use `wakterm ls-fonts --text foo` to explain how wakterm will render the text
+`foo`, and `wakterm ls-fonts --text foo --rasterize-ascii` to show an ascii art
 rendition of that text.
 

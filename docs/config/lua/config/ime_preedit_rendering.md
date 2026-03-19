@@ -9,9 +9,9 @@ tags:
 
 Control IME preedit rendering.
 IME preedit is an area that is used to display the string being preedited in IME.
-WezTerm supports the following IME preedit rendering.
+wakterm supports the following IME preedit rendering.
 
-* `"Builtin"` - (Default) IME preedit is rendered by WezTerm itself
+* `"Builtin"` - (Default) IME preedit is rendered by wakterm itself
 
   "Builtin" rendering provides good look and feel for many IMEs,
   rendering the text using the same font as the terminal and
@@ -37,6 +37,6 @@ Otherwise, the default is `"Builtin"`.
 
 Note:
 
-* Changing `ime_preedit_rendering` usually requires re-launching WezTerm to take full effect.
+* Changing `ime_preedit_rendering` usually requires re-launching wakterm to take full effect.
 * In macOS, `ime_preedit_rendering` has effected nothing yet.
-  IME preedit is always rendered by WezTerm itself.
+  IME preedit is always rendered by wakterm itself.

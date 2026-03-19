@@ -24,7 +24,7 @@ bypassing mouse reporting capture.
 
 ## Default Mouse Assignments
 
-*Note: you can run `wezterm show-keys` to show the effective key and mouse assignments*.
+*Note: you can run `wakterm show-keys` to show the effective key and mouse assignments*.
 
 In the table below, `Triple Left Down` means that the left mouse button is
 being triple clicked and that the event matches the downstroke of the third
@@ -33,10 +33,10 @@ of that triple click, so for a triple click both
 `SelectTextAtMouseCursor="Line"` and `CompleteSelection` will be triggered in
 that order.
 
-NOTE: In the action column, `act` is an alias to `wezterm.action` (to avoid repetition):
+NOTE: In the action column, `act` is an alias to `wakterm.action` (to avoid repetition):
 
 ```lua
-local act = wezterm.action
+local act = wakterm.action
 ```
 
 | Event | Modifiers | Action |
@@ -76,8 +76,8 @@ config.disable_default_mouse_bindings = true
 You can define mouse actions using the `mouse_bindings` configuration section:
 
 ```lua
-local wezterm = require 'wezterm'
-local act = wezterm.action
+local wakterm = require 'wakterm'
+local act = wakterm.action
 local config = {}
 
 config.mouse_bindings = {
@@ -166,8 +166,8 @@ You can handle vertical wheel scroll events using the example shown below. The
 delta scroll value while handling the event.
 
 ```lua
-local wezterm = require 'wezterm'
-local act = wezterm.action
+local wakterm = require 'wakterm'
+local act = wakterm.action
 local config = {}
 
 config.mouse_bindings = {
@@ -201,8 +201,8 @@ event, but not the 'Up' event (which is bound to something in your config).
 To avoid this, it is recommended to disable the 'Down' event (to ensure it won't
 be sent to the running program), for example:
 ```lua
-local wezterm = require 'wezterm'
-local act = wezterm.action
+local wakterm = require 'wakterm'
+local act = wakterm.action
 local config = {}
 
 config.mouse_bindings = {

@@ -10,9 +10,9 @@ use crate::readbuf::ReadBuffer;
 #[cfg(feature = "use_serde")]
 use serde::{Deserialize, Serialize};
 use std::fmt::Write;
-use wezterm_input_types::ctrl_mapping;
+use wakterm_input_types::ctrl_mapping;
 
-pub use wezterm_input_types::Modifiers;
+pub use wakterm_input_types::Modifiers;
 
 pub const CSI: &str = "\x1b[";
 pub const SS3: &str = "\x1bO";
@@ -44,7 +44,7 @@ use winapi::um::wincon::{
     WINDOW_BUFFER_SIZE_EVENT, WINDOW_BUFFER_SIZE_RECORD,
 };
 
-pub use wezterm_escape_parser::csi::MouseButtons;
+pub use wakterm_escape_parser::csi::MouseButtons;
 
 #[cfg_attr(feature = "use_serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1328,7 +1328,7 @@ impl InputParser {
                         // end marker in 8K, 16K, 24K etc. of text until the final buffer is received.
                         // Ensure that we use saturating math here for the case where the amount
                         // of buffered data after the begin paste is smaller than the end paste marker
-                        // <https://github.com/wezterm/wezterm/pull/1832>
+                        // <https://github.com/wakamex/wakterm/pull/1832>
                         self.state =
                             InputState::Pasting(self.buf.len().saturating_sub(end_paste.len()));
                         return;

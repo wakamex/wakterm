@@ -1,8 +1,8 @@
 [package]
-name = "wezterm-bidi"
+name = "wakterm-bidi"
 version = "0.2.3"
 edition = "2021"
-repository = "https://github.com/wezterm/wezterm"
+repository = "https://github.com/wakamex/wakterm"
 description = "The Unicode Bidi Algorithm (UBA)"
 license = "MIT AND Unicode-DFS-2016"
 exclude = ["/data", "/tests"]
@@ -13,7 +13,7 @@ exclude = ["/data", "/tests"]
 
 [dependencies]
 log.workspace = true
-wezterm-dynamic.workspace = true
+wakterm-dynamic.workspace = true
 
 [dev-dependencies]
 k9.workspace = true

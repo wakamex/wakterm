@@ -9,7 +9,7 @@ tags:
 When the BEL ascii sequence is sent to a pane, the bell is "rung" in that pane.
 
 You may choose to configure the `audible_bell` option to change the sound
-that wezterm makes when the bell rings.
+that wakterm makes when the bell rings.
 
 The follow are possible values:
 

@@ -47,7 +47,7 @@ mod test {
     #[test]
     fn test_xtversion_name() {
         for (input, result) in [
-            ("WezTerm something", Some(("WezTerm", "something"))),
+            ("wakterm something", Some(("wakterm", "something"))),
             ("xterm(something)", Some(("xterm", "something"))),
             ("something-else", None),
         ] {
@@ -183,7 +183,7 @@ impl<'a> ProbeCapabilities<'a> {
                 // print!("{action:?}\r\n");
                 match action {
                     // ConPTY appears to trigger 1 or more xtversion queries
-                    // to wezterm in response to this probe, so we need to
+                    // to wakterm in response to this probe, so we need to
                     // prepared to accept and discard data of that shape
                     // here, so that we keep going until we get our reports
                     Action::DeviceControl(_) => {}

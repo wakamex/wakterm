@@ -45,7 +45,7 @@ and alter their width in the terminal display.
 
 If you'd like to use a higher default version but switch to a lower version
 when launching an older application, or when SSH'ing into a remote host, then
-you may be pleased to learn that wezterm also provides an escape sequence that
+you may be pleased to learn that wakterm also provides an escape sequence that
 allows the unicode version to be changed on the fly.
 
 ## Unicode Version Escape sequence

@@ -3,7 +3,7 @@ set -euo pipefail
 
 owner_user="${SUDO_USER:-$USER}"
 owner_home="$(getent passwd "$owner_user" | cut -d: -f6)"
-source_dir="${SOURCE_DIR:-$owner_home/wezterm-test}"
+source_dir="${SOURCE_DIR:-$owner_home/wakterm-test}"
 mode="user"
 user_prefix_default="${owner_home}/.local/bin"
 system_prefix_default="/usr/local/bin"
@@ -77,7 +77,7 @@ fi
 mkdir -p "$prefix"
 
 echo "Installing binaries from $source_dir to $prefix ($mode mode)"
-for bin in wezterm wezterm-gui wezterm-mux-server; do
+for bin in wakterm wakterm-gui wakterm-mux-server; do
     if [ ! -x "$source_dir/$bin" ]; then
         echo "Missing executable: $source_dir/$bin"
         exit 1
@@ -88,15 +88,15 @@ done
 
 cat >"$prefix/agent" <<EOF
 #!/usr/bin/env bash
-exec "$prefix/wezterm" cli agent "\$@"
+exec "$prefix/wakterm" cli agent "\$@"
 EOF
 chmod 755 "$prefix/agent"
 echo "  agent -> $prefix/agent"
 
 echo ""
 echo "Installed versions:"
-"$prefix/wezterm" --version
-"$prefix/wezterm-mux-server" --version
+"$prefix/wakterm" --version
+"$prefix/wakterm-mux-server" --version
 echo ""
 echo "To install and enable the standalone user service:"
-echo "  ./install-user-service.sh --bin $prefix/wezterm-mux-server"
+echo "  ./install-user-service.sh --bin $prefix/wakterm-mux-server"

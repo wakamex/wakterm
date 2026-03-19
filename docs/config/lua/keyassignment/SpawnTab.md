@@ -3,7 +3,7 @@
 Create a new tab in the current window.  The argument defines to which *domain* the tab belongs:
 
 ```lua
-local act = wezterm.action
+local act = wakterm.action
 
 config.keys = {
   -- Create a new tab in the same domain as the current pane.

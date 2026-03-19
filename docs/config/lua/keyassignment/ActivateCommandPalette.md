@@ -9,7 +9,7 @@ config.keys = {
   {
     key = 'P',
     mods = 'CTRL',
-    action = wezterm.action.ActivateCommandPalette,
+    action = wakterm.action.ActivateCommandPalette,
   },
 }
 ```

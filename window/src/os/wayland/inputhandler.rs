@@ -14,7 +14,7 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_manager_v3::Z
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
     Event as TextInputEvent, ZwpTextInputV3,
 };
-use wezterm_input_types::{KeyCode, KeyEvent, KeyboardLedStatus, Modifiers};
+use wakterm_input_types::{KeyCode, KeyEvent, KeyboardLedStatus, Modifiers};
 
 use crate::{DeadKeyStatus, WindowEvent};
 

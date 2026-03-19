@@ -19,7 +19,7 @@ config.window_background_opacity = 0.3
 config.macos_window_background_blur = 20
 ```
 
-![Screenshot](../../../screenshots/wezterm-macos-background-blur.png)
+![Screenshot](../../../screenshots/wakterm-macos-background-blur.png)
 
 The default value for `macos_window_background_blur` is `0`.
 

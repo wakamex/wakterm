@@ -4,12 +4,12 @@
 > with the various technical documents is laborious and tedious and I only
 > have so much spare time!
 >
-> If you notice that something is inaccurate or missing, please do [file an issue](https://github.com/wezterm/wezterm/issues/new/choose)
+> If you notice that something is inaccurate or missing, please do [file an issue](https://github.com/wakamex/wakterm/issues/new/choose)
 > so that it can be resolved!
 
 ## Output/Escape Sequences
 
-WezTerm considers the output from the terminal to be a UTF-8 encoded stream of
+wakterm considers the output from the terminal to be a UTF-8 encoded stream of
 codepoints.  No other encoding is supported.  As described below, some C1
 control codes have both 7-bit ASCII compatible as well as 8-bit
 representations.  As ASCII is a compatible subset of UTF-8, the 7-bit
@@ -41,7 +41,7 @@ applied to the terminal display using the following rules:
 * The cursor position will be updated based on the column width of the grapheme.
 
 After the graphemes are applied to the terminal display, the rendering portion of
-WezTerm will attempt to apply your [font shaping](config/font-shaping.md) configuration
+wakterm will attempt to apply your [font shaping](config/font-shaping.md) configuration
 based on runs of graphemes with matching graphic attributes to determine which glyphs
 should be rendered from your fonts; it is at this stage that emoji and ligatures are
 resolved.
@@ -61,7 +61,7 @@ the action described below.
 | ^D |0x04|EOT |End of Transmission|Ignored|
 | ^E |0x05|ENQ |Enquiry    |Ignored|
 | ^F |0x06|ACK |Acknowledge|Ignored|
-| ^G |0x07|BEL |Bell       |Logs `Ding! (this is the bell)` to stderr of the WezTerm process. See [#3](https://github.com/wezterm/wezterm/issues/3)|
+| ^G |0x07|BEL |Bell       |Logs `Ding! (this is the bell)` to stderr of the wakterm process. See [#3](https://github.com/wakamex/wakterm/issues/3)|
 | ^H |0x08|BS  |Backspace  |Move cursor left by 1, constrained by the left margin. If Reverse Wraparound and dec auto wrap modes are enabled, moving left of the left margin will jump the cursor to the right margin, jumping to bottom right margin if it was at the top left.|
 | ^I |0x09|HT  |Horizontal Tab|Move cursor right to the next tab stop|
 | ^J |0x0A|LF  |Line Feed  |If cursor is at the bottom margin, scroll the region up, otherwise move cursor down 1 row|
@@ -89,7 +89,7 @@ the action described below.
 
 ### C1 Control Codes
 
-As mentioned above, WezTerm only supports UTF-8 encoding.  C1 control codes
+As mentioned above, wakterm only supports UTF-8 encoding.  C1 control codes
 have an 8-bit representation as well as a multi-codepoint 7-bit escape sequence.
 
 The 8-bit representation is recognized if the 8-bit value is treated as a
@@ -135,7 +135,7 @@ action.
 CSI sequences begin with the `C1` `CSI` sequence, which is either the 7-bit
 `ESC [` sequence or the codepoint `0x9B`.
 
-WezTerm classifies these sequences into a number of functional families which
+wakterm classifies these sequences into a number of functional families which
 are broken out below.
 
 #### Graphic Rendition (SGR)
@@ -222,7 +222,7 @@ There are a handful of additional SGR codes that allow setting extended colors;
 unlike the codes above, which are activated by a single numeric parameter out
 of SGR sequence, these the extended color codes require multiple parameters.
 The canonical representation of these sequences is to have the multiple
-parameters be separated by colons (`:`), but for compatibility reasons WezTerm
+parameters be separated by colons (`:`), but for compatibility reasons wakterm
 also accepts an ambiguous semicolon (`;`) separated variation.  The colon form
 is unambiguous and should be preferred; the semicolon form should not be used
 by new applications and is not documented here in the interest of avoiding
@@ -262,7 +262,7 @@ colorspace.  The `R`, `G` and `B` symbols below are decimal numbers in the
 range `0-255`.  Note that after the `2` parameter two colons are present; its
 really an omitted *colorspace ID* parameter but that nature of that parameter
 is not specified in the accompanying ITU T.416 specification and is ignored by
-`WezTerm` and most (all?) other terminal emulators:
+`wakterm` and most (all?) other terminal emulators:
 
 ```
 CSI 38 : 2 : : R : G : B m
@@ -280,7 +280,7 @@ CSI 38 : 2 : R : G : B m
 
 {{since('20220807-113146-c2fee766')}}
 
-This is a wezterm extension: wezterm considers color mode `6` as RGBA,
+This is a wakterm extension: wakterm considers color mode `6` as RGBA,
 allowing you to specify the alpha channel in addition to the RGB channels.
 
 ```
@@ -308,7 +308,7 @@ CSI 48 : 2 : R : G : B m
 
 {{since('20220807-113146-c2fee766')}}
 
-This is a wezterm extension: wezterm considers color mode `6` as RGBA,
+This is a wakterm extension: wakterm considers color mode `6` as RGBA,
 allowing you to specify the alpha channel in addition to the RGB channels.
 
 ```
@@ -336,7 +336,7 @@ CSI 58 : 2 : R : G : B m
 
 {{since('20220807-113146-c2fee766')}}
 
-This is a wezterm extension: wezterm considers color mode `6` as RGBA,
+This is a wakterm extension: wakterm considers color mode `6` as RGBA,
 allowing you to specify the alpha channel in addition to the RGB channels.
 
 ```
@@ -351,7 +351,7 @@ CSI 58 : 6 : : R : G : B : A m
 
 {{since('20210814-124438-54e29167')}}
 
-WezTerm supports [Synchronized Rendering](https://gist.github.com/christianparpart/d8a62cc1ab659194337d73e399004036).
+wakterm supports [Synchronized Rendering](https://gist.github.com/christianparpart/d8a62cc1ab659194337d73e399004036).
 DECSET 2026 is set to batch (hold) rendering until DECSET 2026 is reset to flush the queued screen data.
 
 #### Device Functions
@@ -369,14 +369,14 @@ In the table below, `DCS` can be either the 7-bit representation (`ESC P`) or th
 |DCS $ q " p ST | [DECRQSS](https://vt100.net/docs/vt510-rm/DECRQSS.html) for [DECSCL](https://vt100.net/docs/vt510-rm/DECSCL.html) | Request Conformance Level; Reports the conformance level |
 |DCS $ q r ST   | [DECRQSS](https://vt100.net/docs/vt510-rm/DECRQSS.html) for [DECSTBM](https://vt100.net/docs/vt510-rm/DECSTBM.html) | Request top and bottom margin report; Reports the margins |
 |DCS $ q s ST   | [DECRQSS](https://vt100.net/docs/vt510-rm/DECRQSS.html) for [DECSLRM](https://vt100.net/docs/vt510-rm/DECSLRM.html) | Request left and right margin report; Reports the margins |
-|DCS \[PARAMS\] q \[DATA\] ST | Sixel Graphic Data | Decodes [Sixel graphic data](https://vt100.net/docs/vt3xx-gp/chapter14.html) and apply the image to the terminal model. Support is preliminary and incomplete; see [this issue](https://github.com/wezterm/wezterm/issues/217) for status. |
-|DCS 1000 q | tmux control mode | Bridges tmux into the WezTerm multiplexer.  Currently incomplete, see [this issue](https://github.com/wezterm/wezterm/issues/336) for status. |
+|DCS \[PARAMS\] q \[DATA\] ST | Sixel Graphic Data | Decodes [Sixel graphic data](https://vt100.net/docs/vt3xx-gp/chapter14.html) and apply the image to the terminal model. Support is preliminary and incomplete; see [this issue](https://github.com/wakamex/wakterm/issues/217) for status. |
+|DCS 1000 q | tmux control mode | Bridges tmux into the wakterm multiplexer.  Currently incomplete, see [this issue](https://github.com/wakamex/wakterm/issues/336) for status. |
 
 ### Operating System Command Sequences
 
 Operating System Command (OSC) sequences are introduced via `ESC ]` followed by
 a numeric code and typically have parameters delimited by `;`.  OSC sequences
-are canonically delimited by the `ST` (String Terminator) sequence, but WezTerm
+are canonically delimited by the `ST` (String Terminator) sequence, but wakterm
 also accepts delimiting them with the `BEL` control.
 
 The table below is keyed by the OSC code.

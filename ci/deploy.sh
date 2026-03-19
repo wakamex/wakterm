@@ -19,36 +19,36 @@ fi
 
 case $OSTYPE in
   darwin*)
-    zipdir=WezTerm-macos-$TAG_NAME
+    zipdir=wakterm-macos-$TAG_NAME
     if [[ "$BUILD_REASON" == "Schedule" ]] ; then
-      zipname=WezTerm-macos-nightly.zip
+      zipname=wakterm-macos-nightly.zip
     else
       zipname=$zipdir.zip
     fi
     rm -rf $zipdir $zipname
     mkdir $zipdir
-    cp -r assets/macos/WezTerm.app $zipdir/
+    cp -r assets/macos/wakterm.app $zipdir/
     # Omit MetalANGLE for now; it's a bit laggy compared to CGL,
     # and on M1/Big Sur, CGL is implemented in terms of Metal anyway
-    rm $zipdir/WezTerm.app/*.dylib
-    mkdir -p $zipdir/WezTerm.app/Contents/MacOS
-    mkdir -p $zipdir/WezTerm.app/Contents/Resources
-    cp -r assets/shell-integration/* $zipdir/WezTerm.app/Contents/Resources
-    cp -r assets/shell-completion $zipdir/WezTerm.app/Contents/Resources
-    tic -xe wezterm -o $zipdir/WezTerm.app/Contents/Resources/terminfo termwiz/data/wezterm.terminfo
+    rm $zipdir/wakterm.app/*.dylib
+    mkdir -p $zipdir/wakterm.app/Contents/MacOS
+    mkdir -p $zipdir/wakterm.app/Contents/Resources
+    cp -r assets/shell-integration/* $zipdir/wakterm.app/Contents/Resources
+    cp -r assets/shell-completion $zipdir/wakterm.app/Contents/Resources
+    tic -xe wakterm -o $zipdir/wakterm.app/Contents/Resources/terminfo termwiz/data/wakterm.terminfo
 
-    for bin in wezterm wezterm-mux-server wezterm-gui strip-ansi-escapes ; do
+    for bin in wakterm wakterm-mux-server wakterm-gui strip-ansi-escapes ; do
       # If the user ran a simple `cargo build --release`, then we want to allow
       # a single-arch package to be built
       if [[ -f $TARGET_DIR/release/$bin ]] ; then
-        cp $TARGET_DIR/release/$bin $zipdir/WezTerm.app/Contents/MacOS/$bin
+        cp $TARGET_DIR/release/$bin $zipdir/wakterm.app/Contents/MacOS/$bin
       else
         # The CI runs `cargo build --target XXX --release` which means that
         # the binaries will be deployed in `$TARGET_DIR/XXX/release` instead of
         # the plain path above.
         # In that situation, we have two architectures to assemble into a
         # Universal ("fat") binary, so we use the `lipo` tool for that.
-        lipo $TARGET_DIR/*/release/$bin -output $zipdir/WezTerm.app/Contents/MacOS/$bin -create
+        lipo $TARGET_DIR/*/release/$bin -output $zipdir/wakterm.app/Contents/MacOS/$bin -create
       fi
     done
 
@@ -79,7 +79,7 @@ case $OSTYPE in
       security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_PW" build.keychain
       echo "Codesign"
       /usr/bin/codesign --keychain build.keychain --force --options runtime \
-        --entitlements ci/macos-entitlement.plist --deep --sign "$MACOS_TEAM_ID" $zipdir/WezTerm.app/
+        --entitlements ci/macos-entitlement.plist --deep --sign "$MACOS_TEAM_ID" $zipdir/wakterm.app/
       echo "Restore default keychain"
       security default-keychain -d user -s $def_keychain
       echo "Remove build.keychain"
@@ -97,25 +97,25 @@ case $OSTYPE in
     set -x
 
     SHA256=$(shasum -a 256 $zipname | cut -d' ' -f1)
-    sed -e "s/@TAG@/$TAG_NAME/g" -e "s/@SHA256@/$SHA256/g" < ci/wezterm-homebrew-macos.rb.template > wezterm.rb
+    sed -e "s/@TAG@/$TAG_NAME/g" -e "s/@SHA256@/$SHA256/g" < ci/wakterm-homebrew-macos.rb.template > wakterm.rb
 
     ;;
   msys)
-    zipdir=WezTerm-windows-$TAG_NAME
+    zipdir=wakterm-windows-$TAG_NAME
     if [[ "$BUILD_REASON" == "Schedule" ]] ; then
-      zipname=WezTerm-windows-nightly.zip
-      instname=WezTerm-nightly-setup
+      zipname=wakterm-windows-nightly.zip
+      instname=wakterm-nightly-setup
     else
       zipname=$zipdir.zip
-      instname=WezTerm-${TAG_NAME}-setup
+      instname=wakterm-${TAG_NAME}-setup
     fi
     rm -rf $zipdir $zipname
     mkdir $zipdir
-    cp $TARGET_DIR/release/wezterm.exe \
-      $TARGET_DIR/release/wezterm-mux-server.exe \
-      $TARGET_DIR/release/wezterm-gui.exe \
+    cp $TARGET_DIR/release/wakterm.exe \
+      $TARGET_DIR/release/wakterm-mux-server.exe \
+      $TARGET_DIR/release/wakterm-gui.exe \
       $TARGET_DIR/release/strip-ansi-escapes.exe \
-      $TARGET_DIR/release/wezterm.pdb \
+      $TARGET_DIR/release/wakterm.pdb \
       assets/windows/conhost/conpty.dll \
       assets/windows/conhost/OpenConsole.exe \
       assets/windows/angle/libEGL.dll \
@@ -132,7 +132,7 @@ case $OSTYPE in
     distver=$(lsb_release -rs 2>/dev/null || sh -c "source /etc/os-release && echo \$VERSION_ID")
     case "$distro" in
       *Fedora*|*CentOS*|*SUSE*)
-        WEZTERM_RPM_VERSION=$(echo ${TAG_NAME#nightly-} | tr - _)
+        WAKTERM_RPM_VERSION=$(echo ${TAG_NAME#nightly-} | tr - _)
         distroid=$(sh -c "source /etc/os-release && echo \$ID" | tr - _)
         distver=$(sh -c "source /etc/os-release && echo \$VERSION_ID" | tr - _)
 
@@ -156,7 +156,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source ~/.cargo/env
 
 cargo build --release \
-      -p wezterm-gui -p wezterm -p wezterm-mux-server \
+      -p wakterm-gui -p wakterm -p wakterm-mux-server \
       -p strip-ansi-escapes
 BUILDEOFEOF
 )
@@ -170,7 +170,7 @@ BuildRequires: mesa-libEGL-devel
 %if 0%{?fedora} >= 41
 BuildRequires: openssl-devel-engine
 %endif
-Source0: wezterm-${TAR_NAME}.tar.gz
+Source0: wakterm-${TAR_NAME}.tar.gz
 BREQEOF
 )
         else
@@ -184,52 +184,52 @@ BUILDEOFEOF
         fi
 
         # Generate single spec with subpackages
-        cat > wezterm.spec <<EOF
-Name: wezterm
-Version: ${WEZTERM_RPM_VERSION}
+        cat > wakterm.spec <<EOF
+Name: wakterm
+Version: ${WAKTERM_RPM_VERSION}
 Release: ${SPEC_RELEASE}
 Packager: Wez Furlong <wez@wezfurlong.org>
 License: MIT
-URL: https://wezterm.org/
-Summary: Wez's Terminal Emulator.
+URL: https://wakterm.org/
+Summary: wakterm.
 ${BUILD_REQUIRES}
-Requires: wezterm-common, wezterm-gui, wezterm-mux-server
+Requires: wakterm-common, wakterm-gui, wakterm-mux-server
 
 %global debug_package %{nil}
 
 %description
-wezterm is a terminal emulator with support for modern features
+wakterm is a terminal emulator with support for modern features
 such as fonts with ligatures, hyperlinks, tabs and multiple
 windows.
 
-# Subpackage: wezterm-common
-%package -n wezterm-common
-Summary: Wez's Terminal Emulator - Common CLI components
+# Subpackage: wakterm-common
+%package -n wakterm-common
+Summary: wakterm - Common CLI components
 Requires: openssl
-%description -n wezterm-common
-wezterm-common provides the base CLI launcher and utilities shared by
-all wezterm components.
+%description -n wakterm-common
+wakterm-common provides the base CLI launcher and utilities shared by
+all wakterm components.
 
-# Subpackage: wezterm-gui
-%package -n wezterm-gui
-Summary: Wez's Terminal Emulator - GUI and multiplexer
-Requires: wezterm-common
+# Subpackage: wakterm-gui
+%package -n wakterm-gui
+Summary: wakterm - GUI and multiplexer
+Requires: wakterm-common
 %if 0%{?suse_version}
 Requires: dbus-1, fontconfig, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-egl1, libwayland-cursor0, Mesa-libEGL1, libxcb-keysyms1, libxcb-ewmh2, libxcb-icccm4
 %else
 Requires: dbus, fontconfig, libxcb, libxkbcommon, libxkbcommon-x11, libwayland-client, libwayland-egl, libwayland-cursor, mesa-libEGL, xcb-util-keysyms, xcb-util-wm
 %endif
-%description -n wezterm-gui
-wezterm-gui is a GPU-accelerated cross-platform terminal emulator with
+%description -n wakterm-gui
+wakterm-gui is a GPU-accelerated cross-platform terminal emulator with
 support for modern features such as fonts with ligatures, hyperlinks,
 tabs and multiple windows.
 
-# Subpackage: wezterm-mux-server
-%package -n wezterm-mux-server
-Summary: Wez's Terminal Emulator - Multiplexer server (headless)
+# Subpackage: wakterm-mux-server
+%package -n wakterm-mux-server
+Summary: wakterm - Multiplexer server (headless)
 Requires: openssl
-%description -n wezterm-mux-server
-wezterm-mux-server is a headless terminal multiplexer that can be used
+%description -n wakterm-mux-server
+wakterm-mux-server is a headless terminal multiplexer that can be used
 as a session manager for terminal sessions, without requiring X11,
 Wayland, or other GUI libraries.
 
@@ -239,39 +239,39 @@ ${BUILD_SECTION}
 set -x
 cd ${HERE}
 mkdir -p %{buildroot}/usr/bin %{buildroot}/etc/profile.d %{buildroot}/usr/share/icons/hicolor/128x128/apps %{buildroot}/usr/share/applications %{buildroot}/usr/share/metainfo %{buildroot}/usr/share/nautilus-python/extensions
-install -Dm755 assets/open-wezterm-here -t %{buildroot}/usr/bin
-install -Dsm755 $TARGET_DIR/release/wezterm -t %{buildroot}/usr/bin
-install -Dsm755 $TARGET_DIR/release/wezterm-gui -t %{buildroot}/usr/bin
-install -Dsm755 $TARGET_DIR/release/wezterm-mux-server -t %{buildroot}/usr/bin
+install -Dm755 assets/open-wakterm-here -t %{buildroot}/usr/bin
+install -Dsm755 $TARGET_DIR/release/wakterm -t %{buildroot}/usr/bin
+install -Dsm755 $TARGET_DIR/release/wakterm-gui -t %{buildroot}/usr/bin
+install -Dsm755 $TARGET_DIR/release/wakterm-mux-server -t %{buildroot}/usr/bin
 install -Dsm755 $TARGET_DIR/release/strip-ansi-escapes -t %{buildroot}/usr/bin
 install -Dm644 assets/shell-integration/* -t %{buildroot}/etc/profile.d
-install -Dm644 assets/shell-completion/zsh %{buildroot}/usr/share/zsh/site-functions/_wezterm
-install -Dm644 assets/shell-completion/bash %{buildroot}/etc/bash_completion.d/wezterm
-install -Dm644 assets/icon/terminal.png %{buildroot}/usr/share/icons/hicolor/128x128/apps/org.wezfurlong.wezterm.png
-install -Dm644 assets/wezterm.desktop %{buildroot}/usr/share/applications/org.wezfurlong.wezterm.desktop
-install -Dm644 assets/wezterm.appdata.xml %{buildroot}/usr/share/metainfo/org.wezfurlong.wezterm.appdata.xml
-install -Dm644 assets/wezterm-nautilus.py %{buildroot}/usr/share/nautilus-python/extensions/wezterm-nautilus.py
+install -Dm644 assets/shell-completion/zsh %{buildroot}/usr/share/zsh/site-functions/_wakterm
+install -Dm644 assets/shell-completion/bash %{buildroot}/etc/bash_completion.d/wakterm
+install -Dm644 assets/icon/terminal.png %{buildroot}/usr/share/icons/hicolor/128x128/apps/org.wezfurlong.wakterm.png
+install -Dm644 assets/wakterm.desktop %{buildroot}/usr/share/applications/org.wezfurlong.wakterm.desktop
+install -Dm644 assets/wakterm.appdata.xml %{buildroot}/usr/share/metainfo/org.wezfurlong.wakterm.appdata.xml
+install -Dm644 assets/wakterm-nautilus.py %{buildroot}/usr/share/nautilus-python/extensions/wakterm-nautilus.py
 
 %files
 # Main package (metapackage) has no files
 
-%files -n wezterm-common
-/usr/bin/wezterm
+%files -n wakterm-common
+/usr/bin/wakterm
 /usr/bin/strip-ansi-escapes
-/usr/share/zsh/site-functions/_wezterm
-/etc/bash_completion.d/wezterm
+/usr/share/zsh/site-functions/_wakterm
+/etc/bash_completion.d/wakterm
 /etc/profile.d/*
 
-%files -n wezterm-gui
-/usr/bin/open-wezterm-here
-/usr/bin/wezterm-gui
-/usr/share/icons/hicolor/128x128/apps/org.wezfurlong.wezterm.png
-/usr/share/applications/org.wezfurlong.wezterm.desktop
-/usr/share/metainfo/org.wezfurlong.wezterm.appdata.xml
-/usr/share/nautilus-python/extensions/wezterm-nautilus.py*
+%files -n wakterm-gui
+/usr/bin/open-wakterm-here
+/usr/bin/wakterm-gui
+/usr/share/icons/hicolor/128x128/apps/org.wezfurlong.wakterm.png
+/usr/share/applications/org.wezfurlong.wakterm.desktop
+/usr/share/metainfo/org.wezfurlong.wakterm.appdata.xml
+/usr/share/nautilus-python/extensions/wakterm-nautilus.py*
 
-%files -n wezterm-mux-server
-/usr/bin/wezterm-mux-server
+%files -n wakterm-mux-server
+/usr/bin/wakterm-mux-server
 
 %changelog
 * Mon Oct 2 2023 Wez Furlong
@@ -279,23 +279,23 @@ install -Dm644 assets/wezterm-nautilus.py %{buildroot}/usr/share/nautilus-python
 EOF
 
         if test -n "${COPR_SRPM}" ; then
-          /usr/bin/rpmbuild -bs --rmspec wezterm.spec --verbose
-          mv $(rpm --eval '%{_srcrpmdir}')/wezterm-${TAR_NAME}*.src.rpm "${COPR_SRPM}"/
+          /usr/bin/rpmbuild -bs --rmspec wakterm.spec --verbose
+          mv $(rpm --eval '%{_srcrpmdir}')/wakterm-${TAR_NAME}*.src.rpm "${COPR_SRPM}"/
         else
-          /usr/bin/rpmbuild -bb --rmspec wezterm.spec --verbose
+          /usr/bin/rpmbuild -bb --rmspec wakterm.spec --verbose
         fi
 
         ;;
       Ubuntu*|Debian*|Pop)
         rm -rf pkg
-        mkdir -p pkg/debian/usr/bin pkg/debian/DEBIAN pkg/debian/usr/share/{applications,wezterm}
+        mkdir -p pkg/debian/usr/bin pkg/debian/DEBIAN pkg/debian/usr/share/{applications,wakterm}
 
         if [[ "$BUILD_REASON" == "Schedule" ]] ; then
-          pkgname=wezterm-nightly
-          conflicts=wezterm
+          pkgname=wakterm-nightly
+          conflicts=wakterm
         else
-          pkgname=wezterm
-          conflicts=wezterm-nightly
+          pkgname=wakterm
+          conflicts=wakterm-nightly
         fi
 
         cat > pkg/debian/control <<EOF
@@ -306,20 +306,20 @@ Architecture: $(dpkg-architecture -q DEB_BUILD_ARCH_CPU)
 Maintainer: Wez Furlong <wez@wezfurlong.org>
 Section: utils
 Priority: optional
-Homepage: https://wezterm.org/
-Description: Wez's Terminal Emulator.
- wezterm is a terminal emulator with support for modern features
+Homepage: https://wakterm.org/
+Description: wakterm.
+ wakterm is a terminal emulator with support for modern features
  such as fonts with ligatures, hyperlinks, tabs and multiple
  windows.
 Provides: x-terminal-emulator
-Source: https://wezterm.org/
+Source: https://wakterm.org/
 EOF
 
         cat > pkg/debian/postinst <<EOF
 #!/bin/sh
 set -e
 if [ "\$1" = "configure" ] ; then
-        update-alternatives --install /usr/bin/x-terminal-emulator x-terminal-emulator /usr/bin/open-wezterm-here 20
+        update-alternatives --install /usr/bin/x-terminal-emulator x-terminal-emulator /usr/bin/open-wakterm-here 20
 fi
 EOF
 
@@ -327,14 +327,14 @@ EOF
 #!/bin/sh
 set -e
 if [ "\$1" = "remove" ]; then
-	update-alternatives --remove x-terminal-emulator /usr/bin/open-wezterm-here
+	update-alternatives --remove x-terminal-emulator /usr/bin/open-wakterm-here
 fi
 EOF
 
-        install -Dsm755 -t pkg/debian/usr/bin $TARGET_DIR/release/wezterm-mux-server
-        install -Dsm755 -t pkg/debian/usr/bin $TARGET_DIR/release/wezterm-gui
-        install -Dsm755 -t pkg/debian/usr/bin $TARGET_DIR/release/wezterm
-        install -Dm755 -t pkg/debian/usr/bin assets/open-wezterm-here
+        install -Dsm755 -t pkg/debian/usr/bin $TARGET_DIR/release/wakterm-mux-server
+        install -Dsm755 -t pkg/debian/usr/bin $TARGET_DIR/release/wakterm-gui
+        install -Dsm755 -t pkg/debian/usr/bin $TARGET_DIR/release/wakterm
+        install -Dm755 -t pkg/debian/usr/bin assets/open-wakterm-here
         install -Dsm755 -t pkg/debian/usr/bin $TARGET_DIR/release/strip-ansi-escapes
 
         deps=$(cd pkg && dpkg-shlibdeps -O -e debian/usr/bin/*)
@@ -347,18 +347,18 @@ EOF
         echo $deps | sed -e 's/shlibs:Depends=/Depends: /' >> pkg/debian/DEBIAN/control
         cat pkg/debian/DEBIAN/control
 
-        install -Dm644 assets/icon/terminal.png pkg/debian/usr/share/icons/hicolor/128x128/apps/org.wezfurlong.wezterm.png
-        install -Dm644 assets/wezterm.desktop pkg/debian/usr/share/applications/org.wezfurlong.wezterm.desktop
-        install -Dm644 assets/wezterm.appdata.xml pkg/debian/usr/share/metainfo/org.wezfurlong.wezterm.appdata.xml
-        install -Dm644 assets/wezterm-nautilus.py pkg/debian/usr/share/nautilus-python/extensions/wezterm-nautilus.py
-        install -Dm644 assets/shell-completion/bash pkg/debian/usr/share/bash-completion/completions/wezterm
-        install -Dm644 assets/shell-completion/zsh pkg/debian/usr/share/zsh/functions/Completion/Unix/_wezterm
+        install -Dm644 assets/icon/terminal.png pkg/debian/usr/share/icons/hicolor/128x128/apps/org.wezfurlong.wakterm.png
+        install -Dm644 assets/wakterm.desktop pkg/debian/usr/share/applications/org.wezfurlong.wakterm.desktop
+        install -Dm644 assets/wakterm.appdata.xml pkg/debian/usr/share/metainfo/org.wezfurlong.wakterm.appdata.xml
+        install -Dm644 assets/wakterm-nautilus.py pkg/debian/usr/share/nautilus-python/extensions/wakterm-nautilus.py
+        install -Dm644 assets/shell-completion/bash pkg/debian/usr/share/bash-completion/completions/wakterm
+        install -Dm644 assets/shell-completion/zsh pkg/debian/usr/share/zsh/functions/Completion/Unix/_wakterm
         install -Dm644 assets/shell-integration/* -t pkg/debian/etc/profile.d
 
         if [[ "$BUILD_REASON" == "Schedule" ]] ; then
-          debname=wezterm-nightly.$distro$distver
+          debname=wakterm-nightly.$distro$distver
         else
-          debname=wezterm-$TAG_NAME.$distro$distver
+          debname=wakterm-$TAG_NAME.$distro$distver
         fi
         arch=$(dpkg-architecture -q DEB_BUILD_ARCH_CPU)
         case $arch in
@@ -375,8 +375,8 @@ EOF
           $SUDO apt-get install ./$debname.deb
         fi
 
-        mv pkg/debian pkg/wezterm
-        tar cJf $debname.tar.xz -C pkg wezterm
+        mv pkg/debian pkg/wakterm
+        tar cJf $debname.tar.xz -C pkg wakterm
         rm -rf pkg
       ;;
     esac
@@ -389,7 +389,7 @@ EOF
         pkgver="${TAG_NAME#nightly-}"
         cat > APKBUILD <<EOF
 # Maintainer: Wez Furlong <wez@wezfurlong.org>
-pkgname=wezterm
+pkgname=wakterm
 pkgver=$(echo "$pkgver" | cut -d'-' -f1-2 | tr - .)
 _pkgver=$pkgver
 pkgrel=0
@@ -397,38 +397,38 @@ pkgdesc="A GPU-accelerated cross-platform terminal emulator and multiplexer writ
 license="MIT"
 arch="all"
 options="!check"
-url="https://wezterm.org/"
+url="https://wakterm.org/"
 makedepends="cmd:tic"
 source="
-  $TARGET_DIR/release/wezterm
-  $TARGET_DIR/release/wezterm-gui
-  $TARGET_DIR/release/wezterm-mux-server
-  assets/open-wezterm-here
-  assets/wezterm.desktop
-  assets/wezterm.appdata.xml
+  $TARGET_DIR/release/wakterm
+  $TARGET_DIR/release/wakterm-gui
+  $TARGET_DIR/release/wakterm-mux-server
+  assets/open-wakterm-here
+  assets/wakterm.desktop
+  assets/wakterm.appdata.xml
   assets/icon/terminal.png
-  assets/icon/wezterm-icon.svg
-  termwiz/data/wezterm.terminfo
+  assets/icon/wakterm-icon.svg
+  termwiz/data/wakterm.terminfo
 "
 builddir="\$srcdir"
 
 build() {
-  tic -x -o "\$builddir"/wezterm.terminfo "\$srcdir"/wezterm.terminfo
+  tic -x -o "\$builddir"/wakterm.terminfo "\$srcdir"/wakterm.terminfo
 }
 
 package() {
-  install -Dm755 -t "\$pkgdir"/usr/bin "\$srcdir"/open-wezterm-here
-  install -Dm755 -t "\$pkgdir"/usr/bin "\$srcdir"/wezterm
-  install -Dm755 -t "\$pkgdir"/usr/bin "\$srcdir"/wezterm-gui
-  install -Dm755 -t "\$pkgdir"/usr/bin "\$srcdir"/wezterm-mux-server
+  install -Dm755 -t "\$pkgdir"/usr/bin "\$srcdir"/open-wakterm-here
+  install -Dm755 -t "\$pkgdir"/usr/bin "\$srcdir"/wakterm
+  install -Dm755 -t "\$pkgdir"/usr/bin "\$srcdir"/wakterm-gui
+  install -Dm755 -t "\$pkgdir"/usr/bin "\$srcdir"/wakterm-mux-server
 
-  install -Dm644 -t "\$pkgdir"/usr/share/applications "\$srcdir"/wezterm.desktop
-  install -Dm644 -t "\$pkgdir"/usr/share/metainfo "\$srcdir"/wezterm.appdata.xml
-  install -Dm644 "\$srcdir"/terminal.png "\$pkgdir"/usr/share/pixmaps/wezterm.png
-  install -Dm644 "\$srcdir"/wezterm-icon.svg "\$pkgdir"/usr/share/pixmaps/wezterm.svg
-  install -Dm644 "\$srcdir"/terminal.png "\$pkgdir"/usr/share/icons/hicolor/128x128/apps/wezterm.png
-  install -Dm644 "\$srcdir"/wezterm-icon.svg "\$pkgdir"/usr/share/icons/hicolor/scalable/apps/wezterm.svg
-  install -Dm644 "\$builddir"/wezterm.terminfo "\$pkgdir"/usr/share/terminfo/w/wezterm
+  install -Dm644 -t "\$pkgdir"/usr/share/applications "\$srcdir"/wakterm.desktop
+  install -Dm644 -t "\$pkgdir"/usr/share/metainfo "\$srcdir"/wakterm.appdata.xml
+  install -Dm644 "\$srcdir"/terminal.png "\$pkgdir"/usr/share/pixmaps/wakterm.png
+  install -Dm644 "\$srcdir"/wakterm-icon.svg "\$pkgdir"/usr/share/pixmaps/wakterm.svg
+  install -Dm644 "\$srcdir"/terminal.png "\$pkgdir"/usr/share/icons/hicolor/128x128/apps/wakterm.png
+  install -Dm644 "\$srcdir"/wakterm-icon.svg "\$pkgdir"/usr/share/icons/hicolor/scalable/apps/wakterm.svg
+  install -Dm644 "\$builddir"/wakterm.terminfo "\$pkgdir"/usr/share/terminfo/w/wakterm
 }
 EOF
         abuild -F checksum

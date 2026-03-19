@@ -3,14 +3,14 @@ set -x
 name="$1"
 
 notes=$(cat <<EOT
-See https://wezterm.org/changelog.html#$name for the changelog
+See https://wakterm.org/changelog.html#$name for the changelog
 
 If you're looking for nightly downloads or more detailed installation instructions:
 
-[Windows](https://wezterm.org/install/windows.html)
-[macOS](https://wezterm.org/install/macos.html)
-[Linux](https://wezterm.org/install/linux.html)
-[FreeBSD](https://wezterm.org/install/freebsd.html)
+[Windows](https://wakterm.org/install/windows.html)
+[macOS](https://wakterm.org/install/macos.html)
+[Linux](https://wakterm.org/install/linux.html)
+[FreeBSD](https://wakterm.org/install/freebsd.html)
 EOT
 )
 

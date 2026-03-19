@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate HOTKEYS.md from wezterm source code.
+"""Generate HOTKEYS.md from wakterm source code.
 
-Parses wezterm-gui/src/commands.rs to extract all CommandDef blocks
+Parses wakterm-gui/src/commands.rs to extract all CommandDef blocks
 with their key bindings. Compares fork (HEAD) vs upstream (upstream/main).
-Validates against `wezterm show-keys` when a binary is available.
+Validates against `wakterm show-keys` when a binary is available.
 
 Usage:
     python3 generate-hotkeys.py [--validate] > HOTKEYS.md
@@ -190,8 +190,8 @@ def format_key(mods_raw, key, platform="linux"):
     return key
 
 
-def get_show_keys_actions(binary="target/release/wezterm"):
-    """Get action→keys mapping from wezterm show-keys for validation."""
+def get_show_keys_actions(binary="target/release/wakterm"):
+    """Get action→keys mapping from wakterm show-keys for validation."""
     try:
         output = subprocess.check_output(
             [binary, "show-keys"], stderr=subprocess.DEVNULL
@@ -223,16 +223,16 @@ def main():
         upstream_hash = None
 
     # Parse fork
-    fork_src = git_show("HEAD", "wezterm-gui/src/commands.rs")
+    fork_src = git_show("HEAD", "wakterm-gui/src/commands.rs")
     if not fork_src:
-        with open("wezterm-gui/src/commands.rs") as f:
+        with open("wakterm-gui/src/commands.rs") as f:
             fork_src = f.read()
     fork_blocks = extract_command_blocks(fork_src)
 
     # Parse upstream
     upstream_blocks = []
     if upstream_hash:
-        upstream_src = git_show("upstream/main", "wezterm-gui/src/commands.rs")
+        upstream_src = git_show("upstream/main", "wakterm-gui/src/commands.rs")
         if upstream_src:
             upstream_blocks = extract_command_blocks(upstream_src)
 
@@ -275,7 +275,7 @@ def main():
     no_entry = sorted(all_variants - bound_action_bases)
 
     # Output
-    print("# WezTerm Hotkeys Reference")
+    print("# wakterm Hotkeys Reference")
     print()
     print("Auto-generated from source. "
           "Run `python3 generate-hotkeys.py > HOTKEYS.md` to update.")

@@ -13,7 +13,7 @@ window.
 
 When `true`, transitioning to full screen will use the macOS native full screen
 mode, which in more recent versions of macOS, will allocate a separate Space
-for the wezterm application and then slowly animate the wezterm window moving
+for the wakterm application and then slowly animate the wakterm window moving
 into to that full screen Space on the monitor.
 
 This option only has an effect when running on macOS.

@@ -1,6 +1,6 @@
-# `wezterm cli send-text`
+# `wakterm cli send-text`
 
-*Run `wezterm cli send-text --help` to see more help*
+*Run `wakterm cli send-text --help` to see more help*
 
 Send text to a pane as though it were pasted. If bracketed paste mode is
 enabled in the pane, then the text will be sent as a bracketed paste.
@@ -8,7 +8,7 @@ enabled in the pane, then the text will be sent as a bracketed paste.
 For example:
 
 ```
-$ wezterm cli send-text "hello there"
+$ wakterm cli send-text "hello there"
 ```
 
 will cause `hello there` to be sent to the input in the current pane.
@@ -16,7 +16,7 @@ will cause `hello there` to be sent to the input in the current pane.
 You can also pipe text in via stdin:
 
 ```
-$ echo hello there | wezterm cli send-text
+$ echo hello there | wakterm cli send-text
 ```
 
 The following arguments modify the behavior:
@@ -27,5 +27,5 @@ The following arguments modify the behavior:
 ## Synopsis
 
 ```console
-{% include "../../examples/cmd-synopsis-wezterm-cli-send-text--help.txt" %}
+{% include "../../examples/cmd-synopsis-wakterm-cli-send-text--help.txt" %}
 ```

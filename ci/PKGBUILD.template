@@ -1,18 +1,18 @@
 # Maintainer:  Wez Furlong <wez at wezfurlong dot org>
 # NOTE: if you're looking at this on AUR, this file is generated from
-# https://github.com/wezterm/wezterm/blob/main/ci/PKGBUILD.template
-# by automation in the wezterm repo.
+# https://github.com/wakamex/wakterm/blob/main/ci/PKGBUILD.template
+# by automation in the wakterm repo.
 
-pkgname=wezterm-bin
+pkgname=wakterm-bin
 _tag=@TAG@
 pkgver=$(echo $_tag | tr - .)
 pkgrel=2
 pkgdesc='A GPU-accelerated cross-platform terminal emulator and multiplexer implemented in Rust'
 arch=('i686' 'x86_64')
-url='https://wezterm.org'
+url='https://wakterm.org'
 license=('MIT')
-provides=('wezterm')
-conflicts=('wezterm')
+provides=('wakterm')
+conflicts=('wakterm')
 # Don't strip: it will break the binary and it only saves ~10% anyway
 options=('!strip')
 makedepends=('fuse')
@@ -27,11 +27,11 @@ depends=(
   'xcb-util-wm'
 )
 optdepends=(
-  'python-nautilus: WezTerm context menu in Nautilus'
+  'python-nautilus: wakterm context menu in Nautilus'
 )
 source=(
-  "wezterm::https://github.com/wezterm/wezterm/releases/download/${_tag}/WezTerm-${_tag}-Ubuntu16.04.AppImage"
-  'LICENSE::https://github.com/wezterm/wezterm/raw/main/LICENSE.md'
+  "wakterm::https://github.com/wakamex/wakterm/releases/download/${_tag}/wakterm-${_tag}-Ubuntu16.04.AppImage"
+  'LICENSE::https://github.com/wakamex/wakterm/raw/main/LICENSE.md'
 )
 sha256sums=(
   '@SHA256@'
@@ -39,26 +39,26 @@ sha256sums=(
 )
 
 prepare() {
-  chmod +x "${srcdir}/wezterm"
+  chmod +x "${srcdir}/wakterm"
 }
 
 pkgver() {
-  "${srcdir}/wezterm" --version | cut -d' ' -f2 | tr - .
+  "${srcdir}/wakterm" --version | cut -d' ' -f2 | tr - .
 }
 
 build() {
-  "${srcdir}/wezterm" --appimage-extract >/dev/null
+  "${srcdir}/wakterm" --appimage-extract >/dev/null
 }
 
 package() {
-  install -Dm755 squashfs-root/usr/bin/wezterm -t "${pkgdir}/usr/bin/"
-  install -Dm755 squashfs-root/usr/bin/wezterm-gui -t "${pkgdir}/usr/bin/"
-  install -Dm755 squashfs-root/usr/bin/wezterm-mux-server -t "${pkgdir}/usr/bin/"
+  install -Dm755 squashfs-root/usr/bin/wakterm -t "${pkgdir}/usr/bin/"
+  install -Dm755 squashfs-root/usr/bin/wakterm-gui -t "${pkgdir}/usr/bin/"
+  install -Dm755 squashfs-root/usr/bin/wakterm-mux-server -t "${pkgdir}/usr/bin/"
   install -Dm644 LICENSE -t "${pkgdir}/usr/share/licenses/${pkgname}"
-  install -Dm644 squashfs-root/usr/share/icons/hicolor/128x128/apps/org.wezfurlong.wezterm.png \
-                 "${pkgdir}/usr/share/icons/hicolor/128x128/apps/org.wezfurlong.wezterm.png"
-  install -Dm644 squashfs-root/usr/share/applications/org.wezfurlong.wezterm.desktop \
-                 "${pkgdir}/usr/share/applications/org.wezfurlong.wezterm.desktop"
-  install -Dm644 squashfs-root/usr/share/nautilus-python/extensions/wezterm-nautilus.py \
-                 "${pkgdir}/usr/share/nautilus-python/extensions/wezterm-nautilus.py"
+  install -Dm644 squashfs-root/usr/share/icons/hicolor/128x128/apps/org.wezfurlong.wakterm.png \
+                 "${pkgdir}/usr/share/icons/hicolor/128x128/apps/org.wezfurlong.wakterm.png"
+  install -Dm644 squashfs-root/usr/share/applications/org.wezfurlong.wakterm.desktop \
+                 "${pkgdir}/usr/share/applications/org.wezfurlong.wakterm.desktop"
+  install -Dm644 squashfs-root/usr/share/nautilus-python/extensions/wakterm-nautilus.py \
+                 "${pkgdir}/usr/share/nautilus-python/extensions/wakterm-nautilus.py"
 }

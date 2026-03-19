@@ -13,18 +13,18 @@ use std::ops::{Deref, DerefMut};
 use termwiz::input::KeyboardEncoding;
 use unicode_normalization::{is_nfc_quick, IsNormalized, UnicodeNormalization};
 use url::Url;
-use wezterm_bidi::ParagraphDirectionHint;
-use wezterm_cell::{
+use wakterm_bidi::ParagraphDirectionHint;
+use wakterm_cell::{
     grapheme_column_width, is_white_space_grapheme, Cell, CellAttributes, SemanticType,
 };
-use wezterm_escape_parser::csi::{
+use wakterm_escape_parser::csi::{
     CharacterPath, EraseInDisplay, Keyboard, KittyKeyboardFlags, KittyKeyboardMode,
 };
-use wezterm_escape_parser::osc::{
+use wakterm_escape_parser::osc::{
     ChangeColorPair, ColorOrQuery, FinalTermSemanticPrompt, ITermProprietary,
     ITermUnicodeVersionOp, Selection,
 };
-use wezterm_escape_parser::{
+use wakterm_escape_parser::{
     Action, ControlCode, DeviceControlMode, Esc, EscCode, OperatingSystemCommand, CSI,
 };
 
@@ -139,8 +139,8 @@ impl<'a> Performer<'a> {
                 // We got a zero-width grapheme.
 
                 // Relevant reading:
-                // <https://github.com/wezterm/wezterm/issues/1422>
-                // <https://github.com/wezterm/wezterm/issues/6637>
+                // <https://github.com/wakamex/wakterm/issues/1422>
+                // <https://github.com/wakamex/wakterm/issues/6637>
                 // <https://github.com/harfbuzz/harfbuzz/issues/4279>
                 // <https://www.unicode.org/faq/unsup_char.html#2>
                 //
@@ -242,7 +242,7 @@ impl<'a> Performer<'a> {
     /// in a mode where all printable output is accumulated for the title.
     /// To combat this, we pop_tmux_title_state when we're obviously moving
     /// to different escape sequence parsing states.
-    /// <https://github.com/wezterm/wezterm/issues/2442>
+    /// <https://github.com/wakamex/wakterm/issues/2442>
     fn pop_tmux_title_state(&mut self) {
         if let Some(title) = self.accumulating_title.take() {
             log::debug!("ST never received for pending tmux title escape sequence: {title:?}");
@@ -457,7 +457,7 @@ impl<'a> Performer<'a> {
             }
             ControlCode::RI => self.c1_reverse_index(),
 
-            // wezterm only supports UTF-8, so does not support the
+            // wakterm only supports UTF-8, so does not support the
             // DEC National Replacement Character Sets.  However, it does
             // support the DEC Special Graphics character set used by
             // numerous ncurses applications.  DEC Special Graphics can be
@@ -493,10 +493,10 @@ impl<'a> Performer<'a> {
         self.flush_print();
         match csi {
             CSI::Sgr(sgr) => self.state.perform_csi_sgr(sgr),
-            CSI::Cursor(wezterm_escape_parser::csi::Cursor::Left(n)) => {
+            CSI::Cursor(wakterm_escape_parser::csi::Cursor::Left(n)) => {
                 // We treat CUB (Cursor::Left) the same as Backspace as
                 // that is what xterm does.
-                // <https://github.com/wezterm/wezterm/issues/1273>
+                // <https://github.com/wakamex/wakterm/issues/1273>
                 for _ in 0..n {
                     self.control(ControlCode::Backspace);
                 }
@@ -986,7 +986,7 @@ impl<'a> Performer<'a> {
 
             OperatingSystemCommand::ChangeDynamicColors(first_color, colors) => {
                 log::trace!("ChangeDynamicColors: {:?} {:?}", first_color, colors);
-                use wezterm_escape_parser::osc::DynamicColorNumber;
+                use wakterm_escape_parser::osc::DynamicColorNumber;
                 let mut idx: u8 = first_color as u8;
                 for color in colors {
                     let which_color: Option<DynamicColorNumber> = FromPrimitive::from_u8(idx);
@@ -1041,7 +1041,7 @@ impl<'a> Performer<'a> {
 
             OperatingSystemCommand::ResetDynamicColor(color) => {
                 log::trace!("ResetDynamicColor: {:?}", color);
-                use wezterm_escape_parser::osc::DynamicColorNumber;
+                use wakterm_escape_parser::osc::DynamicColorNumber;
                 let which_color: Option<DynamicColorNumber> = FromPrimitive::from_u8(color as u8);
                 if let Some(which_color) = which_color {
                     macro_rules! reset {
@@ -1076,7 +1076,7 @@ impl<'a> Performer<'a> {
                 self.palette_did_change();
             }
             OperatingSystemCommand::ConEmuProgress(prog) => {
-                use wezterm_escape_parser::osc::Progress as TProg;
+                use wakterm_escape_parser::osc::Progress as TProg;
                 let prog = match prog {
                     TProg::None => Progress::None,
                     TProg::SetPercentage(p) => Progress::Percentage(p),

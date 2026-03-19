@@ -1,7 +1,7 @@
-# `wezterm record`
+# `wakterm record`
 
 ```console
-{% include "../examples/cmd-synopsis-wezterm-record--help.txt" %}
+{% include "../examples/cmd-synopsis-wakterm-record--help.txt" %}
 ```
 
 

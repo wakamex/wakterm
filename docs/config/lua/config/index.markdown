@@ -5,7 +5,7 @@ search:
 
 # `Config` struct
 
-The `return` statement at the end of your `wezterm.lua` file returns
+The `return` statement at the end of your `wakterm.lua` file returns
 a table that is interpreted as the internal `Config` struct type.
 
 This section documents the various available fields in the config

@@ -18,7 +18,7 @@ See also [IncreaseFontSize](../keyassignment/IncreaseFontSize.md),
 
 {{since('20230712-072601-f4abf8fd')}}
 
-The default value is now `nil` which causes wezterm to match the name of the
+The default value is now `nil` which causes wakterm to match the name of the
 connected window environment (which you can see if you open the debug overlay)
 against the list of known tiling environments configured by
 [tiling_desktop_environments](tiling_desktop_environments.md).  If the

@@ -22,10 +22,10 @@ use termwiz::lineedit::*;
 use termwiz::render::terminfo::TerminfoRenderer;
 use termwiz::surface::{Change, LineAttribute};
 use termwiz::terminal::{ScreenSize, Terminal, TerminalWaker};
-use wezterm_ssh::{
+use wakterm_ssh::{
     ConfigMap, HostVerificationFailed, Session, SessionEvent, SshChildProcess, SshPty,
 };
-use wezterm_term::TerminalSize;
+use wakterm_term::TerminalSize;
 
 #[derive(Default)]
 struct PasswordPromptHost {
@@ -58,7 +58,7 @@ impl LineEditorHost for PasswordPromptHost {
 }
 
 pub fn ssh_connect_with_ui(
-    ssh_config: wezterm_ssh::ConfigMap,
+    ssh_config: wakterm_ssh::ConfigMap,
     ui: &mut ConnectionUI,
 ) -> anyhow::Result<Session> {
     let cloned_ui = ui.clone();
@@ -185,7 +185,7 @@ pub struct RemoteSshDomain {
 }
 
 pub fn ssh_domain_to_ssh_config(ssh_dom: &SshDomain) -> anyhow::Result<ConfigMap> {
-    let mut ssh_config = wezterm_ssh::Config::new();
+    let mut ssh_config = wakterm_ssh::Config::new();
     ssh_config.add_default_config_files();
 
     let (remote_host_name, port) = {
@@ -200,7 +200,7 @@ pub fn ssh_domain_to_ssh_config(ssh_dom: &SshDomain) -> anyhow::Result<ConfigMap
 
     let mut ssh_config = ssh_config.for_host(&remote_host_name);
     ssh_config.insert(
-        "wezterm_ssh_backend".to_string(),
+        "wakterm_ssh_backend".to_string(),
         match ssh_dom
             .ssh_backend
             .unwrap_or_else(|| config::configuration().ssh_backend)
@@ -223,7 +223,7 @@ pub fn ssh_domain_to_ssh_config(ssh_dom: &SshDomain) -> anyhow::Result<ConfigMap
     if ssh_dom.no_agent_auth {
         ssh_config.insert("identitiesonly".to_string(), "yes".to_string());
     }
-    if let Some("true") = ssh_config.get("wezterm_ssh_verbose").map(|s| s.as_str()) {
+    if let Some("true") = ssh_config.get("wakterm_ssh_verbose").map(|s| s.as_str()) {
         log::info!("Using ssh config: {ssh_config:#?}");
     }
     Ok(ssh_config)
@@ -267,7 +267,7 @@ impl RemoteSshDomain {
         // One option is to forward the mux via unix domain, another is to
         // embed the mux protocol in an escape sequence and just use the
         // existing terminal connection
-        env.insert("WEZTERM_REMOTE_PANE".to_string(), pane_id.to_string());
+        env.insert("WAKTERM_REMOTE_PANE".to_string(), pane_id.to_string());
 
         fn build_env_command(
             dir: Option<String>,
@@ -568,7 +568,7 @@ fn connect_ssh_session(
         }
     }
 
-    let renderer = termwiz_funcs::new_wezterm_terminfo_renderer();
+    let renderer = termwiz_funcs::new_wakterm_terminfo_renderer();
     let mut shim = TerminalShim {
         stdout: &mut StdoutShim {
             stdout: stdout_write,
@@ -737,7 +737,7 @@ impl Domain for RemoteSshDomain {
                 Err(err) => {
                     if err
                         .root_cause()
-                        .downcast_ref::<wezterm_ssh::DeadSession>()
+                        .downcast_ref::<wakterm_ssh::DeadSession>()
                         .is_some()
                     {
                         // Session died (perhaps they closed the initial tab?)
@@ -759,11 +759,11 @@ impl Domain for RemoteSshDomain {
 
         let writer = WriterWrapper::new(writer);
 
-        let terminal = wezterm_term::Terminal::new(
+        let terminal = wakterm_term::Terminal::new(
             size,
             std::sync::Arc::new(config::TermConfig::new()),
-            "WezTerm",
-            config::wezterm_version(),
+            "wakterm",
+            config::wakterm_version(),
             Box::new(writer.clone()),
         );
 
@@ -1111,7 +1111,7 @@ impl std::io::Write for PtyWriter {
         // will let us successfully write a byte to a disconnected
         // socket and we won't discover the issue until we write
         // the next byte.
-        // <https://github.com/wezterm/wezterm/issues/771>
+        // <https://github.com/wakamex/wakterm/issues/771>
         if let Ok(writer) = self.rx.try_recv() {
             self.writer = writer;
         }

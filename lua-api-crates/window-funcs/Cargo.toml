@@ -10,5 +10,5 @@ publish = false
 anyhow.workspace = true
 config.workspace = true
 luahelper.workspace = true
-wezterm-dynamic.workspace = true
+wakterm-dynamic.workspace = true
 window.workspace = true

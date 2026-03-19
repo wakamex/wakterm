@@ -11,4 +11,4 @@ anyhow.workspace = true
 config.workspace = true
 luahelper.workspace = true
 starship-battery.workspace = true
-wezterm-dynamic.workspace = true
+wakterm-dynamic.workspace = true

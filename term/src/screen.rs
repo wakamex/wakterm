@@ -5,7 +5,7 @@ use log::debug;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use termwiz::input::KeyboardEncoding;
-use wezterm_surface::SequenceNo;
+use wakterm_surface::SequenceNo;
 
 /// Holds the model of a screen.  This can either be the primary screen
 /// which includes lines of scrollback text, or the alternate screen

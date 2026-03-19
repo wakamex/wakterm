@@ -12,7 +12,7 @@ here](https://docs.rs/regex/1.3.9/regex/#syntax).
 
 
 ```lua
-local act = wezterm.action
+local act = wakterm.action
 
 config.keys = {
   -- search for things that look like git hashes
@@ -42,6 +42,6 @@ config.keys = {
 
 {{since('20220624-141144-bd1b7c5d')}}
 
-You may now use `wezterm.action.Search("CurrentSelectionOrEmptyString")` to have the search take the currently selected text as the item to search.
+You may now use `wakterm.action.Search("CurrentSelectionOrEmptyString")` to have the search take the currently selected text as the item to search.
 
 The selection text is adjusted to be a single line.

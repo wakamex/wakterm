@@ -121,7 +121,7 @@ fn lua_value_to_gvalue_impl(value: LuaValue, visited: &mut HashSet<usize>) -> ml
         }
         LuaValue::UserData(ud) => match ud.get_metatable() {
             Ok(mt) => {
-                if let Ok(to_dynamic) = mt.get::<mlua::Function>("__wezterm_to_dynamic") {
+                if let Ok(to_dynamic) = mt.get::<mlua::Function>("__wakterm_to_dynamic") {
                     match to_dynamic.call(LuaValue::UserData(ud.clone())) {
                         Ok(value) => {
                             return lua_value_to_gvalue_impl(value, visited);
@@ -131,7 +131,7 @@ fn lua_value_to_gvalue_impl(value: LuaValue, visited: &mut HashSet<usize>) -> ml
                                 from: "userdata",
                                 to: "Value",
                                 message: Some(format!(
-                                    "error calling __wezterm_to_dynamic: {err:#}"
+                                    "error calling __wakterm_to_dynamic: {err:#}"
                                 )),
                             })
                         }
@@ -268,7 +268,7 @@ fn gvalue_to_lua<'lua>(lua: &'lua Lua, value: &Value) -> mlua::Result<LuaValue<'
 impl UserData for Value {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_meta_method(
-            "__wezterm_to_dynamic",
+            "__wakterm_to_dynamic",
             |lua: &Lua, this, _: ()| -> mlua::Result<mlua::Value> { gvalue_to_lua(lua, this) },
         );
         methods.add_meta_method(
@@ -470,7 +470,7 @@ impl UserData for Value {
 }
 
 pub fn register(lua: &Lua) -> anyhow::Result<()> {
-    let wezterm_mod = get_or_create_module(lua, "wezterm")?;
-    wezterm_mod.set("GLOBAL", GLOBALS.clone())?;
+    let wakterm_mod = get_or_create_module(lua, "wakterm")?;
+    wakterm_mod.set("GLOBAL", GLOBALS.clone())?;
     Ok(())
 }

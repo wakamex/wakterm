@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::path::PathBuf;
-use wezterm_dynamic::{FromDynamic, FromDynamicOptions, ToDynamic, Value};
-use wezterm_input_types::{KeyCode, Modifiers};
-use wezterm_term::input::MouseButton;
-use wezterm_term::SemanticType;
+use wakterm_dynamic::{FromDynamic, FromDynamicOptions, ToDynamic, Value};
+use wakterm_input_types::{KeyCode, Modifiers};
+use wakterm_term::input::MouseButton;
+use wakterm_term::SemanticType;
 
 #[derive(Default, Debug, Clone, FromDynamic, ToDynamic, PartialEq, Eq)]
 pub struct LauncherActionArgs {
@@ -184,7 +184,7 @@ pub struct SpawnCommand {
     /// Specifies the current working directory for the command.
     /// If omitted, a default will be used; typically that will
     /// be the home directory of the user, but may also be the
-    /// current working directory of the wezterm process when
+    /// current working directory of the wakterm process when
     /// it was launched, or for some domains it may be some
     /// other location appropriate to the domain.
     pub cwd: Option<PathBuf>,

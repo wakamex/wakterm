@@ -6,10 +6,10 @@ tags:
 
 {{since('20220101-133340-7edc5b5a')}}
 
-Explicitly set the name of the IME server to which wezterm will connect
+Explicitly set the name of the IME server to which wakterm will connect
 via the XIM protocol when using X11 and [use_ime](use_ime.md) is `true`.
 
-By default, this option is not set which means that wezterm will consider
+By default, this option is not set which means that wakterm will consider
 the value of the `XMODIFIERS` environment variable.
 
 If for some reason the environment isn't set up correctly, or you want
@@ -20,5 +20,5 @@ update your config to specify it explicitly:
 config.xim_im_name = 'fcitx'
 ```
 
-will cause wezterm to connect to fcitx regardless of the value of `XMODIFIERS`.
+will cause wakterm to connect to fcitx regardless of the value of `XMODIFIERS`.
 

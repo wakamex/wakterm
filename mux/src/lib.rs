@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 use termwiz::escape::csi::{DecPrivateMode, DecPrivateModeCode, Device, Mode};
 use termwiz::escape::{Action, CSI};
 use thiserror::*;
-use wezterm_term::{Clipboard, ClipboardSelection, DownloadHandler, TerminalSize};
+use wakterm_term::{Clipboard, ClipboardSelection, DownloadHandler, TerminalSize};
 #[cfg(windows)]
 use winapi::um::winsock2::{SO_RCVBUF, SO_SNDBUF, SOL_SOCKET};
 
@@ -72,7 +72,7 @@ pub enum MuxNotification {
     ActiveWorkspaceChanged(Arc<ClientId>),
     Alert {
         pane_id: PaneId,
-        alert: wezterm_term::Alert,
+        alert: wakterm_term::Alert,
     },
     Empty,
     AssignClipboard {
@@ -318,7 +318,7 @@ fn read_from_pane_pty(
             localpane::emit_output_for_pane(
                 pane_id,
                 &format!(
-                    "⚠️  wezterm: read_from_pane_pty: \
+                    "⚠️  wakterm: read_from_pane_pty: \
                     Unable to allocate a socketpair: {err:#}"
                 ),
             );
@@ -660,7 +660,7 @@ impl Mux {
     pub fn record_agent_terminal_progress(
         &self,
         pane_id: PaneId,
-        progress: wezterm_term::Progress,
+        progress: wakterm_term::Progress,
     ) {
         self.refresh_agent_runtime_for_pane_with_update(pane_id, true, |runtime| {
             let now = chrono::Utc::now();
@@ -1506,7 +1506,7 @@ impl Mux {
             MuxNotification::PaneOutput(pane_id) => self.record_agent_output(*pane_id),
             MuxNotification::Alert {
                 pane_id,
-                alert: wezterm_term::Alert::Progress(progress),
+                alert: wakterm_term::Alert::Progress(progress),
             } => self.record_agent_terminal_progress(*pane_id, progress.clone()),
             _ => {}
         }
@@ -2393,7 +2393,7 @@ impl Clipboard for MuxClipboard {
 
 struct MuxDownloader {}
 
-impl wezterm_term::DownloadHandler for MuxDownloader {
+impl wakterm_term::DownloadHandler for MuxDownloader {
     fn save_to_downloads(&self, name: Option<String>, data: Vec<u8>) {
         if let Some(mux) = Mux::try_get() {
             mux.notify(MuxNotification::SaveToDownloads {
@@ -2420,8 +2420,8 @@ mod test {
     use std::ops::Range;
     use termwiz::surface::SequenceNo;
     use url::Url;
-    use wezterm_term::color::ColorPalette;
-    use wezterm_term::{KeyCode, KeyModifiers, Line, MouseEvent, StableRowIndex};
+    use wakterm_term::color::ColorPalette;
+    use wakterm_term::{KeyCode, KeyModifiers, Line, MouseEvent, StableRowIndex};
 
     struct FakePane {
         id: PaneId,

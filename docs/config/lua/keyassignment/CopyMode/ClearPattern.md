@@ -5,8 +5,8 @@
 Clear the CopyMode/SearchMode search pattern.
 
 ```lua
-local wezterm = require 'wezterm'
-local act = wezterm.action
+local wakterm = require 'wakterm'
+local act = wakterm.action
 
 return {
   key_tables = {

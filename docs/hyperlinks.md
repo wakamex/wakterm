@@ -1,4 +1,4 @@
-wezterm has support for both implicit and explicit hyperlinks.
+wakterm has support for both implicit and explicit hyperlinks.
 
 ### Implicit Hyperlinks
 
@@ -10,14 +10,14 @@ to make your own links.
 As an example, at my place of work many of our internal tools use `T123` to
 indicate task number 123 in our internal task tracking system.  It is desirable
 to make this clickable, and that can be done with the following configuration
-in your `~/.wezterm.lua`:
+in your `~/.wakterm.lua`:
 
 ```lua
-local wezterm = require 'wezterm'
+local wakterm = require 'wakterm'
 local config = {}
 
 -- Use the defaults as a base
-config.hyperlink_rules = wezterm.default_hyperlink_rules()
+config.hyperlink_rules = wakterm.default_hyperlink_rules()
 
 -- make task numbers clickable
 -- the first matched regex group is captured in $1.
@@ -27,7 +27,7 @@ table.insert(config.hyperlink_rules, {
 })
 
 -- make username/project paths clickable. this implies paths like the following are for github.
--- ( "nvim-treesitter/nvim-treesitter" | wbthomason/packer.nvim | wezterm/wezterm | "wezterm/wezterm.git" )
+-- ( "nvim-treesitter/nvim-treesitter" | wbthomason/packer.nvim | wakterm/wakterm | "wakamex/wakterm.git" )
 -- as long as a full url hyperlink regex exists above this it should not match a full url to
 -- github or gitlab / bitbucket (i.e. https://gitlab.com/user/project.git is still a whole clickable url)
 table.insert(config.hyperlink_rules, {
@@ -39,12 +39,12 @@ return config
 ```
 
 See also [hyperlink_rules](config/lua/config/hyperlink_rules.md) and
-[default_hyperlink_rules](config/lua/wezterm/default_hyperlink_rules.md).
+[default_hyperlink_rules](config/lua/wakterm/default_hyperlink_rules.md).
 
 
 ### Explicit Hyperlinks
 
-wezterm supports the relatively new [Hyperlinks in Terminal
+wakterm supports the relatively new [Hyperlinks in Terminal
 Emulators](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda)
 specification that allows emitting text that can be clicked and resolve to a
 specific URL, without the URL being part of the display text.  This allows

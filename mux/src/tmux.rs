@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::sync::Arc;
 use termwiz::tmux_cc::*;
-use wezterm_term::TerminalSize;
+use wakterm_term::TerminalSize;
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
 pub enum AttachState {

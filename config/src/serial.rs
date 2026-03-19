@@ -1,5 +1,5 @@
 use crate::config::validate_domain_name;
-use wezterm_dynamic::{FromDynamic, ToDynamic};
+use wakterm_dynamic::{FromDynamic, ToDynamic};
 
 #[derive(Default, Debug, Clone, FromDynamic, ToDynamic)]
 pub struct SerialDomain {

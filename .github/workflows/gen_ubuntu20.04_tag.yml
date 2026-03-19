@@ -40,7 +40,7 @@ jobs:
         run: "apt-get install -y openssh-server"
       - name: "Workaround git permissions issue"
         shell: bash
-        run: "git config --global --add safe.directory /__w/wezterm/wezterm"
+        run: "git config --global --add safe.directory /__w/wakterm/wakterm"
       - name: "checkout repo"
         uses: actions/checkout@v4
         with:
@@ -64,15 +64,15 @@ jobs:
       - name: "Install System Deps"
         shell: bash
         run: "env CI=yes PATH=$PATH ./get-deps"
-      - name: "Build wezterm (Release mode)"
+      - name: "Build wakterm (Release mode)"
         shell: bash
-        run: "cargo build -p wezterm --release"
-      - name: "Build wezterm-gui (Release mode)"
+        run: "cargo build -p wakterm --release"
+      - name: "Build wakterm-gui (Release mode)"
         shell: bash
-        run: "cargo build -p wezterm-gui --release"
-      - name: "Build wezterm-mux-server (Release mode)"
+        run: "cargo build -p wakterm-gui --release"
+      - name: "Build wakterm-mux-server (Release mode)"
         shell: bash
-        run: "cargo build -p wezterm-mux-server --release"
+        run: "cargo build -p wakterm-mux-server --release"
       - name: "Build strip-ansi-escapes (Release mode)"
         shell: bash
         run: "cargo build -p strip-ansi-escapes --release"
@@ -101,15 +101,15 @@ jobs:
         with:
           name: "ubuntu20.04"
           path: |
-            wezterm-*.deb
-            wezterm-*.xz
+            wakterm-*.deb
+            wakterm-*.xz
             *src.tar.gz
             *.AppImage
 
   upload:
     runs-on: ubuntu-latest
     needs: build
-    if: github.repository == 'wezterm/wezterm'
+    if: github.repository == 'wakamex/wakterm'
     permissions:
       contents: write
       pages: write
@@ -118,30 +118,30 @@ jobs:
     steps:
       - name: "Workaround git permissions issue"
         shell: bash
-        run: "git config --global --add safe.directory /__w/wezterm/wezterm"
+        run: "git config --global --add safe.directory /__w/wakterm/wakterm"
       - name: "checkout repo"
         uses: actions/checkout@v4
       - name: "Checkout linuxbrew tap"
         uses: actions/checkout@v4
         with:
-          repository: "wez/homebrew-wezterm-linuxbrew"
-          path: "linuxbrew-wezterm"
+          repository: "wez/homebrew-wakterm-linuxbrew"
+          path: "linuxbrew-wakterm"
           token: "${{ secrets.GH_PAT }}"
       - name: "Update linuxbrew tap formula"
         shell: bash
-        run: "cp wezterm-linuxbrew.rb linuxbrew-wezterm/Formula/wezterm.rb"
+        run: "cp wakterm-linuxbrew.rb linuxbrew-wakterm/Formula/wakterm.rb"
       - name: "Commit linuxbrew tap changes"
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Automated update to match latest tag"
-          repository: "linuxbrew-wezterm"
+          repository: "linuxbrew-wakterm"
       - name: "Download artifact"
         uses: actions/download-artifact@v4
         with:
           name: "ubuntu20.04"
       - name: "Checksum"
         shell: bash
-        run: "for f in wezterm-*.deb wezterm-*.xz *src.tar.gz *.AppImage ; do sha256sum $f > $f.sha256 ; done"
+        run: "for f in wakterm-*.deb wakterm-*.xz *src.tar.gz *.AppImage ; do sha256sum $f > $f.sha256 ; done"
       - name: "Create pre-release"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -151,11 +151,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
-        run: "bash ci/retry.sh gh release upload --clobber $(ci/tag-name.sh) wezterm-*.deb wezterm-*.xz *src.tar.gz *.AppImage *.sha256"
-      - name: "Checkout flathub/org.wezfurlong.wezterm"
+        run: "bash ci/retry.sh gh release upload --clobber $(ci/tag-name.sh) wakterm-*.deb wakterm-*.xz *src.tar.gz *.AppImage *.sha256"
+      - name: "Checkout flathub/org.wezfurlong.wakterm"
         uses: actions/checkout@v4
         with:
-          repository: "flathub/org.wezfurlong.wezterm"
+          repository: "flathub/org.wezfurlong.wakterm"
           path: "flathub"
           token: "${{ secrets.GH_PAT }}"
       - name: "Create flathub commit and push"
@@ -165,4 +165,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         shell: bash
-        run: 'cd flathub && gh pr create --fill --body "PR automatically created by release automation in the wezterm repo"'
+        run: 'cd flathub && gh pr create --fill --body "PR automatically created by release automation in the wakterm repo"'

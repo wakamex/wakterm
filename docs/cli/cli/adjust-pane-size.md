@@ -1,8 +1,8 @@
-# `wezterm cli adjust-pane-size DIRECTION`
+# `wakterm cli adjust-pane-size DIRECTION`
 
 {{since('20230712-072601-f4abf8fd')}}
 
-*Run `wezterm cli adjust-pane-size --help` to see more help*
+*Run `wakterm cli adjust-pane-size --help` to see more help*
 
 Adjust the size of the current pane, or the pane specified by `--pane-id`, in the specified direction.
 
@@ -14,5 +14,5 @@ ignoring case so you can use `left` rather than `Left`:
 ## Synopsis
 
 ```console
-{% include "../../examples/cmd-synopsis-wezterm-cli-adjust-pane-size--help.txt" %}
+{% include "../../examples/cmd-synopsis-wakterm-cli-adjust-pane-size--help.txt" %}
 ```

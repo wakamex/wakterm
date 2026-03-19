@@ -7,7 +7,7 @@ tags:
 
 {{since('20240203-110809-5046fc22')}}
 
-If set to `true`, launching a new instance of `wezterm` will prefer to
+If set to `true`, launching a new instance of `wakterm` will prefer to
 spawn a new tab when it is able to connect to your already-running GUI
 instance.
 

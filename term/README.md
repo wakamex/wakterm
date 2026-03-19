@@ -1,9 +1,9 @@
-# wezterm-term
+# wakterm-term
 
 This crate provides the core of the virtual terminal emulator implementation
-used by [wezterm](https://wezterm.org/).  The home for this
-crate is in the wezterm repo and development is tracked at
-<https://github.com/wezterm/wezterm/>.
+used by [wakterm](https://wakterm.org/).  The home for this
+crate is in the wakterm repo and development is tracked at
+<https://github.com/wakamex/wakterm/>.
 
 It is full featured, providing terminal escape sequence parsing, keyboard
 and mouse input encoding, a model for the screen cells including scrollback,

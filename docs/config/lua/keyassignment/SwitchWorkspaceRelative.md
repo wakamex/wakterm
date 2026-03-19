@@ -14,10 +14,10 @@ It shows the active workspace in the title bar.  The launcher menu can be used
 to create workspaces.
 
 ```lua
-local wezterm = require 'wezterm'
-local act = wezterm.action
+local wakterm = require 'wakterm'
+local act = wakterm.action
 
-wezterm.on('update-right-status', function(window, pane)
+wakterm.on('update-right-status', function(window, pane)
   window:set_right_status(window:active_workspace())
 end)
 

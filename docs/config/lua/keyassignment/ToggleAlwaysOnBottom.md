@@ -9,7 +9,7 @@ config.keys = {
   {
     key = ']',
     mods = 'CMD|SHIFT',
-    action = wezterm.action.ToggleAlwaysOnBottom,
+    action = wakterm.action.ToggleAlwaysOnBottom,
   },
 }
 ```

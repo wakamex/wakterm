@@ -186,7 +186,7 @@ impl log::Log for Logger {
                 // We use writeln! here rather than eprintln! so that we can ignore
                 // a failed log write in the case that stderr has been redirected
                 // to a device that is out of disk space.
-                // <https://github.com/wezterm/wezterm/issues/1839>
+                // <https://github.com/wakamex/wakterm/issues/1839>
                 let mut stderr = std::io::stderr();
                 // Direct `write!` will `write()` every single padding space as individual syscall
                 // which makes terminal with tracing logs enabled unusably slow.
@@ -265,11 +265,11 @@ fn setup_pretty() -> (LevelFilter, Logger) {
     let base_name = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
-        .unwrap_or_else(|| "wezterm".to_string());
+        .unwrap_or_else(|| "wakterm".to_string());
 
     if base_name.contains("gui") {
         // Only tidy up logs when the gui process is starting.
-        // rationale: `wezterm cli` commands should have as low startup
+        // rationale: `wakterm cli` commands should have as low startup
         // overhead as possible
         prune_old_logs();
     }
@@ -289,7 +289,7 @@ fn setup_pretty() -> (LevelFilter, Logger) {
         filters.filter_module(module, level);
     }
 
-    if let Ok(s) = std::env::var("WEZTERM_LOG") {
+    if let Ok(s) = std::env::var("WAKTERM_LOG") {
         filters.parse(&s);
     } else {
         filters.filter_level(LevelFilter::Info);

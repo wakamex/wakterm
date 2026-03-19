@@ -1,0 +1,39 @@
+[package]
+authors = ["Wez Furlong"]
+name = "wakterm-surface"
+version = "0.1.0"
+edition = "2018"
+repository = "https://github.com/wakamex/wakterm"
+description = "Surface and Line types for terminals"
+license = "MIT"
+documentation = "https://docs.rs/wakterm-surface"
+keywords = ["terminal", "surface", "line"]
+
+[dependencies]
+bitflags = "2.0"
+fancy-regex.workspace = true
+finl_unicode.workspace = true
+fixedbitset.workspace = true
+ordered-float.workspace = true
+serde = {workspace=true, optional=true}
+siphasher.workspace = true
+unicode-segmentation.workspace = true
+wakterm-bidi.workspace = true
+wakterm-blob-leases = {workspace=true, optional=true}
+wakterm-cell = {workspace = true}
+wakterm-char-props.workspace = true
+wakterm-color-types = {workspace = true}
+wakterm-dynamic = {workspace = true}
+wakterm-escape-parser = {workspace = true}
+wakterm-input-types.workspace = true
+
+[features]
+default = []
+std = ["fancy-regex/std", "wakterm-cell/std", "wakterm-dynamic/std", "wakterm-escape-parser/std", "fixedbitset/std", "fancy-regex/perf", "fancy-regex/unicode"]
+appdata = ["std"]
+use_serde = ["serde"] #, "wakterm-color-types/use_serde", "wakterm-blob-leases/serde", "bitflags/serde", "wakterm-input-types/serde", "wakterm-escape-parser/use_serde", "wakterm-cell/use_serde"]
+use_image = ["wakterm-cell/use_image"] # "image", "dep:image", "wakterm-escape-parser/use_image", "wakterm-escape-parser/kitty-shm", "wakterm-cell/use_image"]
+
+[dev-dependencies]
+k9.workspace = true
+

@@ -1,0 +1,32 @@
+[package]
+authors = ["Wez Furlong"]
+name = "wakterm-cell"
+version = "0.1.0"
+edition = "2024"
+repository = "https://github.com/wakamex/wakterm"
+description = "Model a Cell in a Terminal display"
+license = "MIT"
+documentation = "https://docs.rs/wakterm-cell"
+keywords = ["terminal", "cell"]
+
+[dependencies]
+finl_unicode.workspace = true
+image = {workspace=true, optional=true}
+log = {workspace = true, optional=true}
+ordered-float = {workspace = true, optional=true}
+sha2 = {workspace=true, optional=true}
+serde = {workspace=true, optional=true}
+thiserror = {workspace=true, optional=true}
+wakterm-blob-leases = {workspace = true, optional=true}
+wakterm-char-props.workspace = true
+wakterm-color-types.workspace = true
+wakterm-escape-parser.workspace = true
+wakterm-dynamic.workspace = true
+
+[features]
+std = ["serde/std", "wakterm-char-props/std", "wakterm-color-types/std", "wakterm-escape-parser/std", "wakterm-dynamic/std", "finl_unicode/std"]
+use_serde = ["dep:serde", "wakterm-color-types/use_serde"]
+use_image = ["dep:image", "dep:wakterm-blob-leases", "dep:log", "dep:ordered-float", "dep:sha2", "dep:thiserror"]
+
+[dev-dependencies]
+

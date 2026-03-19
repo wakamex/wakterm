@@ -1,14 +1,14 @@
-wezterm uses an embedded ssh library to provide an integrated SSH client.  The
+wakterm uses an embedded ssh library to provide an integrated SSH client.  The
 client can be used to make ad-hoc SSH connections to remote hosts
 by invoking the client like this:
 
 ```console
-$ wezterm ssh wez@my.server
+$ wakterm ssh wez@my.server
 ```
 
-(checkout `wezterm ssh -h` for more options).
+(checkout `wakterm ssh -h` for more options).
 
-When invoked in this way, wezterm may prompt you for SSH authentication
+When invoked in this way, wakterm may prompt you for SSH authentication
 and once a connection is established, open a new terminal window with
 your requested command, or your shell if you didn't specify one.
 
@@ -20,7 +20,7 @@ SSH sessions created in this way are non-persistent and all associated
 tabs will die if your network connection is interrupted.
 
 Take a look at [the multiplexing section](multiplexing.md) for an
-alternative configuration that connects to a remote wezterm instance
+alternative configuration that connects to a remote wakterm instance
 and preserves your tabs.
 
 The [ssh_backend](config/lua/config/ssh_backend.md) configuration can
@@ -28,7 +28,7 @@ be used to specify which ssh library is used.
 
 {{since('20210404-112810-b63a949d')}}
 
-wezterm is now able to parse `~/.ssh/config` and `/etc/ssh/ssh_config`
+wakterm is now able to parse `~/.ssh/config` and `/etc/ssh/ssh_config`
 and respects the following options:
 
 * `IdentityAgent`
@@ -60,7 +60,7 @@ All other options are parsed but have no effect.  Notably, neither `Match` or
 `ProxyUseFDpass` is now supported. (But not on Microsoft Windows).
 
 `ServerAliveInterval` is now supported by the `libssh` backend.  Setting it to
-a non-zero value will cause wezterm to send an `IGNORE` packet on that interval.
+a non-zero value will cause wakterm to send an `IGNORE` packet on that interval.
 `ServerAliveCountMax` is NOT supported by this backend.  This keepalive
 mechanism will not actively track the number of keepalives or disconnect the
 session; the packets are sent in a fire-and-forget manner as a least effort way
@@ -69,11 +69,11 @@ hardware to keep the session alive.
 
 ### CLI Overrides
 
-`wezterm ssh` CLI allows overriding config settings via the command line.  This
+`wakterm ssh` CLI allows overriding config settings via the command line.  This
 example shows how to specify the private key to use when connecting to
 `some-host`:
 
 ```bash
-wezterm ssh -oIdentityFile=/secret/id_ed25519 some-host
+wakterm ssh -oIdentityFile=/secret/id_ed25519 some-host
 ```
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=wakterm mux server
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+EnvironmentFile=-%h/.config/wakterm-mux-server.env
+ExecStart=__WAKTERM_MUX_SERVER_BIN__
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

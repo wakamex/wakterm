@@ -20,21 +20,21 @@ When `st` is:
 * `1`: set progress value to `pr` (number, 0-100). Reported as `{Percentage = pr}`
 * `2`: set error state in progress, `pr` is optional and will be assumed 0 if omitted. Reported as `{Error = pr}`
 * `3`: set indeterminate state. Reported as `"Indeterminate"`
-* `4`: set paused state, pr is optional. *Not supported by WezTerm*
+* `4`: set paused state, pr is optional. *Not supported by wakterm*
 
 When the progress OSC is processed, the state is captured, and if it has
-changed, WezTerm will trigger an update of the tab bar, which will in turn
+changed, wakterm will trigger an update of the tab bar, which will in turn
 cause events such as
 [format-tab-title](../window-events/format-tab-title.md) to trigger.
 
-The progress information is not directly used by wezterm, but you can access it
+The progress information is not directly used by wakterm, but you can access it
 from lua to style tabs differently according to progress. For example, the
 following will prefix the tab with the progress percentage expressed using Nerd
 Fonts circle symbols and adjust its color based on whether it is success or
 error progress:
 
 ```lua
-local wezterm = require 'wezterm'
+local wakterm = require 'wakterm'
 
 local function tab_title(tab_info)
   local title = tab_info.tab_title
@@ -48,21 +48,21 @@ local function tab_title(tab_info)
 end
 
 local PCT_GLYPHS = {
-  wezterm.nerdfonts.md_circle_slice_1,
-  wezterm.nerdfonts.md_circle_slice_2,
-  wezterm.nerdfonts.md_circle_slice_3,
-  wezterm.nerdfonts.md_circle_slice_4,
-  wezterm.nerdfonts.md_circle_slice_5,
-  wezterm.nerdfonts.md_circle_slice_6,
-  wezterm.nerdfonts.md_circle_slice_7,
-  wezterm.nerdfonts.md_circle_slice_8,
+  wakterm.nerdfonts.md_circle_slice_1,
+  wakterm.nerdfonts.md_circle_slice_2,
+  wakterm.nerdfonts.md_circle_slice_3,
+  wakterm.nerdfonts.md_circle_slice_4,
+  wakterm.nerdfonts.md_circle_slice_5,
+  wakterm.nerdfonts.md_circle_slice_6,
+  wakterm.nerdfonts.md_circle_slice_7,
+  wakterm.nerdfonts.md_circle_slice_8,
 }
 local function pct_glyph(pct)
   local slot = math.floor(pct / 12)
   return PCT_GLYPHS[slot + 1]
 end
 
-wezterm.on(
+wakterm.on(
   'format-tab-title',
   function(tab, tabs, panes, config, hover, max_width)
     local progress = tab.active_pane.progress or 'None'
@@ -84,7 +84,7 @@ wezterm.on(
       elseif progress == 'Indeterminate' then
         status = '~'
       else
-        status = wezterm.serde.json_encode(progress)
+        status = wakterm.serde.json_encode(progress)
       end
 
       table.insert(elements, { Foreground = { Color = color } })
@@ -98,5 +98,5 @@ wezterm.on(
   end
 )
 
-return wezterm.config_builder()
+return wakterm.config_builder()
 ```

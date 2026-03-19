@@ -8,10 +8,10 @@ Your shell is determined by the following rules:
 
     The shell configured for the current user in the password database will be
     used.  The value of the `$SHELL` environment variable is **_deliberately
-    ignored_** in order for wezterm to continue to be functional without
+    ignored_** in order for wakterm to continue to be functional without
     restarting after the user changes their shell.
 
-    wezterm will set the `$SHELL` environment variable to the shell that it
+    wakterm will set the `$SHELL` environment variable to the shell that it
     resolved from the password database. If you want to control the value of
     `$SHELL` in your spawned processes, use
     [set_environment_variables](lua/config/set_environment_variables.md) to
@@ -21,21 +21,21 @@ Your shell is determined by the following rules:
     to invoke it as a login shell.  A login shell generally loads additional
     startup files and sets up more environment than a non-login shell.
 
-    Older versions of wezterm (circa 2022 and earlier) used slightly
+    Older versions of wakterm (circa 2022 and earlier) used slightly
     different logic to determine the default program and invoke it.
 
 === "On Windows Systems"
 
     1. The value of the `%COMSPEC%` environment variable is used if it is set.
        **It is not recommended to change COMSPEC**, keep reading this
-       page of the documentation to learn how to make wezterm
+       page of the documentation to learn how to make wakterm
        run a different program.
 
     2. Otherwise, `cmd.exe`
 
 ## Changing the default program
 
-If you'd like `wezterm` to run a different program than the shell as
+If you'd like `wakterm` to run a different program than the shell as
 described above, you can use the `default_prog` config setting to specify
 the argument array; the array allows specifying the program and arguments
 portably:
@@ -48,17 +48,17 @@ config.default_prog = { '/usr/local/bin/fish', '-l' }
 ## Launching a different program as a one off via the CLI
 
 If you want to make a shortcut for your desktop environment that will,
-for example, open an editor in wezterm you can use the `start` subcommand
+for example, open an editor in wakterm you can use the `start` subcommand
 to launch it.  This example opens up a new terminal window running vim
-to edit your wezterm configuration:
+to edit your wakterm configuration:
 
 ```console
-$ wezterm start -- vim ~/.wezterm.lua
+$ wakterm start -- vim ~/.wakterm.lua
 ```
 
 ## Specifying the current working directory
 
-If you'd like `wezterm` to start running a program in a specific working
+If you'd like `wakterm` to start running a program in a specific working
 directory you can do so via the config, CLI, and when using
 [`SpawnCommand`](lua/SpawnCommand.md):
 
@@ -71,7 +71,7 @@ directory you can do so via the config, CLI, and when using
 * One off program in a specific working directory via the CLI:
 
   ```console
-  $ wezterm start --cwd /some/path
+  $ wakterm start --cwd /some/path
   ```
 
 * The [`SpawnCommandInNewTab`](lua/keyassignment/SpawnCommandInNewTab.md),
@@ -104,7 +104,7 @@ The [set_environment_variables](lua/config/set_environment_variables.md)
 configuration setting can be used to add environment variables to the
 environment of the spawned program.
 
-The behavior is to take the environment of the `wezterm` process
+The behavior is to take the environment of the `wakterm` process
 and then set the specified variables for the spawned process.
 
 ```lua
@@ -170,10 +170,10 @@ Here's a fancy example that will add some helpful entries to the launcher
 menu when running on Windows:
 
 ```lua
-local wezterm = require 'wezterm'
+local wakterm = require 'wakterm'
 local launch_menu = {}
 
-if wezterm.target_triple == 'x86_64-pc-windows-msvc' then
+if wakterm.target_triple == 'x86_64-pc-windows-msvc' then
   table.insert(launch_menu, {
     label = 'PowerShell',
     args = { 'powershell.exe', '-NoLogo' },
@@ -183,7 +183,7 @@ if wezterm.target_triple == 'x86_64-pc-windows-msvc' then
   -- environment command prompts to the menu
   for _, vsvers in
     ipairs(
-      wezterm.glob('Microsoft Visual Studio/20*', 'C:/Program Files (x86)')
+      wakterm.glob('Microsoft Visual Studio/20*', 'C:/Program Files (x86)')
     )
   do
     local year = vsvers:gsub('Microsoft Visual Studio/', '')

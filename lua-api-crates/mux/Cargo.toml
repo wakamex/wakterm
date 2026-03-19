@@ -19,5 +19,5 @@ smol.workspace = true
 termwiz-funcs.workspace = true
 termwiz.workspace = true
 url-funcs.workspace = true
-wezterm-dynamic.workspace = true
-wezterm-term.workspace = true
+wakterm-dynamic.workspace = true
+wakterm-term.workspace = true

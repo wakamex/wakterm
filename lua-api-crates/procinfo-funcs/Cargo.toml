@@ -12,4 +12,4 @@ config.workspace = true
 libc.workspace = true
 luahelper.workspace = true
 procinfo.workspace = true
-wezterm-dynamic.workspace = true
+wakterm-dynamic.workspace = true

@@ -1,8 +1,8 @@
-# `wezterm cli activate-pane-direction DIRECTION`
+# `wakterm cli activate-pane-direction DIRECTION`
 
 {{since('20221119-145034-49b9839f')}}
 
-*Run `wezterm cli activate-pane-direction --help` to see more help*
+*Run `wakterm cli activate-pane-direction --help` to see more help*
 
 Changes the activate pane to the one in the specified direction.
 
@@ -15,5 +15,5 @@ ignoring case so you can use `left` rather than `Left`:
 ## Synopsis
 
 ```console
-{% include "../../examples/cmd-synopsis-wezterm-cli-activate-pane-direction--help.txt" %}
+{% include "../../examples/cmd-synopsis-wakterm-cli-activate-pane-direction--help.txt" %}
 ```

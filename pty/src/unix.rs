@@ -138,7 +138,7 @@ fn tty_name(fd: RawFd) -> Option<PathBuf> {
 /// This is approximately equivalent to the darwin `posix_spawnattr_setflags`
 /// option POSIX_SPAWN_CLOEXEC_DEFAULT which is used as a bit of a cheat
 /// on macOS.
-/// On Linux, gnome/mutter leak shell extension fds to wezterm too, so we
+/// On Linux, gnome/mutter leak shell extension fds to wakterm too, so we
 /// also need to make an effort to clean up the mess.
 ///
 /// This function enumerates the open filedescriptors in the current process

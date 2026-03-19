@@ -24,7 +24,7 @@ The default value is system specific:
 
 In macOS and Wayland environments there isn't strictly a system DPI value that
 can be queried; instead standard density has a fixed value and the system will
-inform WezTerm when the display is high density by communicating a scaling
+inform wakterm when the display is high density by communicating a scaling
 factor for the display.
 
 The Wayland protocol only allows for integer scaling factors, but some

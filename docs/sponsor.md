@@ -1,6 +1,6 @@
 # Sponsoring
 
-If you use and find wezterm valuable, please consider sponsoring its
+If you use and find wakterm valuable, please consider sponsoring its
 development.
 
 Your support helps to validate the time spent so far and encourages me to spend

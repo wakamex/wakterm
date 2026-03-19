@@ -278,7 +278,7 @@ title: Color Schemes with first letter "{scheme_prefix}"
                     origin_url = scheme["metadata"].get("origin_url", None)
                     if origin_url:
                         idx.write(f"Source: <{origin_url}><br/>\n")
-                    version = scheme["metadata"].get("wezterm_version", None)
+                    version = scheme["metadata"].get("wakterm_version", None)
                     if version and version != "Always":
                         idx.write(f"{{{{since('{version}')}}}}<br/>\n")
 
@@ -324,7 +324,7 @@ document.addEventListener("DOMContentLoaded", function() {{
 
 TOC = [
     Page(
-        "WezTerm",
+        "wakterm",
         "index.md",
         children=[
             Page("Features", "features.md"),
@@ -379,40 +379,40 @@ TOC = [
                 "config/lua/config",
             ),
             Gen(
-                "module: wezterm",
-                "config/lua/wezterm",
+                "module: wakterm",
+                "config/lua/wakterm",
             ),
             Gen(
-                "module: wezterm.color",
-                "config/lua/wezterm.color",
+                "module: wakterm.color",
+                "config/lua/wakterm.color",
             ),
             Gen(
-                "module: wezterm.gui",
-                "config/lua/wezterm.gui",
+                "module: wakterm.gui",
+                "config/lua/wakterm.gui",
             ),
             Gen(
-                "module: wezterm.mux",
-                "config/lua/wezterm.mux",
+                "module: wakterm.mux",
+                "config/lua/wakterm.mux",
             ),
             Gen(
-                "module: wezterm.plugin",
-                "config/lua/wezterm.plugin",
+                "module: wakterm.plugin",
+                "config/lua/wakterm.plugin",
             ),
             Gen(
-                "module: wezterm.procinfo",
-                "config/lua/wezterm.procinfo",
+                "module: wakterm.procinfo",
+                "config/lua/wakterm.procinfo",
             ),
             Gen(
-                "module: wezterm.serde",
-                "config/lua/wezterm.serde",
+                "module: wakterm.serde",
+                "config/lua/wakterm.serde",
             ),
             Gen(
-                "module: wezterm.time",
-                "config/lua/wezterm.time",
+                "module: wakterm.time",
+                "config/lua/wakterm.time",
             ),
             Gen(
-                "module: wezterm.url",
-                "config/lua/wezterm.url",
+                "module: wakterm.url",
+                "config/lua/wakterm.url",
             ),
             Gen(
                 "enum: KeyAssignment",
@@ -432,7 +432,7 @@ TOC = [
             Page("object: TabInformation", "config/lua/TabInformation.md"),
             Page("object: SshDomain", "config/lua/SshDomain.md"),
             Page("object: SpawnCommand", "config/lua/SpawnCommand.md"),
-            Gen("object: Time", "config/lua/wezterm.time/Time"),
+            Gen("object: Time", "config/lua/wakterm.time/Time"),
             Page("object: TlsDomainClient", "config/lua/TlsDomainClient.md"),
             Page("object: TlsDomainServer", "config/lua/TlsDomainServer.md"),
             Gen(
@@ -462,17 +462,17 @@ TOC = [
         "CLI Reference",
         "cli/general.md",
         children=[
-            Gen("wezterm cli", "cli/cli"),
-            Page("wezterm connect", "cli/connect.md"),
-            Page("wezterm imgcat", "cli/imgcat.md"),
-            Page("wezterm ls-fonts", "cli/ls-fonts.md"),
-            Page("wezterm record", "cli/record.md"),
-            Page("wezterm replay", "cli/replay.md"),
-            Page("wezterm serial", "cli/serial.md"),
-            Page("wezterm set-working-directory", "cli/set-working-directory.md"),
-            Page("wezterm show-keys", "cli/show-keys.md"),
-            Page("wezterm ssh", "cli/ssh.md"),
-            Page("wezterm start", "cli/start.md"),
+            Gen("wakterm cli", "cli/cli"),
+            Page("wakterm connect", "cli/connect.md"),
+            Page("wakterm imgcat", "cli/imgcat.md"),
+            Page("wakterm ls-fonts", "cli/ls-fonts.md"),
+            Page("wakterm record", "cli/record.md"),
+            Page("wakterm replay", "cli/replay.md"),
+            Page("wakterm serial", "cli/serial.md"),
+            Page("wakterm set-working-directory", "cli/set-working-directory.md"),
+            Page("wakterm show-keys", "cli/show-keys.md"),
+            Page("wakterm ssh", "cli/ssh.md"),
+            Page("wakterm start", "cli/start.md"),
         ],
     ),
     Page(

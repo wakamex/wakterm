@@ -3,7 +3,7 @@ use crate::*;
 use luahelper::impl_lua_conversion_dynamic;
 use std::fmt::Display;
 use std::str::FromStr;
-use wezterm_dynamic::{FromDynamic, ToDynamic};
+use wakterm_dynamic::{FromDynamic, FromDynamicOptions, ToDynamic, Value};
 
 #[derive(Debug, Clone, Copy, FromDynamic, ToDynamic)]
 pub enum SshBackend {
@@ -17,16 +17,52 @@ impl Default for SshBackend {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromDynamic, ToDynamic)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SshMultiplexing {
-    WezTerm,
+    Wakterm,
     None,
     // TODO: Tmux-cc in the future?
 }
 
 impl Default for SshMultiplexing {
     fn default() -> Self {
-        Self::WezTerm
+        Self::Wakterm
+    }
+}
+
+impl SshMultiplexing {
+    fn variants() -> &'static [&'static str] {
+        &["wakterm", "none"]
+    }
+}
+
+impl FromDynamic for SshMultiplexing {
+    fn from_dynamic(value: &Value, _options: FromDynamicOptions) -> Result<Self, wakterm_dynamic::Error> {
+        match value {
+            Value::String(s) => match s.as_str() {
+                "wakterm" | "WakTerm" | "wezterm" | "WezTerm" => Ok(Self::Wakterm),
+                "none" | "None" => Ok(Self::None),
+                _ => Err(wakterm_dynamic::Error::InvalidVariantForType {
+                    variant_name: s.clone(),
+                    type_name: "SshMultiplexing",
+                    possible: Self::variants(),
+                }),
+            },
+            other => Err(wakterm_dynamic::Error::NoConversion {
+                source_type: other.variant_name().to_string(),
+                dest_type: "SshMultiplexing",
+            }),
+        }
+    }
+}
+
+impl ToDynamic for SshMultiplexing {
+    fn to_dynamic(&self) -> Value {
+        let value = match self {
+            Self::Wakterm => "wakterm",
+            Self::None => "none",
+        };
+        Value::String(value.to_string())
     }
 }
 
@@ -76,23 +112,23 @@ pub struct SshDomain {
 
     /// Show time since last response when waiting for a response.
     /// It is recommended to use
-    /// <https://wezterm.org/config/lua/pane/get_metadata.html#since_last_response_ms>
+    /// <https://wakterm.org/config/lua/pane/get_metadata.html#since_last_response_ms>
     /// instead.
     #[dynamic(default)]
     pub overlay_lag_indicator: bool,
 
-    /// The path to the wezterm binary on the remote host
-    pub remote_wezterm_path: Option<String>,
-    /// Override the entire `wezterm cli proxy` invocation that would otherwise
-    /// be computed from remote_wezterm_path and other information.
+    /// The path to the wakterm binary on the remote host
+    pub remote_wakterm_path: Option<String>,
+    /// Override the entire `wakterm cli proxy` invocation that would otherwise
+    /// be computed from remote_wakterm_path and other information.
     pub override_proxy_command: Option<String>,
 
     pub ssh_backend: Option<SshBackend>,
 
     /// If false, then don't use a multiplexer connection,
     /// just connect directly using ssh. This doesn't require
-    /// that the remote host have wezterm installed, and is equivalent
-    /// to using `wezterm ssh` to connect.
+    /// that the remote host have wakterm installed, and is equivalent
+    /// to using `wakterm ssh` to connect.
     #[dynamic(default)]
     pub multiplexing: SshMultiplexing,
 
@@ -109,7 +145,7 @@ impl_lua_conversion_dynamic!(SshDomain);
 
 impl SshDomain {
     pub fn default_domains() -> Vec<Self> {
-        let mut config = wezterm_ssh::Config::new();
+        let mut config = wakterm_ssh::Config::new();
         config.add_default_config_files();
 
         let mut plain_ssh = vec![];
@@ -126,7 +162,7 @@ impl SshDomain {
             mux_ssh.push(Self {
                 name: format!("SSHMUX:{host}"),
                 remote_address: host.to_string(),
-                multiplexing: SshMultiplexing::WezTerm,
+                multiplexing: SshMultiplexing::Wakterm,
                 local_echo_threshold_ms: default_local_echo_threshold_ms(),
                 ..SshDomain::default()
             });
@@ -134,6 +170,34 @@ impl SshDomain {
 
         plain_ssh.append(&mut mux_ssh);
         plain_ssh
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::SshMultiplexing;
+    use wakterm_dynamic::{FromDynamic, FromDynamicOptions, ToDynamic, Value};
+
+    #[test]
+    fn ssh_multiplexing_serializes_to_lowercase_wakterm() {
+        assert_eq!(
+            SshMultiplexing::Wakterm.to_dynamic(),
+            Value::String("wakterm".to_string())
+        );
+    }
+
+    #[test]
+    fn ssh_multiplexing_accepts_legacy_and_renamed_values() {
+        for value in ["wakterm", "WakTerm", "wezterm", "WezTerm"] {
+            assert_eq!(
+                SshMultiplexing::from_dynamic(
+                    &Value::String(value.to_string()),
+                    FromDynamicOptions::default()
+                )
+                .unwrap(),
+                SshMultiplexing::Wakterm
+            );
+        }
     }
 }
 

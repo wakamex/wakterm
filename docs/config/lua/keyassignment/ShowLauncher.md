@@ -5,7 +5,7 @@ in the current tab.
 
 ```lua
 config.keys = {
-  { key = 'l', mods = 'ALT', action = wezterm.action.ShowLauncher },
+  { key = 'l', mods = 'ALT', action = wakterm.action.ShowLauncher },
 }
 ```
 

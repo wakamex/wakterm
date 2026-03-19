@@ -36,12 +36,12 @@ smol.workspace = true
 termwiz = { workspace=true, features=["use_serde"] }
 toml.workspace = true
 umask.workspace = true
-wezterm-bidi.workspace = true
-wezterm-config-derive.workspace = true
-wezterm-dynamic.workspace = true
-wezterm-input-types.workspace = true
-wezterm-ssh.workspace = true
-wezterm-term = { workspace = true, features=["use_serde"] }
+wakterm-bidi.workspace = true
+wakterm-config-derive.workspace = true
+wakterm-dynamic.workspace = true
+wakterm-input-types.workspace = true
+wakterm-ssh.workspace = true
+wakterm-term = { workspace = true, features=["use_serde"] }
 
 [target."cfg(unix)".dependencies]
 nix = {workspace=true, features=["resource"]}

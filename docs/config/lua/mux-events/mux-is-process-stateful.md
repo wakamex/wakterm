@@ -26,11 +26,11 @@ indenting the entries for each level of the process hierarchy.
 Since it returns `nil`, it uses the default behavior.
 
 ```lua
-local wezterm = require 'wezterm'
+local wakterm = require 'wakterm'
 
 function log_proc(proc, indent)
   indent = indent or ''
-  wezterm.log_info(
+  wakterm.log_info(
     indent
       .. 'pid='
       .. proc.pid
@@ -39,8 +39,8 @@ function log_proc(proc, indent)
       .. ', status='
       .. proc.status
   )
-  wezterm.log_info(indent .. 'argv=' .. table.concat(proc.argv, ' '))
-  wezterm.log_info(
+  wakterm.log_info(indent .. 'argv=' .. table.concat(proc.argv, ' '))
+  wakterm.log_info(
     indent .. 'executable=' .. proc.executable .. ', cwd=' .. proc.cwd
   )
   for pid, child in pairs(proc.children) do
@@ -48,7 +48,7 @@ function log_proc(proc, indent)
   end
 end
 
-wezterm.on('mux-is-process-stateful', function(proc)
+wakterm.on('mux-is-process-stateful', function(proc)
   log_proc(proc)
 
   -- Just use the default behavior

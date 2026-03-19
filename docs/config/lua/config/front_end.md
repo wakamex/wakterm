@@ -5,7 +5,7 @@ tags:
 # `front_end = "OpenGL"`
 
 Specifies which render front-end to use.  This option used to have
-more scope in earlier versions of wezterm, but today it allows three
+more scope in earlier versions of wakterm, but today it allows three
 possible values:
 
 * `OpenGL` - use GPU accelerated rasterization
@@ -21,14 +21,14 @@ possible values:
 You may wish (or need!) to select `Software` if there are issues with your
 GPU/OpenGL drivers.
 
-WezTerm will automatically select `Software` if it detects that it is
+wakterm will automatically select `Software` if it detects that it is
 being started in a Remote Desktop environment on Windows.
 
 ## WebGpu
 
 {{since('20221119-145034-49b9839f')}}
 
-The WebGpu front end allows wezterm to use GPU acceleration provided by
+The WebGpu front end allows wakterm to use GPU acceleration provided by
 a number of platform-specific backends:
 
 * Metal (on macOS)

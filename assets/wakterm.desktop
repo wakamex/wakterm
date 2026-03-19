@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=wakterm
+Comment=GPU-accelerated terminal and multiplexer
+Keywords=shell;prompt;command;commandline;cmd;
+Icon=org.wezfurlong.wakterm
+StartupWMClass=org.wezfurlong.wakterm
+TryExec=wakterm
+Exec=wakterm start --cwd .
+Type=Application
+Categories=System;TerminalEmulator;Utility;
+Terminal=false

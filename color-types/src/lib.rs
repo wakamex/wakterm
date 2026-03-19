@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 #[cfg(feature = "std")]
 use std::sync::LazyLock;
-use wezterm_dynamic::{FromDynamic, FromDynamicOptions, ToDynamic, Value};
+use wakterm_dynamic::{FromDynamic, FromDynamicOptions, ToDynamic, Value};
 
 extern crate alloc;
 
@@ -329,7 +329,7 @@ impl FromDynamic for SrgbaTuple {
     fn from_dynamic(
         value: &Value,
         options: FromDynamicOptions,
-    ) -> Result<Self, wezterm_dynamic::Error> {
+    ) -> Result<Self, wakterm_dynamic::Error> {
         let s = String::from_dynamic(value, options)?;
         Ok(SrgbaTuple::from_str(&s).map_err(|()| format!("unknown color name: {}", s))?)
     }

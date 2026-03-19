@@ -6,8 +6,8 @@ Moves the CopyMode cursor position to the top of the scrollback.
 
 
 ```lua
-local wezterm = require 'wezterm'
-local act = wezterm.action
+local wakterm = require 'wakterm'
+local act = wakterm.action
 
 return {
   key_tables = {

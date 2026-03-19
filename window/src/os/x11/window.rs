@@ -24,8 +24,8 @@ use std::ptr::NonNull;
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
 use url::Url;
-use wezterm_font::FontConfiguration;
-use wezterm_input_types::{KeyCode, KeyEvent, KeyboardLedStatus, Modifiers};
+use wakterm_font::FontConfiguration;
+use wakterm_input_types::{KeyCode, KeyEvent, KeyboardLedStatus, Modifiers};
 use xcb::x::{Atom, PropMode};
 use xcb::{Event, Xid};
 
@@ -804,7 +804,7 @@ impl XWindowInner {
             Event::X(xcb::x::Event::SelectionRequest(e)) => {
                 if let Err(err) = self.selection_request(e) {
                     // Don't propagate this, as it is not worth exiting the program over it.
-                    // <https://github.com/wezterm/wezterm/pull/6135>
+                    // <https://github.com/wakamex/wakterm/pull/6135>
                     log::error!("Error handling SelectionRequest: {err:#}");
                 }
             }
@@ -896,7 +896,7 @@ impl XWindowInner {
         // Since we just composed, synthesize a cleared status, as we
         // are not guaranteed to receive an event notification to
         // trigger dispatch_ime_compose_status() above.
-        // <https://github.com/wezterm/wezterm/issues/4841>
+        // <https://github.com/wakamex/wakterm/issues/4841>
         self.events
             .dispatch(WindowEvent::AdviseDeadKeyStatus(DeadKeyStatus::None));
     }
@@ -1557,7 +1557,7 @@ impl XWindow {
         // Before we map the window, flush to ensure that all of the other properties
         // have been applied to it.
         // This is a speculative fix for this race condition issue:
-        // <https://github.com/wezterm/wezterm/issues/2155>
+        // <https://github.com/wakamex/wakterm/issues/2155>
         conn.flush().context("flushing before mapping window")?;
         window_handle.show();
 
@@ -1616,7 +1616,7 @@ impl XWindowInner {
         // should give whatever stuff is still referencing the window
         // to finish and avoid triggering a protocol error.
         // I don't really like this as a solution :-/
-        // <https://github.com/wezterm/wezterm/issues/2198>
+        // <https://github.com/wakamex/wakterm/issues/2198>
         let window = self.window_id;
         promise::spawn::spawn(async move {
             async_io::Timer::after(std::time::Duration::from_secs(2)).await;
@@ -2122,11 +2122,11 @@ impl WindowOps for XWindow {
         XConnection::with_window_inner(window_id, move |inner| {
             // In theory, we could simply consult inner.copy_and_paste to see
             // if we think we own the clipboard, but there are some situations
-            // where the selection owner moves between two wezterm windows
+            // where the selection owner moves between two wakterm windows
             // where we don't receive a SELECTION_NOTIFY in time to correctly
             // invalidate that state, so we always ask the X server to for
             // the selection, even if it is a little slower.
-            // <https://github.com/wezterm/wezterm/issues/2110>
+            // <https://github.com/wakamex/wakterm/issues/2110>
             let promise = promise.take().unwrap();
             log::debug!(
                 "SEL: window_id={window_id:?} Window::get_clipboard: \

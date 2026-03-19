@@ -14,7 +14,7 @@ intersect with the value of `macos_forward_to_ime_modifier_mask`, then the key
 event is routed to the IME, which may choose to swallow the key event as
 part of its own state management.
 
-The behavior of wezterm has varied in the past:
+The behavior of wakterm has varied in the past:
 
 |Version                              |Effective Setting|
 |-------------------------------------|-----------------|

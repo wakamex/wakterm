@@ -1,9 +1,9 @@
 [package]
-name = "wezterm-color-types"
+name = "wakterm-color-types"
 version = "0.3.0"
 authors = ["Wez Furlong"]
 edition = "2018"
-repository = "https://github.com/wezterm/wezterm"
+repository = "https://github.com/wakamex/wakterm"
 description = "Types for working with colors"
 license = "MIT"
 
@@ -16,4 +16,4 @@ csscolorparser = {workspace=true, optional=true}
 deltae = {workspace = true, optional=true}
 num-traits = {workspace=true, features=["libm"]}
 serde = {workspace=true, features = ["derive"], optional=true}
-wezterm-dynamic.workspace = true
+wakterm-dynamic.workspace = true

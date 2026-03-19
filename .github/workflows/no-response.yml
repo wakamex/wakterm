@@ -23,7 +23,7 @@ on:
 jobs:
   noResponse:
     runs-on: ubuntu-latest
-    if: github.repository == 'wezterm/wezterm'
+    if: github.repository == 'wakamex/wakterm'
     steps:
       - uses: actions/stale@v9.1.0
         with:

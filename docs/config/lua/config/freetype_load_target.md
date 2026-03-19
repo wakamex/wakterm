@@ -27,7 +27,7 @@ explicitly set the alpha channel for the text foreground color. You will need
 to choose between using the alpha channel or using subpixel-rendering, and you
 must select subpixel-rendering in your main configuration in order for the
 correct render mode to activate: setting it only in a
-[wezterm.font](../wezterm/font.md) override is not sufficient.
+[wakterm.font](../wakterm/font.md) override is not sufficient.
 
 
 {{since('20240127-113634-bbcac864')}}

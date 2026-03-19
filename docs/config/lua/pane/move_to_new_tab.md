@@ -12,7 +12,7 @@ config.keys = {
   {
     key = '!',
     mods = 'LEADER | SHIFT',
-    action = wezterm.action_callback(function(win, pane)
+    action = wakterm.action_callback(function(win, pane)
       local tab, window = pane:move_to_new_tab()
     end),
   },
@@ -20,4 +20,4 @@ config.keys = {
 ```
 
 See also [pane:move_to_new_window()](move_to_new_window.md),
-[wezterm cli move-pane-to-new-tab](../../../cli/cli/move-pane-to-new-tab.md).
+[wakterm cli move-pane-to-new-tab](../../../cli/cli/move-pane-to-new-tab.md).

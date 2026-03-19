@@ -17,7 +17,7 @@ config.keys = {
   {
     key = '%',
     mods = 'CTRL|SHIFT|ALT',
-    action = wezterm.action.SplitPane {
+    action = wakterm.action.SplitPane {
       direction = 'Left',
       command = { args = { 'top' } },
       size = { Percent = 50 },
@@ -26,4 +26,4 @@ config.keys = {
 }
 ```
 
-See also: [SplitHorizontal](SplitHorizontal.md), [SplitVertical](SplitVertical.md) and `wezterm cli split-pane --help`.
+See also: [SplitHorizontal](SplitHorizontal.md), [SplitVertical](SplitVertical.md) and `wakterm cli split-pane --help`.

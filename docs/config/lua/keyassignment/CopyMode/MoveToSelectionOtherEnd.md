@@ -8,8 +8,8 @@ corner, then the cursor and starting point are swapped, with the cursor now
 positioned at the bottom right corner.
 
 ```lua
-local wezterm = require 'wezterm'
-local act = wezterm.action
+local wakterm = require 'wakterm'
+local act = wakterm.action
 
 return {
   key_tables = {

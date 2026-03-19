@@ -5,7 +5,7 @@ use mlua::{IntoLua, Value as LuaValue};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::rc::Rc;
-use wezterm_dynamic::{FromDynamic, ToDynamic, Value as DynValue};
+use wakterm_dynamic::{FromDynamic, ToDynamic, Value as DynValue};
 
 pub mod enumctor;
 
@@ -120,13 +120,13 @@ fn lua_value_to_dynamic_impl(
         LuaValue::LightUserData(_) => {
             return Err(mlua::Error::FromLuaConversionError {
                 from: "userdata",
-                to: "wezterm_dynamic::Value",
+                to: "wakterm_dynamic::Value",
                 message: None,
             })
         }
         LuaValue::UserData(ud) => match ud.get_metatable() {
             Ok(mt) => {
-                if let Ok(to_dynamic) = mt.get::<mlua::Function>("__wezterm_to_dynamic") {
+                if let Ok(to_dynamic) = mt.get::<mlua::Function>("__wakterm_to_dynamic") {
                     match to_dynamic.call(LuaValue::UserData(ud.clone())) {
                         Ok(value) => {
                             return lua_value_to_dynamic_impl(value, visited);
@@ -134,9 +134,9 @@ fn lua_value_to_dynamic_impl(
                         Err(err) => {
                             return Err(mlua::Error::FromLuaConversionError {
                                 from: "userdata",
-                                to: "wezterm_dynamic::Value",
+                                to: "wakterm_dynamic::Value",
                                 message: Some(format!(
-                                    "error calling __wezterm_to_dynamic: {err:#}"
+                                    "error calling __wakterm_to_dynamic: {err:#}"
                                 )),
                             })
                         }
@@ -151,7 +151,7 @@ fn lua_value_to_dynamic_impl(
                         Err(err) => {
                             return Err(mlua::Error::FromLuaConversionError {
                                 from: "userdata",
-                                to: "wezterm_dynamic::Value",
+                                to: "wakterm_dynamic::Value",
                                 message: Some(format!("error calling tostring: {err:#}")),
                             })
                         }
@@ -159,7 +159,7 @@ fn lua_value_to_dynamic_impl(
                     Err(err) => {
                         return Err(mlua::Error::FromLuaConversionError {
                             from: "userdata",
-                            to: "wezterm_dynamic::Value",
+                            to: "wakterm_dynamic::Value",
                             message: Some(format!("error getting tostring: {err:#}")),
                         })
                     }
@@ -168,7 +168,7 @@ fn lua_value_to_dynamic_impl(
             Err(err) => {
                 return Err(mlua::Error::FromLuaConversionError {
                     from: "userdata",
-                    to: "wezterm_dynamic::Value",
+                    to: "wakterm_dynamic::Value",
                     message: Some(format!("error getting metatable: {err:#}")),
                 })
             }
@@ -176,14 +176,14 @@ fn lua_value_to_dynamic_impl(
         LuaValue::Function(_) => {
             return Err(mlua::Error::FromLuaConversionError {
                 from: "function",
-                to: "wezterm_dynamic::Value",
+                to: "wakterm_dynamic::Value",
                 message: None,
             })
         }
         LuaValue::Thread(_) => {
             return Err(mlua::Error::FromLuaConversionError {
                 from: "thread",
-                to: "wezterm_dynamic::Value",
+                to: "wakterm_dynamic::Value",
                 message: None,
             })
         }
@@ -250,7 +250,7 @@ pub fn from_lua_value_dynamic<T: FromDynamic>(value: LuaValue) -> mlua::Result<T
 
 #[derive(FromDynamic, ToDynamic)]
 pub struct ValueLua {
-    pub value: wezterm_dynamic::Value,
+    pub value: wakterm_dynamic::Value,
 }
 impl_lua_conversion_dynamic!(ValueLua);
 
@@ -399,7 +399,7 @@ impl<'lua> std::fmt::Debug for ValuePrinterHelper<'lua> {
             }
             LuaValue::UserData(ud) => {
                 if let Ok(mt) = ud.get_metatable() {
-                    if let Ok(to_dynamic) = mt.get::<mlua::Function>("__wezterm_to_dynamic") {
+                    if let Ok(to_dynamic) = mt.get::<mlua::Function>("__wakterm_to_dynamic") {
                         return match to_dynamic.call(LuaValue::UserData(ud.clone())) {
                             Ok(value) => Self {
                                 visited: Rc::clone(&self.visited),
@@ -407,7 +407,7 @@ impl<'lua> std::fmt::Debug for ValuePrinterHelper<'lua> {
                                 is_cycle: false,
                             }
                             .fmt(fmt),
-                            Err(err) => write!(fmt, "Error calling __wezterm_to_dynamic: {err}"),
+                            Err(err) => write!(fmt, "Error calling __wakterm_to_dynamic: {err}"),
                         };
                     }
                 }

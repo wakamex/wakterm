@@ -8,13 +8,13 @@ pub fn assign_version_info(version: &'static str, triple: &'static str) {
     TRIPLE.set(triple).unwrap();
 }
 
-pub fn wezterm_version() -> &'static str {
+pub fn wakterm_version() -> &'static str {
     VERSION
         .get()
         .unwrap_or(&"someone forgot to call assign_version_info")
 }
 
-pub fn wezterm_target_triple() -> &'static str {
+pub fn wakterm_target_triple() -> &'static str {
     TRIPLE
         .get()
         .unwrap_or(&"someone forgot to call assign_version_info")

@@ -1,4 +1,4 @@
-`wezterm` allows assigning action(s) to specific key events, and comes
+`wakterm` allows assigning action(s) to specific key events, and comes
 pre-configured with a number of commonly useful assignments.
 
 This page describes how key presses are handled and turned into actions
@@ -23,19 +23,19 @@ first, some operating system concepts:
   but instead holds some state that will compose with a subsequently
   pressed key. Most commonly used for example in European layouts to
   produce accented versions of the plain latin alphabet.
-* *Physical Key* - a way to identify a key based on its hardware-dependent location. `wezterm` can refer to keys based on code they would emit if configured to use an ANSI US English keyboard layout (even if that layout is not currently active), or based on its raw scan code.
+* *Physical Key* - a way to identify a key based on its hardware-dependent location. `wakterm` can refer to keys based on code they would emit if configured to use an ANSI US English keyboard layout (even if that layout is not currently active), or based on its raw scan code.
 * *Mapped key* - a way to identify a key after the keyboard layout has been applied by the OS.
 * *Modifier* - A key such as `SHIFT`, `CTRL`, `CMD`, `ALT` that can be held simultaneously while other keys are pressed. Modifier keys are special because keyboard hardware traditionally only supports those four modifiers, and that detail is ingrained into most OS input APIs.
 
-And then some wezterm concepts:
+And then some wakterm concepts:
 
 * *Key Assignment* - an action assigned to a matching key and modifier combination.
-* *Key Table* - a grouping of key assignments. For each window, `wezterm` maintains a stack of table activations, allowing for rich modal keyboard input customization
+* *Key Table* - a grouping of key assignments. For each window, `wakterm` maintains a stack of table activations, allowing for rich modal keyboard input customization
 
 
 ## Keyboard Processing Flow
 
-This schematic depicts the processing flow for keyboard events in `wezterm`:
+This schematic depicts the processing flow for keyboard events in `wakterm`:
 
 {% raw %}
 ```mermaid
@@ -79,13 +79,13 @@ RAWDONE2 --> RAWDONE3
 
 The operating system has its own user selectable keymap that is sometimes at
 odds with old-school terminal emulation that pre-dates internationalization as
-a concept.  WezTerm tries to behave reasonably by default, but also give you
+a concept.  wakterm tries to behave reasonably by default, but also give you
 control in other situations.
 
 ### Layouts with an AltGr key
 
 If you have, for example, a European keyboard layout with an AltGr key then
-wezterm will respect the composition effects of AltGr produced by the system.
+wakterm will respect the composition effects of AltGr produced by the system.
 For example, in a German keymap, `AltGr <` will produce `|`.
 
 If your physical keyboard doesn't match the keyboard layout (eg: using a US
@@ -117,7 +117,7 @@ config.send_composed_key_when_right_alt_is_pressed = true
 
 {{since('20210203-095643-70a364eb')}}
 
-WezTerm is now able to perform dead-key expansion when `use_ime = false`.  Dead
+wakterm is now able to perform dead-key expansion when `use_ime = false`.  Dead
 keys are treated as composition effects, so with the default settings of
 `send_composed_key_when_left_alt_is_pressed` and
 `send_composed_key_when_right_alt_is_pressed` above, in a US layout, `Left-Opt
@@ -130,7 +130,7 @@ the example above, `Right-Opt n` will then immediately produce `~`.
 
 ### Input Method Editor (IME)
 
-WezTerm has support for using the operating system Input Method Editor (IME) on
+wakterm has support for using the operating system Input Method Editor (IME) on
 some operating systems.
 
 [The `use_ime` docs have more information](lua/config/use_ime.md).
@@ -141,7 +141,7 @@ some operating systems.
 
 By default, if you are using a layout with *dead keys* (eg: US International
 layout, or a number of European layouts such as German or French) pressing
-a dead key in wezterm will "hold" the dead key until the next character is
+a dead key in wakterm will "hold" the dead key until the next character is
 pressed, resulting in a combined character with a diacritic.  For example,
 pressing `^` and then `e` will produce `ê`.  Pressing `^` then `SPACE`
 will produce `^` on its own.
@@ -149,7 +149,7 @@ will produce `^` on its own.
 If you are a heavy user of Vi style editors then you may wish to disable
 dead key processing so that `^` can be used with a single keypress.
 
-You can tell WezTerm to disable dead keys by setting this in your configuration
+You can tell wakterm to disable dead keys by setting this in your configuration
 file:
 
 ```lua
@@ -158,11 +158,11 @@ config.use_dead_keys = false
 
 Note that for X11 systems with `use_ime=true`, depending on the configured IME,
 the IME may handle dead key processing implicitly. There is no way for
-`wezterm` to prevent it from doing that, short of disabling the IME.
+`wakterm` to prevent it from doing that, short of disabling the IME.
 
 ### Defining Assignments for key combinations that may be composed
 
-When a key combination produces a composed key result, wezterm will look up
+When a key combination produces a composed key result, wakterm will look up
 both the composed and uncomposed versions of the keypress in your key mappings.
 If either lookup matches your assignment, that will take precedence over
 the normal key processing.

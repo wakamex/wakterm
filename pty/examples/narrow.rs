@@ -1,5 +1,5 @@
 //! Runs a command with a fixed terminal size.
-//! This is used by wezterm's doc building automation to keep
+//! This is used by wakterm's doc building automation to keep
 //! the --help output within a reasonable width
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use std::sync::mpsc::channel;

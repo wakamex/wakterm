@@ -12,7 +12,7 @@ config.keys = {
   {
     key = 'm',
     mods = 'CMD',
-    action = wezterm.action.DisableDefaultAssignment,
+    action = wakterm.action.DisableDefaultAssignment,
   },
 }
 ```

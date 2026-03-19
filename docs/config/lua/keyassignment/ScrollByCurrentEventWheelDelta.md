@@ -12,7 +12,7 @@ there's not much point adding this to your config unless you also have set
 to `true`.
 
 ```lua
-local act = wezterm.action
+local act = wakterm.action
 
 config.mouse_bindings = {
   {

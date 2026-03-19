@@ -10,7 +10,7 @@ that you set; it will not be implicitly clipped.
 The parameter is a string that can contain escape sequences that change
 presentation.
 
-It is recommended that you use [wezterm.format](../wezterm/format.md) to
+It is recommended that you use [wakterm.format](../wakterm/format.md) to
 compose the string.
 
 See [window:set_right_status](set_right_status.md) for examples.

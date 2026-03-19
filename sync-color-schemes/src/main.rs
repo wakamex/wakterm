@@ -21,12 +21,12 @@ lazy_static::lazy_static! {
 
 fn apply_nightly_version(metadata: &mut ColorSchemeMetaData) {
     metadata
-        .wezterm_version
+        .wakterm_version
         .replace("nightly builds only".to_string());
 }
 
 fn make_cache() -> Cache {
-    let file_name = "/tmp/wezterm-sync-color-schemes.sqlite";
+    let file_name = "/tmp/wakterm-sync-color-schemes.sqlite";
     let connection = sqlite_cache::rusqlite::Connection::open(&file_name).unwrap();
     Cache::new(sqlite_cache::CacheConfig::default(), connection).unwrap()
 }
@@ -51,7 +51,7 @@ pub async fn fetch_url(url: &str) -> anyhow::Result<Vec<u8>> {
 
     println!("Going to request {url}");
     let client = reqwest::Client::builder()
-        .user_agent("wezterm-sync-color-schemes/1.0")
+        .user_agent("wakterm-sync-color-schemes/1.0")
         .build()?;
 
     let response = client
@@ -156,7 +156,7 @@ pub const SCHEMES: [(&'static str, &'static str); {count}] = [\n
     // Summarize new schemes for the changelog
     let mut new_items = vec![];
     for s in &all {
-        if s.data.metadata.wezterm_version.as_deref() == Some("nightly builds only") {
+        if s.data.metadata.wakterm_version.as_deref() == Some("nightly builds only") {
             let (prefix, _) = make_prefix(&s.name);
             let ident = make_ident(&s.name);
             new_items.push(format!(
@@ -219,12 +219,12 @@ impl SchemeSet {
             struct MetaData {
                 name: String,
                 aliases: Vec<String>,
-                wezterm_version: Option<String>,
+                wakterm_version: Option<String>,
             }
 
             let existing: Vec<Entry> = serde_json::from_str(&data)?;
             for item in existing {
-                if let Some(version) = &item.metadata.wezterm_version {
+                if let Some(version) = &item.metadata.wakterm_version {
                     let ident = serde_json::to_string(&item.colors)?;
                     version_by_color_scheme.insert(ident.to_string(), version.to_string());
                     version_by_name.insert(item.metadata.name.to_string(), version.to_string());
@@ -275,7 +275,7 @@ impl SchemeSet {
             }
         }
 
-        // Resolve wezterm version information for this scheme
+        // Resolve wakterm version information for this scheme
         let json = candidate.to_json_value().expect("scheme to be json compat");
         let ident =
             serde_json::to_string(json.get("colors").unwrap()).expect("colors to be json compat");
@@ -295,7 +295,7 @@ impl SchemeSet {
             candidate
                 .data
                 .metadata
-                .wezterm_version
+                .wakterm_version
                 .replace(version.to_string());
         }
 
@@ -384,20 +384,20 @@ async fn main() -> anyhow::Result<()> {
     let mut schemeses = SchemeSet::load_existing()?;
 
     schemeses
-        .sync_toml("https://github.com/catppuccin/wezterm", "main", "")
+        .sync_toml("https://github.com/catppuccin/wakterm", "main", "")
         .await?;
     schemeses
         .sync_toml("https://github.com/EdenEast/nightfox.nvim", "main", "")
         .await?;
     schemeses
         .sync_toml(
-            "https://github.com/Hiroya-W/wezterm-sequoia-theme",
+            "https://github.com/Hiroya-W/wakterm-sequoia-theme",
             "main",
             "",
         )
         .await?;
     schemeses
-        .sync_toml("https://github.com/dracula/wezterm", "main", "")
+        .sync_toml("https://github.com/dracula/wakterm", "main", "")
         .await?;
     schemeses
         .sync_toml(
@@ -410,11 +410,11 @@ async fn main() -> anyhow::Result<()> {
         .sync_toml("https://github.com/folke/tokyonight.nvim", "main", "")
         .await?;
     schemeses
-        .sync_toml("https://codeberg.org/anhsirk0/wezterm-themes", "main", "")
+        .sync_toml("https://codeberg.org/anhsirk0/wakterm-themes", "main", "")
         .await?;
     schemeses
         .sync_toml(
-            "https://github.com/hardhackerlabs/theme-wezterm",
+            "https://github.com/hardhackerlabs/theme-wakterm",
             "master",
             "",
         )
@@ -423,7 +423,7 @@ async fn main() -> anyhow::Result<()> {
         .sync_toml("https://github.com/ribru17/bamboo.nvim", "master", "")
         .await?;
     schemeses
-        .sync_toml("https://github.com/eldritch-theme/wezterm", "master", "")
+        .sync_toml("https://github.com/eldritch-theme/wakterm", "master", "")
         .await?;
     schemeses.accumulate(iterm2::sync_iterm2().await.context("sync iterm2")?);
     schemeses.accumulate(base16::sync().await.context("sync base16")?);

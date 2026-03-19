@@ -14,7 +14,7 @@ config.tls_clients = {
 
     -- If set, use ssh to connect, start the server, and obtain
     -- a certificate.
-    -- The value is "user@host:port", just like "wezterm ssh" accepts.
+    -- The value is "user@host:port", just like "wakterm ssh" accepts.
     bootstrap_via_ssh = 'server.hostname',
 
     -- identifies the host:port pair of the remote server.
@@ -62,8 +62,8 @@ config.tls_clients = {
     -- Specify an alternate write timeout
     -- write_timeout = 60,
 
-    -- The path to the wezterm binary on the remote host
-    -- remote_wezterm_path = "/home/myname/bin/wezterm"
+    -- The path to the wakterm binary on the remote host
+    -- remote_wakterm_path = "/home/myname/bin/wakterm"
   },
 }
 ```
@@ -72,10 +72,10 @@ config.tls_clients = {
 
 You may now specify the round-trip latency threshold for enabling predictive
 local echo using `local_echo_threshold_ms`. If the measured round-trip latency
-between the wezterm client and the server exceeds the specified threshold, the
+between the wakterm client and the server exceeds the specified threshold, the
 client will attempt to predict the server's response to key events and echo the
 result of that prediction locally without waiting, hence hiding latency to the
-user. This option only applies when `multiplexing = "WezTerm"`.
+user. This option only applies when `multiplexing = "wakterm"`.
 
 ```lua
 config.tls_clients = {

@@ -22,7 +22,7 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use wezterm_term::TerminalSize;
+use wakterm_term::TerminalSize;
 
 static DOMAIN_ID: ::std::sync::atomic::AtomicUsize = ::std::sync::atomic::AtomicUsize::new(0);
 pub type DomainId = usize;
@@ -385,7 +385,7 @@ impl LocalDomain {
 
             let is_default_prog = cmd.is_default_prog();
 
-            // Note: WEZTERM_UNIX_SOCKET, WEZTERM_CONFIG_(FILE|DIR) and other env
+            // Note: WAKTERM_UNIX_SOCKET, WAKTERM_CONFIG_(FILE|DIR) and other env
             // vars are not included in this.
             // We can't include them: their paths are only meaningful in the sandbox
             // and cannot be reasonably accessed from outside it in the shell.
@@ -476,10 +476,10 @@ impl LocalDomain {
         if let Some(dir) = command_dir {
             cmd.cwd(dir);
         }
-        if let Ok(sock) = std::env::var("WEZTERM_UNIX_SOCKET") {
-            cmd.env("WEZTERM_UNIX_SOCKET", sock);
+        if let Ok(sock) = std::env::var("WAKTERM_UNIX_SOCKET") {
+            cmd.env("WAKTERM_UNIX_SOCKET", sock);
         }
-        cmd.env("WEZTERM_PANE", pane_id.to_string());
+        cmd.env("WAKTERM_PANE", pane_id.to_string());
         if let Some(agent) = Mux::get().agent.as_ref() {
             cmd.env("SSH_AUTH_SOCK", agent.path());
         }
@@ -618,11 +618,11 @@ impl Domain for LocalDomain {
         let child_result = pair.slave.spawn_command(cmd);
         let mut writer = WriterWrapper::new(pair.master.take_writer()?);
 
-        let mut terminal = wezterm_term::Terminal::new(
+        let mut terminal = wakterm_term::Terminal::new(
             size,
             std::sync::Arc::new(config::TermConfig::new()),
-            "WezTerm",
-            config::wezterm_version(),
+            "wakterm",
+            config::wakterm_version(),
             Box::new(writer.clone()),
         );
         if self.is_conpty() {
@@ -675,7 +675,7 @@ impl Domain for LocalDomain {
     async fn domain_label(&self) -> String {
         if let Some(ed) = self.resolve_exec_domain() {
             match &ed.label {
-                Some(ValueOrFunc::Value(wezterm_dynamic::Value::String(s))) => s.to_string(),
+                Some(ValueOrFunc::Value(wakterm_dynamic::Value::String(s))) => s.to_string(),
                 Some(ValueOrFunc::Func(label_func)) => {
                     let label = config::with_lua_config_on_main_thread(|lua| async {
                         let lua = lua.ok_or_else(|| anyhow::anyhow!("missing lua context"))?;

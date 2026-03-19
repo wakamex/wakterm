@@ -19,7 +19,7 @@ config.window_background_opacity = 0.4 -- opacity as you please
 config.kde_window_background_blur = true
 ```
 
-![Screenshot](../../../screenshots/wezterm-kde-background-blur.png)
+![Screenshot](../../../screenshots/wakterm-kde-background-blur.png)
 
 See also [win32_system_backdrop](win32_system_backdrop.md) for a similar
 effect on Windows.

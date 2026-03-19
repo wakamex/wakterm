@@ -20,7 +20,7 @@ use raw_window_handle::{
 };
 use std::any::Any;
 use std::rc::Rc;
-use wezterm_font::FontConfiguration;
+use wakterm_font::FontConfiguration;
 
 pub enum Connection {
     X11(Rc<XConnection>),

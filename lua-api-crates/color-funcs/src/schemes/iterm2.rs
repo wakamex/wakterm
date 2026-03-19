@@ -136,7 +136,7 @@ impl ITerm2 {
                 name,
                 author,
                 origin_url,
-                wezterm_version: None,
+                wakterm_version: None,
                 aliases: vec![],
             },
         })

@@ -7,5 +7,5 @@ xprop -notype 32c _NET_WM_ICON |
     s/(.)(...)/$2$1/gs' > /tmp/icon.pam
 
 convert /tmp/icon.pam /tmp/icon.png
-wezterm imgcat /tmp/icon.png
+wakterm imgcat /tmp/icon.png
 

@@ -233,7 +233,7 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
 async fn restore_tab(
     domain: &Arc<dyn crate::domain::Domain>,
     saved_tab: &SavedTab,
-    default_size: wezterm_term::TerminalSize,
+    default_size: wakterm_term::TerminalSize,
     window_id: crate::WindowId,
 ) -> anyhow::Result<()> {
     let first_cwd = first_leaf_cwd(&saved_tab.tree);
@@ -246,7 +246,7 @@ async fn restore_tab(
         let saved = saved_tab.tree.root_size().unwrap_or(default_size);
         // Use the larger of saved size and a minimum (200x60) to ensure
         // splits have room to work
-        wezterm_term::TerminalSize {
+        wakterm_term::TerminalSize {
             rows: saved.rows.max(60),
             cols: saved.cols.max(200),
             pixel_width: saved.pixel_width.max(200 * 10),
@@ -401,8 +401,8 @@ mod test {
     use std::sync::{Arc, Mutex};
     use termwiz::surface::{CursorShape, CursorVisibility, Line, SequenceNo};
     use url::Url;
-    use wezterm_term::color::ColorPalette;
-    use wezterm_term::{KeyCode, KeyModifiers, MouseEvent, StableRowIndex, TerminalSize};
+    use wakterm_term::color::ColorPalette;
+    use wakterm_term::{KeyCode, KeyModifiers, MouseEvent, StableRowIndex, TerminalSize};
 
     struct TestPane {
         id: crate::pane::PaneId,

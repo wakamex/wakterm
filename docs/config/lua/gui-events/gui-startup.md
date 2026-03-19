@@ -3,11 +3,11 @@
 {{since('20220624-141144-bd1b7c5d')}}
 
 The `gui-startup` event is emitted once when the GUI server is starting up
-when running the `wezterm start` subcommand.
+when running the `wakterm start` subcommand.
 
 It is triggered before any default program is started.
 
-If no explicit program was passed to `wezterm start`, and if the
+If no explicit program was passed to `wakterm start`, and if the
 `gui-startup` event causes any panes to be created then those will take
 precedence over the default program configuration and no additional default
 program will be spawned.
@@ -17,14 +17,14 @@ configuration to save you the effort of doing it manually each time.
 
 This event fires before [gui-attached](gui-attached.md).
 
-This event does not fire for `wezterm connect` invocations.
+This event does not fire for `wakterm connect` invocations.
 
 {{since('20220807-113146-c2fee766')}}
 
 The event receives an optional [SpawnCommand](../SpawnCommand.md) argument that
-corresponds to any arguments that may have been passed via `wezterm start`.
+corresponds to any arguments that may have been passed via `wakterm start`.
 In earlier releases if you implemented this event, you would essentially
-prevent `wezterm start -- something` from spawning `something`.
+prevent `wakterm start -- something` from spawning `something`.
 
 The intent is for you to use the information in the command object to
 spawn a new window, but you can choose to use or ignore it as suits
@@ -33,11 +33,11 @@ your purpose.
 This basic example splits an initial window into thirds:
 
 ```lua
-local wezterm = require 'wezterm'
-local mux = wezterm.mux
+local wakterm = require 'wakterm'
+local mux = wakterm.mux
 local config = {}
 
-wezterm.on('gui-startup', function(cmd)
+wakterm.on('gui-startup', function(cmd)
   local tab, pane, window = mux.spawn_window(cmd or {})
   -- Create a split occupying the right 1/3 of the screen
   pane:split { size = 0.3 }
@@ -53,11 +53,11 @@ return config
 This example creates a default window but makes it maximize on startup:
 
 ```lua
-local wezterm = require 'wezterm'
-local mux = wezterm.mux
+local wakterm = require 'wakterm'
+local mux = wakterm.mux
 local config = {}
 
-wezterm.on('gui-startup', function(cmd)
+wakterm.on('gui-startup', function(cmd)
   local tab, pane, window = mux.spawn_window(cmd or {})
   window:gui_window():maximize()
 end)
@@ -68,12 +68,12 @@ return config
 Here's a more elaborate example that configures two workspaces:
 
 ```lua
-local wezterm = require 'wezterm'
-local mux = wezterm.mux
+local wakterm = require 'wakterm'
+local mux = wakterm.mux
 local config = {}
 
-wezterm.on('gui-startup', function(cmd)
-  -- allow `wezterm start -- something` to affect what we spawn
+wakterm.on('gui-startup', function(cmd)
+  -- allow `wakterm start -- something` to affect what we spawn
   -- in our initial window
   local args = {}
   if cmd then
@@ -82,7 +82,7 @@ wezterm.on('gui-startup', function(cmd)
 
   -- Set a workspace for coding on a current project
   -- Top pane is for the editor, bottom pane is for the build tool
-  local project_dir = wezterm.home_dir .. '/wezterm'
+  local project_dir = wakterm.home_dir .. '/wakterm'
   local tab, build_pane, window = mux.spawn_window {
     workspace = 'coding',
     cwd = project_dir,
@@ -112,5 +112,5 @@ return config
 
 See also:
 
-* [wezterm.mux](../wezterm.mux/index.md)
+* [wakterm.mux](../wakterm.mux/index.md)
 * [gui-attached](gui-attached.md).

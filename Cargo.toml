@@ -5,22 +5,22 @@ members = [
   "strip-ansi-escapes",
   "sync-color-schemes",
   "deps/cairo",
-  "wezterm",
-  "wezterm-blob-leases",
-  "wezterm-cell",
-  "wezterm-escape-parser",
-  "wezterm-dynamic",
-  "wezterm-gui",
-  "wezterm-mux-server",
-  "wezterm-open-url",
-  "wezterm-ssh",
-  "wezterm-surface",
-  "wezterm-uds",
+  "wakterm",
+  "wakterm-blob-leases",
+  "wakterm-cell",
+  "wakterm-escape-parser",
+  "wakterm-dynamic",
+  "wakterm-gui",
+  "wakterm-mux-server",
+  "wakterm-open-url",
+  "wakterm-ssh",
+  "wakterm-surface",
+  "wakterm-uds",
 ]
 resolver = "2"
 exclude = [
   "termwiz/codegen",
-  "wezterm-char-props/codegen",
+  "wakterm-char-props/codegen",
 ]
 
 [profile.release]
@@ -239,27 +239,27 @@ wayland-client = "0.31"
 wayland-egl = "0.32"
 wayland-protocols = "0.32"
 wayland-protocols-plasma = { version="0.3.6", features=["client"] }
-wezterm-bidi = { version="0.2.3", path = "bidi", default-features=false}
-wezterm-blob-leases = { version="0.1.1", path = "wezterm-blob-leases"}
-wezterm-cell = { path = "wezterm-cell"}
-wezterm-char-props = { path = "wezterm-char-props", default-features=false }
-wezterm-client = { path = "wezterm-client" }
-wezterm-color-types = { version="0.3", path = "color-types", default-features=false }
-wezterm-config-derive = { version="0.1", path="config/derive" }
-wezterm-dynamic = { version = "0.2.1", path = "wezterm-dynamic", default-features=false }
-wezterm-dynamic-derive = { version="0.1.1", path="wezterm-dynamic/derive" }
-wezterm-escape-parser = { version="0.1.0", path="wezterm-escape-parser" }
-wezterm-font = { path = "wezterm-font" }
-wezterm-gui-subcommands = { path = "wezterm-gui-subcommands" }
-wezterm-input-types = { version="0.1", path = "wezterm-input-types", default-features=false }
-wezterm-mux-server-impl = { path = "wezterm-mux-server-impl" }
-wezterm-open-url = { path = "wezterm-open-url" }
-wezterm-ssh = { path = "wezterm-ssh" }
-wezterm-surface = { path = "wezterm-surface" }
-wezterm-term = { path = "term" }
-wezterm-toast-notification = { path = "wezterm-toast-notification" }
-wezterm-uds = { path = "wezterm-uds" }
-wezterm-version = { path = "wezterm-version" }
+wakterm-bidi = { version="0.2.3", path = "bidi", default-features=false}
+wakterm-blob-leases = { version="0.1.1", path = "wakterm-blob-leases"}
+wakterm-cell = { path = "wakterm-cell"}
+wakterm-char-props = { path = "wakterm-char-props", default-features=false }
+wakterm-client = { path = "wakterm-client" }
+wakterm-color-types = { version="0.3", path = "color-types", default-features=false }
+wakterm-config-derive = { version="0.1", path="config/derive" }
+wakterm-dynamic = { version = "0.2.1", path = "wakterm-dynamic", default-features=false }
+wakterm-dynamic-derive = { version="0.1.1", path="wakterm-dynamic/derive" }
+wakterm-escape-parser = { version="0.1.0", path="wakterm-escape-parser" }
+wakterm-font = { path = "wakterm-font" }
+wakterm-gui-subcommands = { path = "wakterm-gui-subcommands" }
+wakterm-input-types = { version="0.1", path = "wakterm-input-types", default-features=false }
+wakterm-mux-server-impl = { path = "wakterm-mux-server-impl" }
+wakterm-open-url = { path = "wakterm-open-url" }
+wakterm-ssh = { path = "wakterm-ssh" }
+wakterm-surface = { path = "wakterm-surface" }
+wakterm-term = { path = "term" }
+wakterm-toast-notification = { path = "wakterm-toast-notification" }
+wakterm-uds = { path = "wakterm-uds" }
+wakterm-version = { path = "wakterm-version" }
 wgpu = "25.0.2"
 whoami = "1.5"
 winapi = "0.3.9"
@@ -269,7 +269,7 @@ windows = "0.33.0"
 winreg = "0.10"
 x11 = "2.21"
 xcb = "1.3"
-xcb-imdkit = { version="0.3", git="https://github.com/wezterm/xcb-imdkit-rs.git", rev="212330f7c6c37794d78061a773e8f4f9e4785bbb"}
+xcb-imdkit = { version="0.3", git="https://github.com/wakamex/xcb-imdkit-rs.git", rev="212330f7c6c37794d78061a773e8f4f9e4785bbb"}
 xkbcommon = "0.7.0"
 xml-rs = "0.8"
 zbus = "4.2"

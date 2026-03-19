@@ -15,17 +15,17 @@ config.keys = {
   {
     key = '[',
     mods = 'CMD',
-    action = wezterm.action.SetWindowLevel 'AlwaysOnBottom',
+    action = wakterm.action.SetWindowLevel 'AlwaysOnBottom',
   },
   {
     key = '0',
     mods = 'CMD|SHIFT',
-    action = wezterm.action.SetWindowLevel 'Normal',
+    action = wakterm.action.SetWindowLevel 'Normal',
   },
   {
     key = ']',
     mods = 'CMD',
-    action = wezterm.action.SetWindowLevel 'AlwaysOnTop',
+    action = wakterm.action.SetWindowLevel 'AlwaysOnTop',
   },
 }
 ```

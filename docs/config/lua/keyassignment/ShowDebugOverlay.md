@@ -7,7 +7,7 @@ of a debug log and a lua [REPL](https://en.wikipedia.org/wiki/Read%E2%80%93eval%
 
 The REPL has the following globals available:
 
-* `wezterm` - the [wezterm](../wezterm/index.md) module is pre-imported
+* `wakterm` - the [wakterm](../wakterm/index.md) module is pre-imported
 * `window` - the [window](../window/index.md) object for the current window
 
 The lua context in the REPL is not connected to any global state; you cannot use it
@@ -17,6 +17,6 @@ prototyping lua snippets before you integrate them fully into your config.
 ```lua
 config.keys = {
   -- CTRL-SHIFT-l activates the debug overlay
-  { key = 'L', mods = 'CTRL', action = wezterm.action.ShowDebugOverlay },
+  { key = 'L', mods = 'CTRL', action = wakterm.action.ShowDebugOverlay },
 }
 ```

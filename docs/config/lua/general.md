@@ -1,14 +1,14 @@
 # Lua Reference
 
-WezTerm provides Lua 5.4 as a configuration language. This section documents
+wakterm provides Lua 5.4 as a configuration language. This section documents
 the various lua functions and types that are provided to the configuration
-file. These are provided by the `wezterm` module that must be imported into
+file. These are provided by the `wakterm` module that must be imported into
 your configuration file:
 
 ```lua
-local wezterm = require 'wezterm'
+local wakterm = require 'wakterm'
 local config = {}
-config.font = wezterm.font 'JetBrains Mono'
+config.font = wakterm.font 'JetBrains Mono'
 return config
 ```
 

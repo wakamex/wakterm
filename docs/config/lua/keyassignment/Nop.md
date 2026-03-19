@@ -9,7 +9,7 @@ the terminal, look at [DisableDefaultAssignment](DisableDefaultAssignment.md).
 ```lua
 config.keys = {
   -- Turn off any side effects from pressing CMD-m
-  { key = 'm', mods = 'CMD', action = wezterm.action.Nop },
+  { key = 'm', mods = 'CMD', action = wakterm.action.Nop },
 }
 ```
 

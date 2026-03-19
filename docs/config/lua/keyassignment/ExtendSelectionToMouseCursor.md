@@ -13,7 +13,7 @@ config.mouse_bindings = {
   {
     event = { Up = { streak = 1, button = 'Left' } },
     mods = 'SHIFT',
-    action = wezterm.action.ExtendSelectionToMouseCursor 'Word',
+    action = wakterm.action.ExtendSelectionToMouseCursor 'Word',
   },
 }
 ```

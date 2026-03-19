@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-unit_name="${UNIT_NAME:-wezterm-mux-server}"
+unit_name="${UNIT_NAME:-wakterm-mux-server}"
 systemd_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-env_file="${ENV_FILE:-$HOME/.config/wezterm-mux-server.env}"
+env_file="${ENV_FILE:-$HOME/.config/wakterm-mux-server.env}"
 unit_path="$systemd_dir/$unit_name.service"
-template_path="$(cd "$(dirname "$0")" && pwd)/systemd/wezterm-mux-server.service"
+template_path="$(cd "$(dirname "$0")" && pwd)/systemd/wakterm-mux-server.service"
 
-default_user_bin="$HOME/.local/bin/wezterm-mux-server"
-default_system_bin="/usr/local/bin/wezterm-mux-server"
+default_user_bin="$HOME/.local/bin/wakterm-mux-server"
+default_system_bin="/usr/local/bin/wakterm-mux-server"
 if [ -n "${BIN_PATH:-}" ]; then
     bin_path="$BIN_PATH"
 elif [ -x "$default_user_bin" ]; then
@@ -63,16 +63,16 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$bin_mode" = "explicit" ] && [ "$bin_path" = "auto-path" ]; then
-    resolved="$(command -v wezterm-mux-server || true)"
+    resolved="$(command -v wakterm-mux-server || true)"
     if [ -z "$resolved" ]; then
-        echo "Could not resolve wezterm-mux-server via command -v"
+        echo "Could not resolve wakterm-mux-server via command -v"
         exit 1
     fi
     bin_path="$resolved"
 fi
 
 if [ "$bin_mode" = "auto" ] && [ ! -x "$bin_path" ]; then
-    resolved="$(command -v wezterm-mux-server || true)"
+    resolved="$(command -v wakterm-mux-server || true)"
     if [ -n "$resolved" ]; then
         bin_path="$resolved"
     fi
@@ -86,8 +86,8 @@ fi
 mkdir -p "$systemd_dir"
 
 sed \
-    -e "s|ExecStart=__WEZTERM_MUX_SERVER_BIN__|ExecStart=$bin_path|" \
-    -e "s|EnvironmentFile=-%h/.config/wezterm-mux-server.env|EnvironmentFile=-$env_file|" \
+    -e "s|ExecStart=__WAKTERM_MUX_SERVER_BIN__|ExecStart=$bin_path|" \
+    -e "s|EnvironmentFile=-%h/.config/wakterm-mux-server.env|EnvironmentFile=-$env_file|" \
     "$template_path" >"$unit_path"
 
 echo "Installed $unit_path"
@@ -95,9 +95,9 @@ echo "Installed $unit_path"
 if [ ! -f "$env_file" ]; then
     mkdir -p "$(dirname "$env_file")"
     cat >"$env_file" <<'EOF'
-# Optional overrides for the wezterm user service.
+# Optional overrides for the wakterm user service.
 # Examples:
-# RUST_LOG=wezterm_mux_server_impl=debug,mux=debug
+# RUST_LOG=wakterm_mux_server_impl=debug,mux=debug
 # RUST_BACKTRACE=1
 EOF
     echo "Created $env_file"
@@ -130,5 +130,5 @@ echo ""
 echo "Notes:"
 echo "  - The installed unit runs $bin_path directly under systemd."
 echo "  - Optional service env lives in $env_file"
-echo "  - Other user services that call 'wezterm cli' should depend on"
-echo "    $unit_name.service and use WEZTERM_UNIX_SOCKET=%t/wezterm/sock"
+echo "  - Other user services that call 'wakterm cli' should depend on"
+echo "    $unit_name.service and use WAKTERM_UNIX_SOCKET=%t/wakterm/sock"

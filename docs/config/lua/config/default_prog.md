@@ -7,7 +7,7 @@ tags:
 If no `prog` is specified on the command line, use this
 instead of running the user's shell.
 
-For example, to have `wezterm` always run `top` by default,
+For example, to have `wakterm` always run `top` by default,
 you'd use this:
 
 ```lua

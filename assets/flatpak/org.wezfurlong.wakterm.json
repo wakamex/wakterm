@@ -1,0 +1,59 @@
+{
+    "app-id": "org.wezfurlong.wakterm",
+    "runtime": "org.freedesktop.Platform",
+    "runtime-version": "23.08",
+    "sdk": "org.freedesktop.Sdk",
+    "sdk-extensions" : [
+        "org.freedesktop.Sdk.Extension.rust-stable"
+    ],
+    "command": "wakterm",
+    "finish-args": [
+        "--share=ipc",
+        "--filesystem=home:ro",
+        "--filesystem=xdg-config/wakterm",
+        "--socket=fallback-x11",
+        "--socket=wayland",
+        "--device=dri",
+        "--talk-name=org.freedesktop.Flatpak",
+        "--talk-name=org.freedesktop.Notifications",
+        "--share=network"
+    ],
+    "build-options": {
+        "append-path" : "/usr/lib/sdk/rust-stable/bin"
+    },
+    "modules": [
+        {
+            "name": "wakterm",
+            "buildsystem": "simple",
+            "build-options": {
+                "env": {
+                    "CARGO_HOME": "/run/build/wakterm/cargo"
+                }
+            },
+            "build-commands": [
+                "cargo --offline fetch --manifest-path Cargo.toml --verbose",
+                "cargo --offline build --release --verbose",
+                "mkdir -p /app/share/icons/hicolor/128x128/apps/",
+                "cp ./assets/icon/terminal.png /app/share/icons/hicolor/128x128/apps/org.wezfurlong.wakterm.png",
+                "mkdir -p /app/share/metainfo/",
+                "cp ./assets/wakterm.appdata.xml /app/share/metainfo/org.wezfurlong.wakterm.appdata.xml",
+                "mkdir -p /app/share/applications/",
+                "cp ./assets/wakterm.desktop /app/share/applications/org.wezfurlong.wakterm.desktop",
+                "install -Dm755 ./target/release/wakterm -t /app/bin/",
+                "install -Dm755 ./target/release/wakterm-gui -t /app/bin/",
+                "install -Dm755 ./target/release/wakterm-mux-server -t /app/bin/",
+                "install -Dm755 ./target/release/strip-ansi-escapes -t /app/bin/",
+                "install -Dm644 assets/shell-integration/* -t /app/extra/export/share/etc/profile.d",
+                "install -Dm644 assets/shell-completion/zsh /app/extra/export/share/zsh/site-functions/_wakterm",
+                "install -Dm644 assets/shell-completion/bash /app/extra/export/share/etc/bash_completion.d/wakterm"
+              ],
+            "sources": [
+                {
+                    "type": "dir",
+                    "path": "../.."
+                },
+                "generated-sources.json"
+            ]
+        }
+    ]
+}

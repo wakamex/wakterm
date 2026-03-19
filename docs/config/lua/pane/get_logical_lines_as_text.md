@@ -6,7 +6,7 @@ Returns the textual representation (not including color or other attributes) of
 the *logical* lines of text in the viewport as a string.
 
 A *logical* line is an original input line prior to being wrapped into *physical*
-lines to composes rows in the terminal display matrix.  WezTerm doesn't store
+lines to composes rows in the terminal display matrix.  wakterm doesn't store
 logical lines, but can recompute them from metadata stored in physical lines.
 Excessively long logical lines are force-wrapped to constrain the cost of
 rewrapping on resize and selection operations.

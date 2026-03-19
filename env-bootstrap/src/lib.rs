@@ -2,12 +2,12 @@ pub mod ringlog;
 pub use ringlog::setup_logger;
 use std::path::{Path, PathBuf};
 
-pub fn set_wezterm_executable() {
+pub fn set_wakterm_executable() {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            std::env::set_var("WEZTERM_EXECUTABLE_DIR", dir);
+            std::env::set_var("WAKTERM_EXECUTABLE_DIR", dir);
         }
-        std::env::set_var("WEZTERM_EXECUTABLE", exe);
+        std::env::set_var("WAKTERM_EXECUTABLE", exe);
     }
 }
 
@@ -46,15 +46,15 @@ pub fn fixup_appimage() {
         // AppImage exports ARGV0 into the environment and that causes
         // everything that was indirectly spawned by us to appear to
         // be the AppImage.  eg: if you `vim foo` it shows as
-        // `WezTerm.AppImage foo`, which is super confusing for everyone!
+        // `wakterm.AppImage foo`, which is super confusing for everyone!
         // Let's just unset that from the environment!
         std::env::remove_var("ARGV0");
 
         // Since our AppImage includes multiple utilities, we want to
         // be able to use them, so add that location to the PATH!
-        // WEZTERM_EXECUTABLE_DIR is set by `set_wezterm_executable`
+        // WAKTERM_EXECUTABLE_DIR is set by `set_wakterm_executable`
         // which is called before `fixup_appimage`
-        if let Some(dir) = std::env::var_os("WEZTERM_EXECUTABLE_DIR") {
+        if let Some(dir) = std::env::var_os("WAKTERM_EXECUTABLE_DIR") {
             if let Some(path) = std::env::var_os("PATH") {
                 let mut paths = std::env::split_paths(&path).collect::<Vec<_>>();
                 paths.insert(0, PathBuf::from(dir));
@@ -82,12 +82,12 @@ pub fn fixup_appimage() {
         }
 
         /// Our config stuff exports these env vars to help portable apps locate
-        /// the correct environment when it is launched via wezterm.
-        /// However, if we are using the system wezterm to spawn a portable
+        /// the correct environment when it is launched via wakterm.
+        /// However, if we are using the system wakterm to spawn a portable
         /// AppImage then we want these to not take effect.
-        fn clean_wezterm_config_env() {
-            std::env::remove_var("WEZTERM_CONFIG_FILE");
-            std::env::remove_var("WEZTERM_CONFIG_DIR");
+        fn clean_wakterm_config_env() {
+            std::env::remove_var("WAKTERM_CONFIG_FILE");
+            std::env::remove_var("WAKTERM_CONFIG_DIR");
         }
 
         if config::HOME_DIR.starts_with(append_extra_file_name_suffix(&appimage, ".home")) {
@@ -97,7 +97,7 @@ pub fn fixup_appimage() {
                 "HOME",
                 dirs_next::home_dir().expect("can't resolve HOME dir"),
             );
-            clean_wezterm_config_env();
+            clean_wakterm_config_env();
         }
 
         if std::env::var("XDG_CONFIG_HOME")
@@ -107,7 +107,7 @@ pub fn fixup_appimage() {
             .unwrap_or_default()
         {
             std::env::remove_var("XDG_CONFIG_HOME");
-            clean_wezterm_config_env();
+            clean_wakterm_config_env();
         }
     }
 }
@@ -208,13 +208,13 @@ fn register_lua_modules() {
 
 pub fn bootstrap() {
     config::assign_version_info(
-        wezterm_version::wezterm_version(),
-        wezterm_version::wezterm_target_triple(),
+        wakterm_version::wakterm_version(),
+        wakterm_version::wakterm_target_triple(),
     );
     setup_logger();
     register_panic_hook();
 
-    set_wezterm_executable();
+    set_wakterm_executable();
 
     #[cfg(target_os = "macos")]
     set_lang_from_locale();
@@ -225,12 +225,12 @@ pub fn bootstrap() {
     register_lua_modules();
 
     // Remove this env var to avoid weirdness with some vim configurations.
-    // wezterm never sets WINDOWID and we don't want to inherit it from a
+    // wakterm never sets WINDOWID and we don't want to inherit it from a
     // parent process.
     std::env::remove_var("WINDOWID");
     // Avoid vte shell integration kicking in if someone started
-    // wezterm or the mux server from inside gnome terminal.
-    // <https://github.com/wezterm/wezterm/issues/2237>
+    // wakterm or the mux server from inside gnome terminal.
+    // <https://github.com/wakamex/wakterm/issues/2237>
     std::env::remove_var("VTE_VERSION");
 
     // Sice folks don't like to reboot or sign out if they `chsh`,

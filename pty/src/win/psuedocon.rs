@@ -116,7 +116,7 @@ impl PsuedoCon {
         // Explicitly set the stdio handles as invalid handles otherwise
         // we can end up with a weird state where the spawned process can
         // inherit the explicitly redirected output handles from its parent.
-        // For example, when daemonizing wezterm-mux-server, the stdio handles
+        // For example, when daemonizing wakterm-mux-server, the stdio handles
         // are redirected to a log file and the spawned process would end up
         // writing its output there instead of to the pty we just created.
         si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;

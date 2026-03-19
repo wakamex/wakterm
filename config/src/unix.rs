@@ -1,7 +1,7 @@
 use crate::config::validate_domain_name;
 use crate::*;
 use std::path::PathBuf;
-use wezterm_dynamic::{FromDynamic, ToDynamic};
+use wakterm_dynamic::{FromDynamic, ToDynamic};
 
 /// Configures an instance of a multiplexer that can be communicated
 /// with via a unix domain socket
@@ -27,9 +27,9 @@ pub struct UnixDomain {
 
     /// If we decide that we need to start the server, the command to run
     /// to set that up.  The default is to spawn:
-    /// `wezterm-mux-server --daemonize`
+    /// `wakterm-mux-server --daemonize`
     /// but it can be useful to set this to eg:
-    /// `wsl -e wezterm-mux-server --daemonize` to start up
+    /// `wsl -e wakterm-mux-server --daemonize` to start up
     /// a unix domain inside a wsl container.
     pub serve_command: Option<Vec<String>>,
 
@@ -58,7 +58,7 @@ pub struct UnixDomain {
 
     /// Show time since last response when waiting for a response.
     /// It is recommended to use
-    /// <https://wezterm.org/config/lua/pane/get_metadata.html#since_last_response_ms>
+    /// <https://wakterm.org/config/lua/pane/get_metadata.html#since_last_response_ms>
     /// instead.
     #[dynamic(default)]
     pub overlay_lag_indicator: bool,
@@ -119,9 +119,9 @@ impl UnixDomain {
             None => Ok(vec![
                 std::env::current_exe()?
                     .with_file_name(if cfg!(windows) {
-                        "wezterm-mux-server.exe"
+                        "wakterm-mux-server.exe"
                     } else {
-                        "wezterm-mux-server"
+                        "wakterm-mux-server"
                     })
                     .into_os_string(),
                 OsString::from("--daemonize"),

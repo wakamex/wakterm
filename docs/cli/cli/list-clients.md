@@ -1,11 +1,11 @@
-# `wezterm cli list-clients`
+# `wakterm cli list-clients`
 
-*Run `wezterm cli list-clients --help` to see more help*
+*Run `wakterm cli list-clients --help` to see more help*
 
 Lists the set of connected clients and some additional information about them:
 
 ```
-$ wezterm cli list-clients
+$ wakterm cli list-clients
 USER HOST     PID CONNECTED     IDLE       WORKSPACE FOCUS
 wez  foo  1098536 166.03140978s 31.40978ms default       0
 ```
@@ -25,7 +25,7 @@ The meanings of the fields are:
 You may request JSON output:
 
 ```
-$ wezterm cli list-clients --format json
+$ wakterm cli list-clients --format json
 [
   {
     "username": "wez",
@@ -48,5 +48,5 @@ $ wezterm cli list-clients --format json
 ## Synopsis
 
 ```console
-{% include "../../examples/cmd-synopsis-wezterm-cli-list-clients--help.txt" %}
+{% include "../../examples/cmd-synopsis-wakterm-cli-list-clients--help.txt" %}
 ```

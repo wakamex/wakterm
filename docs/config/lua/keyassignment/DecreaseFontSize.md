@@ -4,7 +4,7 @@ Decreases the font size of the current window by 10%
 
 ```lua
 config.keys = {
-  { key = '-', mods = 'CTRL', action = wezterm.action.DecreaseFontSize },
+  { key = '-', mods = 'CTRL', action = wakterm.action.DecreaseFontSize },
 }
 ```
 

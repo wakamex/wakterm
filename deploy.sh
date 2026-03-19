@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEST="$HOME/wezterm-test"
-SRC="/code/wezterm/target/release"
+DEST="$HOME/wakterm-test"
+SRC="/code/wakterm/target/release"
 
 usage() {
     echo "Usage: ./deploy.sh [--restart] [--no-save] [--wipe-session] [--clean]"
     echo ""
     echo "  (no flags)  Build, save manual layout snapshot, copy binaries"
     echo "  --restart   Also kill the mux server (Mac reconnect triggers new binary)"
-    echo "  --no-save   Skip wezterm cli save-layout (use when layout/session state is known bad)"
+    echo "  --no-save   Skip wakterm cli save-layout (use when layout/session state is known bad)"
     echo "  --wipe-session  Remove runtime session.json after restart for a clean session"
     echo "  --clean     Run cargo clean for deployed crates before building"
     echo ""
     echo "After --restart, reconnect from Mac then run:"
-    echo "  cd /code/wezterm && target/release/wezterm cli restore-layout"
+    echo "  cd /code/wakterm && target/release/wakterm cli restore-layout"
     echo ""
     echo "To install the deployed binaries into ~/.local/bin:"
     echo "  ./install.sh"
@@ -40,7 +40,7 @@ for arg in "$@"; do
     esac
 done
 
-SESSION_FILE="${XDG_RUNTIME_DIR:-/run/user/$UID}/wezterm/session.json"
+SESSION_FILE="${XDG_RUNTIME_DIR:-/run/user/$UID}/wakterm/session.json"
 
 if $WIPE_SESSION && ! $RESTART; then
     echo "--wipe-session requires --restart"
@@ -63,7 +63,7 @@ wait_for_exit() {
 }
 
 restart_via_user_service() {
-    local unit="wezterm-mux-server.service"
+    local unit="wakterm-mux-server.service"
     if ! command -v systemctl >/dev/null 2>&1; then
         return 1
     fi
@@ -88,15 +88,15 @@ restart_via_user_service() {
 echo "=== Step 1: Build ==="
 if $CLEAN_BUILD; then
     echo "  Cleaning mux/client/server artifacts first"
-    cargo clean -p mux -p codec -p wezterm -p wezterm-gui -p wezterm-mux-server
+    cargo clean -p mux -p codec -p wakterm -p wakterm-gui -p wakterm-mux-server
 fi
-CCACHE_DISABLE=1 cargo build --release -p wezterm -p wezterm-gui -p wezterm-mux-server 2>&1 | tail -3
+CCACHE_DISABLE=1 cargo build --release -p wakterm -p wakterm-gui -p wakterm-mux-server 2>&1 | tail -3
 echo ""
 
 if $SAVE_SESSION; then
     echo "=== Step 2: Save manual layout snapshot ==="
-    cd /code/wezterm
-    "$SRC/wezterm" cli save-layout
+    cd /code/wakterm
+    "$SRC/wakterm" cli save-layout
     echo ""
 else
     echo "=== Step 2: Skip manual layout snapshot ==="
@@ -105,12 +105,12 @@ else
 fi
 
 echo "=== Step 3: Deploy binaries ==="
-for bin in wezterm wezterm-gui wezterm-mux-server; do
+for bin in wakterm wakterm-gui wakterm-mux-server; do
     rm -f "$DEST/$bin"
     cp "$SRC/$bin" "$DEST/$bin"
     echo "  $bin → $DEST/$bin"
 done
-echo "  Version: $($DEST/wezterm --version 2>&1)"
+echo "  Version: $($DEST/wakterm --version 2>&1)"
 echo ""
 
 if $RESTART; then
@@ -121,13 +121,13 @@ if $RESTART; then
             echo "Reconnect from Mac. The user service is running with a clean session."
             echo ""
             echo "To restore tabs manually afterward:"
-            echo "  cd /code/wezterm && target/release/wezterm cli restore-layout"
+            echo "  cd /code/wakterm && target/release/wakterm cli restore-layout"
         else
             echo "Reconnect from Mac. Your tabs will be restored automatically"
             echo "(the user service reads session.json on startup)."
         fi
     else
-        PID=$(pgrep -f 'wezterm-mux-server.*pid-file' | head -1 || true)
+        PID=$(pgrep -f 'wakterm-mux-server.*pid-file' | head -1 || true)
         if [ -n "$PID" ]; then
             kill "$PID"
             wait_for_exit "$PID"
@@ -146,7 +146,7 @@ if $RESTART; then
             echo ""
             if $WIPE_SESSION; then
                 echo "To restore tabs manually afterward:"
-                echo "  cd /code/wezterm && target/release/wezterm cli restore-layout"
+                echo "  cd /code/wakterm && target/release/wakterm cli restore-layout"
             fi
         else
             echo "  No running mux server found"
@@ -158,7 +158,7 @@ if $RESTART; then
     fi
 else
     echo "Binaries deployed. Run with --restart to kill the server."
-    echo "Or manually: kill \$(pgrep -f 'wezterm-mux-server.*pid-file' | head -1)"
+    echo "Or manually: kill \$(pgrep -f 'wakterm-mux-server.*pid-file' | head -1)"
 fi
 
 echo ""

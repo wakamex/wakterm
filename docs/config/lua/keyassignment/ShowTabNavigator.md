@@ -6,7 +6,7 @@ and activate a tab from that list.
 
 ```lua
 config.keys = {
-  { key = 'F9', mods = 'ALT', action = wezterm.action.ShowTabNavigator },
+  { key = 'F9', mods = 'ALT', action = wakterm.action.ShowTabNavigator },
 }
 ```
 

@@ -11,7 +11,7 @@ config.keys = {
   {
     key = '"',
     mods = 'CTRL|SHIFT|ALT',
-    action = wezterm.action.SplitVertical { domain = 'CurrentPaneDomain' },
+    action = wakterm.action.SplitVertical { domain = 'CurrentPaneDomain' },
   },
 }
 ```
@@ -25,7 +25,7 @@ config.keys = {
   {
     key = '"',
     mods = 'CTRL|SHIFT|ALT',
-    action = wezterm.action.SplitVertical {
+    action = wakterm.action.SplitVertical {
       args = { 'top' },
     },
   },

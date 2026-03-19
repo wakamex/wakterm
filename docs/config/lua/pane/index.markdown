@@ -11,7 +11,7 @@ for the sake of simplicity.
 
 
 A Pane object is typically passed to your code via an event callback.  A Pane
-object is a handle to a live instance of a Pane that is known to the wezterm
+object is a handle to a live instance of a Pane that is known to the wakterm
 process.  A Pane object tracks the pseudo terminal (or real serial terminal)
 and associated process(es) and the parsed screen and scrollback.
 

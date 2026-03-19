@@ -10,7 +10,7 @@ tags:
     This option only applies to the standalone mux server.  For the equivalent option in
     the GUI, see [default_domain](default_domain.md)
 
-When starting the mux server, by default wezterm will set the built-in
+When starting the mux server, by default wakterm will set the built-in
 `"local"` domain as the default multiplexing domain.
 
 The `"local"` domain represents processes that are spawned directly on the

@@ -4,7 +4,7 @@
 
 A convenience accessor for returning the active pane in the active tab of the window.
 
-In earlier versions of wezterm, you could obtain this via:
+In earlier versions of wakterm, you could obtain this via:
 
 ```lua
 function active_tab(window)

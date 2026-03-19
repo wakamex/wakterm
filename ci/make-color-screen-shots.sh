@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# Use eg: `xwininfo -int` to get the id of a wezterm
+# Use eg: `xwininfo -int` to get the id of a wakterm
 # and pass it to this script
 WINID=$1
 
 cd ../iTerm2-Color-Schemes/dynamic-colors
-shots=../../wezterm/docs/colorschemes
+shots=../../wakterm/docs/colorschemes
 
-printf "\e]0;wezterm\e\\"
+printf "\e]0;wakterm\e\\"
 
 for scheme in *.sh ; do
   clear

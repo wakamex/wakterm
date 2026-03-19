@@ -15,4 +15,4 @@ luahelper.workspace = true
 promise.workspace = true
 smol.workspace = true
 spa.workspace = true
-wezterm-dynamic.workspace = true
+wakterm-dynamic.workspace = true

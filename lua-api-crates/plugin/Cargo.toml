@@ -13,4 +13,4 @@ git2.workspace = true
 log.workspace = true
 luahelper.workspace = true
 tempfile.workspace = true
-wezterm-dynamic.workspace = true
+wakterm-dynamic.workspace = true

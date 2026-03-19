@@ -3,13 +3,13 @@ use config::lua::get_or_create_module;
 use config::lua::mlua::{self, Lua};
 
 pub fn register(lua: &Lua) -> anyhow::Result<()> {
-    let wezterm_mod = get_or_create_module(lua, "wezterm")?;
-    wezterm_mod.set("open_with", lua.create_function(open_with)?)?;
-    wezterm_mod.set(
+    let wakterm_mod = get_or_create_module(lua, "wakterm")?;
+    wakterm_mod.set("open_with", lua.create_function(open_with)?)?;
+    wakterm_mod.set(
         "run_child_process",
         lua.create_async_function(run_child_process)?,
     )?;
-    wezterm_mod.set(
+    wakterm_mod.set(
         "background_child_process",
         lua.create_async_function(background_child_process)?,
     )?;
@@ -18,9 +18,9 @@ pub fn register(lua: &Lua) -> anyhow::Result<()> {
 
 fn open_with<'lua>(_: &'lua Lua, (url, app): (String, Option<String>)) -> mlua::Result<()> {
     if let Some(app) = app {
-        wezterm_open_url::open_with(&url, &app);
+        wakterm_open_url::open_with(&url, &app);
     } else {
-        wezterm_open_url::open_url(&url);
+        wakterm_open_url::open_url(&url);
     }
     Ok(())
 }

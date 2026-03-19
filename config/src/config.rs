@@ -39,14 +39,14 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use termwiz::hyperlink;
 use termwiz::surface::CursorShape;
-use wezterm_bidi::ParagraphDirectionHint;
-use wezterm_config_derive::ConfigMeta;
-use wezterm_dynamic::{FromDynamic, ToDynamic};
-use wezterm_input_types::{
+use wakterm_bidi::ParagraphDirectionHint;
+use wakterm_config_derive::ConfigMeta;
+use wakterm_dynamic::{FromDynamic, ToDynamic};
+use wakterm_input_types::{
     IntegratedTitleButton, IntegratedTitleButtonAlignment, IntegratedTitleButtonStyle, Modifiers,
     UIKeyCapRendering, WindowDecorations,
 };
-use wezterm_term::TerminalSize;
+use wakterm_term::TerminalSize;
 
 #[derive(Debug, Clone, FromDynamic, ToDynamic, ConfigMeta)]
 pub struct Config {
@@ -133,7 +133,7 @@ pub struct Config {
     #[dynamic(default)]
     pub switch_to_last_active_tab_when_closing_tab: bool,
 
-    /// When true, launching a new wezterm instance will prefer
+    /// When true, launching a new wakterm instance will prefer
     /// to spawn a new tab into an existing instance.
     /// Otherwise, it will spawn a new window.
     #[dynamic(default)]
@@ -215,7 +215,7 @@ pub struct Config {
 
     /// If no `prog` is specified on the command line, use this
     /// instead of running the user's shell.
-    /// For example, to have `wezterm` always run `top` by default,
+    /// For example, to have `wakterm` always run `top` by default,
     /// you'd use this:
     ///
     /// ```toml
@@ -334,7 +334,7 @@ pub struct Config {
     /// it lists available stylistic sets here:
     /// <https://github.com/tonsky/FiraCode/wiki/How-to-enable-stylistic-sets>
     ///
-    /// and you can set them in wezterm:
+    /// and you can set them in wakterm:
     ///
     /// ```toml
     /// # Use this for a zero with a dot rather than a line through it
@@ -917,7 +917,7 @@ impl Default for Config {
         // specified in the struct so that we don't have to repeat
         // the same thing in a different form down here
         Config::from_dynamic(
-            &wezterm_dynamic::Value::Object(Default::default()),
+            &wakterm_dynamic::Value::Object(Default::default()),
             Default::default(),
         )
         .unwrap()
@@ -926,7 +926,7 @@ impl Default for Config {
 
 impl Config {
     pub fn load() -> LoadedConfig {
-        Self::load_with_overrides(&wezterm_dynamic::Value::default())
+        Self::load_with_overrides(&wakterm_dynamic::Value::default())
     }
 
     /// It is relatively expensive to parse all the ssh config files,
@@ -1010,15 +1010,15 @@ impl Config {
         Ok(())
     }
 
-    pub fn load_with_overrides(overrides: &wezterm_dynamic::Value) -> LoadedConfig {
+    pub fn load_with_overrides(overrides: &wakterm_dynamic::Value) -> LoadedConfig {
         // Note that the directories crate has methods for locating project
         // specific config directories, but only returns one of them, not
         // multiple.  In addition, it spawns a lot of subprocesses,
         // so we do this bit "by-hand"
 
-        let mut paths = vec![PathPossibility::optional(HOME_DIR.join(".wezterm.lua"))];
+        let mut paths = vec![PathPossibility::optional(HOME_DIR.join(".wakterm.lua"))];
         for dir in CONFIG_DIRS.iter() {
-            paths.push(PathPossibility::optional(dir.join("wezterm.lua")))
+            paths.push(PathPossibility::optional(dir.join("wakterm.lua")))
         }
 
         if cfg!(windows) {
@@ -1032,12 +1032,12 @@ impl Config {
             // dir as the executable that will take precedence.
             if let Ok(exe_name) = std::env::current_exe() {
                 if let Some(exe_dir) = exe_name.parent() {
-                    paths.insert(0, PathPossibility::optional(exe_dir.join("wezterm.lua")));
+                    paths.insert(0, PathPossibility::optional(exe_dir.join("wakterm.lua")));
                 }
             }
         }
-        if let Some(path) = std::env::var_os("WEZTERM_CONFIG_FILE") {
-            log::trace!("Note: WEZTERM_CONFIG_FILE is set in the environment");
+        if let Some(path) = std::env::var_os("WAKTERM_CONFIG_FILE") {
+            log::trace!("Note: WAKTERM_CONFIG_FILE is set in the environment");
             paths.insert(0, PathPossibility::required(path.into()));
         }
 
@@ -1065,11 +1065,11 @@ impl Config {
             }
         }
 
-        // We didn't find (or were asked to skip) a wezterm.lua file, so
+        // We didn't find (or were asked to skip) a wakterm.lua file, so
         // update the environment to make it simpler to understand this
         // state.
-        std::env::remove_var("WEZTERM_CONFIG_FILE");
-        std::env::remove_var("WEZTERM_CONFIG_DIR");
+        std::env::remove_var("WAKTERM_CONFIG_FILE");
+        std::env::remove_var("WAKTERM_CONFIG_DIR");
 
         match Self::try_default() {
             Err(err) => LoadedConfig {
@@ -1084,7 +1084,7 @@ impl Config {
 
     pub fn try_default() -> anyhow::Result<LoadedConfig> {
         let (config, warnings) =
-            wezterm_dynamic::Error::capture_warnings(|| -> anyhow::Result<Config> {
+            wakterm_dynamic::Error::capture_warnings(|| -> anyhow::Result<Config> {
                 Ok(default_config_with_overrides_applied()?.compute_extra_defaults(None))
             });
 
@@ -1098,7 +1098,7 @@ impl Config {
 
     fn try_load(
         path_item: &PathPossibility,
-        overrides: &wezterm_dynamic::Value,
+        overrides: &wakterm_dynamic::Value,
     ) -> anyhow::Result<Option<LoadedConfig>> {
         let p = path_item.path.as_path();
         log::trace!("consider config: {}", p.display());
@@ -1115,7 +1115,7 @@ impl Config {
         let lua = make_lua_context(p)?;
 
         let (config, warnings) =
-            wezterm_dynamic::Error::capture_warnings(|| -> anyhow::Result<Config> {
+            wakterm_dynamic::Error::capture_warnings(|| -> anyhow::Result<Config> {
                 let cfg: Config;
 
                 let config: mlua::Value = smol::block_on(
@@ -1140,9 +1140,9 @@ impl Config {
                 // problems earlier than we use them.
                 let _ = cfg.key_bindings();
 
-                std::env::set_var("WEZTERM_CONFIG_FILE", p);
+                std::env::set_var("WAKTERM_CONFIG_FILE", p);
                 if let Some(dir) = p.parent() {
-                    std::env::set_var("WEZTERM_CONFIG_DIR", dir);
+                    std::env::set_var("WAKTERM_CONFIG_DIR", dir);
                 }
                 Ok(cfg)
             });
@@ -1159,7 +1159,7 @@ impl Config {
     pub(crate) fn apply_overrides_obj_to<'l>(
         lua: &'l mlua::Lua,
         mut config: mlua::Value<'l>,
-        overrides: &wezterm_dynamic::Value,
+        overrides: &wakterm_dynamic::Value,
     ) -> anyhow::Result<mlua::Value<'l>> {
         // config may be a table, or it may be a config builder.
         // We'll leave it up to lua to call the appropriate
@@ -1176,7 +1176,7 @@ impl Config {
             .eval()?;
 
         match overrides {
-            wezterm_dynamic::Value::Object(obj) => {
+            wakterm_dynamic::Value::Object(obj) => {
                 for (key, value) in obj {
                     let key = luahelper::dynamic_to_lua_value(lua, key.clone())?;
                     let value = luahelper::dynamic_to_lua_value(lua, value.clone())?;
@@ -1206,7 +1206,7 @@ impl Config {
             let literal = value.escape_debug();
             let code = format!(
                 r#"
-                local wezterm = require 'wezterm';
+                local wakterm = require 'wakterm';
                 local value = {value};
                 if value == nil then
                     error("{literal} evaluated as nil. Check for missing quotes or other syntax issues")
@@ -1354,35 +1354,35 @@ impl Config {
 
         cfg.font_rules.push(StyleRule {
             italic: Some(true),
-            intensity: Some(wezterm_term::Intensity::Half),
+            intensity: Some(wakterm_term::Intensity::Half),
             font: half_bright_italic,
             ..Default::default()
         });
 
         cfg.font_rules.push(StyleRule {
             italic: Some(false),
-            intensity: Some(wezterm_term::Intensity::Half),
+            intensity: Some(wakterm_term::Intensity::Half),
             font: half_bright,
             ..Default::default()
         });
 
         cfg.font_rules.push(StyleRule {
             italic: Some(false),
-            intensity: Some(wezterm_term::Intensity::Bold),
+            intensity: Some(wakterm_term::Intensity::Bold),
             font: bold,
             ..Default::default()
         });
 
         cfg.font_rules.push(StyleRule {
             italic: Some(true),
-            intensity: Some(wezterm_term::Intensity::Bold),
+            intensity: Some(wakterm_term::Intensity::Bold),
             font: bold_italic,
             ..Default::default()
         });
 
         cfg.font_rules.push(StyleRule {
             italic: Some(true),
-            intensity: Some(wezterm_term::Intensity::Normal),
+            intensity: Some(wakterm_term::Intensity::Normal),
             font: italic,
             ..Default::default()
         });
@@ -1576,9 +1576,9 @@ impl Config {
         let mut wsl_env = std::env::var("WSLENV").ok();
 
         // If we are running as an appimage, we will have "$APPIMAGE"
-        // and "$APPDIR" set in the wezterm process. These will be
+        // and "$APPDIR" set in the wakterm process. These will be
         // propagated to the child processes. Since some apps (including
-        // wezterm) use these variables to detect if they are running in
+        // wakterm) use these variables to detect if they are running in
         // an appimage, those child processes will be misconfigured.
         // Ensure that they are unset.
         // https://docs.appimage.org/packaging-guide/environment-variables.html#id2
@@ -1609,8 +1609,8 @@ impl Config {
         cmd.env("COLORTERM", "truecolor");
         // TERM_PROGRAM and TERM_PROGRAM_VERSION are an emerging
         // de-facto standard for identifying the terminal.
-        cmd.env("TERM_PROGRAM", "WezTerm");
-        cmd.env("TERM_PROGRAM_VERSION", crate::wezterm_version());
+        cmd.env("TERM_PROGRAM", "wakterm");
+        cmd.env("TERM_PROGRAM_VERSION", crate::wakterm_version());
     }
 }
 
@@ -1689,7 +1689,7 @@ fn default_text_blink_rate_rapid() -> u64 {
 
 fn default_swap_backspace_and_delete() -> bool {
     // cfg!(target_os = "macos")
-    // See: https://github.com/wezterm/wezterm/issues/88
+    // See: https://github.com/wakamex/wakterm/issues/88
     false
 }
 
@@ -1757,26 +1757,26 @@ fn default_font_size() -> f64 {
 
 pub(crate) fn compute_cache_dir() -> anyhow::Result<PathBuf> {
     if let Some(runtime) = dirs_next::cache_dir() {
-        return Ok(runtime.join("wezterm"));
+        return Ok(runtime.join("wakterm"));
     }
 
-    Ok(crate::HOME_DIR.join(".local/share/wezterm"))
+    Ok(crate::HOME_DIR.join(".local/share/wakterm"))
 }
 
 pub(crate) fn compute_data_dir() -> anyhow::Result<PathBuf> {
     if let Some(runtime) = dirs_next::data_dir() {
-        return Ok(runtime.join("wezterm"));
+        return Ok(runtime.join("wakterm"));
     }
 
-    Ok(crate::HOME_DIR.join(".local/share/wezterm"))
+    Ok(crate::HOME_DIR.join(".local/share/wakterm"))
 }
 
 pub(crate) fn compute_runtime_dir() -> anyhow::Result<PathBuf> {
     if let Some(runtime) = dirs_next::runtime_dir() {
-        return Ok(runtime.join("wezterm"));
+        return Ok(runtime.join("wakterm"));
     }
 
-    Ok(crate::HOME_DIR.join(".local/share/wezterm"))
+    Ok(crate::HOME_DIR.join(".local/share/wakterm"))
 }
 
 pub fn pki_dir() -> anyhow::Result<PathBuf> {
@@ -2031,7 +2031,7 @@ impl PathPossibility {
     }
 }
 
-/// Behavior when the program spawned by wezterm terminates
+/// Behavior when the program spawned by wakterm terminates
 #[derive(Debug, FromDynamic, ToDynamic, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ExitBehavior {
     /// Close the associated pane
@@ -2131,15 +2131,15 @@ pub enum BoldBrightening {
 
 impl FromDynamic for BoldBrightening {
     fn from_dynamic(
-        value: &wezterm_dynamic::Value,
-        options: wezterm_dynamic::FromDynamicOptions,
-    ) -> Result<Self, wezterm_dynamic::Error> {
+        value: &wakterm_dynamic::Value,
+        options: wakterm_dynamic::FromDynamicOptions,
+    ) -> Result<Self, wakterm_dynamic::Error> {
         match String::from_dynamic(value, options) {
             Ok(s) => match s.as_str() {
                 "No" => Ok(Self::No),
                 "BrightAndBold" => Ok(Self::BrightAndBold),
                 "BrightOnly" => Ok(Self::BrightOnly),
-                s => Err(wezterm_dynamic::Error::Message(format!(
+                s => Err(wakterm_dynamic::Error::Message(format!(
                     "`{s}` is not valid, use one of `No`, `BrightAndBold` or `BrightOnly`"
                 ))),
             },
@@ -2154,7 +2154,7 @@ impl FromDynamic for BoldBrightening {
 
 #[derive(Debug, FromDynamic, ToDynamic, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ImePreeditRendering {
-    /// IME preedit is rendered by WezTerm itself
+    /// IME preedit is rendered by wakterm itself
     #[default]
     Builtin,
     /// IME preedit is rendered by system
@@ -2201,9 +2201,9 @@ pub(crate) fn validate_domain_name(name: &str) -> Result<(), String> {
     }
 }
 
-/// <https://github.com/wezterm/wezterm/pull/2435>
-/// <https://github.com/wezterm/wezterm/issues/2771>
-/// <https://github.com/wezterm/wezterm/issues/2630>
+/// <https://github.com/wakamex/wakterm/pull/2435>
+/// <https://github.com/wakamex/wakterm/issues/2771>
+/// <https://github.com/wakamex/wakterm/issues/2630>
 fn default_macos_forward_mods() -> Modifiers {
     Modifiers::SHIFT
 }

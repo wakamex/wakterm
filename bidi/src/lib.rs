@@ -4,7 +4,7 @@ use core::ops::Range;
 use level::MAX_DEPTH;
 use level_stack::{LevelStack, Override};
 use log::trace;
-use wezterm_dynamic::{FromDynamic, ToDynamic};
+use wakterm_dynamic::{FromDynamic, ToDynamic};
 
 extern crate alloc;
 use crate::alloc::string::ToString;

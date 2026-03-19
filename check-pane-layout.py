@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Validate pane rectangles from `wezterm cli list --format json`.
+"""Validate pane rectangles from `wakterm cli list --format json`.
 
 The checker verifies that each tab's panes can be recursively decomposed into
-legal wezterm split boxes separated by single-cell dividers. That catches the
+legal wakterm split boxes separated by single-cell dividers. That catches the
 broken cases we saw during mux debugging:
 
 - offscreen panes from oversized tab roots
@@ -12,7 +12,7 @@ broken cases we saw during mux debugging:
 
 Usage:
     python3 check-pane-layout.py
-    wezterm cli list --format json | python3 check-pane-layout.py
+    wakterm cli list --format json | python3 check-pane-layout.py
     python3 check-pane-layout.py --file panes.json
 """
 
@@ -59,10 +59,10 @@ def load_panes(args: argparse.Namespace) -> list[dict]:
         if data.strip():
             return json.loads(data)
 
-    cmd = ["wezterm", "cli", "list", "--format", "json"]
+    cmd = ["wakterm", "cli", "list", "--format", "json"]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
     if result.returncode != 0:
-        raise SystemExit(result.stderr.strip() or "wezterm cli list failed")
+        raise SystemExit(result.stderr.strip() or "wakterm cli list failed")
     return json.loads(result.stdout)
 
 
@@ -217,8 +217,8 @@ def validate_tab(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate wezterm pane layouts")
-    parser.add_argument("--file", help="Read pane JSON from file instead of wezterm cli")
+    parser = argparse.ArgumentParser(description="Validate wakterm pane layouts")
+    parser.add_argument("--file", help="Read pane JSON from file instead of wakterm cli")
     parser.add_argument(
         "--min-cols",
         type=int,

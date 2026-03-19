@@ -1,6 +1,6 @@
-# `wezterm ls-fonts`
+# `wakterm ls-fonts`
 
 ```console
-{% include "../examples/cmd-synopsis-wezterm-ls-fonts--help.txt" %}
+{% include "../examples/cmd-synopsis-wakterm-ls-fonts--help.txt" %}
 ```
 

@@ -8,7 +8,7 @@ tags:
 
 The default key assignments are shown in the table below.
 
-You may also use `wezterm show-keys --lua` to see the assignments
+You may also use `wakterm show-keys --lua` to see the assignments
 in a form that you can copy and paste into your own configuration.
 
 | Modifiers | Key | Action |

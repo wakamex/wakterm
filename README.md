@@ -1,41 +1,29 @@
-# Wez's Terminal (wakamex fork)
+# wakterm (wakamex fork)
 
-<img height="128" alt="WezTerm Icon" src="https://raw.githubusercontent.com/wezterm/wezterm/main/assets/icon/wezterm-icon.svg" align="left"> *A GPU-accelerated cross-platform terminal emulator and multiplexer written by <a href="https://github.com/wez">@wez</a> and implemented in <a href="https://www.rust-lang.org/">Rust</a>*
-
-User facing docs and guide at: https://wezterm.org/
-
-## About this fork
-
-This is an actively maintained fork of [wezterm/wezterm](https://github.com/wezterm/wezterm). Upstream development has slowed, and this fork fixes bugs that affect daily mux server usage.
+This is an actively maintained fork of [wezterm/wezterm](https://github.com/wezterm/wezterm). Upstream development has slowed, and this fork fixes bugs that affect daily mux server usage. I also took the opportunity to make agent harnesses first-class citizens 🤖.
 
 ### What's changed
 
 See [CHANGELOG-FORK.md](CHANGELOG-FORK.md) for the detailed fork fix history.
 
-**Buildability:**
-
-- Builds again on current toolchains after fixing the missing `chrono` `clock` feature required since [`chrono` `0.4.32`](https://github.com/chronotope/chrono/releases/tag/v0.4.32), when Chrono [`split clock into clock and now`](https://github.com/chronotope/chrono/commit/c0f418bbbfa83b1c8392099cec9fdf42657c1e51)
-
-**Session persistence** — tabs survive server restarts:
+**Session persistence**
 - Auto-saves tab layout, split tree structure, working directories, and titles every 60s and on SIGTERM
 - Auto-restores on startup with correct nested splits, proportional sizing, and active-tab selection
-- `wezterm cli save-layout` / `wezterm cli restore-layout` for exact Rust-backed manual snapshots, replay, and active-tab restore
+- `wakterm cli save-layout` / `wakterm cli restore-layout` for exact Rust-backed manual snapshots, replay, and active-tab restore
 
-**Window geometry** — macOS remembers window position and size across restarts via native `NSWindow` autosave
+**Agent harnesses**
+- Claude, Codex, Gemini, and OpenCode are first-class citizens
+- Start them directly with `wakterm cli agent start claude|codex|gemini|opencode`
+- Watch live progress across running harnesses with `wakterm cli agent watch` or `wakterm cli agent list -f`
+- Send prompts and interrupts through wakterm while keeping the real harness UI in the pane
+- Tab title tells you if an agent is waiting on you, or if it's your turn (configurable)
+- `agent` is a shortcut for `wakterm cli agent`
 
-**Resize stability:**
-- Atomic tab-level `ResizeTab` updates replace interleaving per-pane async resize PDUs
-- Divider drags now use the same `ResizeTab` batch path as full tab resizes, keeping local and remote split trees in sync
-- Spawn sizing now uses the live tab/window size across CLI spawn, GUI delegation, and mux server split flows
-- Server suppresses self-echo `TabResized` to break feedback loops while forwarding to other clients
-- Resync debounce queues instead of drops overlapping requests
-
-**Observability:**
-- Always-on `size-trace` logging for spawn, split, tab resize, and client/server `ResizeTab` traffic
-- Mux server logs hard errors for `ResizeTab` pane-count mismatches, unknown pane ids, and split-tree invariant failures
-- `check-pane-layout.py` validates live `wezterm cli list --format json` output against a legal split tree
-
-**Tab titles** — user-set titles (via Ctrl+Shift+<) are no longer overwritten by terminal escape sequences
+**Usability**
+- macOS remembers window position and size across restarts via native `NSWindow` autosave
+- Divider drags, window resizes, and spawned panes agree on the same layout more often
+- Multi-client sessions are much less prone to flickering, jumpy redraws, and resize feedback loops
+- User-set titles (via Ctrl+Shift+<) are no longer overwritten by terminal escape sequences
 
 **5 new default key bindings:**
 
@@ -49,31 +37,16 @@ See [CHANGELOG-FORK.md](CHANGELOG-FORK.md) for the detailed fork fix history.
 
 Full hotkey reference: [HOTKEYS.md](HOTKEYS.md)
 
-### Compatibility
-
-- Codec version 48
-- Both client and server should run this fork for full functionality
-- No backwards-compatibility shims for removed fork-only tooling such as `wez-tabs`
-
 ---
 
 ## Installation
 
-https://wezterm.org/installation
+https://wakterm.org/installation
 
 ## Getting help
 
-If you find any issues with this fork, just make a GitHub issue.
+If you find any issues with this fork, file a GitHub issue.
 
-## Supporting the Project
+## Supporting the project
 
-If you use and like WezTerm, please consider sponsoring it: your support helps
-to cover the fees required to maintain the project and to validate the time
-spent working on it!
-
-[Read more about sponsoring](https://wezterm.org/sponsor.html).
-
-* [![Sponsor WezTerm](https://img.shields.io/github/sponsors/wez?label=Sponsor%20WezTerm&logo=github&style=for-the-badge)](https://github.com/sponsors/wez)
-* [Patreon](https://patreon.com/WezFurlong)
-* [Ko-Fi](https://ko-fi.com/wezfurlong)
-* [Liberapay](https://liberapay.com/wez)
+If you use and like wakterm, consider [supporting WezTerm](https://wezterm.org/sponsor.html), the project it was built on.

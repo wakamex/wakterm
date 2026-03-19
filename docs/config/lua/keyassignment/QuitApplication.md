@@ -1,12 +1,12 @@
 # `QuitApplication`
 
-Terminate the WezTerm application, killing all tabs.
+Terminate the wakterm application, killing all tabs.
 
 ```lua
-local wezterm = require 'wezterm'
+local wakterm = require 'wakterm'
 
 config.keys = {
-  { key = 'q', mods = 'CMD', action = wezterm.action.QuitApplication },
+  { key = 'q', mods = 'CMD', action = wakterm.action.QuitApplication },
 }
 ```
 

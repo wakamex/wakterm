@@ -1,5 +1,5 @@
-# `wezterm start`
+# `wakterm start`
 
 ```console
-{% include "../examples/cmd-synopsis-wezterm-start--help.txt" %}
+{% include "../examples/cmd-synopsis-wakterm-start--help.txt" %}
 ```

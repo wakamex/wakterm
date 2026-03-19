@@ -8,8 +8,8 @@ a `window` when configured via the `keys` and `mouse` configuration options.
 
 This method allows your lua script to trigger those actions for itself.
 
-The first parameter is a key assignment such as that returned by [`wezterm.action`](../wezterm/action.md).
+The first parameter is a key assignment such as that returned by [`wakterm.action`](../wakterm/action.md).
 
 The second parameter is a `pane` object passed to your event callback.
 
-For an example of this method in action, see [`wezterm.on` Custom Events](../wezterm/on.md#custom-events).
+For an example of this method in action, see [`wakterm.on` Custom Events](../wakterm/on.md#custom-events).

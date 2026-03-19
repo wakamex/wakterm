@@ -1,0 +1,12 @@
+[package]
+name = "wakterm-uds"
+version = "0.1.0"
+edition = "2021"
+repository = "https://github.com/wakamex/wakterm"
+description = "Portable unix domain sockets"
+license = "MIT"
+documentation = "https://docs.rs/wakterm-uds"
+
+[dependencies]
+async-io.workspace = true
+uds_windows.workspace = true

@@ -6,7 +6,7 @@ Activates copy mode!
 
 ```lua
 config.keys = {
-  { key = 'X', mods = 'CTRL', action = wezterm.action.ActivateCopyMode },
+  { key = 'X', mods = 'CTRL', action = wakterm.action.ActivateCopyMode },
 }
 ```
 

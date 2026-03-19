@@ -4,7 +4,7 @@ tags:
 ---
 # `max_fps = 60`
 
-Limits the maximum number of frames per second that wezterm will
+Limits the maximum number of frames per second that wakterm will
 attempt to draw.
 
 Defaults to `60`.

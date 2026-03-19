@@ -42,7 +42,7 @@ config.window_background_opacity = 0
 config.win32_system_backdrop = 'Acrylic'
 ```
 
-![Acrylic Effect](../../../screenshots/wezterm-acrylic.png)
+![Acrylic Effect](../../../screenshots/wakterm-acrylic.png)
 
 ## Mica
 
@@ -51,7 +51,7 @@ config.window_background_opacity = 0
 config.win32_system_backdrop = 'Mica'
 ```
 
-![Mica Effect](../../../screenshots/wezterm-mica.png)
+![Mica Effect](../../../screenshots/wakterm-mica.png)
 
 ## Tabbed
 
@@ -60,6 +60,6 @@ config.window_background_opacity = 0
 config.win32_system_backdrop = 'Tabbed'
 ```
 
-![Tabbed Effect](../../../screenshots/wezterm-tabbed.png)
+![Tabbed Effect](../../../screenshots/wakterm-tabbed.png)
 
 

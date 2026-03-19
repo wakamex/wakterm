@@ -1,6 +1,6 @@
-# `wezterm connect`
+# `wakterm connect`
 
 ```console
-{% include "../examples/cmd-synopsis-wezterm-connect--help.txt" %}
+{% include "../examples/cmd-synopsis-wakterm-connect--help.txt" %}
 ```
 

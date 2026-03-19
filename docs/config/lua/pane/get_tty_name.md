@@ -10,9 +10,9 @@ Returns the tty device name, or `nil` if the name is unavailable.
 This example sets the right status to show the tty name:
 
 ```lua
-local wezterm = require 'wezterm'
+local wakterm = require 'wakterm'
 
-wezterm.on('update-status', function(window, pane)
+wakterm.on('update-status', function(window, pane)
   local tty = pane:get_tty_name()
   if tty then
     window:set_right_status(tty)

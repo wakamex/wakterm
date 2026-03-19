@@ -22,12 +22,12 @@ pane:get_lines_as_escapes(pane:get_dimensions().scrollback_rows)
 ## Example: opening scrollback in a pager
 
 ```lua
-local wezterm = require 'wezterm'
+local wakterm = require 'wakterm'
 local io = require 'io'
 local os = require 'os'
-local act = wezterm.action
+local act = wakterm.action
 
-wezterm.on('trigger-less-with-scrollback', function(window, pane)
+wakterm.on('trigger-less-with-scrollback', function(window, pane)
   -- Retrieve the current pane's text
   local text =
     pane:get_lines_as_escapes(pane:get_dimensions().scrollback_rows)
@@ -53,7 +53,7 @@ wezterm.on('trigger-less-with-scrollback', function(window, pane)
   --
   -- Note: We don't strictly need to remove this file, but it is nice
   -- to avoid cluttering up the temporary directory.
-  wezterm.sleep_ms(1000)
+  wakterm.sleep_ms(1000)
   os.remove(name)
 end)
 

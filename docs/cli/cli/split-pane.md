@@ -1,6 +1,6 @@
-# `wezterm cli split-pane`
+# `wakterm cli split-pane`
 
-*Run `wezterm cli split-pane --help` to see more help*
+*Run `wakterm cli split-pane --help` to see more help*
 
 Split the current pane.
 Outputs the pane-id for the newly created pane on success.
@@ -8,25 +8,25 @@ Outputs the pane-id for the newly created pane on success.
 This command will create a split in the current pane and spawn a command into it.  This splits the pane and creates a new one at the bottom running the default command:
 
 ```
-$ wezterm cli split-pane
+$ wakterm cli split-pane
 2
 ```
 
 You may spawn an alternative program by passing the argument list; it is
 recommended that you use `--` to denote the end of the arguments being passed
-to `wezterm cli split-pane` so that any parameters you may wish to pass to the
-program are not confused with parameters to `wezterm cli split-pane`.  This example
+to `wakterm cli split-pane` so that any parameters you may wish to pass to the
+program are not confused with parameters to `wakterm cli split-pane`.  This example
 launches bash as a login shell in a new pane at the bottom:
 
 ```
-$ wezterm cli split-pane -- bash -l
+$ wakterm cli split-pane -- bash -l
 3
 ```
 
 This example creates a split to the left, occupying 30% of the available space:
 
 ```
-$ wezterm cli split-pane --left --percent 30
+$ wakterm cli split-pane --left --percent 30
 4
 ```
 
@@ -51,5 +51,5 @@ The following options affect the behavior:
 ## Synopsis
 
 ```console
-{% include "../../examples/cmd-synopsis-wezterm-cli-split-pane--help.txt" %}
+{% include "../../examples/cmd-synopsis-wakterm-cli-split-pane--help.txt" %}
 ```

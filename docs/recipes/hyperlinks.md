@@ -22,12 +22,12 @@ With this snippet, you can:
 
 - **Click on an hyperlinked directory** to navigate into that directory and list its contents
 - **Click on an hyperlinked file** and if its MIME type is 'text', open it directly in Neovim
-- Other hyperlinks like URLs remain unchanged and follow WezTerm's default behavior
+- Other hyperlinks like URLs remain unchanged and follow wakterm's default behavior
 
 ```lua
-local wezterm = require 'wezterm'
-local act = wezterm.action
-local config = wezterm.config_builder()
+local wakterm = require 'wakterm'
+local act = wakterm.action
+local config = wakterm.config_builder()
 
 local function is_shell(foreground_process_name)
   local shell_names = { 'bash', 'zsh', 'fish', 'sh', 'ksh', 'dash' }
@@ -41,17 +41,17 @@ local function is_shell(foreground_process_name)
   return false
 end
 
-wezterm.on('open-uri', function(window, pane, uri)
+wakterm.on('open-uri', function(window, pane, uri)
   local editor = 'nvim'
 
   if uri:find '^file:' == 1 and not pane:is_alt_screen_active() then
     -- We're processing an hyperlink and the uri format should be: file://[HOSTNAME]/PATH[#linenr]
     -- Also the pane is not in an alternate screen (an editor, less, etc)
-    local url = wezterm.url.parse(uri)
+    local url = wakterm.url.parse(uri)
     if is_shell(pane:get_foreground_process_name()) then
       -- A shell has been detected. Wezterm can check the file type directly
       -- figure out what kind of file we're dealing with
-      local success, stdout, _ = wezterm.run_child_process {
+      local success, stdout, _ = wakterm.run_child_process {
         'file',
         '--brief',
         '--mime-type',
@@ -60,9 +60,9 @@ wezterm.on('open-uri', function(window, pane, uri)
       if success then
         if stdout:find 'directory' then
           pane:send_text(
-            wezterm.shell_join_args { 'cd', url.file_path } .. '\r'
+            wakterm.shell_join_args { 'cd', url.file_path } .. '\r'
           )
-          pane:send_text(wezterm.shell_join_args {
+          pane:send_text(wakterm.shell_join_args {
             'ls',
             '-a',
             '-p',
@@ -73,14 +73,14 @@ wezterm.on('open-uri', function(window, pane, uri)
 
         if stdout:find 'text' then
           if url.fragment then
-            pane:send_text(wezterm.shell_join_args {
+            pane:send_text(wakterm.shell_join_args {
               editor,
               '+' .. url.fragment,
               url.file_path,
             } .. '\r')
           else
             pane:send_text(
-              wezterm.shell_join_args { editor, url.file_path } .. '\r'
+              wakterm.shell_join_args { editor, url.file_path } .. '\r'
             )
           end
           return false
@@ -138,7 +138,7 @@ This setup sends the text of the commands directly into the active pane which ha
 
 - Does not work inside of any interactive terminal program that is not a shell; the pane must be in a shell prompt
 - Requires an empty command prompt before clicking a hyperlink; otherwise, the command may not execute correctly
-- When a shell is not detected (see the `is_shell` function), WezTerm falls back to a long shell command, which may clutter the prompt slightly. This happens because WezTerm cannot directly determine a file's MIME type when not connected to a local shell.
+- When a shell is not detected (see the `is_shell` function), wakterm falls back to a long shell command, which may clutter the prompt slightly. This happens because wakterm cannot directly determine a file's MIME type when not connected to a local shell.
 
 If you're using [tmux](https://github.com/tmux/tmux), you'll need to enable the
 hyperlinks terminal feature and, depending in your configuration

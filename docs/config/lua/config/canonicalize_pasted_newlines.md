@@ -26,7 +26,7 @@ Note that the string forms of these values are accepted in 20220319-142410-0fcde
 however, `true` in all prior versions behaves the same way as
 `"CarriageReturnAndLineFeed"` behaves in the nightly build.
 
-The default value has changed in different versions of wezterm:
+The default value has changed in different versions of wakterm:
 
 |version|platform|default|
 |-------|--------|-------|

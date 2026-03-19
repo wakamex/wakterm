@@ -7,12 +7,12 @@ The current directory can be specified by an application sending
 [OSC 7](../../../shell-integration.md).
 
 If OSC 7 was never sent to a pane, and the pane represents a locally spawned process,
-then wezterm will:
+then wakterm will:
 
 * On Unix systems, determie the *process group leader* attached to the PTY
 * On Windows systems, use heuristics to infer an equivalent to the foreground process
 
-With the process identified, wezterm will then try to determine the current
+With the process identified, wakterm will then try to determine the current
 working directory using operating system dependent code:
 
 |OS     |Supported?                            |
@@ -31,6 +31,6 @@ a file path string.
 
 {{since('20240127-113634-bbcac864')}}
 
-This method now returns a [Url](../wezterm.url/Url.md) object which
+This method now returns a [Url](../wakterm.url/Url.md) object which
 provides a convenient way to decode and operate on the URL.
 

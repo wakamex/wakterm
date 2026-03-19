@@ -13,8 +13,8 @@ Here's an example of setting up (not very useful) hotkeys to cycle between
 windows:
 
 ```lua
-local wezterm = require 'wezterm'
-local act = wezterm.action
+local wakterm = require 'wakterm'
+local act = wakterm.action
 local config = {}
 
 config.keys = {

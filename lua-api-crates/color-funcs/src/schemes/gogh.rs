@@ -85,7 +85,7 @@ impl GoghTheme {
                     name: Some(name.clone()),
                     author: None,
                     origin_url: None,
-                    wezterm_version: None,
+                    wakterm_version: None,
                     aliases: vec![],
                 },
             })

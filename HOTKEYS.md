@@ -1,4 +1,4 @@
-# WezTerm Hotkeys Reference
+# wakterm Hotkeys Reference
 
 Auto-generated from source. Run `python3 generate-hotkeys.py > HOTKEYS.md` to update.
   
@@ -32,7 +32,7 @@ Upstream: `upstream/main` (05343b387)
 | `PasteFrom(Clipboard)` | Paste from clipboard | Ctrl+Shift+v, Paste | Cmd+v, Paste | same |
 | `PasteFrom(PrimarySelection)` | Paste primary selection | Shift+Insert | Shift+Insert | same |
 | `QuickSelect` | Enter QuickSelect mode | Ctrl+Shift+Space | Ctrl+Shift+Space | same |
-| `QuitApplication` | Quit WezTerm | Ctrl+Shift+q | Cmd+q | same |
+| `QuitApplication` | Quit wakterm | Ctrl+Shift+q | Cmd+q | same |
 | `ResetFontSize` | Reset font size | Ctrl+Shift+0, Ctrl+0 | Cmd+0, Ctrl+0 | same |
 | `Search(CurrentSelectionOrEmptyString)` | Search pane output | Ctrl+Shift+f | Cmd+f | same |
 | `ShowDebugOverlay` | Show debug overlay | Ctrl+Shift+l | Ctrl+Shift+l | same |
@@ -45,8 +45,8 @@ Upstream: `upstream/main` (05343b387)
 
 | Action | Description | Upstream |
 |--------|-------------|----------|
-| `"https://github.com/wezterm/wezterm/discussions/"` | Discuss on GitHub | same |
-| `"https://github.com/wezterm/wezterm/issues/"` | Search or report issue on GitHub | same |
+| `"https://github.com/wakamex/wakterm/discussions/"` | Discuss on GitHub | same |
+| `"https://github.com/wakamex/wakterm/issues/"` | Search or report issue on GitHub | same |
 | `ActivateLastTab` | Activate the last active tab | same |
 | `ActivateTab(n)` | Activate Tab(n) | same |
 | `ActivateTabRelative(1)` | Activate the tab to the right | same |

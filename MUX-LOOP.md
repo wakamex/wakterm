@@ -15,9 +15,9 @@ This means:
 This loop covers bugs in the mux server and client domain code:
 - `mux/` — tab, pane, window, domain abstractions
 - `codec/` — PDU types and serialization
-- `wezterm-client/` — client-side pane/domain implementation, PDU sends
-- `wezterm-mux-server-impl/` — server-side PDU handlers
-- `wezterm-gui/` — GUI resize, focus, and window management (where it triggers mux operations)
+- `wakterm-client/` — client-side pane/domain implementation, PDU sends
+- `wakterm-mux-server-impl/` — server-side PDU handlers
+- `wakterm-gui/` — GUI resize, focus, and window management (where it triggers mux operations)
 
 Out of scope: rendering, font, input handling, wayland/platform-specific issues (unless they trigger mux bugs).
 
@@ -77,8 +77,8 @@ LOOP:
 
   5. Verify
      - cargo test -p mux (all mux tests)
-     - cargo check -p wezterm -p wezterm-mux-server-impl (full compile)
-     - if touching protocol: cargo check -p codec -p wezterm-client
+     - cargo check -p wakterm -p wakterm-mux-server-impl (full compile)
+     - if touching protocol: cargo check -p codec -p wakterm-client
      - if a live session is available: manual smoke test
 
   6. Keep or discard
@@ -109,10 +109,10 @@ When exploring a new hypothesis:
 ### Reading code
 ```bash
 # Find where a PDU is handled on the server
-grep -n 'Pdu::FooBar' wezterm-mux-server-impl/src/sessionhandler.rs
+grep -n 'Pdu::FooBar' wakterm-mux-server-impl/src/sessionhandler.rs
 
 # Find where the client sends a PDU
-grep -rn 'rpc!(foo' wezterm-client/src/client.rs
+grep -rn 'rpc!(foo' wakterm-client/src/client.rs
 
 # Trace a function through the call chain
 grep -rn 'fn foo_bar' mux/src/ --include='*.rs'
@@ -125,20 +125,20 @@ git blame mux/src/tab.rs -L 100,120
 ### Reading issues
 ```bash
 # Get issue body and comments
-gh api repos/wezterm/wezterm/issues/7540 --jq '.body'
-gh api repos/wezterm/wezterm/issues/7540/comments --jq '.[] | "[\(.created_at[:10])] \(.user.login): \(.body[:200])"'
+gh api repos/wakterm/wakterm/issues/7540 --jq '.body'
+gh api repos/wakterm/wakterm/issues/7540/comments --jq '.[] | "[\(.created_at[:10])] \(.user.login): \(.body[:200])"'
 
 # Search issues by keyword
-curl -s "https://api.gitrep.fyi/v1/repos/wezterm/wezterm/issues?title=deadlock&state=open" | python3 -m json.tool
+curl -s "https://api.gitrep.fyi/v1/repos/wakamex/wakterm/issues?title=deadlock&state=open" | python3 -m json.tool
 
 # Get related issues
-gh api "search/issues?q=mux+deadlock+repo:wezterm/wezterm&per_page=10" --jq '.items[] | "#\(.number) \(.title)"'
+gh api "search/issues?q=mux+deadlock+repo:wakamex/wakterm&per_page=10" --jq '.items[] | "#\(.number) \(.title)"'
 ```
 
 ### Checking for existing fixes
 ```bash
 # Search for PRs that touch the same code
-gh api "repos/wezterm/wezterm/pulls?state=all&per_page=20" --jq '.[] | select(.title | test("mux|resize|pdu"; "i")) | "#\(.number) [\(.state)] \(.title)"'
+gh api "repos/wakterm/wakterm/pulls?state=all&per_page=20" --jq '.[] | select(.title | test("mux|resize|pdu"; "i")) | "#\(.number) [\(.state)] \(.title)"'
 
 # Check if an issue was referenced in commits
 git log --all --grep='#7540' --oneline
@@ -147,18 +147,18 @@ git log --all --grep='#7540' --oneline
 ### Reproducing with CLI
 ```bash
 # Create a test layout
-wezterm cli split-pane --right --percent 50
-wezterm cli split-pane --bottom --percent 50
+wakterm cli split-pane --right --percent 50
+wakterm cli split-pane --bottom --percent 50
 
 # Simulate operations
-wezterm cli resize-pane --pane-id 1 --rows 30 --cols 80
-wezterm cli adjust-pane-size --pane-id 1 --direction Down --amount 5
-wezterm cli kill-pane --pane-id 2
-wezterm cli activate-pane-direction Up
+wakterm cli resize-pane --pane-id 1 --rows 30 --cols 80
+wakterm cli adjust-pane-size --pane-id 1 --direction Down --amount 5
+wakterm cli kill-pane --pane-id 2
+wakterm cli activate-pane-direction Up
 
 # Monitor state
-wezterm cli list --format json | python3 check-pane-layout.py
-wezterm cli list-clients
+wakterm cli list --format json | python3 check-pane-layout.py
+wakterm cli list-clients
 ```
 
 ### Adding instrumentation
@@ -180,17 +180,17 @@ then check logs. Remove instrumentation before committing the fix.
 | `domain.rs` | `attach`, `detach`, domain lifecycle | State cleanup on disconnect |
 | `client.rs` | `ClientId`, `ClientInfo`, focus tracking | Multi-client coordination |
 
-### Protocol (codec/, wezterm-client/, wezterm-mux-server-impl/)
+### Protocol (codec/, wakterm-client/, wakterm-mux-server-impl/)
 
 | File | Key functions | Risk areas |
 |------|--------------|------------|
 | `codec/src/lib.rs` | PDU definitions, `CODEC_VERSION` | Backwards compatibility |
-| `wezterm-client/src/client.rs` | `rpc!` macro, `resolve_pane_id`, PDU sends | Async fire-and-forget |
-| `wezterm-client/src/domain.rs` | `resync`, `resync_coalesced`, `attach` | Resync storms, deadlocks |
-| `wezterm-client/src/pane/clientpane.rs` | `resize`, `process_unilateral` | PDU interleaving |
-| `wezterm-mux-server-impl/src/sessionhandler.rs` | All `Pdu::*` handlers | Unbounded allocation, missing error handling |
+| `wakterm-client/src/client.rs` | `rpc!` macro, `resolve_pane_id`, PDU sends | Async fire-and-forget |
+| `wakterm-client/src/domain.rs` | `resync`, `resync_coalesced`, `attach` | Resync storms, deadlocks |
+| `wakterm-client/src/pane/clientpane.rs` | `resize`, `process_unilateral` | PDU interleaving |
+| `wakterm-mux-server-impl/src/sessionhandler.rs` | All `Pdu::*` handlers | Unbounded allocation, missing error handling |
 
-### GUI triggers (wezterm-gui/)
+### GUI triggers (wakterm-gui/)
 
 | File | Key functions | Risk areas |
 |------|--------------|------------|
@@ -205,8 +205,8 @@ then check logs. Remove instrumentation before committing the fix.
 
 ## Remotes
 
-- `origin` = `git@github.com:wakamex/wezterm.git` (your fork — push here)
-- `upstream` = `git@github.com:wezterm/wezterm.git` (upstream — NEVER push here)
+- `origin` = `git@github.com:wakamex/wakterm.git` (your fork — push here)
+- `upstream` = `git@github.com:wakamex/wakterm.git` (upstream — NEVER push here)
 
 ## Branching
 

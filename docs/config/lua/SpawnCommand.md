@@ -7,7 +7,7 @@ It is a lua object with the following fields; all of the fields
 have reasonable defaults and can be omitted.
 
 ```lua
-wezterm.action.SpawnCommandInNewWindow {
+wakterm.action.SpawnCommandInNewWindow {
   -- An optional label.
   -- The label is only used for SpawnCommands that are listed in
   -- the `launch_menu` configuration section.
@@ -21,7 +21,7 @@ wezterm.action.SpawnCommandInNewWindow {
   args = { 'ls', '-al' },
 
   -- The current working directory to set for the command.
-  -- If omitted, wezterm will infer a value based on the active pane
+  -- If omitted, wakterm will infer a value based on the active pane
   -- at the time this action is triggered.  If the active pane
   -- matches the domain specified in this `SpawnCommand` instance
   -- then the current working directory of the active pane will be
@@ -46,7 +46,7 @@ wezterm.action.SpawnCommandInNewWindow {
   -- Specify that the default multiplexer domain be used for this
   -- command invocation.  The default domain is typically the "local"
   -- domain, which spawns processes locally.  However, if you started
-  -- wezterm using `wezterm connect` or `wezterm serial` then the default
+  -- wakterm using `wakterm connect` or `wakterm serial` then the default
   -- domain will not be "local".
   domain = 'DefaultDomain',
 
@@ -61,7 +61,7 @@ wezterm.action.SpawnCommandInNewWindow {
   -- Since: 20230320-124340-559cb7b0
   -- Specify the initial position for a GUI window when this command
   -- is used in a context that will create a new window, such as with
-  -- wezterm.mux.spawn_window, SpawnCommandInNewWindow
+  -- wakterm.mux.spawn_window, SpawnCommandInNewWindow
   position = {
     x = 10,
     y = 300,
@@ -70,7 +70,7 @@ wezterm.action.SpawnCommandInNewWindow {
     -- * "ScreenCoordinateSystem" (this is the default)
     -- * "MainScreen" (the primary or main screen)
     -- * "ActiveScreen" (whichever screen hosts the active/focused window)
-    -- * {Named="HDMI-1"} - uses a screen by name. See wezterm.gui.screens()
+    -- * {Named="HDMI-1"} - uses a screen by name. See wakterm.gui.screens()
     -- origin = "ScreenCoordinateSystem"
   },
 }

@@ -1,7 +1,7 @@
 
 ## Introduction
 
-<!-- See also https://github.com/wez/wezterm/commit/e4ae8a844d8feaa43e1de34c5cc8b4f07ce525dd -->
+<!-- See also https://github.com/wez/wakterm/commit/e4ae8a844d8feaa43e1de34c5cc8b4f07ce525dd -->
 
 A Wezterm plugin is a package of Lua files that provide
 some predefined functionality not in the core product.
@@ -10,17 +10,17 @@ A plugin is distributed via a Git URL.
 
 !!! Tip
 
-    Michael Brusegard maintains a [list of plugins](https://github.com/michaelbrusegard/awesome-wezterm)
+    Michael Brusegard maintains a [list of plugins](https://github.com/michaelbrusegard/awesome-wakterm)
 
 ## Installing a Plugin
 
 Brief example:
 
 ```lua
-local wezterm = require 'wezterm'
-local a_plugin = wezterm.plugin.require 'https://github.com/owner/repo'
+local wakterm = require 'wakterm'
+local a_plugin = wakterm.plugin.require 'https://github.com/owner/repo'
 
-local config = wezterm.config_builder()
+local config = wakterm.config_builder()
 
 a_plugin.apply_to_config(config)
 
@@ -35,10 +35,10 @@ is checked out and used as the plugin source.
 Plugins can be configured, for example:
 
 ```lua
-local wezterm = require 'wezterm'
-local a_plugin = wezterm.plugin.require 'https://github.com/owner/repo'
+local wakterm = require 'wakterm'
+local a_plugin = wakterm.plugin.require 'https://github.com/owner/repo'
 
-local config = wezterm.config_builder()
+local config = wakterm.config_builder()
 
 local myPluginConfig = { enable = true, location = 'right' }
 
@@ -55,7 +55,7 @@ return config
 
 When changes are published to a plugin repository they are not updated in the local Wezterm instance.
 
-Run the command [`wezterm.plugin.update_all()`](lua/wezterm.plugin/update_all.md) to update all local plugins.
+Run the command [`wakterm.plugin.update_all()`](lua/wakterm.plugin/update_all.md) to update all local plugins.
 
 !!! Tip
 
@@ -63,11 +63,11 @@ Run the command [`wezterm.plugin.update_all()`](lua/wezterm.plugin/update_all.md
 
 ## Removing a Plugin
 
-When a plugin is first referenced, [`wezterm.plugin.require()`](lua/wezterm.plugin/require.md) will clone the repo if it doesn't already
+When a plugin is first referenced, [`wakterm.plugin.require()`](lua/wakterm.plugin/require.md) will clone the repo if it doesn't already
 exist and store it in the runtime directory under `plugins/NAME` where
 `NAME` is derived from the repo URL.
 
-You can discover locations of the various plugins with [`wezterm.plugin.list()`](lua/wezterm.plugin/list.md).
+You can discover locations of the various plugins with [`wakterm.plugin.list()`](lua/wakterm.plugin/list.md).
 
 To remove the plugin simply delete the appropriate plugin directory.
 
@@ -82,11 +82,11 @@ To remove the plugin simply delete the appropriate plugin directory.
 4. Add any other Lua code needed to fulfil the plugin feature set.
 5. Add the plugin using a local file url e.g.
    ```lua
-   local a_plugin = wezterm.plugin.require "file:///home/user/projects/myPlugin"
+   local a_plugin = wakterm.plugin.require "file:///home/user/projects/myPlugin"
    ```
 
 !!! Info
-    When changes are made to the local project, [`wezterm.plugin.update_all()`](lua/wezterm.plugin/update_all.md) must be run
+    When changes are made to the local project, [`wakterm.plugin.update_all()`](lua/wakterm.plugin/update_all.md) must be run
     to sync the changes into the Wezterm runtime directory for testing and use.
 
 !!! Info
@@ -97,13 +97,13 @@ To remove the plugin simply delete the appropriate plugin directory.
 
 When `requiring` other Lua modules in your plugin the value of `package.path` needs to updated
 with the location of the plugin. The plugin directory can be obtained by running
-`wezterm.plugin.list()`. This function returns an array of triplets. e.g.
+`wakterm.plugin.list()`. This function returns an array of triplets. e.g.
 
 ```
 [
     {
         "component": "filesCssZssZssZsUserssZsdevelopersZsprojectssZsmysDsPlugin",
-        "plugin_dir": "/Users/alec/Library/Application Support/wezterm/plugins/filesCssZssZssZsUserssZsalecsZsprojectssZsbarsDswezterm",
+        "plugin_dir": "/Users/alec/Library/Application Support/wakterm/plugins/filesCssZssZssZsUserssZsalecsZsprojectssZsbarsDswakterm",
         "url": "file:///Users/developer/projects/my.Plugin",
     },
 ]
@@ -114,7 +114,7 @@ The package path can then be updated with the value of `plugin_dir`. For example
 ```lua
 function findPluginPackagePath(myProject)
   local separator = package.config:sub(1, 1) == '\\' and '\\' or '/'
-  for _, v in ipairs(wezterm.plugin.list()) do
+  for _, v in ipairs(wakterm.plugin.list()) do
     if v.url == myProject then
       return v.plugin_dir .. separator .. 'plugin' .. separator .. '?.lua'
     end

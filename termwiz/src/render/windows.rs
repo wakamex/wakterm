@@ -457,7 +457,7 @@ impl WindowsConsoleRenderer {
                     // Don't actually render this for now.
                     // The primary purpose of Change::Title at the time of
                     // writing is to transfer tab titles across domains
-                    // in the wezterm multiplexer model.  It's not clear
+                    // in the wakterm multiplexer model.  It's not clear
                     // that it would be a good idea to unilaterally output
                     // eg: a title change escape sequence here in the
                     // renderer because we might be composing multiple widgets

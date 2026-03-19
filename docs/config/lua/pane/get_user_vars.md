@@ -6,16 +6,16 @@ Returns a table holding the user variables that have been assigned
 to this pane.
 
 User variables are set using an escape sequence defined by iterm2, but
-also recognized by wezterm; this example sets the `foo` user variable
+also recognized by wakterm; this example sets the `foo` user variable
 to the value `bar`:
 
 ```bash
 # This function emits an OSC 1337 sequence to set a user var
 # associated with the current terminal pane.
 # It requires the `base64` utility to be available in the path.
-# This function is included in the wezterm shell integration script, but
+# This function is included in the wakterm shell integration script, but
 # is reproduced here for clarity
-__wezterm_set_user_var() {
+__wakterm_set_user_var() {
   if hash base64 2>/dev/null ; then
     if [[ -z "${TMUX}" ]] ; then
       printf "\033]1337;SetUserVar=%s=%s\007" "$1" `echo -n "$2" | base64`
@@ -27,13 +27,13 @@ __wezterm_set_user_var() {
   fi
 }
 
-__wezterm_set_user_var "foo" "bar"
+__wakterm_set_user_var "foo" "bar"
 ```
 
-you're then able to access this in your wezterm config:
+you're then able to access this in your wakterm config:
 
 ```lua
-wezterm.log_info('foo var is ' .. pane:get_user_vars().foo)
+wakterm.log_info('foo var is ' .. pane:get_user_vars().foo)
 ```
 
 Setting a user var will generate events in the window that contains

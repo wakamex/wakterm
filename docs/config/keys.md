@@ -1,7 +1,7 @@
 ## Configuring Key Assignments
 
 The default key table assignments can be overridden or extended using the
-`keys` section in your `~/.wezterm.lua` config file.  For example, you can
+`keys` section in your `~/.wakterm.lua` config file.  For example, you can
 disable a default assignment like this:
 
 ```lua
@@ -11,7 +11,7 @@ config.keys = {
   {
     key = 'm',
     mods = 'CMD',
-    action = wezterm.action.DisableDefaultAssignment,
+    action = wakterm.action.DisableDefaultAssignment,
   },
 }
 ```
@@ -29,7 +29,7 @@ Possible Modifier labels are:
  * `SHIFT` - The shift key.  Left and right are equivalent.
  * `ALT`, `OPT`, `META` - these are all equivalent: on macOS the `Option` key,
    on other systems the `Alt` or `Meta` key.  Left and right are equivalent.
- * `LEADER` - a special modal modifier state managed by `wezterm`. See [Leader Key](#leader-key) for more information.
+ * `LEADER` - a special modal modifier state managed by `wakterm`. See [Leader Key](#leader-key) for more information.
  * `VoidSymbol` - This keycode is emitted in special cases where the original
    function of the key has been removed. Such as in Linux and using `setxkbmap`.
    `setxkbmap -option caps:none`. The `CapsLock` will no longer function as
@@ -78,7 +78,7 @@ You can explicitly assign the mapped key by adding a `mapped:` prefix to the
 value, for example: `key="mapped:a"` will match a key press where the OS
 keyboard layout produces `a`, regardless of its physical position.
 
-If you omit an explicit prefix, wezterm will assume `phys:` and use the
+If you omit an explicit prefix, wakterm will assume `phys:` and use the
 physical position of the specified key.
 
 The default key assignments listed above use `phys:`.  In previous releases
@@ -100,7 +100,7 @@ The default key assignments will respect `key_map_preference`.
 
 ### Raw Key Assignments
 
-In some cases, `wezterm` may not know how to represent a key event in either
+In some cases, `wakterm` may not know how to represent a key event in either
 its `phys:` or `mapped:` forms.  In that case, you may wish to define an
 assignment in terms of the underlying operating system key code, using a `raw:`
 prefix.
@@ -144,13 +144,13 @@ config.keys = {
   {
     key = '|',
     mods = 'LEADER|SHIFT',
-    action = wezterm.action.SplitHorizontal { domain = 'CurrentPaneDomain' },
+    action = wakterm.action.SplitHorizontal { domain = 'CurrentPaneDomain' },
   },
   -- Send "CTRL-A" to the terminal when pressing CTRL-A, CTRL-A
   {
     key = 'a',
     mods = 'LEADER|CTRL',
-    action = wezterm.action.SendKey { key = 'a', mods = 'CTRL' },
+    action = wakterm.action.SendKey { key = 'a', mods = 'CTRL' },
   },
 }
 ```
@@ -173,12 +173,12 @@ config.keys = {
   {
     key = '|',
     mods = 'LEADER|SHIFT',
-    action = wezterm.action.SplitHorizontal { domain = 'CurrentPaneDomain' },
+    action = wakterm.action.SplitHorizontal { domain = 'CurrentPaneDomain' },
   },
   {
     key = '-',
     mods = 'LEADER',
-    action = wezterm.action.SplitVertical { domain = 'CurrentPaneDomain' },
+    action = wakterm.action.SplitVertical { domain = 'CurrentPaneDomain' },
   },
 }
 ```

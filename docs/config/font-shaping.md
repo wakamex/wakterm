@@ -43,7 +43,7 @@ If you use the [Fira Code font](https://github.com/tonsky/FiraCode),
 it lists available stylistic sets here:
 <https://github.com/tonsky/FiraCode/wiki/How-to-enable-stylistic-sets>
 
-and you can set them in wezterm:
+and you can set them in wakterm:
 
 ```lua
 -- Use this for a zero with a line through it rather than a dot
@@ -57,7 +57,7 @@ You can specify `harfbuzz_features` on a per-font basis, rather than
 globally for all fonts:
 
 ```lua
-config.font = wezterm.font {
+config.font = wakterm.font {
   family = 'JetBrains Mono',
   harfbuzz_features = { 'calt=0', 'clig=0', 'liga=0' },
 }
@@ -67,7 +67,7 @@ and this example disables ligatures for JetBrains Mono,
 but keeps the default for the other fonts in the fallback:
 
 ```lua
-config.font = wezterm.font_with_fallback {
+config.font = wakterm.font_with_fallback {
   {
     family = 'JetBrains Mono',
     weight = 'Medium',

@@ -3,7 +3,7 @@
 //! Unlike other crates in this space, this crate provides a set
 //! of traits that allow selecting from different implementations
 //! at runtime.
-//! This crate is part of [wezterm](https://github.com/wezterm/wezterm).
+//! This crate is part of [wakterm](https://github.com/wakamex/wakterm).
 //!
 //! ```no_run
 //! use portable_pty::{CommandBuilder, PtySize, native_pty_system, PtySystem};

@@ -9,18 +9,18 @@ you wrap up that command invocation by passing it through some other process.
 For example, if you wanted to make it more convenient to work with tabs and
 panes inside a docker container, you might want to define an `ExecDomain` that
 causes the commands to be run via `docker exec`.  While you could just ask
-wezterm to explicitly spawn a command that runs `docker exec`, you would also
+wakterm to explicitly spawn a command that runs `docker exec`, you would also
 need to adjust the default key assignments for splitting panes to know about
 that preference.  Using an `ExecDomain` allows that preference to be associated
 with the pane so that things work more intuitively.
 
 ## Defining an ExecDomain
 
-You must use the `wezterm.exec_domain` function to define a domain. It accepts
+You must use the `wakterm.exec_domain` function to define a domain. It accepts
 the following parameters:
 
 ```
-wezterm.exec_domain(NAME, FIXUP [, LABEL])
+wakterm.exec_domain(NAME, FIXUP [, LABEL])
 ```
 
 * *name* - uniquely identifies the domain. Must be different from any other multiplexer domains.
@@ -34,7 +34,7 @@ wezterm.exec_domain(NAME, FIXUP [, LABEL])
 The simplest fixup function looks like this:
 
 ```lua
-wezterm.exec_domain('myname', function(cmd)
+wakterm.exec_domain('myname', function(cmd)
   return cmd
 end)
 ```
@@ -46,7 +46,7 @@ generated in response to a request to spawn a new tab or split a pane.
 
 It is expected that your fixup function will adjust the various fields
 of the provided command and then return it.  The adjusted command is
-what wezterm will execute in order to satisfy the user's request to
+what wakterm will execute in order to satisfy the user's request to
 spawn a new program.
 
 ### label
@@ -57,8 +57,8 @@ behavior is equivalent to this callback function definition:
 
 ```lua
 -- domain_name is the same name you used as the first parameter to
--- wezterm.exec_domain()
-wezterm.exec_domains(domain_name, fixup_func, function(domain_name)
+-- wakterm.exec_domain()
+wakterm.exec_domains(domain_name, fixup_func, function(domain_name)
   return domain_name
 end)
 ```
@@ -72,12 +72,12 @@ running.
 
 Both the static string and the generated string may include escape sequences
 that affect the styling of the text. You may wish to use
-[wezterm.format()](wezterm/format.md) to manage that.
+[wakterm.format()](wakterm/format.md) to manage that.
 
 ## Example: Running commands in their own systemd scope
 
 ```lua
-local wezterm = require 'wezterm'
+local wakterm = require 'wakterm'
 local config = {}
 
 -- Equivalent to POSIX basename(3)
@@ -93,21 +93,21 @@ config.exec_domains = {
   -- This defines a strong boundary for resource control and can
   -- help to avoid OOMs in one pane causing other panes to be
   -- killed.
-  wezterm.exec_domain('scoped', function(cmd)
+  wakterm.exec_domain('scoped', function(cmd)
     -- The "cmd" parameter is a SpawnCommand object.
     -- You can log it to see what's inside:
-    wezterm.log_info(cmd)
+    wakterm.log_info(cmd)
 
     -- Synthesize a human understandable scope name that is
-    -- (reasonably) unique. WEZTERM_PANE is the pane id that
+    -- (reasonably) unique. WAKTERM_PANE is the pane id that
     -- will be used for the newly spawned pane.
-    -- WEZTERM_UNIX_SOCKET is associated with the wezterm
+    -- WAKTERM_UNIX_SOCKET is associated with the wakterm
     -- process id.
     local env = cmd.set_environment_variables
-    local ident = 'wezterm-pane-'
-      .. env.WEZTERM_PANE
+    local ident = 'wakterm-pane-'
+      .. env.WAKTERM_PANE
       .. '-on-'
-      .. basename(env.WEZTERM_UNIX_SOCKET)
+      .. basename(env.WAKTERM_UNIX_SOCKET)
 
     -- Generate a new argument array that will launch a
     -- program via systemd-run
@@ -115,7 +115,7 @@ config.exec_domains = {
       '/usr/bin/systemd-run',
       '--user',
       '--scope',
-      '--description=Shell started by wezterm',
+      '--description=Shell started by wakterm',
       '--same-dir',
       '--collect',
       '--unit=' .. ident,
@@ -138,7 +138,7 @@ config.exec_domains = {
 }
 
 -- Making the domain the default means that every pane/tab/window
--- spawned by wezterm will have its own scope
+-- spawned by wakterm will have its own scope
 config.default_domain = 'scoped'
 
 return config
@@ -151,19 +151,19 @@ so that you can spawn a shell into it and/or split it:
 
 {% raw %}
 ```lua
-local wezterm = require 'wezterm'
-local config = wezterm.config_builder()
+local wakterm = require 'wakterm'
+local config = wakterm.config_builder()
 
 function docker_list()
   local docker_list = {}
-  local success, stdout, stderr = wezterm.run_child_process {
+  local success, stdout, stderr = wakterm.run_child_process {
     'docker',
     'container',
     'ls',
     '--format',
     '{{.ID}}:{{.Names}}',
   }
-  for _, line in ipairs(wezterm.split_by_newlines(stdout)) do
+  for _, line in ipairs(wakterm.split_by_newlines(stdout)) do
     local id, name = line:match '(.-):(.+)'
     if id and name then
       docker_list[id] = name
@@ -174,7 +174,7 @@ end
 
 function make_docker_label_func(id)
   return function(name)
-    local success, stdout, stderr = wezterm.run_child_process {
+    local success, stdout, stderr = wakterm.run_child_process {
       'docker',
       'inspect',
       '--format',
@@ -183,7 +183,7 @@ function make_docker_label_func(id)
     }
     local running = stdout == 'true\n'
     local color = running and 'Green' or 'Red'
-    return wezterm.format {
+    return wakterm.format {
       { Foreground = { AnsiColor = color } },
       { Text = 'docker container named ' .. name },
     }
@@ -213,7 +213,7 @@ function compute_exec_domains()
   for id, name in pairs(docker_list()) do
     table.insert(
       exec_domains,
-      wezterm.exec_domain(
+      wakterm.exec_domain(
         'docker:' .. name,
         make_docker_fixup_func(id),
         make_docker_label_func(id)

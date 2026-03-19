@@ -10,9 +10,9 @@ Switch to a different workspace, creating it if it doesn't already exist.
 * `spawn` - a [SpawnCommand](../SpawnCommand.md) describing the command that should be started in the workspace if it doesn't already exist.  If omitted, the default program will be spawned in the newly created workspace.
 
 ```lua
-local act = wezterm.action
+local act = wakterm.action
 
-wezterm.on('update-right-status', function(window, pane)
+wakterm.on('update-right-status', function(window, pane)
   window:set_right_status(window:active_workspace())
 end)
 
@@ -57,9 +57,9 @@ return config
 {{since('20230408-112425-69ae8472')}}
 
 ```lua
-local act = wezterm.action
+local act = wakterm.action
 
-wezterm.on('update-right-status', function(window, pane)
+wakterm.on('update-right-status', function(window, pane)
   window:set_right_status(window:active_workspace())
 end)
 
@@ -69,12 +69,12 @@ config.keys = {
     key = 'W',
     mods = 'CTRL|SHIFT',
     action = act.PromptInputLine {
-      description = wezterm.format {
+      description = wakterm.format {
         { Attribute = { Intensity = 'Bold' } },
         { Foreground = { AnsiColor = 'Fuchsia' } },
         { Text = 'Enter name for new workspace' },
       },
-      action = wezterm.action_callback(function(window, pane, line)
+      action = wakterm.action_callback(function(window, pane, line)
         -- line will be `nil` if they hit escape without entering anything
         -- An empty string if they just hit enter
         -- Or the actual line of text they wrote

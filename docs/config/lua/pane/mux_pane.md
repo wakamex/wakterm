@@ -6,7 +6,7 @@
 
 Returns the `MuxPane` representation of this pane.
 
-In nightly versions of wezterm, there is no longer a distinction
+In nightly versions of wakterm, there is no longer a distinction
 between gui and mux representations of panes, so this method
 returns itself.
 

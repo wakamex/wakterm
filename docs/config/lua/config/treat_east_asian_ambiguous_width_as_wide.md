@@ -11,9 +11,9 @@ Width](http://www.unicode.org/reports/tr11/#Ambiguous). These are characters
 whose width resolves differently according to context that is typically absent
 from the monospaced world of the terminal.
 
-WezTerm will by default treat ambiguous width as occupying a single cell.
+wakterm will by default treat ambiguous width as occupying a single cell.
 
-When `treat_east_asian_ambiguous_width_as_wide = true` WezTerm will treat them
+When `treat_east_asian_ambiguous_width_as_wide = true` wakterm will treat them
 as being two cells wide.
 
 Note that changing this setting may have consequences for layout in text UI

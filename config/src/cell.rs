@@ -1,5 +1,5 @@
 use crate::{Arc, HashMap};
-use wezterm_dynamic::{FromDynamic, ToDynamic};
+use wakterm_dynamic::{FromDynamic, ToDynamic};
 
 #[derive(Clone, Debug, Eq, PartialEq, FromDynamic, ToDynamic)]
 pub struct CellWidth {

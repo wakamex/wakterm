@@ -27,7 +27,7 @@ text, and cancel quick select mode.
 
 Pressing `ESCAPE` will cancel quick select mode.
 
-![Screenshot demonstrating the quickselect text highlights](screenshots/wezterm-quick-select.png)
+![Screenshot demonstrating the quickselect text highlights](screenshots/wakterm-quick-select.png)
 
 {{since('nightly')}}
 

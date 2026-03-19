@@ -6,8 +6,8 @@ tags:
 # `debug_key_events = false`
 
 When set to true, each key event will be logged by the GUI layer as an INFO
-level log message on the stderr stream from wezterm.  **You will typically need
-to launch `wezterm` directly from another terminal to see this logging**.
+level log message on the stderr stream from wakterm.  **You will typically need
+to launch `wakterm` directly from another terminal to see this logging**.
 
 This can be helpful in figuring out how keys are being decoded on your system,
 or for discovering the system-dependent "raw" key code values.
@@ -20,10 +20,10 @@ Produces logs like the following when typing `ls`: (artificially wrapped
 to make these docs more readable):
 
 ```
- 2021-02-20T17:04:28.149Z INFO  wezterm_gui::gui::termwindow   > key_event 
+ 2021-02-20T17:04:28.149Z INFO  wakterm_gui::gui::termwindow   > key_event 
    KeyEvent { key: Char('l'), modifiers: NONE, raw_key: None,
    raw_modifiers: NONE, raw_code: Some(46), repeat_count: 1, key_is_down: true }
- 2021-02-20T17:04:28.605Z INFO  wezterm_gui::gui::termwindow   > key_event
+ 2021-02-20T17:04:28.605Z INFO  wakterm_gui::gui::termwindow   > key_event
    KeyEvent { key: Char('s'), modifiers: NONE, raw_key: None, raw_modifiers: NONE,
    raw_code: Some(39), repeat_count: 1, key_is_down: true }
 ```
@@ -53,5 +53,5 @@ The key event has a number of fields:
   multiple key-presses based on the system key repeat settings.
 * `key_is_down` indicates whether the key is being pressed or released. This
   will always be true when debug logging, as logging and key press handling is
-  only triggered on key press events in wezterm.
+  only triggered on key press events in wakterm.
 

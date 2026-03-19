@@ -14,7 +14,7 @@ lazy_static::lazy_static! {
 /// We contrive to call this from the main thread in response to the
 /// config being reloaded.
 /// It spawns a task for each of the timers that have been configured
-/// by the user via `wezterm.time.call_after`.
+/// by the user via `wakterm.time.call_after`.
 fn schedule_all(lua: Option<Rc<mlua::Lua>>) -> mlua::Result<()> {
     if let Some(lua) = lua {
         let scheduled_events: Vec<UserDataRef<ScheduledEvent>> =
@@ -110,7 +110,7 @@ impl UserData for ScheduledEvent {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(_methods: &mut M) {}
 }
 
-const SCHEDULED_EVENTS: &str = "wezterm-scheduled-events";
+const SCHEDULED_EVENTS: &str = "wakterm-scheduled-events";
 
 pub fn register(lua: &Lua) -> anyhow::Result<()> {
     {
@@ -173,10 +173,10 @@ pub fn register(lua: &Lua) -> anyhow::Result<()> {
     )?;
 
     // For backwards compatibility
-    let wezterm_mod = get_or_create_module(lua, "wezterm")?;
-    wezterm_mod.set("sleep_ms", lua.create_async_function(sleep_ms)?)?;
-    wezterm_mod.set("strftime", lua.create_function(strftime)?)?;
-    wezterm_mod.set("strftime_utc", lua.create_function(strftime_utc)?)?;
+    let wakterm_mod = get_or_create_module(lua, "wakterm")?;
+    wakterm_mod.set("sleep_ms", lua.create_async_function(sleep_ms)?)?;
+    wakterm_mod.set("strftime", lua.create_function(strftime)?)?;
+    wakterm_mod.set("strftime_utc", lua.create_function(strftime_utc)?)?;
     Ok(())
 }
 

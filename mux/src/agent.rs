@@ -10,7 +10,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use url::Url;
-use wezterm_term::Progress;
+use wakterm_term::Progress;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentMetadata {
@@ -954,25 +954,25 @@ fn describe_pending_opencode_observer(
 }
 
 fn claude_sessions_root() -> Option<PathBuf> {
-    std::env::var_os("WEZTERM_AGENT_CLAUDE_DIR")
+    std::env::var_os("WAKTERM_AGENT_CLAUDE_DIR")
         .map(PathBuf::from)
         .or_else(|| home_dir().map(|home| home.join(".claude").join("projects")))
 }
 
 fn codex_sessions_root() -> Option<PathBuf> {
-    std::env::var_os("WEZTERM_AGENT_CODEX_DIR")
+    std::env::var_os("WAKTERM_AGENT_CODEX_DIR")
         .map(PathBuf::from)
         .or_else(|| home_dir().map(|home| home.join(".codex").join("sessions")))
 }
 
 fn gemini_root() -> Option<PathBuf> {
-    std::env::var_os("WEZTERM_AGENT_GEMINI_DIR")
+    std::env::var_os("WAKTERM_AGENT_GEMINI_DIR")
         .map(PathBuf::from)
         .or_else(|| home_dir().map(|home| home.join(".gemini")))
 }
 
 fn opencode_db_path() -> Option<PathBuf> {
-    std::env::var_os("WEZTERM_AGENT_OPENCODE_DB")
+    std::env::var_os("WAKTERM_AGENT_OPENCODE_DB")
         .map(PathBuf::from)
         .or_else(|| {
             home_dir().map(|home| {
@@ -1792,7 +1792,7 @@ mod test {
         fs::create_dir_all(&project_dir).unwrap();
         fs::write(project_dir.join(".project_root"), "/tmp/project-m\n").unwrap();
 
-        set_env_path("WEZTERM_AGENT_GEMINI_DIR", temp.path());
+        set_env_path("WAKTERM_AGENT_GEMINI_DIR", temp.path());
         let metadata = AgentMetadata {
             agent_id: "id".to_string(),
             name: "gemini".to_string(),
@@ -1810,7 +1810,7 @@ mod test {
         runtime.observer_started_at = Some(Utc::now());
 
         let detail = pending_observer_detail(&metadata, &runtime);
-        remove_env_var("WEZTERM_AGENT_GEMINI_DIR");
+        remove_env_var("WAKTERM_AGENT_GEMINI_DIR");
 
         assert_eq!(
             detail.as_deref(),
@@ -1853,9 +1853,9 @@ mod test {
         )
         .unwrap();
 
-        set_env_path("WEZTERM_AGENT_CLAUDE_DIR", temp.path());
+        set_env_path("WAKTERM_AGENT_CLAUDE_DIR", temp.path());
         let observed = observe_claude(cwd, None, None).unwrap().unwrap();
-        remove_env_var("WEZTERM_AGENT_CLAUDE_DIR");
+        remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
 
         assert_eq!(observed.progress_summary.as_deref(), Some("done"));
         assert_eq!(observed.harness_mode, None);
@@ -1897,11 +1897,11 @@ mod test {
         )
         .unwrap();
 
-        set_env_path("WEZTERM_AGENT_CODEX_DIR", temp.path());
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
         let observed = observe_codex("/tmp/project-b", None, None)
             .unwrap()
             .unwrap();
-        remove_env_var("WEZTERM_AGENT_CODEX_DIR");
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
 
         assert_eq!(observed.progress_summary.as_deref(), Some("all good"));
         assert_eq!(observed.harness_mode.as_deref(), Some("plan"));
@@ -1942,11 +1942,11 @@ mod test {
         )
         .unwrap();
 
-        set_env_path("WEZTERM_AGENT_CODEX_DIR", temp.path());
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
         let observed = observe_codex("/tmp/project-f", None, None)
             .unwrap()
             .unwrap();
-        remove_env_var("WEZTERM_AGENT_CODEX_DIR");
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
 
         assert_eq!(observed.progress_summary.as_deref(), Some("thinking"));
         assert_eq!(observed.harness_mode.as_deref(), Some("plan"));
@@ -1978,11 +1978,11 @@ mod test {
         )
         .unwrap();
 
-        set_env_path("WEZTERM_AGENT_CODEX_DIR", temp.path());
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
         let observed = observe_codex("/tmp/project-g", None, None)
             .unwrap()
             .unwrap();
-        remove_env_var("WEZTERM_AGENT_CODEX_DIR");
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
 
         assert_eq!(observed.harness_mode.as_deref(), Some("default"));
         assert_eq!(observed.turn_phase.as_deref(), Some("aborted"));
@@ -2017,9 +2017,9 @@ mod test {
         )
         .unwrap();
 
-        set_env_path("WEZTERM_AGENT_GEMINI_DIR", temp.path());
+        set_env_path("WAKTERM_AGENT_GEMINI_DIR", temp.path());
         let observed = observe_gemini(cwd, None, None).unwrap().unwrap();
-        remove_env_var("WEZTERM_AGENT_GEMINI_DIR");
+        remove_env_var("WAKTERM_AGENT_GEMINI_DIR");
 
         assert_eq!(observed.progress_summary.as_deref(), Some("all good"));
         assert_eq!(
@@ -2057,11 +2057,11 @@ mod test {
         )
         .unwrap();
 
-        set_env_path("WEZTERM_AGENT_GEMINI_DIR", temp.path());
+        set_env_path("WAKTERM_AGENT_GEMINI_DIR", temp.path());
         let observed = observe_gemini("/tmp/project-e", None, None)
             .unwrap()
             .unwrap();
-        remove_env_var("WEZTERM_AGENT_GEMINI_DIR");
+        remove_env_var("WAKTERM_AGENT_GEMINI_DIR");
 
         assert_eq!(observed.progress_summary.as_deref(), Some("fallback"));
         assert_eq!(
@@ -2131,11 +2131,11 @@ mod test {
             .unwrap();
         drop(connection);
 
-        set_env_path("WEZTERM_AGENT_OPENCODE_DB", &db_path);
+        set_env_path("WAKTERM_AGENT_OPENCODE_DB", &db_path);
         let observed = observe_opencode("/tmp/project-j", None, None)
             .unwrap()
             .unwrap();
-        remove_env_var("WEZTERM_AGENT_OPENCODE_DB");
+        remove_env_var("WAKTERM_AGENT_OPENCODE_DB");
 
         assert_eq!(observed.progress_summary.as_deref(), Some("all good"));
         assert_eq!(observed.turn_state, AgentTurnState::WaitingOnUser);
@@ -2181,7 +2181,7 @@ mod test {
         )
         .unwrap();
 
-        set_env_path("WEZTERM_AGENT_GEMINI_DIR", gemini_temp.path());
+        set_env_path("WAKTERM_AGENT_GEMINI_DIR", gemini_temp.path());
         let gemini_metadata = AgentMetadata {
             agent_id: "id-gemini".to_string(),
             name: "gemini".to_string(),
@@ -2197,7 +2197,7 @@ mod test {
         gemini_runtime.foreground_process_name =
             Some("/home/mihai/.nvm/versions/node/v22.14.0/bin/node".to_string());
         refresh_runtime_from_harness(&mut gemini_runtime, &gemini_metadata);
-        remove_env_var("WEZTERM_AGENT_GEMINI_DIR");
+        remove_env_var("WAKTERM_AGENT_GEMINI_DIR");
 
         assert_eq!(gemini_runtime.transport, AgentTransport::ObservedPty);
         assert_eq!(gemini_runtime.harness, AgentHarness::Gemini);
@@ -2248,7 +2248,7 @@ mod test {
             .unwrap();
         drop(connection);
 
-        set_env_path("WEZTERM_AGENT_OPENCODE_DB", &opencode_db);
+        set_env_path("WAKTERM_AGENT_OPENCODE_DB", &opencode_db);
         let opencode_metadata = AgentMetadata {
             agent_id: "id-opencode".to_string(),
             name: "opencode".to_string(),
@@ -2263,7 +2263,7 @@ mod test {
         let mut opencode_runtime = AgentRuntimeSnapshot::new(&opencode_metadata);
         opencode_runtime.foreground_process_name = Some("opencode".to_string());
         refresh_runtime_from_harness(&mut opencode_runtime, &opencode_metadata);
-        remove_env_var("WEZTERM_AGENT_OPENCODE_DB");
+        remove_env_var("WAKTERM_AGENT_OPENCODE_DB");
 
         assert_eq!(opencode_runtime.transport, AgentTransport::ObservedPty);
         assert_eq!(opencode_runtime.harness, AgentHarness::Opencode);
@@ -2287,7 +2287,7 @@ mod test {
         )
         .unwrap();
 
-        set_env_path("WEZTERM_AGENT_CLAUDE_DIR", temp.path());
+        set_env_path("WAKTERM_AGENT_CLAUDE_DIR", temp.path());
         let metadata = AgentMetadata {
             agent_id: "id".to_string(),
             name: "alpha".to_string(),
@@ -2302,7 +2302,7 @@ mod test {
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         runtime.foreground_process_name = Some("claude".to_string());
         refresh_runtime_from_harness(&mut runtime, &metadata);
-        remove_env_var("WEZTERM_AGENT_CLAUDE_DIR");
+        remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
 
         assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnAgent);
         assert_eq!(runtime.last_turn_completed_at, None);
@@ -2331,7 +2331,7 @@ mod test {
         )
         .unwrap();
 
-        set_env_path("WEZTERM_AGENT_CODEX_DIR", temp.path());
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
         let metadata = AgentMetadata {
             agent_id: "id".to_string(),
             name: "delta".to_string(),
@@ -2347,7 +2347,7 @@ mod test {
         runtime.foreground_process_name = Some("zsh".to_string());
         runtime.observer_started_at = Some(Utc::now() - Duration::minutes(1));
         refresh_runtime_from_harness(&mut runtime, &metadata);
-        remove_env_var("WEZTERM_AGENT_CODEX_DIR");
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
 
         assert_eq!(runtime.harness, AgentHarness::Codex);
         assert_eq!(runtime.transport, AgentTransport::PlainPty);
@@ -2407,7 +2407,7 @@ mod test {
         )
         .unwrap();
 
-        set_env_path("WEZTERM_AGENT_CODEX_DIR", temp.path());
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
         let metadata = AgentMetadata {
             agent_id: "id".to_string(),
             name: "hotel".to_string(),
@@ -2422,7 +2422,7 @@ mod test {
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         runtime.foreground_process_name = Some("codex".to_string());
         refresh_runtime_from_harness(&mut runtime, &metadata);
-        remove_env_var("WEZTERM_AGENT_CODEX_DIR");
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
 
         assert_eq!(runtime.turn_phase.as_deref(), Some("aborted"));
         assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
@@ -2459,7 +2459,7 @@ mod test {
         )
         .unwrap();
 
-        set_env_path("WEZTERM_AGENT_CODEX_DIR", temp.path());
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
         let observed = observe_codex(
             "/tmp/project-e",
             Some(older.to_string_lossy().as_ref()),
@@ -2467,7 +2467,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        remove_env_var("WEZTERM_AGENT_CODEX_DIR");
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
 
         assert_eq!(observed.progress_summary.as_deref(), Some("older"));
         assert_eq!(observed.harness_mode, None);

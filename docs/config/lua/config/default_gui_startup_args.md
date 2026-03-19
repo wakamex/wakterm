@@ -6,22 +6,22 @@ tags:
 
 {{since('20220101-133340-7edc5b5a')}}
 
-When launching the GUI using either `wezterm` or `wezterm-gui` (with no
-subcommand explicitly specified), wezterm will use the value of
+When launching the GUI using either `wakterm` or `wakterm-gui` (with no
+subcommand explicitly specified), wakterm will use the value of
 `default_gui_startup_args` to pick a default mode for running the GUI.
 
-The default for this config is `{"start"}` which makes `wezterm` with no
-additional subcommand arguments equivalent to `wezterm start`.
+The default for this config is `{"start"}` which makes `wakterm` with no
+additional subcommand arguments equivalent to `wakterm start`.
 
-If you know that you always want to use wezterm's ssh client to login to a
+If you know that you always want to use wakterm's ssh client to login to a
 particular host, then you might consider using this configuration:
 
 ```lua
 config.default_gui_startup_args = { 'ssh', 'some-host' }
 ```
 
-which will cause `wezterm` with no additional subcommand arguments to be
-equivalent to running `wezterm ssh some-host`.
+which will cause `wakterm` with no additional subcommand arguments to be
+equivalent to running `wakterm ssh some-host`.
 
 Specifying subcommand arguments on the command line is NOT additive with
 this config; the command line arguments always take precedence.

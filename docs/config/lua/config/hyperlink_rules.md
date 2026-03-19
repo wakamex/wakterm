@@ -37,7 +37,7 @@ The value is a list of rule entries. Each entry has the following fields:
 Assigning `hyperlink_rules` overrides the built-in default rules.
 
 The default value for `hyperlink_rules` can be retrieved using
-[wezterm.default_hyperlink_rules()](../wezterm/default_hyperlink_rules.md),
+[wakterm.default_hyperlink_rules()](../wakterm/default_hyperlink_rules.md),
 and is shown below:
 
 ```lua
@@ -100,7 +100,7 @@ Some other examples include:
 
 ```lua
 -- Use the defaults as a base
-config.hyperlink_rules = wezterm.default_hyperlink_rules()
+config.hyperlink_rules = wakterm.default_hyperlink_rules()
 
 -- make task numbers clickable
 -- the first matched regex group is captured in $1.
@@ -110,7 +110,7 @@ table.insert(config.hyperlink_rules, {
 })
 
 -- make username/project paths clickable. this implies paths like the following are for github.
--- ( "nvim-treesitter/nvim-treesitter" | wbthomason/packer.nvim | wezterm/wezterm | "wezterm/wezterm.git" )
+-- ( "nvim-treesitter/nvim-treesitter" | wbthomason/packer.nvim | wakterm/wakterm | "wakamex/wakterm.git" )
 -- as long as a full url hyperlink regex exists above this it should not match a full url to
 -- github or gitlab / bitbucket (i.e. https://gitlab.com/user/project.git is still a whole clickable url)
 table.insert(config.hyperlink_rules, {

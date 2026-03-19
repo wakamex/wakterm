@@ -38,7 +38,7 @@ above, the left-most pane is still the largest of the panes despite rotating
 the panes withing those placements.
 
 ```lua
-local act = wezterm.action
+local act = wakterm.action
 
 config.keys = {
   {

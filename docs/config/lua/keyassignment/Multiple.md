@@ -8,7 +8,7 @@ want a single key press to trigger multiple actions.
 The example below causes `LeftArrow` to effectively type `left`:
 
 ```lua
-local act = wezterm.action
+local act = wakterm.action
 
 config.keys = {
   {

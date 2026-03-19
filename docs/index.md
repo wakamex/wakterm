@@ -3,9 +3,9 @@ hide:
   - toc
 ---
 
-*WezTerm is a powerful cross-platform terminal emulator and multiplexer written by <a href="https://github.com/wez/">@wez</a> and implemented in <a href="https://www.rust-lang.org/">Rust</a>*
+*wakterm is a powerful cross-platform terminal emulator and multiplexer written by <a href="https://github.com/wez/">@wez</a> and implemented in <a href="https://www.rust-lang.org/">Rust</a>*
 
-![Screenshot](screenshots/wezterm-vday-screenshot.png)
+![Screenshot](screenshots/wakterm-vday-screenshot.png)
 
 [Download :material-tray-arrow-down:](installation.md){ .md-button }
 
@@ -26,5 +26,5 @@ to activate the search function!**
 
 ![Screenshot](screenshots/two.png)
 
-<figcaption>Screenshot of wezterm on macOS, running vim</figcaption>
+<figcaption>Screenshot of wakterm on macOS, running vim</figcaption>
 </figure>

@@ -1,8 +1,8 @@
 [package]
-name = "wezterm-config-derive"
+name = "wakterm-config-derive"
 version = "0.1.0"
 edition = "2021"
-repository = "https://github.com/wezterm/wezterm"
+repository = "https://github.com/wakamex/wakterm"
 description = "derive config metadata"
 license = "MIT"
 

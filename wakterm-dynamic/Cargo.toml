@@ -1,0 +1,20 @@
+[package]
+name = "wakterm-dynamic"
+version = "0.2.1"
+edition = "2021"
+repository = "https://github.com/wakamex/wakterm"
+description = "config serialization for wakterm via dynamic json-like data values"
+license = "MIT"
+
+[features]
+std = ["thiserror/std", "dep:strsim", "ordered-float/std"]
+
+[dependencies]
+log.workspace = true
+ordered-float = {workspace = true, features=["libm"]}
+strsim = {workspace = true, optional=true}
+thiserror = {version="2.0", default-features=false}
+wakterm-dynamic-derive.workspace = true
+
+[dev-dependencies]
+maplit.workspace = true

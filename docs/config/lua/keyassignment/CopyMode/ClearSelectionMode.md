@@ -5,8 +5,8 @@
 Clears the current CopyMode selection mode without leaving CopyMode.
 
 ```lua
-local wezterm = require 'wezterm'
-local act = wezterm.action
+local wakterm = require 'wakterm'
+local act = wakterm.action
 
 return {
   key_tables = {

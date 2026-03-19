@@ -56,7 +56,7 @@ Source: 200 most recently active open issues, filtered for ssh/mux/domain keywor
 
 **Where to look:**
 - `codec/src/lib.rs` — PDU deserialization, `decode_raw` or equivalent
-- `wezterm-mux-server-impl/src/sessionhandler.rs` — how incoming bytes become PDUs
+- `wakterm-mux-server-impl/src/sessionhandler.rs` — how incoming bytes become PDUs
 - Search for `Vec::with_capacity`, `vec![0u8; len]`, or similar allocations gated on wire data
 
 **What would confirm:** Finding an allocation path where `len` comes from the wire with no upper bound.
@@ -70,9 +70,9 @@ Source: 200 most recently active open issues, filtered for ssh/mux/domain keywor
 **Claim:** When the last tmux CC window is closed via Ctrl+D, the detach path acquires locks in an order that conflicts with the GUI's render path.
 
 **Where to look:**
-- `wezterm-client/src/domain.rs` — detach/cleanup code
+- `wakterm-client/src/domain.rs` — detach/cleanup code
 - `mux/src/lib.rs` — window removal, tab removal
-- `wezterm-gui/src/termwindow/mod.rs` — what locks the GUI holds during render
+- `wakterm-gui/src/termwindow/mod.rs` — what locks the GUI holds during render
 - Search for nested `.lock()` calls on different mutexes
 
 **What would confirm:** Finding two code paths that acquire the same two locks in opposite order.
@@ -86,8 +86,8 @@ Source: 200 most recently active open issues, filtered for ssh/mux/domain keywor
 **Claim:** Client resize → server resizes panes → server sends resize notification → client resyncs → client resizes again → infinite loop.
 
 **Where to look:**
-- `wezterm-client/src/client.rs` — `process_unilateral` handling of `TabResized`
-- `wezterm-client/src/domain.rs` — `resync` and what triggers it
+- `wakterm-client/src/client.rs` — `process_unilateral` handling of `TabResized`
+- `wakterm-client/src/domain.rs` — `resync` and what triggers it
 - The coalesce fix (`resync_coalesced`) — is it sufficient?
 
 **What would confirm:** Finding a path where `TabResized` notification triggers a resync that sends new resize PDUs.

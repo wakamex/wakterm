@@ -6,8 +6,8 @@ Move the CopyMode/SearchMode cycle between case-sensitive, case-insensitive
 and regular expression match types.
 
 ```lua
-local wezterm = require 'wezterm'
-local act = wezterm.action
+local wakterm = require 'wakterm'
+local act = wakterm.action
 
 return {
   key_tables = {

@@ -3,9 +3,9 @@ use config::lua::mlua::{Lua, Value, Variadic};
 use luahelper::ValuePrinter;
 
 pub fn register(lua: &Lua) -> anyhow::Result<()> {
-    let wezterm_mod = get_or_create_module(lua, "wezterm")?;
+    let wakterm_mod = get_or_create_module(lua, "wakterm")?;
 
-    wezterm_mod.set(
+    wakterm_mod.set(
         "log_error",
         lua.create_function(|_, args: Variadic<Value>| {
             let output = print_helper(args);
@@ -13,7 +13,7 @@ pub fn register(lua: &Lua) -> anyhow::Result<()> {
             Ok(())
         })?,
     )?;
-    wezterm_mod.set(
+    wakterm_mod.set(
         "log_info",
         lua.create_function(|_, args: Variadic<Value>| {
             let output = print_helper(args);
@@ -21,7 +21,7 @@ pub fn register(lua: &Lua) -> anyhow::Result<()> {
             Ok(())
         })?,
     )?;
-    wezterm_mod.set(
+    wakterm_mod.set(
         "log_warn",
         lua.create_function(|_, args: Variadic<Value>| {
             let output = print_helper(args);
@@ -30,7 +30,7 @@ pub fn register(lua: &Lua) -> anyhow::Result<()> {
         })?,
     )?;
 
-    wezterm_mod.set(
+    wakterm_mod.set(
         "to_string",
         lua.create_function(|_, arg: Value| {
             let res = ValuePrinter(arg);

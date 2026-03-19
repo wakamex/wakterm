@@ -19,7 +19,7 @@ This video demonstrates the use of multiple layers to produce a rich video game
 style parallax background; the configuration used for this is shown as an
 example at the bottom of this page:
 
-<video width="80%" controls src="../../../screenshots/wezterm-parallax-2.mp4" loop></video>
+<video width="80%" controls src="../../../screenshots/wakterm-parallax-2.mp4" loop></video>
 
 The `background` option is a table that lists the desired layers starting with
 the deepest/back-most layer.  Subsequent layers are composited over the top of

@@ -24,7 +24,7 @@ options.
 
 Styling in this context refers to how the edges of the tabs and the new tab button are rendered.
 The default is simply a space character but you can use any sequence of formatted text produced
-by the [wezterm.format](../wezterm/format.md) function.
+by the [wakterm.format](../wakterm/format.md) function.
 
 The defaults for each of these styles is simply a space.  For each element, the foreground
 and background colors are set as per the tab bar colors you've configured.
@@ -39,36 +39,36 @@ The available elements are:
 
 This example changes the tab edges to the PowerLine arrow symbols:
 
-![Demonstrating setting the styling of the left and right tab edges](../../../screenshots/wezterm-tab-edge-styled.png)
+![Demonstrating setting the styling of the left and right tab edges](../../../screenshots/wakterm-tab-edge-styled.png)
 
 ```lua
-local wezterm = require 'wezterm'
+local wakterm = require 'wakterm'
 
-local config = wezterm.config_builder()
+local config = wakterm.config_builder()
 
 -- The filled in variant of the < symbol
-local SOLID_LEFT_ARROW = wezterm.nerdfonts.pl_right_hard_divider
+local SOLID_LEFT_ARROW = wakterm.nerdfonts.pl_right_hard_divider
 
 -- The filled in variant of the > symbol
-local SOLID_RIGHT_ARROW = wezterm.nerdfonts.pl_left_hard_divider
+local SOLID_RIGHT_ARROW = wakterm.nerdfonts.pl_left_hard_divider
 
 config.tab_bar_style = {
-  active_tab_left = wezterm.format {
+  active_tab_left = wakterm.format {
     { Background = { Color = '#0b0022' } },
     { Foreground = { Color = '#2b2042' } },
     { Text = SOLID_LEFT_ARROW },
   },
-  active_tab_right = wezterm.format {
+  active_tab_right = wakterm.format {
     { Background = { Color = '#0b0022' } },
     { Foreground = { Color = '#2b2042' } },
     { Text = SOLID_RIGHT_ARROW },
   },
-  inactive_tab_left = wezterm.format {
+  inactive_tab_left = wakterm.format {
     { Background = { Color = '#0b0022' } },
     { Foreground = { Color = '#1b1032' } },
     { Text = SOLID_LEFT_ARROW },
   },
-  inactive_tab_right = wezterm.format {
+  inactive_tab_right = wakterm.format {
     { Background = { Color = '#0b0022' } },
     { Foreground = { Color = '#1b1032' } },
     { Text = SOLID_RIGHT_ARROW },

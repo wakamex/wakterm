@@ -16,7 +16,7 @@ jobs:
   lints:
     name: Build
     runs-on: ubuntu-latest
-    if: github.repository == 'wezterm/wezterm'
+    if: github.repository == 'wakamex/wakterm'
     steps:
       - uses: actions/checkout@v3
       - name: Install nix
@@ -31,10 +31,10 @@ jobs:
       - name: Setup Cachix
         uses: cachix/cachix-action@v16
         with:
-          name: wezterm
+          name: wakterm
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
       - name: Build default package
         run: |
           nix build ./nix --json \
           | jq -r '.[].outputs | to_entries[].value' \
-          | cachix push wezterm
+          | cachix push wakterm

@@ -3,12 +3,12 @@ use config::lua::mlua::{self, Lua, Variadic};
 use std::collections::HashMap;
 
 pub fn register(lua: &Lua) -> anyhow::Result<()> {
-    let wezterm_mod = get_or_create_module(lua, "wezterm")?;
-    wezterm_mod.set(
+    let wakterm_mod = get_or_create_module(lua, "wakterm")?;
+    wakterm_mod.set(
         "enumerate_ssh_hosts",
         lua.create_function(enumerate_ssh_hosts)?,
     )?;
-    wezterm_mod.set(
+    wakterm_mod.set(
         "default_ssh_domains",
         lua.create_function(|_, ()| Ok(config::SshDomain::default_domains()))?,
     )?;
@@ -18,8 +18,8 @@ pub fn register(lua: &Lua) -> anyhow::Result<()> {
 fn enumerate_ssh_hosts<'lua>(
     lua: &'lua Lua,
     config_files: Variadic<String>,
-) -> mlua::Result<HashMap<String, wezterm_ssh::ConfigMap>> {
-    let mut config = wezterm_ssh::Config::new();
+) -> mlua::Result<HashMap<String, wakterm_ssh::ConfigMap>> {
+    let mut config = wakterm_ssh::Config::new();
     for file in config_files {
         config.add_config_file(file);
     }

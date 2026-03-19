@@ -5,7 +5,7 @@ use enum_display_derive::Display;
 use luahelper::impl_lua_conversion_dynamic;
 use std::convert::TryFrom;
 use std::fmt::Display;
-use wezterm_dynamic::{FromDynamic, FromDynamicOptions, ToDynamic, Value};
+use wakterm_dynamic::{FromDynamic, FromDynamicOptions, ToDynamic, Value};
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Display, PartialOrd, Ord, FromDynamic, ToDynamic,
@@ -147,7 +147,7 @@ impl FromDynamic for FontWeight {
     fn from_dynamic(
         value: &Value,
         _options: FromDynamicOptions,
-    ) -> Result<Self, wezterm_dynamic::Error> {
+    ) -> Result<Self, wakterm_dynamic::Error> {
         match value {
             Value::String(s) => {
                 Ok(Self::from_str(s).ok_or_else(|| format!("invalid font weight {}", s))?)
@@ -160,7 +160,7 @@ impl FromDynamic for FontWeight {
                         Err(format!("invalid font weight {}", value).into())
                     }
                 } else {
-                    Err(wezterm_dynamic::Error::NoConversion {
+                    Err(wakterm_dynamic::Error::NoConversion {
                         source_type: other.variant_name().to_string(),
                         dest_type: "FontWeight",
                     })
@@ -386,7 +386,7 @@ impl std::fmt::Display for FontAttributes {
     fn fmt(&self, fmt: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
         write!(
             fmt,
-            "wezterm.font('{}', {{weight={}, stretch='{}', style={}}})",
+            "wakterm.font('{}', {{weight={}, stretch='{}', style={}}})",
             self.family, self.weight, self.stretch, self.style
         )
     }
@@ -482,7 +482,7 @@ impl TextStyle {
     /// doesn't help us know anything about the name until
     /// we have a parsed font to compare with.
     ///
-    /// <https://github.com/wezterm/wezterm/issues/456>
+    /// <https://github.com/wakamex/wakterm/issues/456>
     pub fn reduce_first_font_to_family(&self) -> Self {
         fn reduce(mut family: &str) -> String {
             loop {
@@ -624,17 +624,17 @@ pub struct StyleRule {
     /// If present, this rule matches when CellAttributes::intensity holds
     /// a value that matches this rule.  Valid values are "Bold", "Normal",
     /// "Half".
-    pub intensity: Option<wezterm_term::Intensity>,
+    pub intensity: Option<wakterm_term::Intensity>,
     /// If present, this rule matches when CellAttributes::underline holds
     /// a value that matches this rule.  Valid values are "None", "Single",
     /// "Double".
-    pub underline: Option<wezterm_term::Underline>,
+    pub underline: Option<wakterm_term::Underline>,
     /// If present, this rule matches when CellAttributes::italic holds
     /// a value that matches this rule.
     pub italic: Option<bool>,
     /// If present, this rule matches when CellAttributes::blink holds
     /// a value that matches this rule.
-    pub blink: Option<wezterm_term::Blink>,
+    pub blink: Option<wakterm_term::Blink>,
     /// If present, this rule matches when CellAttributes::reverse holds
     /// a value that matches this rule.
     pub reverse: Option<bool>,

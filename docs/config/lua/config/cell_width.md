@@ -10,8 +10,8 @@ Scales the computed cell width to adjust the spacing between successive cells
 of text.
 
 If possible, you should prefer to specify the `stretch` parameter when
-selecting a font using [wezterm.font](../wezterm/font.md) or
-[wezterm.font_with_fallback](../wezterm/font_with_fallback.md) as that will
+selecting a font using [wakterm.font](../wakterm/font.md) or
+[wakterm.font_with_fallback](../wakterm/font_with_fallback.md) as that will
 generally look better and have fewer undesirable side effects.
 
 If your preferred font doesn't have variations with different stretches, or
@@ -31,7 +31,7 @@ set `cell_width = 1.2` to increase the horizontal spacing by 20%.  Conversely,
 setting `cell_width = 0.9` will decrease the horizontal spacing by 10%.
 
 This option doesn't adjust the rasterized width of glyphs, it just changes what
-wezterm considers to be the cell boundaries. When rendering monospace, wezterm
+wakterm considers to be the cell boundaries. When rendering monospace, wakterm
 advances by the cell width to place successive glyphs.
 
 If you set the scale less than `1.0` then the glyphs won't be truncated or

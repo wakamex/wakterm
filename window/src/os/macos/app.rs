@@ -13,7 +13,7 @@ use objc::rc::StrongPtr;
 use objc::runtime::{Class, Object, Sel, BOOL, NO, YES};
 use objc::*;
 
-const CLS_NAME: &str = "WezTermAppDelegate";
+const CLS_NAME: &str = "WakTermAppDelegate";
 
 extern "C" fn application_should_terminate(
     _self: &mut Object,
@@ -27,8 +27,8 @@ extern "C" fn application_should_terminate(
             WindowCloseConfirmation::AlwaysPrompt => {
                 let alert: id = msg_send![class!(NSAlert), alloc];
                 let alert: id = msg_send![alert, init];
-                let message_text = nsstring("Terminate WezTerm?");
-                let info_text = nsstring("Detach and close all panes and terminate wezterm?");
+                let message_text = nsstring("Terminate wakterm?");
+                let info_text = nsstring("Detach and close all panes and terminate wakterm?");
                 let cancel = nsstring("Cancel");
                 let ok = nsstring("Ok");
 
@@ -93,15 +93,15 @@ extern "C" fn application_open_untitled_file(
     NO
 }
 
-extern "C" fn wezterm_perform_key_assignment(
+extern "C" fn wakterm_perform_key_assignment(
     _self: &mut Object,
     _sel: Sel,
     menu_item: *mut Object,
 ) {
     let menu_item = crate::os::macos::menu::MenuItem::with_menu_item(menu_item);
-    // Safe because weztermPerformKeyAssignment: is only used with KeyAssignment
+    // Safe because waktermPerformKeyAssignment: is only used with KeyAssignment
     let action = menu_item.get_represented_item();
-    log::debug!("wezterm_perform_key_assignment {action:?}",);
+    log::debug!("wakterm_perform_key_assignment {action:?}",);
     match action {
         Some(RepresentedItem::KeyAssignment(action)) => {
             if let Some(conn) = Connection::get() {
@@ -135,7 +135,7 @@ extern "C" fn application_dock_menu(
 ) -> *mut Object {
     let dock_menu = Menu::new_with_title("");
     let new_window_item =
-        MenuItem::new_with("New Window", Some(sel!(weztermPerformKeyAssignment:)), "");
+        MenuItem::new_with("New Window", Some(sel!(waktermPerformKeyAssignment:)), "");
     new_window_item
         .set_represented_item(RepresentedItem::KeyAssignment(KeyAssignment::SpawnWindow));
     dock_menu.add_item(&new_window_item);
@@ -172,8 +172,8 @@ fn get_class() -> &'static Class {
                     as extern "C" fn(&mut Object, Sel, *mut Object) -> *mut Object,
             );
             cls.add_method(
-                sel!(weztermPerformKeyAssignment:),
-                wezterm_perform_key_assignment as extern "C" fn(&mut Object, Sel, *mut Object),
+                sel!(waktermPerformKeyAssignment:),
+                wakterm_perform_key_assignment as extern "C" fn(&mut Object, Sel, *mut Object),
             );
             cls.add_method(
                 sel!(applicationOpenUntitledFile:),

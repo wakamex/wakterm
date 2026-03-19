@@ -31,9 +31,9 @@ config.serial_ports = {
 
 You can then use the port in one of the following ways:
 
-* `wezterm connect /dev/tty.usbserial-10` - this behaves similarly to `wezterm
+* `wakterm connect /dev/tty.usbserial-10` - this behaves similarly to `wakterm
   serial /dev/tty.usbserial-10 --baud 115200`.
-* Start wezterm normally, then use the Command Palette or Launcher Menu to
+* Start wakterm normally, then use the Command Palette or Launcher Menu to
   spawn a new tab in the `/dev/tty.usbserial-10` domain to connect to the
   serial device
 * You can reference the serial domain by its name `/dev/tty.usbserial-10` in

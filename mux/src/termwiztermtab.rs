@@ -1,5 +1,5 @@
 //! a tab hosting a termwiz terminal applet
-//! The idea is to use these when wezterm needs to request
+//! The idea is to use these when wakterm needs to request
 //! input from the user as part of eg: setting up an ssh
 //! session.
 
@@ -30,8 +30,8 @@ use termwiz::surface::{Change, Line, SequenceNo};
 use termwiz::terminal::{ScreenSize, TerminalWaker};
 use termwiz::Context;
 use url::Url;
-use wezterm_term::color::ColorPalette;
-use wezterm_term::{
+use wakterm_term::color::ColorPalette;
+use wakterm_term::{
     KeyCode, KeyModifiers, MouseEvent, StableRowIndex, TerminalConfiguration, TerminalSize,
 };
 
@@ -88,7 +88,7 @@ impl Domain for TermWizTerminalDomain {
 pub struct TermWizTerminalPane {
     pane_id: PaneId,
     domain_id: DomainId,
-    terminal: Mutex<wezterm_term::Terminal>,
+    terminal: Mutex<wakterm_term::Terminal>,
     input_tx: Sender<InputEvent>,
     dead: Mutex<bool>,
     writer: Mutex<Vec<u8>>,
@@ -105,11 +105,11 @@ impl TermWizTerminalPane {
     ) -> Self {
         let pane_id = alloc_pane_id();
 
-        let terminal = Mutex::new(wezterm_term::Terminal::new(
+        let terminal = Mutex::new(wakterm_term::Terminal::new(
             size,
             term_config.unwrap_or_else(|| Arc::new(config::TermConfig::new())),
-            "WezTerm",
-            config::wezterm_version(),
+            "wakterm",
+            config::wakterm_version(),
             Box::new(Vec::new()), // FIXME: connect to something?
         ));
 
@@ -228,7 +228,7 @@ impl Pane for TermWizTerminalPane {
 
     fn mouse_event(&self, event: MouseEvent) -> anyhow::Result<()> {
         use termwiz::input::MouseButtons as Buttons;
-        use wezterm_term::input::MouseButton;
+        use wakterm_term::input::MouseButton;
 
         let mouse_buttons = match event.button {
             MouseButton::Left => Buttons::LEFT,
@@ -452,7 +452,7 @@ pub fn allocate(
 
     let (input_tx, input_rx) = channel();
 
-    let renderer = termwiz_funcs::new_wezterm_terminfo_renderer();
+    let renderer = termwiz_funcs::new_wakterm_terminfo_renderer();
 
     let tw_term = TermWizTerminal {
         render_tx: TermWizTerminalRenderTty {
@@ -501,7 +501,7 @@ pub async fn run<
     let (input_tx, input_rx) = channel();
     let should_close_window = window_id.is_none();
 
-    let renderer = termwiz_funcs::new_wezterm_terminfo_renderer();
+    let renderer = termwiz_funcs::new_wakterm_terminfo_renderer();
 
     let tw_term = TermWizTerminal {
         render_tx: TermWizTerminalRenderTty {

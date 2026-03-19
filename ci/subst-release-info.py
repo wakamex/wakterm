@@ -16,11 +16,11 @@ CATEGORIZE = {
     r"Ubuntu(\d+)(\.\d+)?\.arm64\.deb$": "ubuntu\\1_arm64_deb",
     r"Debian(\d+)(\.\d+)?\.arm64\.deb$": "debian\\1_arm64_deb",
     r"Ubuntu20.04.tar.xz$": "linux_raw_bin",
-    r"^wezterm-\d+-\d+-[a-f0-9]+.tar.xz$": "linux_raw_bin",
+    r"^wakterm-\d+-\d+-[a-f0-9]+.tar.xz$": "linux_raw_bin",
     r"src.tar.gz$": "src",
-    r"^WezTerm-macos-.*.zip$": "macos_zip",
-    r"^WezTerm-windows-.*.zip$": "windows_zip",
-    r"^WezTerm-.*.setup.exe$": "windows_exe",
+    r"^wakterm-macos-.*.zip$": "macos_zip",
+    r"^wakterm-windows-.*.zip$": "windows_zip",
+    r"^wakterm-.*.setup.exe$": "windows_exe",
     r"alpine(\d+)\.(\d+)(:?-\S+)?.apk": "alpine\\1_\\2_apk",
 }
 
@@ -28,7 +28,7 @@ CATEGORIZE = {
 def categorize(rel):
     downloads = {}
 
-    tag_name = "wezterm-%s" % rel["tag_name"]
+    tag_name = "wakterm-%s" % rel["tag_name"]
     for asset in rel["assets"]:
         url = asset["browser_download_url"]
         name = asset["name"]
@@ -58,10 +58,10 @@ def build_subst(subst, stable, categorized):
 
 
 def load_release_info():
-    with open("/tmp/wezterm.releases.json") as f:
+    with open("/tmp/wakterm.releases.json") as f:
         release_info = json.load(f)
 
-    with open("/tmp/wezterm.nightly.json") as f:
+    with open("/tmp/wakterm.nightly.json") as f:
         nightly = json.load(f)
 
     latest = None

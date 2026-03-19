@@ -2,7 +2,7 @@
 
 {{since('20220903-194523-3bb1ed61')}}
 
-When set to `true`, on unix systems, for local panes, wezterm will query the
+When set to `true`, on unix systems, for local panes, wakterm will query the
 *termios* associated with the PTY to see whether local echo is disabled and
 canonical input is enabled.
 

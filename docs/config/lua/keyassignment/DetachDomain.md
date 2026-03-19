@@ -11,8 +11,8 @@ Not every domain supports detaching, and will log an error to the
 error log/debug overlay.
 
 ```lua
-local wezterm = require 'wezterm'
-local act = wezterm.action
+local wakterm = require 'wakterm'
+local act = wakterm.action
 
 config.ssh_domains = {
   {

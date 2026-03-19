@@ -3,7 +3,7 @@ use config::lua::mlua::{self, Lua};
 use luahelper::impl_lua_conversion_dynamic;
 use std::collections::HashMap;
 use std::rc::Rc;
-use wezterm_dynamic::{FromDynamic, ToDynamic};
+use wakterm_dynamic::{FromDynamic, ToDynamic};
 use window::{Appearance, Connection, ConnectionOps};
 
 fn get_conn() -> mlua::Result<Rc<Connection>> {

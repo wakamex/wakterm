@@ -3,15 +3,15 @@
 {{since('20220319-142410-0fcdea07')}}
 
 The `WslDomain` struct specifies information about an individual `WslDomain`,
-which is used to tell wezterm how to interact with one of your locally
+which is used to tell wakterm how to interact with one of your locally
 installed [WSL](https://docs.microsoft.com/en-us/windows/wsl/about)
 distributions.
 
-By mapping a distribution to a multiplexing domain, wezterm is better able to
+By mapping a distribution to a multiplexing domain, wakterm is better able to
 support creating new tabs and panes with the same working directory as an
 existing tab/pane running in that same domain.
 
-By default, wezterm creates a list of `WslDomain` objects based on parsing the
+By default, wakterm creates a list of `WslDomain` objects based on parsing the
 output from `wsl -l -v` and assigns that as the value of the
 [wsl_domains](config/wsl_domains.md) configuration option.
 
