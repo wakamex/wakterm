@@ -14,9 +14,10 @@ use mux::tab::{SplitDirection, SplitRequest, SplitSize};
 use mux::window::WindowId;
 use portable_pty::cmdbuilder::CommandBuilder;
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::future::Future;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
@@ -45,11 +46,20 @@ enum AgentSubCommand {
     #[command(name = "list", about = "list agent-tagged panes")]
     List(ListAgentsCommand),
 
+    #[command(
+        name = "watch",
+        about = "stream latest observer-backed harness messages for agent panes"
+    )]
+    Watch(WatchAgentsCommand),
+
     #[command(name = "inspect", about = "inspect a single agent by name or id")]
     Inspect(InspectAgentCommand),
 
     #[command(name = "send", about = "send a message to an agent pane")]
     Send(SendAgentCommand),
+
+    #[command(name = "interrupt", about = "interrupt a native harness turn")]
+    Interrupt(InterruptAgentCommand),
 
     #[command(name = "set", about = "attach agent metadata to a pane")]
     Set(SetAgentCommand),
@@ -64,8 +74,10 @@ impl AgentCommand {
             AgentSubCommand::Start(cmd) => cmd.run(client, config).await,
             AgentSubCommand::Adopt(cmd) => cmd.run(client).await,
             AgentSubCommand::List(cmd) => cmd.run(client).await,
+            AgentSubCommand::Watch(cmd) => cmd.run(client).await,
             AgentSubCommand::Inspect(cmd) => cmd.run(client).await,
             AgentSubCommand::Send(cmd) => cmd.run(client).await,
+            AgentSubCommand::Interrupt(cmd) => cmd.run(client).await,
             AgentSubCommand::Set(cmd) => cmd.run(client).await,
             AgentSubCommand::Clear(cmd) => cmd.run(client).await,
         }
@@ -861,10 +873,27 @@ pub struct ListAgentsCommand {
     /// "table" and "json" are possible formats.
     #[arg(long = "format", default_value = "table")]
     format: CliOutputFormatKind,
+
+    /// Stream latest observer-backed harness message updates instead of printing a snapshot.
+    #[arg(short = 'f', long)]
+    follow: bool,
+
+    /// Poll interval for follow/watch mode.
+    #[arg(long, default_value_t = 500, requires = "follow")]
+    poll_ms: u64,
 }
 
 impl ListAgentsCommand {
     async fn run(&self, client: Client) -> anyhow::Result<()> {
+        if self.follow {
+            return WatchAgentsCommand {
+                format: self.format,
+                poll_ms: self.poll_ms,
+            }
+            .run(client)
+            .await;
+        }
+
         let agents = client.list_agents().await?.agents;
 
         match self.format {
@@ -943,6 +972,74 @@ impl ListAgentsCommand {
                 Ok(())
             }
         }
+    }
+}
+
+#[derive(Debug, Parser, Clone, Copy)]
+pub struct WatchAgentsCommand {
+    /// Controls the output format.
+    /// "table" streams tab-separated lines, while "json" streams JSON lines.
+    #[arg(long = "format", default_value = "table")]
+    format: CliOutputFormatKind,
+
+    /// Poll interval while streaming updates.
+    #[arg(long, default_value_t = 500)]
+    poll_ms: u64,
+}
+
+impl WatchAgentsCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        let mut out = std::io::stdout().lock();
+        self.run_with(|| client.list_agents(), &mut out, None).await
+    }
+
+    async fn run_with<ListAgents, ListAgentsFut, W: Write>(
+        &self,
+        mut list_agents: ListAgents,
+        out: &mut W,
+        max_polls: Option<usize>,
+    ) -> anyhow::Result<()>
+    where
+        ListAgents: FnMut() -> ListAgentsFut,
+        ListAgentsFut: Future<Output = anyhow::Result<codec::ListAgentsResponse>>,
+    {
+        let mut seen = HashMap::new();
+        let mut remaining_polls = max_polls;
+
+        loop {
+            let agents = list_agents().await?.agents;
+            let events = collect_agent_watch_events(&mut seen, &agents);
+            self.write_events(out, &events)?;
+            out.flush()?;
+
+            if let Some(remaining) = remaining_polls.as_mut() {
+                if *remaining <= 1 {
+                    return Ok(());
+                }
+                *remaining -= 1;
+            }
+
+            smol::Timer::after(Duration::from_millis(self.poll_ms)).await;
+        }
+    }
+
+    fn write_events<W: Write>(
+        &self,
+        out: &mut W,
+        events: &[AgentWatchEvent],
+    ) -> anyhow::Result<()> {
+        for event in events {
+            match self.format {
+                CliOutputFormatKind::Json => {
+                    serde_json::to_writer(&mut *out, event)?;
+                    writeln!(out)?;
+                }
+                CliOutputFormatKind::Table => {
+                    writeln!(out, "{}\t{}\t{}", event.name, event.harness, event.message)?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1120,45 +1217,100 @@ impl SendAgentCommand {
             });
         }
 
-        let started = Instant::now();
-        let timeout = Duration::from_millis(self.ack_timeout_ms);
-        let poll = Duration::from_millis(self.ack_poll_ms);
+        wait_for_observer_acknowledgement(
+            list_agents,
+            baseline_agent,
+            baseline,
+            self.ack_timeout_ms,
+            self.ack_poll_ms,
+        )
+        .await
+    }
+}
 
-        loop {
-            let agent = list_agents()
-                .await?
-                .agents
-                .into_iter()
-                .find(|agent| agent.metadata.agent_id == baseline_agent.metadata.agent_id)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "agent {} disappeared while waiting for acknowledgement",
-                        baseline_agent.metadata.name
-                    )
-                })?;
+#[derive(Debug, Parser, Clone)]
+pub struct InterruptAgentCommand {
+    /// Agent name or stable id
+    target: String,
 
-            if baseline.is_acknowledged_by(&agent) {
-                return Ok(AgentSendAcknowledgement {
-                    kind: AgentAckKind::SessionObserver,
-                    acknowledged: true,
-                    latency_ms: Some(started.elapsed().as_millis() as u64),
-                    session_path: agent.runtime.session_path.clone(),
-                    detail: agent.runtime.progress_summary.clone(),
-                });
-            }
+    /// Maximum time to wait for observer-backed acknowledgement
+    #[arg(long, default_value_t = 2000)]
+    ack_timeout_ms: u64,
 
-            if started.elapsed() >= timeout {
-                return Ok(AgentSendAcknowledgement {
-                    kind: AgentAckKind::TimedOut,
-                    acknowledged: false,
-                    latency_ms: Some(started.elapsed().as_millis() as u64),
-                    session_path: agent.runtime.session_path.clone(),
-                    detail: agent.runtime.progress_summary.clone(),
-                });
-            }
+    /// Poll interval while waiting for acknowledgement
+    #[arg(long, default_value_t = 50)]
+    ack_poll_ms: u64,
+}
 
-            smol::Timer::after(poll).await;
+impl InterruptAgentCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        let result = self
+            .run_with(|| client.list_agents(), |request| client.key_down(request))
+            .await?;
+        write_json(&result)
+    }
+
+    async fn run_with<ListAgents, ListAgentsFut, KeyDownFn, KeyDownFut>(
+        &self,
+        mut list_agents: ListAgents,
+        key_down: KeyDownFn,
+    ) -> anyhow::Result<AgentInterruptResult>
+    where
+        ListAgents: FnMut() -> ListAgentsFut,
+        ListAgentsFut: Future<Output = anyhow::Result<codec::ListAgentsResponse>>,
+        KeyDownFn: Fn(SendKeyDown) -> KeyDownFut,
+        KeyDownFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
+    {
+        let agents = list_agents().await?.agents;
+        let agent = find_agent(&agents, &self.target)
+            .cloned()
+            .with_context(|| format!("no agent named or identified by {}", self.target))?;
+
+        if agent.runtime.harness != AgentHarness::Codex {
+            bail!(
+                "agent {} uses {}; interrupt is currently only implemented for codex panes",
+                agent.metadata.name,
+                harness_label(&agent.runtime.harness)
+            );
         }
+
+        let baseline = AgentAckBaseline::from_agent(&agent);
+        key_down(SendKeyDown {
+            pane_id: agent.pane_id,
+            event: KeyEvent {
+                key: KeyCode::Char('C'),
+                modifiers: Modifiers::CTRL,
+            },
+            input_serial: InputSerial::now(),
+        })
+        .await?;
+
+        let acknowledgement = if !matches!(agent.runtime.transport, AgentTransport::ObservedPty) {
+            AgentSendAcknowledgement {
+                kind: AgentAckKind::Unavailable,
+                acknowledged: false,
+                latency_ms: None,
+                session_path: baseline.session_path.clone(),
+                detail: Some("agent has no observer-backed session path".to_string()),
+            }
+        } else {
+            wait_for_observer_acknowledgement(
+                &mut list_agents,
+                &agent,
+                &baseline,
+                self.ack_timeout_ms,
+                self.ack_poll_ms,
+            )
+            .await?
+        };
+
+        Ok(AgentInterruptResult {
+            agent_id: agent.metadata.agent_id.clone(),
+            agent_name: agent.metadata.name.clone(),
+            pane_id: agent.pane_id,
+            harness: agent.runtime.harness,
+            acknowledgement,
+        })
     }
 }
 
@@ -1446,11 +1598,20 @@ struct AgentSendResult {
     acknowledgement: AgentSendAcknowledgement,
 }
 
+#[derive(Debug, Serialize)]
+struct AgentInterruptResult {
+    agent_id: String,
+    agent_name: String,
+    pane_id: PaneId,
+    harness: AgentHarness,
+    acknowledgement: AgentSendAcknowledgement,
+}
+
 #[derive(Debug, Clone)]
 struct AgentAckBaseline {
     session_path: Option<String>,
     last_progress_at: Option<chrono::DateTime<Utc>>,
-    progress_summary: Option<String>,
+    message: String,
 }
 
 impl AgentAckBaseline {
@@ -1458,7 +1619,7 @@ impl AgentAckBaseline {
         Self {
             session_path: agent.runtime.session_path.clone(),
             last_progress_at: agent.runtime.last_progress_at,
-            progress_summary: agent.runtime.progress_summary.clone(),
+            message: inline_progress_summary(agent),
         }
     }
 
@@ -1471,8 +1632,60 @@ impl AgentAckBaseline {
             return true;
         }
 
-        agent.runtime.progress_summary != self.progress_summary
-            && agent.runtime.progress_summary.is_some()
+        let current_message = inline_progress_summary(agent);
+        !current_message.is_empty() && current_message != self.message
+    }
+}
+
+async fn wait_for_observer_acknowledgement<ListAgents, ListAgentsFut>(
+    list_agents: &mut ListAgents,
+    baseline_agent: &AgentSnapshot,
+    baseline: &AgentAckBaseline,
+    ack_timeout_ms: u64,
+    ack_poll_ms: u64,
+) -> anyhow::Result<AgentSendAcknowledgement>
+where
+    ListAgents: FnMut() -> ListAgentsFut,
+    ListAgentsFut: Future<Output = anyhow::Result<codec::ListAgentsResponse>>,
+{
+    let started = Instant::now();
+    let timeout = Duration::from_millis(ack_timeout_ms);
+    let poll = Duration::from_millis(ack_poll_ms);
+
+    loop {
+        let agent = list_agents()
+            .await?
+            .agents
+            .into_iter()
+            .find(|agent| agent.metadata.agent_id == baseline_agent.metadata.agent_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "agent {} disappeared while waiting for acknowledgement",
+                    baseline_agent.metadata.name
+                )
+            })?;
+
+        if baseline.is_acknowledged_by(&agent) {
+            return Ok(AgentSendAcknowledgement {
+                kind: AgentAckKind::SessionObserver,
+                acknowledged: true,
+                latency_ms: Some(started.elapsed().as_millis() as u64),
+                session_path: agent.runtime.session_path.clone(),
+                detail: inline_progress_detail(&agent),
+            });
+        }
+
+        if started.elapsed() >= timeout {
+            return Ok(AgentSendAcknowledgement {
+                kind: AgentAckKind::TimedOut,
+                acknowledged: false,
+                latency_ms: Some(started.elapsed().as_millis() as u64),
+                session_path: agent.runtime.session_path.clone(),
+                detail: inline_progress_detail(&agent),
+            });
+        }
+
+        smol::Timer::after(poll).await;
     }
 }
 
@@ -1528,6 +1741,108 @@ fn find_agent<'a>(agents: &'a [AgentSnapshot], target: &str) -> Option<&'a Agent
     agents
         .iter()
         .find(|agent| agent.metadata.name == target || agent.metadata.agent_id == target)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AgentWatchFingerprint {
+    session_path: Option<String>,
+    last_progress_at: Option<chrono::DateTime<Utc>>,
+    message: String,
+}
+
+impl AgentWatchFingerprint {
+    fn from_agent(agent: &AgentSnapshot) -> Self {
+        Self {
+            session_path: agent.runtime.session_path.clone(),
+            last_progress_at: agent.runtime.last_progress_at,
+            message: inline_progress_summary(agent),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AgentWatchEvent {
+    agent_id: String,
+    name: String,
+    pane_id: PaneId,
+    tab_id: mux::tab::TabId,
+    window_id: WindowId,
+    workspace: String,
+    harness: String,
+    status: String,
+    turn_state: String,
+    mode: Option<String>,
+    phase: Option<String>,
+    session_path: Option<String>,
+    last_progress_at: Option<chrono::DateTime<Utc>>,
+    message: String,
+}
+
+impl AgentWatchEvent {
+    fn from_agent(agent: &AgentSnapshot) -> Option<Self> {
+        let message = inline_progress_summary(agent);
+        if message.is_empty() {
+            return None;
+        }
+
+        Some(Self {
+            agent_id: agent.metadata.agent_id.clone(),
+            name: agent.metadata.name.clone(),
+            pane_id: agent.pane_id,
+            tab_id: agent.tab_id,
+            window_id: agent.window_id,
+            workspace: agent.workspace.clone(),
+            harness: harness_label(&agent.runtime.harness),
+            status: runtime_status_label(&agent.runtime.status),
+            turn_state: turn_state_label(&agent.runtime.turn_state),
+            mode: agent.runtime.harness_mode.clone(),
+            phase: agent.runtime.turn_phase.clone(),
+            session_path: agent.runtime.session_path.clone(),
+            last_progress_at: agent.runtime.last_progress_at,
+            message,
+        })
+    }
+}
+
+fn collect_agent_watch_events(
+    seen: &mut HashMap<String, AgentWatchFingerprint>,
+    agents: &[AgentSnapshot],
+) -> Vec<AgentWatchEvent> {
+    let mut sorted_agents = agents.iter().collect::<Vec<_>>();
+    sorted_agents.sort_by(|left, right| {
+        left.metadata
+            .name
+            .cmp(&right.metadata.name)
+            .then(left.pane_id.cmp(&right.pane_id))
+    });
+
+    let mut current_ids = HashSet::new();
+    let mut events = vec![];
+
+    for agent in sorted_agents {
+        current_ids.insert(agent.metadata.agent_id.clone());
+
+        let fingerprint = AgentWatchFingerprint::from_agent(agent);
+        if fingerprint.message.is_empty() {
+            seen.remove(&agent.metadata.agent_id);
+            continue;
+        }
+
+        let changed = seen
+            .get(&agent.metadata.agent_id)
+            .map(|existing| existing != &fingerprint)
+            .unwrap_or(true);
+        if changed {
+            if let Some(event) = AgentWatchEvent::from_agent(agent) {
+                events.push(event);
+            }
+        }
+
+        seen.insert(agent.metadata.agent_id.clone(), fingerprint);
+    }
+
+    seen.retain(|agent_id, _| current_ids.contains(agent_id));
+    events
 }
 
 fn find_pane_cwd(panes: &ListPanesResponse, pane_id: PaneId) -> Option<String> {
@@ -1619,6 +1934,15 @@ fn inline_progress_summary(agent: &AgentSnapshot) -> String {
         prefix
     } else {
         format!("{prefix} {summary}")
+    }
+}
+
+fn inline_progress_detail(agent: &AgentSnapshot) -> Option<String> {
+    let summary = inline_progress_summary(agent);
+    if summary.is_empty() {
+        None
+    } else {
+        Some(summary)
     }
 }
 
@@ -1883,6 +2207,191 @@ mod test {
             inline_progress_summary(&agent),
             "[plan final-answer] all good"
         );
+    }
+
+    #[test]
+    fn collect_agent_watch_events_sorts_and_skips_empty_messages() {
+        let mut alpha = sample_agent(30, "alpha");
+        alpha.runtime.progress_summary = Some("ready".to_string());
+        alpha.runtime.last_progress_at = Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 1).unwrap());
+
+        let beta = sample_agent(31, "beta");
+
+        let mut gamma = sample_agent(32, "gamma");
+        gamma.runtime.progress_summary = Some("working".to_string());
+        gamma.runtime.last_progress_at = Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 2).unwrap());
+
+        let mut seen = HashMap::new();
+        let events = collect_agent_watch_events(&mut seen, &[gamma.clone(), beta, alpha.clone()]);
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].name, "alpha");
+        assert_eq!(events[0].message, "ready");
+        assert_eq!(events[1].name, "gamma");
+        assert_eq!(events[1].message, "working");
+        assert_eq!(seen.len(), 2);
+        assert!(seen.contains_key(&alpha.metadata.agent_id));
+        assert!(seen.contains_key(&gamma.metadata.agent_id));
+    }
+
+    #[test]
+    fn watch_run_with_streams_initial_and_changed_messages() {
+        let command = WatchAgentsCommand {
+            format: CliOutputFormatKind::Table,
+            poll_ms: 0,
+        };
+
+        let mut baseline = sample_agent(30, "reviewer");
+        baseline.runtime.progress_summary = Some("thinking".to_string());
+        baseline.runtime.harness_mode = Some("plan".to_string());
+        baseline.runtime.turn_phase = Some("commentary".to_string());
+        baseline.runtime.last_progress_at =
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 1).unwrap());
+
+        let unchanged = baseline.clone();
+
+        let mut updated = baseline.clone();
+        updated.runtime.progress_summary = Some("done".to_string());
+        updated.runtime.turn_phase = Some("final_answer".to_string());
+        updated.runtime.last_progress_at =
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 2).unwrap());
+
+        let polls = Rc::new(RefCell::new(0usize));
+        let mut out = Vec::new();
+        promise::spawn::block_on(command.run_with(
+            {
+                let polls = Rc::clone(&polls);
+                move || {
+                    let polls = Rc::clone(&polls);
+                    let baseline = baseline.clone();
+                    let unchanged = unchanged.clone();
+                    let updated = updated.clone();
+                    async move {
+                        let idx = {
+                            let mut polls = polls.borrow_mut();
+                            *polls += 1;
+                            *polls
+                        };
+                        let agents = match idx {
+                            1 => vec![baseline],
+                            2 => vec![unchanged],
+                            _ => vec![updated],
+                        };
+                        Ok(ListAgentsResponse { agents })
+                    }
+                }
+            },
+            &mut out,
+            Some(3),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            concat!(
+                "reviewer\tcodex\t[plan commentary] thinking\n",
+                "reviewer\tcodex\t[plan final-answer] done\n"
+            )
+        );
+    }
+
+    #[test]
+    fn interrupt_codex_uses_ctrl_c_and_waits_for_ack() {
+        let key_calls = Rc::new(RefCell::new(vec![]));
+        let list_calls = Rc::new(RefCell::new(0usize));
+        let command = InterruptAgentCommand {
+            target: "reviewer".to_string(),
+            ack_timeout_ms: 0,
+            ack_poll_ms: 0,
+        };
+
+        let mut baseline = sample_agent(30, "reviewer");
+        baseline.runtime.transport = mux::agent::AgentTransport::ObservedPty;
+        baseline.runtime.session_path = Some("/tmp/reviewer.jsonl".to_string());
+        baseline.runtime.progress_summary = Some("thinking".to_string());
+        baseline.runtime.harness_mode = Some("plan".to_string());
+        baseline.runtime.turn_phase = Some("commentary".to_string());
+        baseline.runtime.last_progress_at =
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap());
+
+        let mut acknowledged = baseline.clone();
+        acknowledged.runtime.turn_phase = Some("aborted".to_string());
+        acknowledged.runtime.progress_summary = None;
+        acknowledged.runtime.last_progress_at =
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 1).unwrap());
+
+        let result = promise::spawn::block_on(command.run_with(
+            {
+                let list_calls = Rc::clone(&list_calls);
+                move || {
+                    let list_calls = Rc::clone(&list_calls);
+                    let baseline = baseline.clone();
+                    let acknowledged = acknowledged.clone();
+                    async move {
+                        let idx = {
+                            let mut calls = list_calls.borrow_mut();
+                            *calls += 1;
+                            *calls
+                        };
+                        Ok(ListAgentsResponse {
+                            agents: vec![if idx == 1 { baseline } else { acknowledged }],
+                        })
+                    }
+                }
+            },
+            {
+                let key_calls = Rc::clone(&key_calls);
+                move |request: SendKeyDown| {
+                    key_calls.borrow_mut().push(request);
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(result.agent_name, "reviewer");
+        assert_eq!(result.harness, mux::agent::AgentHarness::Codex);
+        assert_eq!(result.acknowledgement.kind, AgentAckKind::SessionObserver);
+        assert!(result.acknowledgement.acknowledged);
+        assert_eq!(
+            result.acknowledgement.detail.as_deref(),
+            Some("[plan aborted]")
+        );
+
+        let key_calls = key_calls.borrow();
+        assert_eq!(key_calls.len(), 1);
+        assert_eq!(key_calls[0].pane_id, 30);
+        assert_eq!(key_calls[0].event.key, KeyCode::Char('C'));
+        assert_eq!(key_calls[0].event.modifiers, Modifiers::CTRL);
+    }
+
+    #[test]
+    fn interrupt_rejects_non_codex_agents() {
+        let command = InterruptAgentCommand {
+            target: "reviewer".to_string(),
+            ack_timeout_ms: 0,
+            ack_poll_ms: 0,
+        };
+
+        let mut agent = sample_agent(30, "reviewer");
+        agent.runtime.harness = mux::agent::AgentHarness::Claude;
+
+        let err = promise::spawn::block_on(command.run_with(
+            move || {
+                let agent = agent.clone();
+                async move {
+                    Ok(ListAgentsResponse {
+                        agents: vec![agent],
+                    })
+                }
+            },
+            |_| async { Ok(UnitResponse {}) },
+        ))
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("interrupt is currently only implemented for codex panes"));
     }
 
     #[test]
