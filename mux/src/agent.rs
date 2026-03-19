@@ -138,13 +138,14 @@ pub fn prime_runtime_for_new_agent(
     let configured_harness = infer_harness(&metadata.launch_cmd, None);
     let process_harness = infer_harness("", foreground_process_name);
 
-    if matches!(configured_harness, AgentHarness::Unknown) || configured_harness == process_harness
+    if matches!(configured_harness, AgentHarness::Unknown)
+        && matches!(process_harness, AgentHarness::Unknown)
     {
         runtime.observer_started_at = None;
         return;
     }
 
-    runtime.observer_started_at = Some(Utc::now());
+    runtime.observer_started_at = Some(metadata.created_at);
     runtime.session_path = None;
     runtime.progress_summary = None;
     runtime.harness_mode = None;
@@ -595,11 +596,8 @@ fn observe_gemini(
     let Some(root) = gemini_root() else {
         return Ok(None);
     };
-    let Some(project_id) = gemini_project_id(&root, cwd)? else {
-        return Ok(None);
-    };
-    let chats_dir = root.join("tmp").join(project_id).join("chats");
-    if !chats_dir.is_dir() {
+    let project_dirs = gemini_project_dirs(&root, cwd)?;
+    if project_dirs.is_empty() {
         return Ok(None);
     }
 
@@ -627,29 +625,36 @@ fn observe_gemini(
 
     let prefer_earliest = updated_after.is_some();
     let mut selected: Option<(PathBuf, DateTime<Utc>)> = None;
-    for entry in fs::read_dir(&chats_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(|name| name.starts_with("session-") && name.ends_with(".json"))
-            .unwrap_or(false)
-        {
+    for project_dir in project_dirs {
+        let chats_dir = project_dir.join("chats");
+        if !chats_dir.is_dir() {
             continue;
         }
-        let modified_at = DateTime::<Utc>::from(entry.metadata()?.modified()?);
-        if updated_after
-            .map(|cutoff| modified_at < cutoff)
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        match &selected {
-            Some((_, existing_modified))
-                if (prefer_earliest && *existing_modified <= modified_at)
-                    || (!prefer_earliest && *existing_modified >= modified_at) => {}
-            _ => selected = Some((path, modified_at)),
+
+        for entry in fs::read_dir(&chats_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("session-") && name.ends_with(".json"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let modified_at = DateTime::<Utc>::from(entry.metadata()?.modified()?);
+            if updated_after
+                .map(|cutoff| modified_at < cutoff)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            match &selected {
+                Some((_, existing_modified))
+                    if (prefer_earliest && *existing_modified <= modified_at)
+                        || (!prefer_earliest && *existing_modified >= modified_at) => {}
+                _ => selected = Some((path, modified_at)),
+            }
         }
     }
 
@@ -835,6 +840,57 @@ fn gemini_project_id(root: &Path, cwd: &str) -> anyhow::Result<Option<String>> {
     }
 
     Ok(None)
+}
+
+fn gemini_project_dirs(root: &Path, cwd: &str) -> anyhow::Result<Vec<PathBuf>> {
+    let mut dirs = vec![];
+    let mut seen = std::collections::HashSet::new();
+    let tmp_root = root.join("tmp");
+
+    if let Some(project_id) = gemini_project_id(root, cwd)? {
+        let path = tmp_root.join(project_id);
+        if path.is_dir() && seen.insert(path.clone()) {
+            dirs.push(path);
+        }
+    }
+
+    if !tmp_root.is_dir() {
+        return Ok(dirs);
+    }
+
+    let variants = cwd_lookup_variants(cwd);
+    for entry in fs::read_dir(&tmp_root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let Some(project_root) = gemini_project_root(&path)? else {
+            continue;
+        };
+        if variants.iter().any(|candidate| candidate == &project_root) && seen.insert(path.clone())
+        {
+            dirs.push(path);
+        }
+    }
+
+    Ok(dirs)
+}
+
+fn gemini_project_root(project_dir: &Path) -> anyhow::Result<Option<String>> {
+    let root_file = project_dir.join(".project_root");
+    if !root_file.is_file() {
+        return Ok(None);
+    }
+
+    let root = fs::read_to_string(root_file)?;
+    let root = root.trim().trim_end_matches('/').to_string();
+    if root.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(root))
+    }
 }
 
 fn extract_message_text(content: &Value) -> Option<String> {
@@ -1689,6 +1745,40 @@ mod test {
     }
 
     #[test]
+    fn observes_gemini_session_via_project_root_file_without_projects_registry() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let project_dir = temp.path().join("tmp").join("fallback-project");
+        let chats_dir = project_dir.join("chats");
+        fs::create_dir_all(&chats_dir).unwrap();
+        fs::write(project_dir.join(".project_root"), "/tmp/project-e\n").unwrap();
+        let session = chats_dir.join("session-2026-03-17.json");
+        fs::write(
+            &session,
+            concat!(
+                "{\"lastUpdated\":\"2026-03-17T12:00:03Z\",\"messages\":[",
+                "{\"type\":\"user\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"content\":[{\"text\":\"hello\"}]},",
+                "{\"type\":\"gemini\",\"timestamp\":\"2026-03-17T12:00:03Z\",\"content\":\"fallback\"}",
+                "]}"
+            ),
+        )
+        .unwrap();
+
+        set_env_path("WEZTERM_AGENT_GEMINI_DIR", temp.path());
+        let observed = observe_gemini("/tmp/project-e", None, None)
+            .unwrap()
+            .unwrap();
+        remove_env_var("WEZTERM_AGENT_GEMINI_DIR");
+
+        assert_eq!(observed.progress_summary.as_deref(), Some("fallback"));
+        assert_eq!(
+            observed.session_path.as_deref(),
+            Some(session.to_string_lossy().as_ref())
+        );
+        assert_eq!(observed.turn_state, AgentTurnState::WaitingOnUser);
+    }
+
+    #[test]
     fn observes_latest_opencode_session_summary() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
@@ -1972,6 +2062,32 @@ mod test {
         assert_eq!(runtime.harness_mode, None);
         assert_eq!(runtime.turn_phase, None);
         assert_eq!(runtime.attention_reason, None);
+        assert_eq!(runtime.turn_state, AgentTurnState::Unknown);
+    }
+
+    #[test]
+    fn prime_runtime_for_new_agent_gates_stale_sessions_for_matching_harnesses() {
+        let metadata = AgentMetadata {
+            agent_id: "id".to_string(),
+            name: "delta".to_string(),
+            launch_cmd: "claude".to_string(),
+            declared_cwd: "/tmp/project-d".to_string(),
+            created_at: Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+        };
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.foreground_process_name = Some("claude".to_string());
+        runtime.session_path = Some("/tmp/stale.jsonl".to_string());
+        runtime.progress_summary = Some("stale".to_string());
+
+        prime_runtime_for_new_agent(&mut runtime, &metadata, Some("claude"));
+
+        assert_eq!(runtime.observer_started_at, Some(metadata.created_at));
+        assert_eq!(runtime.session_path, None);
+        assert_eq!(runtime.progress_summary, None);
         assert_eq!(runtime.turn_state, AgentTurnState::Unknown);
     }
 

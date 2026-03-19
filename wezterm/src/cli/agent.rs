@@ -1153,7 +1153,6 @@ impl SendAgentCommand {
                 || client.list_agents(),
                 |request| client.write_to_pane(request),
                 |request| client.send_paste(request),
-                |request| client.key_down(request),
             )
             .await?;
         write_json(&result)
@@ -1166,14 +1165,11 @@ impl SendAgentCommand {
         WriteToPaneFut,
         SendPasteFn,
         SendPasteFut,
-        KeyDownFn,
-        KeyDownFut,
     >(
         &self,
         mut list_agents: ListAgents,
         write_to_pane: WriteToPaneFn,
         send_paste: SendPasteFn,
-        key_down: KeyDownFn,
     ) -> anyhow::Result<AgentSendResult>
     where
         ListAgents: FnMut() -> ListAgentsFut,
@@ -1182,8 +1178,6 @@ impl SendAgentCommand {
         WriteToPaneFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
         SendPasteFn: Fn(codec::SendPaste) -> SendPasteFut,
         SendPasteFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
-        KeyDownFn: Fn(SendKeyDown) -> KeyDownFut,
-        KeyDownFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
     {
         let agents = list_agents().await?.agents;
         let agent = find_agent(&agents, &self.target)
@@ -1208,13 +1202,13 @@ impl SendAgentCommand {
 
         let submitted = !self.no_submit;
         if submitted {
-            key_down(SendKeyDown {
+            // Native harnesses reliably accept a raw carriage return after the
+            // prompt text; synthetic Enter key events were leaving Claude and
+            // Gemini prompts unsubmitted.
+            std::thread::sleep(Duration::from_millis(200));
+            write_to_pane(codec::WriteToPane {
                 pane_id: agent.pane_id,
-                event: KeyEvent {
-                    key: KeyCode::Enter,
-                    modifiers: Modifiers::NONE,
-                },
-                input_serial: InputSerial::now(),
+                data: b"\r".to_vec(),
             })
             .await?;
         }
@@ -2193,7 +2187,7 @@ mod test {
     #[test]
     fn send_uses_observed_transport_and_waits_for_ack() {
         let paste_calls = Rc::new(RefCell::new(vec![]));
-        let key_calls = Rc::new(RefCell::new(vec![]));
+        let write_calls = Rc::new(RefCell::new(vec![]));
         let list_calls = Rc::new(RefCell::new(0usize));
         let command = SendAgentCommand {
             target: "reviewer".to_string(),
@@ -2234,18 +2228,17 @@ mod test {
                     }
                 }
             },
-            |_| async { panic!("write_to_pane should not be used") },
             {
-                let paste_calls = Rc::clone(&paste_calls);
-                move |request: SendPaste| {
-                    paste_calls.borrow_mut().push(request);
+                let write_calls = Rc::clone(&write_calls);
+                move |request: WriteToPane| {
+                    write_calls.borrow_mut().push(request);
                     async { Ok(UnitResponse {}) }
                 }
             },
             {
-                let key_calls = Rc::clone(&key_calls);
-                move |request: SendKeyDown| {
-                    key_calls.borrow_mut().push(request);
+                let paste_calls = Rc::clone(&paste_calls);
+                move |request: SendPaste| {
+                    paste_calls.borrow_mut().push(request);
                     async { Ok(UnitResponse {}) }
                 }
             },
@@ -2263,11 +2256,10 @@ mod test {
         assert_eq!(paste_calls[0].pane_id, 30);
         assert_eq!(paste_calls[0].data, "fix this");
 
-        let key_calls = key_calls.borrow();
-        assert_eq!(key_calls.len(), 1);
-        assert_eq!(key_calls[0].pane_id, 30);
-        assert_eq!(key_calls[0].event.key, KeyCode::Enter);
-        assert_eq!(key_calls[0].event.modifiers, Modifiers::NONE);
+        let write_calls = write_calls.borrow();
+        assert_eq!(write_calls.len(), 1);
+        assert_eq!(write_calls[0].pane_id, 30);
+        assert_eq!(write_calls[0].data, b"\r");
     }
 
     #[test]
@@ -2499,7 +2491,6 @@ mod test {
     #[test]
     fn send_uses_plain_transport_without_observer_ack() {
         let write_calls = Rc::new(RefCell::new(vec![]));
-        let key_calls = Rc::new(RefCell::new(vec![]));
         let command = SendAgentCommand {
             target: "reviewer".to_string(),
             no_paste: true,
@@ -2523,13 +2514,6 @@ mod test {
                 }
             },
             |_| async { panic!("send_paste should not be used") },
-            {
-                let key_calls = Rc::clone(&key_calls);
-                move |request: SendKeyDown| {
-                    key_calls.borrow_mut().push(request);
-                    async { Ok(UnitResponse {}) }
-                }
-            },
         ))
         .unwrap();
 
@@ -2538,16 +2522,15 @@ mod test {
         assert!(!result.acknowledgement.acknowledged);
 
         let write_calls = write_calls.borrow();
-        assert_eq!(write_calls.len(), 1);
+        assert_eq!(write_calls.len(), 2);
         assert_eq!(write_calls[0].pane_id, 30);
         assert_eq!(write_calls[0].data, b"raw");
-
-        let key_calls = key_calls.borrow();
-        assert_eq!(key_calls.len(), 1);
+        assert_eq!(write_calls[1].pane_id, 30);
+        assert_eq!(write_calls[1].data, b"\r");
     }
 
     #[test]
-    fn send_no_submit_skips_keydown_and_ack_wait() {
+    fn send_no_submit_skips_submit_and_ack_wait() {
         let paste_calls = Rc::new(RefCell::new(vec![]));
         let command = SendAgentCommand {
             target: "reviewer".to_string(),
@@ -2575,7 +2558,6 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
-            |_| async { panic!("key_down should not be used") },
         ))
         .unwrap();
 
