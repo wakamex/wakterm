@@ -79,6 +79,8 @@ pub struct AgentRuntimeSnapshot {
     pub harness_mode: Option<String>,
     #[serde(default)]
     pub turn_phase: Option<String>,
+    #[serde(default)]
+    pub attention_reason: Option<String>,
     pub terminal_progress: Progress,
     pub observer_error: Option<String>,
     #[serde(skip, default)]
@@ -106,6 +108,7 @@ impl AgentRuntimeSnapshot {
             progress_summary: None,
             harness_mode: None,
             turn_phase: None,
+            attention_reason: None,
             terminal_progress: Progress::None,
             observer_error: None,
             observer_started_at: None,
@@ -143,6 +146,7 @@ pub fn prime_runtime_for_new_agent(
     runtime.progress_summary = None;
     runtime.harness_mode = None;
     runtime.turn_phase = None;
+    runtime.attention_reason = None;
     runtime.turn_state = AgentTurnState::Unknown;
     runtime.last_turn_completed_at = None;
     runtime.transport = AgentTransport::PlainPty;
@@ -217,6 +221,26 @@ fn derive_effective_turn_state(runtime: &AgentRuntimeSnapshot) -> AgentTurnState
     runtime.turn_state.clone()
 }
 
+fn derive_attention_reason(runtime: &AgentRuntimeSnapshot) -> Option<String> {
+    if runtime.observer_error.is_some() {
+        return Some("observer-error".to_string());
+    }
+
+    if matches!(runtime.turn_phase.as_deref(), Some("aborted")) {
+        return Some("turn-aborted".to_string());
+    }
+
+    if matches!(runtime.terminal_progress, Progress::Error(_)) {
+        return Some("terminal-error".to_string());
+    }
+
+    if !runtime.alive && !matches!(runtime.harness, AgentHarness::Unknown) {
+        return Some("exited".to_string());
+    }
+
+    None
+}
+
 pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata: &AgentMetadata) {
     let normalized_cwd = normalize_declared_cwd(&metadata.declared_cwd);
     let cwd = normalized_cwd.trim();
@@ -225,6 +249,7 @@ pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata
         runtime.turn_state = AgentTurnState::Unknown;
         runtime.last_turn_completed_at = None;
         runtime.status = derive_runtime_status(runtime);
+        runtime.attention_reason = derive_attention_reason(runtime);
         return;
     }
 
@@ -245,10 +270,12 @@ pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata
             runtime.progress_summary = None;
             runtime.harness_mode = None;
             runtime.turn_phase = None;
+            runtime.attention_reason = None;
             runtime.turn_state = AgentTurnState::Unknown;
             runtime.last_turn_completed_at = None;
             runtime.transport = AgentTransport::PlainPty;
             runtime.status = derive_runtime_status(runtime);
+            runtime.attention_reason = derive_attention_reason(runtime);
             return;
         }
     };
@@ -291,6 +318,7 @@ pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata
                 runtime.progress_summary = None;
                 runtime.harness_mode = None;
                 runtime.turn_phase = None;
+                runtime.attention_reason = None;
                 runtime.turn_state = AgentTurnState::Unknown;
                 runtime.last_turn_completed_at = None;
             }
@@ -299,12 +327,14 @@ pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata
             runtime.observer_error = Some(err.to_string());
             runtime.harness_mode = None;
             runtime.turn_phase = None;
+            runtime.attention_reason = None;
         }
     }
 
     if matches!(runtime.harness, AgentHarness::Unknown) {
         runtime.harness_mode = None;
         runtime.turn_phase = None;
+        runtime.attention_reason = None;
         runtime.turn_state = AgentTurnState::Unknown;
         runtime.last_turn_completed_at = None;
     }
@@ -316,6 +346,7 @@ pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata
     };
     runtime.turn_state = derive_effective_turn_state(runtime);
     runtime.status = derive_runtime_status(runtime);
+    runtime.attention_reason = derive_attention_reason(runtime);
 }
 
 #[derive(Debug)]
@@ -883,6 +914,46 @@ mod test {
     }
 
     #[test]
+    fn derives_attention_reason_from_runtime_state() {
+        let metadata = AgentMetadata {
+            agent_id: "id".to_string(),
+            name: "alpha".to_string(),
+            launch_cmd: "codex".to_string(),
+            declared_cwd: "/tmp/alpha".to_string(),
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+        };
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Codex;
+        runtime.turn_phase = Some("aborted".to_string());
+        assert_eq!(
+            derive_attention_reason(&runtime).as_deref(),
+            Some("turn-aborted")
+        );
+
+        runtime.turn_phase = None;
+        runtime.observer_error = Some("bad parse".to_string());
+        assert_eq!(
+            derive_attention_reason(&runtime).as_deref(),
+            Some("observer-error")
+        );
+
+        runtime.observer_error = None;
+        runtime.terminal_progress = Progress::Error(1);
+        assert_eq!(
+            derive_attention_reason(&runtime).as_deref(),
+            Some("terminal-error")
+        );
+
+        runtime.terminal_progress = Progress::None;
+        runtime.alive = false;
+        assert_eq!(derive_attention_reason(&runtime).as_deref(), Some("exited"));
+    }
+
+    #[test]
     fn observes_latest_claude_session_summary() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
@@ -1075,6 +1146,7 @@ mod test {
 
         assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnAgent);
         assert_eq!(runtime.last_turn_completed_at, None);
+        assert_eq!(runtime.attention_reason, None);
         assert_eq!(runtime.transport, AgentTransport::ObservedPty);
     }
 
@@ -1122,7 +1194,53 @@ mod test {
         assert_eq!(runtime.session_path, None);
         assert_eq!(runtime.harness_mode, None);
         assert_eq!(runtime.turn_phase, None);
+        assert_eq!(runtime.attention_reason, None);
         assert_eq!(runtime.turn_state, AgentTurnState::Unknown);
+    }
+
+    #[test]
+    fn refresh_runtime_marks_aborted_codex_turn_as_attention() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let day = Utc::now();
+        let dir = temp
+            .path()
+            .join(format!("{:04}", day.year_ce().1))
+            .join(format!("{:02}", day.month()))
+            .join(format!("{:02}", day.day()));
+        fs::create_dir_all(&dir).unwrap();
+        let session = dir.join("rollout-aborted-runtime.jsonl");
+        fs::write(
+            &session,
+            concat!(
+                "{\"payload\":{\"cwd\":\"/tmp/project-h\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"collaboration_mode_kind\":\"default\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:01Z\",\"payload\":{\"type\":\"user_message\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:03Z\",\"payload\":{\"type\":\"turn_aborted\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        set_env_path("WEZTERM_AGENT_CODEX_DIR", temp.path());
+        let metadata = AgentMetadata {
+            agent_id: "id".to_string(),
+            name: "hotel".to_string(),
+            launch_cmd: "codex".to_string(),
+            declared_cwd: "/tmp/project-h".to_string(),
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+        };
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.foreground_process_name = Some("codex".to_string());
+        refresh_runtime_from_harness(&mut runtime, &metadata);
+        remove_env_var("WEZTERM_AGENT_CODEX_DIR");
+
+        assert_eq!(runtime.turn_phase.as_deref(), Some("aborted"));
+        assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(runtime.attention_reason.as_deref(), Some("turn-aborted"));
     }
 
     #[test]

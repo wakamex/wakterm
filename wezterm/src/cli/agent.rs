@@ -1773,6 +1773,7 @@ struct AgentWatchEvent {
     turn_state: String,
     mode: Option<String>,
     phase: Option<String>,
+    attention_reason: Option<String>,
     session_path: Option<String>,
     last_progress_at: Option<chrono::DateTime<Utc>>,
     message: String,
@@ -1797,6 +1798,7 @@ impl AgentWatchEvent {
             turn_state: turn_state_label(&agent.runtime.turn_state),
             mode: agent.runtime.harness_mode.clone(),
             phase: agent.runtime.turn_phase.clone(),
+            attention_reason: agent.runtime.attention_reason.clone(),
             session_path: agent.runtime.session_path.clone(),
             last_progress_at: agent.runtime.last_progress_at,
             message,
@@ -1909,6 +1911,13 @@ fn inline_progress_summary(agent: &AgentSnapshot) -> String {
         .as_deref()
         .or(agent.runtime.observer_error.as_deref())
         .map(|summary| summary.replace('\n', " "))
+        .or_else(|| {
+            agent
+                .runtime
+                .attention_reason
+                .as_deref()
+                .map(|reason| format!("attention: {}", reason.replace('_', "-")))
+        })
         .unwrap_or_default();
 
     let mut tags = vec![];
@@ -2056,6 +2065,7 @@ mod test {
                 progress_summary: None,
                 harness_mode: None,
                 turn_phase: None,
+                attention_reason: None,
                 terminal_progress: wezterm_term::Progress::None,
                 observer_error: None,
                 observer_started_at: None,
@@ -2210,6 +2220,21 @@ mod test {
     }
 
     #[test]
+    fn inline_progress_summary_falls_back_to_attention_reason() {
+        let mut agent = sample_agent(30, "reviewer");
+        agent.runtime.attention_reason = Some("turn-aborted".to_string());
+
+        assert_eq!(inline_progress_summary(&agent), "attention: turn-aborted");
+
+        agent.runtime.harness_mode = Some("plan".to_string());
+        agent.runtime.turn_phase = Some("aborted".to_string());
+        assert_eq!(
+            inline_progress_summary(&agent),
+            "[plan aborted] attention: turn-aborted"
+        );
+    }
+
+    #[test]
     fn collect_agent_watch_events_sorts_and_skips_empty_messages() {
         let mut alpha = sample_agent(30, "alpha");
         alpha.runtime.progress_summary = Some("ready".to_string());
@@ -2232,6 +2257,19 @@ mod test {
         assert_eq!(seen.len(), 2);
         assert!(seen.contains_key(&alpha.metadata.agent_id));
         assert!(seen.contains_key(&gamma.metadata.agent_id));
+    }
+
+    #[test]
+    fn collect_agent_watch_events_preserves_attention_reason() {
+        let mut agent = sample_agent(30, "alpha");
+        agent.runtime.attention_reason = Some("exited".to_string());
+
+        let mut seen = HashMap::new();
+        let events = collect_agent_watch_events(&mut seen, &[agent]);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].message, "attention: exited");
+        assert_eq!(events[0].attention_reason.as_deref(), Some("exited"));
     }
 
     #[test]
