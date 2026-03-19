@@ -1,3 +1,4 @@
+use crate::agent::AgentMetadata;
 use crate::domain::DomainId;
 use crate::pane::*;
 use crate::renderable::StableCursorPosition;
@@ -307,6 +308,7 @@ fn pane_tree(
                 window_id,
                 tab_id,
                 pane_id: pane.pane_id(),
+                agent_metadata: None,
                 title: pane.get_title(),
                 is_active_pane: active_pane_id == Some(pane.pane_id()),
                 is_zoomed_pane: zoomed
@@ -2563,6 +2565,7 @@ pub struct PaneEntry {
     pub window_id: WindowId,
     pub tab_id: TabId,
     pub pane_id: PaneId,
+    pub agent_metadata: Option<AgentMetadata>,
     pub title: String,
     pub size: TerminalSize,
     pub working_dir: Option<SerdeUrl>,

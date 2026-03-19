@@ -13,6 +13,7 @@
 
 use anyhow::{bail, Context as _, Error};
 use config::keyassignment::{PaneDirection, ScrollbackEraseMode};
+use mux::agent::{AgentMetadata, AgentSnapshot};
 use mux::client::{ClientId, ClientInfo, ClientViewId, ClientWindowViewState};
 use mux::pane::PaneId;
 use mux::renderable::{RenderableDimensions, StableCursorPosition};
@@ -462,7 +463,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 49;
+pub const CODEC_VERSION: usize = 51;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -531,6 +532,10 @@ pdu! {
     ResizeTab: 63,
     RotatePanes: 64,
     SetClientActiveTab: 65,
+    ListAgents: 66,
+    ListAgentsResponse: 67,
+    SetAgentMetadata: 68,
+    ClearAgentMetadata: 69,
 }
 
 impl Pdu {
@@ -546,7 +551,9 @@ impl Pdu {
             | Self::Resize(_)
             | Self::SetClipboard(_)
             | Self::SetPaneZoomed(_)
-            | Self::SpawnV2(_) => true,
+            | Self::SpawnV2(_)
+            | Self::SetAgentMetadata(_)
+            | Self::ClearAgentMetadata(_) => true,
             _ => false,
         }
     }
@@ -672,6 +679,14 @@ pub struct GetTlsCredsResponse {
 pub struct ListPanes {}
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ListAgents {}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ListAgentsResponse {
+    pub agents: Vec<AgentSnapshot>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct ListPanesResponse {
     pub tabs: Vec<PaneNode>,
     pub tab_titles: Vec<String>,
@@ -734,6 +749,17 @@ pub struct SplitPane {
     /// dimensions rather than the server's potentially stale size.
     #[serde(default)]
     pub tab_size: Option<TerminalSize>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct SetAgentMetadata {
+    pub pane_id: PaneId,
+    pub metadata: AgentMetadata,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ClearAgentMetadata {
+    pub pane_id: PaneId,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
@@ -1256,6 +1282,7 @@ mod test {
             window_id,
             tab_id,
             pane_id,
+            agent_metadata: None,
             title: String::new(),
             size,
             working_dir: None,

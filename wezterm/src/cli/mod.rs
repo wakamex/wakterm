@@ -5,6 +5,7 @@ use wezterm_client::client::Client;
 
 mod activate_pane;
 mod activate_pane_direction;
+mod agent;
 mod activate_tab;
 mod adjust_pane_size;
 mod get_pane_direction;
@@ -78,6 +79,9 @@ pub struct CliCommand {
 enum CliSubCommand {
     #[command(name = "list", about = "list windows, tabs and panes")]
     List(list::ListCommand),
+
+    #[command(name = "agent", about = "manage pane-attached agent metadata")]
+    Agent(agent::AgentCommand),
 
     #[command(name = "list-clients", about = "list clients")]
     ListClients(list_clients::ListClientsCommand),
@@ -191,6 +195,7 @@ async fn run_cli_async(opts: &crate::Opt, cli: CliCommand) -> anyhow::Result<()>
     )?;
 
     match cli.sub {
+        CliSubCommand::Agent(cmd) => cmd.run(client).await,
         CliSubCommand::ListClients(cmd) => cmd.run(client).await,
         CliSubCommand::List(cmd) => cmd.run(client).await,
         CliSubCommand::SaveLayout(cmd) => cmd.run(client).await,

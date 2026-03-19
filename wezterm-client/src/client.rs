@@ -1367,6 +1367,7 @@ impl Client {
 
     rpc!(ping, Ping = (), Pong);
     rpc!(list_panes, ListPanes = (), ListPanesResponse);
+    rpc!(list_agents, ListAgents = (), ListAgentsResponse);
     rpc!(spawn_v2, SpawnV2, SpawnResponse);
     rpc!(split_pane, SplitPane, SpawnResponse);
     rpc!(
@@ -1407,6 +1408,8 @@ impl Client {
     rpc!(set_window_workspace, SetWindowWorkspace, UnitResponse);
     rpc!(set_client_active_tab, SetClientActiveTab, UnitResponse);
     rpc!(set_focused_pane_id, SetFocusedPane, UnitResponse);
+    rpc!(set_agent_metadata, SetAgentMetadata, UnitResponse);
+    rpc!(clear_agent_metadata, ClearAgentMetadata, UnitResponse);
     rpc!(get_image_cell, GetImageCell, GetImageCellResponse);
     rpc!(set_configured_palette_for_pane, SetPalette, UnitResponse);
     rpc!(set_tab_title, TabTitleChanged, UnitResponse);

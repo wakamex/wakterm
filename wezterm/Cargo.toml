@@ -36,6 +36,7 @@ termwiz.workspace = true
 textwrap.workspace  =true
 umask.workspace = true
 url.workspace = true
+uuid.workspace = true
 wezterm-client.workspace = true
 wezterm-gui-subcommands.workspace = true
 wezterm-term.workspace = true

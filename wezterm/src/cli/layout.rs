@@ -5,6 +5,7 @@ use codec::{
     WindowTitleChanged,
 };
 use config::keyassignment::SpawnTabDomain;
+use mux::agent::AgentMetadata;
 use mux::pane::PaneId;
 use mux::tab::{PaneEntry, PaneNode, SerdeUrl, SplitDirection, SplitRequest, SplitSize, TabId};
 use mux::window::WindowId;
@@ -14,7 +15,7 @@ use std::path::{Path, PathBuf};
 use wezterm_client::client::Client;
 use wezterm_term::TerminalSize;
 
-const LAYOUT_VERSION: usize = 2;
+const LAYOUT_VERSION: usize = 3;
 
 fn default_layout_path() -> PathBuf {
     config::CONFIG_DIRS
@@ -74,6 +75,7 @@ enum SavedPaneTree {
     },
     Pane {
         cwd: Option<String>,
+        agent_metadata: Option<AgentMetadata>,
         is_active: bool,
         is_zoomed: bool,
     },
@@ -100,6 +102,7 @@ impl SavedPaneTree {
             PaneNode::Empty => Err(anyhow!("cannot save empty pane tree")),
             PaneNode::Leaf(entry) => Ok(Self::Pane {
                 cwd: entry.working_dir.map(url_to_path_string),
+                agent_metadata: entry.agent_metadata,
                 is_active: entry.is_active_pane,
                 is_zoomed: entry.is_zoomed_pane,
             }),
@@ -355,13 +358,21 @@ fn restore_tree<'a>(
     Box::pin(async move {
         match tree {
             SavedPaneTree::Pane {
+                agent_metadata,
                 is_active,
                 is_zoomed,
                 ..
-            } => Ok(RestoredPaneState {
-                active_pane_id: if *is_active { Some(pane_id) } else { None },
-                zoomed_pane_id: if *is_zoomed { Some(pane_id) } else { None },
-            }),
+            } => {
+                if let Some(metadata) = agent_metadata.clone() {
+                    client
+                        .set_agent_metadata(codec::SetAgentMetadata { pane_id, metadata })
+                        .await?;
+                }
+                Ok(RestoredPaneState {
+                    active_pane_id: if *is_active { Some(pane_id) } else { None },
+                    zoomed_pane_id: if *is_zoomed { Some(pane_id) } else { None },
+                })
+            }
             SavedPaneTree::Split {
                 direction,
                 second_cells,
@@ -432,6 +443,8 @@ fn url_to_path_string(url: SerdeUrl) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
+    use chrono::{TimeZone, Utc};
+    use mux::agent::AgentMetadata;
     use mux::tab::{PaneEntry, PaneNode, SplitDirectionAndSize};
     use mux::renderable::StableCursorPosition;
     use termwiz::surface::{CursorShape, CursorVisibility};
@@ -461,6 +474,7 @@ mod test {
             window_id,
             tab_id,
             pane_id,
+            agent_metadata: None,
             title: String::new(),
             size: pane_size,
             working_dir: Some(SerdeUrl {
@@ -487,6 +501,19 @@ mod test {
             left: Box::new(left),
             right: Box::new(right),
             node,
+        }
+    }
+
+    fn sample_agent_metadata(name: &str) -> AgentMetadata {
+        AgentMetadata {
+            agent_id: format!("agent-{name}"),
+            name: name.to_string(),
+            launch_cmd: "codex".to_string(),
+            declared_cwd: format!("/tmp/{name}"),
+            created_at: Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
         }
     }
 
@@ -578,5 +605,32 @@ mod test {
             url: url::Url::parse("file://fedora/code/wezterm").unwrap(),
         });
         assert_eq!(path, "/code/wezterm");
+    }
+
+    #[test]
+    fn saved_layout_preserves_agent_metadata_on_leaf() {
+        let mut leaf = leaf(1, 2, 10, 0, 0, size(80, 24), "/tmp/agent", true, false);
+        if let PaneNode::Leaf(entry) = &mut leaf {
+            entry.agent_metadata = Some(sample_agent_metadata("reviewer"));
+        }
+
+        let saved = SavedPaneTree::from_pane_node(leaf).unwrap();
+        match saved {
+            SavedPaneTree::Pane {
+                cwd,
+                agent_metadata,
+                is_active,
+                is_zoomed,
+            } => {
+                assert_eq!(cwd.as_deref(), Some("/tmp/agent"));
+                assert_eq!(
+                    agent_metadata.as_ref().map(|metadata| metadata.name.as_str()),
+                    Some("reviewer")
+                );
+                assert!(is_active);
+                assert!(!is_zoomed);
+            }
+            other => panic!("expected pane, got {:?}", other),
+        }
     }
 }

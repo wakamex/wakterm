@@ -35,7 +35,7 @@ pub struct SavedSession {
     pub windows: Vec<SavedWindow>,
 }
 
-const SESSION_VERSION: u32 = 3;
+const SESSION_VERSION: u32 = 4;
 
 fn session_path() -> PathBuf {
     config::RUNTIME_DIR.join("session.json")
@@ -51,6 +51,7 @@ fn build_saved_session(mux: &Mux) -> SavedSession {
             for tab in window.iter() {
                 let title = tab.get_title();
                 let mut tree = tab.codec_pane_tree_with_active_pane_id(None);
+                mux.annotate_pane_tree_with_agent_metadata(&mut tree);
                 // Fix any degenerate splits (< 3 cols/rows on one side)
                 // before saving, so the restore produces a usable layout
                 heal_tree(&mut tree);
@@ -281,7 +282,14 @@ fn restore_node<'a>(
     Box::pin(async move {
         match node {
             PaneNode::Empty => {}
-            PaneNode::Leaf(_) => {
+            PaneNode::Leaf(entry) => {
+                if let Some(metadata) = entry.agent_metadata.clone() {
+                    if let Some(positioned) = tab.iter_panes().get(*leaf_index) {
+                        Mux::get()
+                            .set_agent_metadata(positioned.pane.pane_id(), metadata)
+                            .context("restoring pane agent metadata")?;
+                    }
+                }
                 // This leaf already exists — advance the index
                 *leaf_index += 1;
             }
@@ -367,6 +375,7 @@ fn first_leaf_cwd(node: &PaneNode) -> Option<String> {
 
 #[cfg(test)]
 mod test {
+    use crate::agent::AgentMetadata;
     use super::*;
     use crate::client::{ClientId, ClientViewId};
     use crate::pane::{alloc_pane_id, CachePolicy, LogicalLine, Pane};
@@ -381,6 +390,7 @@ mod test {
     use url::Url;
     use wezterm_term::color::ColorPalette;
     use wezterm_term::{KeyCode, KeyModifiers, MouseEvent, StableRowIndex, TerminalSize};
+    use chrono::{TimeZone, Utc};
 
     struct TestPane {
         id: crate::pane::PaneId,
@@ -529,6 +539,19 @@ mod test {
         }
     }
 
+    fn sample_agent_metadata(name: &str) -> AgentMetadata {
+        AgentMetadata {
+            agent_id: format!("agent-{name}"),
+            name: name.to_string(),
+            launch_cmd: "codex".to_string(),
+            declared_cwd: format!("/tmp/{name}"),
+            created_at: Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+        }
+    }
+
     #[test]
     fn saved_session_omits_per_client_active_state() {
         let _test_lock = crate::TEST_MUX_LOCK.lock();
@@ -597,5 +620,42 @@ mod test {
             Some(right_pane_id)
         );
         assert_ne!(Some(left_pane_id), Some(right_pane_id));
+    }
+
+    #[test]
+    fn saved_session_includes_agent_metadata_on_leaf_nodes() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = crate::TestMuxGuard;
+
+        let window_id = *mux.new_empty_window(Some("default".to_string()), None);
+        let tab_size = size(120, 40);
+
+        let tab = Arc::new(Tab::new(&tab_size));
+        let pane = TestPane::new(alloc_pane_id(), tab_size);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        mux.set_agent_metadata(pane_id, sample_agent_metadata("reviewer"))
+            .unwrap();
+
+        let session = build_saved_session(&mux);
+        let saved_tree = &session.windows[0].tabs[0].tree;
+
+        match saved_tree {
+            PaneNode::Leaf(entry) => {
+                assert_eq!(
+                    entry
+                        .agent_metadata
+                        .as_ref()
+                        .map(|metadata| metadata.name.as_str()),
+                    Some("reviewer")
+                );
+            }
+            other => panic!("expected single leaf, got {:?}", other),
+        }
     }
 }

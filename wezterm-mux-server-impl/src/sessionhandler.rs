@@ -413,6 +413,20 @@ impl SessionHandler {
                 })
                 .detach();
             }
+            Pdu::ListAgents(ListAgents {}) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let mux = Mux::get();
+                            Ok(Pdu::ListAgentsResponse(ListAgentsResponse {
+                                agents: mux.list_agents(),
+                            }))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
             Pdu::ListPanes(ListPanes {}) => {
                 let client_id = self.client_id.clone();
                 spawn_into_main_thread(async move {
@@ -436,9 +450,10 @@ impl SessionHandler {
                                                 .get(&tab.tab_id())
                                                 .and_then(|tab_state| tab_state.active_pane_id)
                                         });
-                                    tabs.push(tab.codec_pane_tree_with_active_pane_id(
-                                        active_pane_id,
-                                    ));
+                                    let mut tree =
+                                        tab.codec_pane_tree_with_active_pane_id(active_pane_id);
+                                    mux.annotate_pane_tree_with_agent_metadata(&mut tree);
+                                    tabs.push(tree);
                                     tab_titles.push(tab.get_title());
                                 }
                             }
@@ -449,6 +464,34 @@ impl SessionHandler {
                                 window_titles,
                                 client_window_view_state: view_state,
                             }))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
+            Pdu::SetAgentMetadata(SetAgentMetadata { pane_id, metadata }) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let mux = Mux::get();
+                            mux.set_agent_metadata(pane_id, metadata)?;
+                            Ok(Pdu::UnitResponse(UnitResponse {}))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
+            Pdu::ClearAgentMetadata(ClearAgentMetadata { pane_id }) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let mux = Mux::get();
+                            mux.get_pane(pane_id)
+                                .ok_or_else(|| anyhow!("pane {} is invalid", pane_id))?;
+                            mux.clear_agent_metadata(pane_id);
+                            Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
                     )
@@ -1147,6 +1190,7 @@ impl SessionHandler {
             Pdu::Invalid { .. } => send_response(Err(anyhow!("invalid PDU {:?}", decoded.pdu))),
             Pdu::Pong { .. }
             | Pdu::ListPanesResponse { .. }
+            | Pdu::ListAgentsResponse { .. }
             | Pdu::SetClipboard { .. }
             | Pdu::NotifyAlert { .. }
             | Pdu::SpawnResponse { .. }
@@ -1313,9 +1357,11 @@ async fn move_pane(
 #[cfg(test)]
 mod test {
     use super::*;
+    use chrono::{TimeZone, Utc};
+    use mux::agent::AgentMetadata;
     use mux::client::{ClientTabViewState, ClientViewId};
-    use mux::pane::{alloc_pane_id, CachePolicy, Pane};
     use mux::pane::LogicalLine;
+    use mux::pane::{alloc_pane_id, CachePolicy, Pane};
     use mux::renderable::RenderableDimensions;
     use mux::tab::{SplitDirection, SplitRequest, SplitSize, Tab};
     use mux::window::WindowId;
@@ -1590,6 +1636,19 @@ mod test {
         (client_id, view_id, harness)
     }
 
+    fn sample_agent_metadata(name: &str) -> AgentMetadata {
+        AgentMetadata {
+            agent_id: format!("agent-{name}"),
+            name: name.to_string(),
+            launch_cmd: "codex".to_string(),
+            declared_cwd: format!("file:///tmp/{name}"),
+            created_at: Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+        }
+    }
+
     #[test]
     fn set_client_active_tab_updates_only_requesting_view() {
         let _test_lock = TEST_MUX_LOCK.lock();
@@ -1839,5 +1898,103 @@ mod test {
 
         assert_eq!(client.active_workspace.as_deref(), Some("default"));
         assert_eq!(client.focused_pane_id, Some(layout.left_pane_id));
+    }
+
+    #[test]
+    fn set_list_and_clear_agent_metadata_round_trip() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let layout = build_test_layout(&mux);
+        let (_client_id, _view_id, mut handler) = register_test_client(&mux, "agents");
+
+        assert!(matches!(
+            handler.request(
+                &executor,
+                Pdu::SetAgentMetadata(SetAgentMetadata {
+                    pane_id: layout.left_pane_id,
+                    metadata: sample_agent_metadata("alpha"),
+                }),
+            ),
+            Pdu::UnitResponse(_)
+        ));
+
+        let listed = match handler.request(&executor, Pdu::ListAgents(ListAgents {})) {
+            Pdu::ListAgentsResponse(response) => response,
+            other => panic!("expected ListAgentsResponse, got {:?}", other),
+        };
+        assert_eq!(listed.agents.len(), 1);
+        assert_eq!(listed.agents[0].metadata.name, "alpha");
+        assert_eq!(listed.agents[0].pane_id, layout.left_pane_id);
+        assert_eq!(listed.agents[0].tab_id, layout.left_tab_id);
+        assert_eq!(listed.agents[0].window_id, layout.window_id);
+
+        let panes = match handler.request(&executor, Pdu::ListPanes(ListPanes {})) {
+            Pdu::ListPanesResponse(response) => response,
+            other => panic!("expected ListPanesResponse, got {:?}", other),
+        };
+        let mut found = None;
+        for tab in panes.tabs {
+            let mut cursor = tab.into_tree().cursor();
+            loop {
+                if let Some(entry) = cursor.leaf_mut() {
+                    if entry.pane_id == layout.left_pane_id {
+                        found = entry.agent_metadata.clone();
+                        break;
+                    }
+                }
+                match cursor.preorder_next() {
+                    Ok(next) => cursor = next,
+                    Err(_) => break,
+                }
+            }
+        }
+        assert_eq!(
+            found.as_ref().map(|metadata| metadata.name.as_str()),
+            Some("alpha")
+        );
+
+        assert!(matches!(
+            handler.request(
+                &executor,
+                Pdu::ClearAgentMetadata(ClearAgentMetadata {
+                    pane_id: layout.left_pane_id,
+                }),
+            ),
+            Pdu::UnitResponse(_)
+        ));
+
+        let listed = match handler.request(&executor, Pdu::ListAgents(ListAgents {})) {
+            Pdu::ListAgentsResponse(response) => response,
+            other => panic!("expected ListAgentsResponse, got {:?}", other),
+        };
+        assert!(listed.agents.is_empty());
+    }
+
+    #[test]
+    fn set_agent_metadata_rejects_invalid_pane() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let (_client_id, _view_id, mut handler) = register_test_client(&mux, "agents");
+
+        match handler.request(
+            &executor,
+            Pdu::SetAgentMetadata(SetAgentMetadata {
+                pane_id: 999_999,
+                metadata: sample_agent_metadata("alpha"),
+            }),
+        ) {
+            Pdu::ErrorResponse(ErrorResponse { reason }) => {
+                assert!(reason.contains("pane"), "{}", reason);
+            }
+            other => panic!("expected ErrorResponse, got {:?}", other),
+        }
     }
 }

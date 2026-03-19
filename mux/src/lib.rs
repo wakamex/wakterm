@@ -1,4 +1,5 @@
 use crate::client::{ClientId, ClientInfo, ClientViewId, ClientViewState, ClientWindowViewState};
+use crate::agent::{AgentMetadata, AgentSnapshot};
 use crate::pane::{CachePolicy, Pane, PaneId};
 use crate::ssh_agent::AgentProxy;
 use crate::tab::{size_trace_enabled, NotifyMux, SplitRequest, Tab, TabId};
@@ -34,6 +35,7 @@ use wezterm_term::{Clipboard, ClipboardSelection, DownloadHandler, TerminalSize}
 use winapi::um::winsock2::{SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
 
 pub mod activity;
+pub mod agent;
 pub mod client;
 pub mod connui;
 pub mod domain;
@@ -103,6 +105,8 @@ static SUB_ID: AtomicUsize = AtomicUsize::new(0);
 pub struct Mux {
     tabs: RwLock<HashMap<TabId, Arc<Tab>>>,
     panes: RwLock<HashMap<PaneId, Arc<dyn Pane>>>,
+    agent_panes_by_name: RwLock<HashMap<String, PaneId>>,
+    agent_metadata_by_pane: RwLock<HashMap<PaneId, Arc<AgentMetadata>>>,
     windows: RwLock<HashMap<WindowId, Window>>,
     default_domain: RwLock<Option<Arc<dyn Domain>>>,
     domains: RwLock<HashMap<DomainId, Arc<dyn Domain>>>,
@@ -454,6 +458,8 @@ impl Mux {
         Self {
             tabs: RwLock::new(HashMap::new()),
             panes: RwLock::new(HashMap::new()),
+            agent_panes_by_name: RwLock::new(HashMap::new()),
+            agent_metadata_by_pane: RwLock::new(HashMap::new()),
             windows: RwLock::new(HashMap::new()),
             default_domain: RwLock::new(default_domain),
             domains_by_name: RwLock::new(domains_by_name),
@@ -543,6 +549,92 @@ impl Mux {
         self.active_view_id()
             .map(|view_id| self.client_window_view_state_for_view(view_id.as_ref()))
             .unwrap_or_default()
+    }
+
+    pub fn set_agent_metadata(&self, pane_id: PaneId, metadata: AgentMetadata) -> anyhow::Result<()> {
+        self.get_pane(pane_id)
+            .ok_or_else(|| anyhow!("pane {} is invalid", pane_id))?;
+
+        let mut names = self.agent_panes_by_name.write();
+        let mut metadata_by_pane = self.agent_metadata_by_pane.write();
+
+        if let Some(existing_pane_id) = names.get(&metadata.name).copied() {
+            anyhow::ensure!(
+                existing_pane_id == pane_id,
+                "agent name {} is already assigned to pane {}",
+                metadata.name,
+                existing_pane_id
+            );
+        }
+
+        if let Some(existing) = metadata_by_pane.get(&pane_id) {
+            if existing.name != metadata.name {
+                names.remove(&existing.name);
+            }
+        }
+
+        names.insert(metadata.name.clone(), pane_id);
+        metadata_by_pane.insert(pane_id, Arc::new(metadata));
+        Ok(())
+    }
+
+    pub fn clear_agent_metadata(&self, pane_id: PaneId) -> Option<Arc<AgentMetadata>> {
+        let mut metadata_by_pane = self.agent_metadata_by_pane.write();
+        let metadata = metadata_by_pane.remove(&pane_id)?;
+        self.agent_panes_by_name.write().remove(&metadata.name);
+        Some(metadata)
+    }
+
+    pub fn get_agent_metadata_for_pane(&self, pane_id: PaneId) -> Option<Arc<AgentMetadata>> {
+        self.agent_metadata_by_pane.read().get(&pane_id).cloned()
+    }
+
+    fn build_agent_snapshot(
+        &self,
+        pane_id: PaneId,
+        metadata: Arc<AgentMetadata>,
+    ) -> Option<AgentSnapshot> {
+        let pane = self.get_pane(pane_id)?;
+        let (_domain_id, window_id, tab_id) = self.resolve_pane_id(pane_id)?;
+        let window = self.get_window(window_id)?;
+        Some(AgentSnapshot {
+            metadata: (*metadata).clone(),
+            pane_id,
+            tab_id,
+            window_id,
+            workspace: window.get_workspace().to_string(),
+            domain_id: pane.domain_id(),
+        })
+    }
+
+    pub fn list_agents(&self) -> Vec<AgentSnapshot> {
+        let metadata_by_pane = self.agent_metadata_by_pane.read().clone();
+        let mut agents = metadata_by_pane
+            .into_iter()
+            .filter_map(|(pane_id, metadata)| self.build_agent_snapshot(pane_id, metadata))
+            .collect::<Vec<_>>();
+        agents.sort_by(|a, b| {
+            a.metadata
+                .name
+                .cmp(&b.metadata.name)
+                .then_with(|| a.pane_id.cmp(&b.pane_id))
+        });
+        agents
+    }
+
+    pub fn annotate_pane_tree_with_agent_metadata(&self, node: &mut crate::tab::PaneNode) {
+        match node {
+            crate::tab::PaneNode::Empty => {}
+            crate::tab::PaneNode::Leaf(entry) => {
+                entry.agent_metadata = self
+                    .get_agent_metadata_for_pane(entry.pane_id)
+                    .map(|metadata| (*metadata).clone());
+            }
+            crate::tab::PaneNode::Split { left, right, .. } => {
+                self.annotate_pane_tree_with_agent_metadata(left);
+                self.annotate_pane_tree_with_agent_metadata(right);
+            }
+        }
     }
 
     pub fn get_active_tab_id_for_window_for_client(
@@ -1146,6 +1238,7 @@ impl Mux {
         log::debug!("removing pane {}", pane_id);
         let mut changed = false;
         let pane_location = self.resolve_pane_id(pane_id);
+        self.clear_agent_metadata(pane_id);
         if let Some(pane) = self.panes.write().remove(&pane_id).clone() {
             log::debug!("killing pane {}", pane_id);
             pane.kill();
@@ -1996,11 +2089,13 @@ impl wezterm_term::DownloadHandler for MuxDownloader {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::agent::AgentMetadata;
     use crate::domain::{alloc_domain_id, Domain, DomainId, DomainState};
     use crate::pane::{alloc_pane_id, CachePolicy, ForEachPaneLogicalLine, Pane, WithPaneLines};
     use crate::renderable::{RenderableDimensions, StableCursorPosition};
     use anyhow::Error;
     use async_trait::async_trait;
+    use chrono::{TimeZone, Utc};
     use parking_lot::{MappedMutexGuard, Mutex};
     use rangeset::RangeSet;
     use std::ops::Range;
@@ -2382,6 +2477,107 @@ mod test {
                 .and_then(|info| info.focused_pane_id),
             Some(pane_b.pane_id())
         );
+    }
+
+    fn sample_agent_metadata(name: &str) -> AgentMetadata {
+        AgentMetadata {
+            agent_id: format!("agent-{name}"),
+            name: name.to_string(),
+            launch_cmd: "codex".to_string(),
+            declared_cwd: format!("file:///tmp/{name}"),
+            created_at: Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+        }
+    }
+
+    #[test]
+    fn agent_metadata_is_listed_and_cleared_when_pane_is_removed() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new(40, size, domain.id);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        mux.set_agent_metadata(pane_id, sample_agent_metadata("alpha"))
+            .unwrap();
+
+        let agents = mux.list_agents();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].metadata.name, "alpha");
+        assert_eq!(agents[0].pane_id, pane_id);
+        assert_eq!(agents[0].tab_id, tab.tab_id());
+        assert_eq!(agents[0].window_id, window_id);
+        assert_eq!(agents[0].workspace, DEFAULT_WORKSPACE);
+
+        mux.remove_pane(pane_id);
+        assert!(mux.list_agents().is_empty());
+        assert!(mux.get_agent_metadata_for_pane(pane_id).is_none());
+    }
+
+    #[test]
+    fn agent_names_are_unique_across_panes_but_replaceable_on_same_pane() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+
+        let tab_a = Arc::new(Tab::new(&size));
+        let pane_a = FakePane::new(41, size, domain.id);
+        tab_a.assign_pane(&pane_a);
+        mux.add_tab_and_active_pane(&tab_a).unwrap();
+        mux.add_tab_to_window(&tab_a, window_id).unwrap();
+
+        let tab_b = Arc::new(Tab::new(&size));
+        let pane_b = FakePane::new(42, size, domain.id);
+        tab_b.assign_pane(&pane_b);
+        mux.add_tab_and_active_pane(&tab_b).unwrap();
+        mux.add_tab_to_window(&tab_b, window_id).unwrap();
+
+        mux.set_agent_metadata(pane_a.pane_id(), sample_agent_metadata("alpha"))
+            .unwrap();
+
+        let err = mux
+            .set_agent_metadata(pane_b.pane_id(), sample_agent_metadata("alpha"))
+            .unwrap_err();
+        assert!(err.to_string().contains("already assigned"));
+
+        mux.set_agent_metadata(pane_a.pane_id(), sample_agent_metadata("beta"))
+            .unwrap();
+        let agents = mux.list_agents();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].metadata.name, "beta");
+        assert_eq!(agents[0].pane_id, pane_a.pane_id());
     }
 
     #[test]
