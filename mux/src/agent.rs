@@ -403,6 +403,50 @@ pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata
     runtime.attention_reason = derive_attention_reason(runtime);
 }
 
+pub fn pending_observer_detail(
+    metadata: &AgentMetadata,
+    runtime: &AgentRuntimeSnapshot,
+) -> Option<String> {
+    if runtime.session_path.is_some()
+        || runtime.observer_error.is_some()
+        || runtime.attention_reason.is_some()
+        || !runtime.alive
+    {
+        return None;
+    }
+
+    let should_describe = runtime.observer_started_at.is_some()
+        || runtime.last_input_at.is_some()
+        || runtime.last_output_at.is_some()
+        || runtime.last_progress_at.is_some();
+    if !should_describe {
+        return None;
+    }
+
+    let cwd = normalize_declared_cwd(&metadata.declared_cwd);
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return None;
+    }
+
+    let updated_after = runtime.observer_started_at;
+    match runtime.harness {
+        AgentHarness::Claude => describe_pending_claude_observer(cwd, updated_after)
+            .ok()
+            .flatten(),
+        AgentHarness::Codex => describe_pending_codex_observer(cwd, updated_after)
+            .ok()
+            .flatten(),
+        AgentHarness::Gemini => describe_pending_gemini_observer(cwd, updated_after)
+            .ok()
+            .flatten(),
+        AgentHarness::Opencode => describe_pending_opencode_observer(cwd, updated_after)
+            .ok()
+            .flatten(),
+        AgentHarness::Unknown => None,
+    }
+}
+
 #[derive(Debug)]
 struct HarnessObservation {
     session_path: Option<String>,
@@ -710,6 +754,203 @@ fn observe_opencode(
         return Ok(None);
     };
     read_last_opencode_observation(&connection, &db_path, &session_id, updated_after)
+}
+
+fn describe_pending_claude_observer(
+    cwd: &str,
+    updated_after: Option<DateTime<Utc>>,
+) -> anyhow::Result<Option<String>> {
+    let Some(root) = claude_sessions_root() else {
+        return Ok(None);
+    };
+    let project_dir = root.join(cwd.replace('/', "-"));
+    if !project_dir.is_dir() {
+        return Ok(Some(
+            "claude project directory has not appeared yet".to_string(),
+        ));
+    }
+
+    let mut has_interactive = false;
+    let mut has_recent_interactive = false;
+    for entry in fs::read_dir(&project_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if !claude_session_is_interactive(&path)? {
+            continue;
+        }
+        has_interactive = true;
+        let modified_at = DateTime::<Utc>::from(entry.metadata()?.modified()?);
+        if updated_after
+            .map(|cutoff| modified_at >= cutoff)
+            .unwrap_or(true)
+        {
+            has_recent_interactive = true;
+            break;
+        }
+    }
+
+    Ok(Some(if has_recent_interactive {
+        "claude session file exists but observer has not attached yet".to_string()
+    } else if has_interactive {
+        "claude project directory exists but no new interactive session file appeared yet"
+            .to_string()
+    } else {
+        "claude project directory exists but no interactive session file appeared yet".to_string()
+    }))
+}
+
+fn describe_pending_codex_observer(
+    cwd: &str,
+    updated_after: Option<DateTime<Utc>>,
+) -> anyhow::Result<Option<String>> {
+    let Some(root) = codex_sessions_root() else {
+        return Ok(None);
+    };
+    if !root.is_dir() {
+        return Ok(Some(
+            "codex session directory has not appeared yet".to_string(),
+        ));
+    }
+
+    let mut has_matching_session = false;
+    let mut has_recent_matching_session = false;
+    for days_ago in 0..=6 {
+        let day = Utc::now() - Duration::days(days_ago);
+        let dir = root
+            .join(format!("{:04}", day.year()))
+            .join(format!("{:02}", day.month()))
+            .join(format!("{:02}", day.day()));
+        if !dir.is_dir() {
+            continue;
+        }
+
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            if !codex_session_matches_cwd(&path, cwd)? {
+                continue;
+            }
+            has_matching_session = true;
+            let modified_at = DateTime::<Utc>::from(entry.metadata()?.modified()?);
+            if updated_after
+                .map(|cutoff| modified_at >= cutoff)
+                .unwrap_or(true)
+            {
+                has_recent_matching_session = true;
+                break;
+            }
+        }
+
+        if has_recent_matching_session {
+            break;
+        }
+    }
+
+    Ok(Some(if has_recent_matching_session {
+        "codex rollout session file exists but observer has not attached yet".to_string()
+    } else if has_matching_session {
+        "codex session history exists but no new rollout session file appeared yet".to_string()
+    } else {
+        "codex rollout session file has not appeared yet".to_string()
+    }))
+}
+
+fn describe_pending_gemini_observer(
+    cwd: &str,
+    updated_after: Option<DateTime<Utc>>,
+) -> anyhow::Result<Option<String>> {
+    let Some(root) = gemini_root() else {
+        return Ok(None);
+    };
+    let project_dirs = gemini_project_dirs(&root, cwd)?;
+    if project_dirs.is_empty() {
+        return Ok(Some(
+            "gemini project directory has not appeared yet".to_string(),
+        ));
+    }
+
+    let mut has_session = false;
+    let mut has_recent_session = false;
+    for project_dir in project_dirs {
+        let chats_dir = project_dir.join("chats");
+        if !chats_dir.is_dir() {
+            continue;
+        }
+
+        for entry in fs::read_dir(&chats_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("session-") && name.ends_with(".json"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            has_session = true;
+            let modified_at = DateTime::<Utc>::from(entry.metadata()?.modified()?);
+            if updated_after
+                .map(|cutoff| modified_at >= cutoff)
+                .unwrap_or(true)
+            {
+                has_recent_session = true;
+                break;
+            }
+        }
+
+        if has_recent_session {
+            break;
+        }
+    }
+
+    Ok(Some(if has_recent_session {
+        "gemini session file exists but observer has not attached yet".to_string()
+    } else if has_session {
+        "gemini project directory exists but no new chat session file appeared yet".to_string()
+    } else {
+        "gemini project directory exists but no chat session file appeared yet".to_string()
+    }))
+}
+
+fn describe_pending_opencode_observer(
+    cwd: &str,
+    updated_after: Option<DateTime<Utc>>,
+) -> anyhow::Result<Option<String>> {
+    let Some(db_path) = opencode_db_path() else {
+        return Ok(None);
+    };
+    if !db_path.is_file() {
+        return Ok(Some(
+            "opencode session database has not appeared yet".to_string(),
+        ));
+    }
+
+    let connection =
+        Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(std::time::Duration::from_secs(2))?;
+
+    let has_recent_session = select_opencode_session(&connection, cwd, updated_after)?.is_some();
+    let has_session = select_opencode_session(&connection, cwd, None)?.is_some();
+
+    Ok(Some(if has_recent_session {
+        "opencode session exists but observer has not attached yet".to_string()
+    } else if has_session {
+        "opencode session exists but no new turn appeared yet".to_string()
+    } else {
+        "opencode session has not appeared yet".to_string()
+    }))
 }
 
 fn claude_sessions_root() -> Option<PathBuf> {
@@ -1541,6 +1782,58 @@ mod test {
         runtime.terminal_progress = Progress::None;
         runtime.alive = false;
         assert_eq!(derive_attention_reason(&runtime).as_deref(), Some("exited"));
+    }
+
+    #[test]
+    fn pending_observer_detail_reports_gemini_project_without_chat_session() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let project_dir = temp.path().join("tmp").join("project-m");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(project_dir.join(".project_root"), "/tmp/project-m\n").unwrap();
+
+        set_env_path("WEZTERM_AGENT_GEMINI_DIR", temp.path());
+        let metadata = AgentMetadata {
+            agent_id: "id".to_string(),
+            name: "gemini".to_string(),
+            launch_cmd: "gemini".to_string(),
+            declared_cwd: "/tmp/project-m".to_string(),
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+        };
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Gemini;
+        runtime.status = AgentStatus::Starting;
+        runtime.observer_started_at = Some(Utc::now());
+
+        let detail = pending_observer_detail(&metadata, &runtime);
+        remove_env_var("WEZTERM_AGENT_GEMINI_DIR");
+
+        assert_eq!(
+            detail.as_deref(),
+            Some("gemini project directory exists but no chat session file appeared yet")
+        );
+    }
+
+    #[test]
+    fn pending_observer_detail_stays_quiet_for_idle_plain_pty_agents() {
+        let metadata = AgentMetadata {
+            agent_id: "id".to_string(),
+            name: "alpha".to_string(),
+            launch_cmd: "codex".to_string(),
+            declared_cwd: "/tmp/project-n".to_string(),
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+        };
+        let runtime = AgentRuntimeSnapshot::new(&metadata);
+
+        assert_eq!(pending_observer_detail(&metadata, &runtime), None);
     }
 
     #[test]

@@ -6,8 +6,8 @@ use codec::{InputSerial, ListPanesResponse, SendKeyDown, SpawnV2, TabTitleChange
 use config::keyassignment::SpawnTabDomain;
 use config::ConfigHandle;
 use mux::agent::{
-    infer_harness, AgentHarness, AgentMetadata, AgentSnapshot, AgentStatus, AgentTransport,
-    AgentTurnState,
+    infer_harness, pending_observer_detail, AgentHarness, AgentMetadata, AgentSnapshot,
+    AgentStatus, AgentTransport, AgentTurnState,
 };
 use mux::pane::PaneId;
 use mux::tab::{SplitDirection, SplitRequest, SplitSize};
@@ -25,6 +25,8 @@ use tabout::{tabulate_output, Alignment, Column};
 use termwiz::input::{KeyCode, KeyEvent, Modifiers};
 use uuid::Uuid;
 use wezterm_client::client::Client;
+
+const STARTUP_STABILIZATION_DELAY_MS: u64 = 200;
 
 #[derive(Debug, Parser, Clone)]
 pub struct AgentCommand {
@@ -307,7 +309,7 @@ impl SpawnAgentCommand {
         config: &ConfigHandle,
         list_agents: ListAgents,
         list_panes: ListPanes,
-        list_agents_after_set: ListAgentsAfterSet,
+        mut list_agents_after_set: ListAgentsAfterSet,
         resolve_pane_id: ResolvePaneId,
         spawn_v2: SpawnV2Fn,
         split_pane: SplitPaneFn,
@@ -324,7 +326,7 @@ impl SpawnAgentCommand {
         ListAgentsFut: Future<Output = anyhow::Result<codec::ListAgentsResponse>>,
         ListPanes: FnOnce() -> ListPanesFut,
         ListPanesFut: Future<Output = anyhow::Result<ListPanesResponse>>,
-        ListAgentsAfterSet: FnOnce() -> ListAgentsAfterSetFut,
+        ListAgentsAfterSet: FnMut() -> ListAgentsAfterSetFut,
         ListAgentsAfterSetFut: Future<Output = anyhow::Result<codec::ListAgentsResponse>>,
         ResolvePaneId: FnOnce(Option<PaneId>) -> ResolvePaneIdFut,
         ResolvePaneIdFut: Future<Output = anyhow::Result<PaneId>>,
@@ -537,12 +539,13 @@ impl SpawnAgentCommand {
             }
         }
 
-        list_agents_after_set()
-            .await?
-            .agents
-            .into_iter()
-            .find(|agent| agent.pane_id == spawned.pane_id)
-            .ok_or_else(|| anyhow::anyhow!("spawned agent but could not reload it from the mux"))
+        reload_spawned_agent_after_startup(
+            &mut list_agents_after_set,
+            spawned.pane_id,
+            &agent_name,
+            STARTUP_STABILIZATION_DELAY_MS,
+        )
+        .await
     }
 
     fn split_request(&self) -> SplitRequest {
@@ -1780,6 +1783,10 @@ where
 }
 
 fn observer_timeout_detail(agent: &AgentSnapshot, baseline: &AgentAckBaseline) -> Option<String> {
+    if let Some(detail) = pending_observer_detail(&agent.metadata, &agent.runtime) {
+        return Some(detail);
+    }
+
     if baseline.session_path.is_none() && agent.runtime.session_path.is_none() {
         return Some("observer session did not appear before timeout".to_string());
     }
@@ -1847,6 +1854,12 @@ fn find_agent<'a>(agents: &'a [AgentSnapshot], target: &str) -> Option<&'a Agent
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AgentWatchFingerprint {
+    transport: String,
+    status: String,
+    turn_state: String,
+    harness_mode: Option<String>,
+    turn_phase: Option<String>,
+    attention_reason: Option<String>,
     session_path: Option<String>,
     last_progress_at: Option<chrono::DateTime<Utc>>,
     message: String,
@@ -1855,9 +1868,15 @@ struct AgentWatchFingerprint {
 impl AgentWatchFingerprint {
     fn from_agent(agent: &AgentSnapshot) -> Self {
         Self {
+            transport: transport_label(&agent.runtime.transport),
+            status: runtime_status_label(&agent.runtime.status),
+            turn_state: turn_state_label(&agent.runtime.turn_state),
+            harness_mode: agent.runtime.harness_mode.clone(),
+            turn_phase: agent.runtime.turn_phase.clone(),
+            attention_reason: agent.runtime.attention_reason.clone(),
             session_path: agent.runtime.session_path.clone(),
             last_progress_at: agent.runtime.last_progress_at,
-            message: inline_progress_summary(agent),
+            message: watch_event_message(agent),
         }
     }
 }
@@ -1871,11 +1890,13 @@ struct AgentWatchEvent {
     window_id: WindowId,
     workspace: String,
     harness: String,
+    transport: String,
     status: String,
     turn_state: String,
-    mode: Option<String>,
-    phase: Option<String>,
+    harness_mode: Option<String>,
+    turn_phase: Option<String>,
     attention_reason: Option<String>,
+    observer_hint: Option<String>,
     session_path: Option<String>,
     last_progress_at: Option<chrono::DateTime<Utc>>,
     message: String,
@@ -1883,7 +1904,8 @@ struct AgentWatchEvent {
 
 impl AgentWatchEvent {
     fn from_agent(agent: &AgentSnapshot) -> Option<Self> {
-        let message = inline_progress_summary(agent);
+        let observer_hint = pending_observer_detail(&agent.metadata, &agent.runtime);
+        let message = watch_event_message(agent);
         if message.is_empty() {
             return None;
         }
@@ -1896,11 +1918,13 @@ impl AgentWatchEvent {
             window_id: agent.window_id,
             workspace: agent.workspace.clone(),
             harness: harness_label(&agent.runtime.harness),
+            transport: transport_label(&agent.runtime.transport),
             status: runtime_status_label(&agent.runtime.status),
             turn_state: turn_state_label(&agent.runtime.turn_state),
-            mode: agent.runtime.harness_mode.clone(),
-            phase: agent.runtime.turn_phase.clone(),
+            harness_mode: agent.runtime.harness_mode.clone(),
+            turn_phase: agent.runtime.turn_phase.clone(),
             attention_reason: agent.runtime.attention_reason.clone(),
+            observer_hint,
             session_path: agent.runtime.session_path.clone(),
             last_progress_at: agent.runtime.last_progress_at,
             message,
@@ -2059,6 +2083,54 @@ fn inline_progress_detail(agent: &AgentSnapshot) -> Option<String> {
     }
 }
 
+fn watch_event_message(agent: &AgentSnapshot) -> String {
+    let summary = inline_progress_summary(agent);
+    if !summary.is_empty() {
+        return summary;
+    }
+    pending_observer_detail(&agent.metadata, &agent.runtime).unwrap_or_default()
+}
+
+async fn reload_spawned_agent_after_startup<ListAgents, ListAgentsFut>(
+    list_agents: &mut ListAgents,
+    pane_id: PaneId,
+    agent_name: &str,
+    stabilization_delay_ms: u64,
+) -> anyhow::Result<AgentSnapshot>
+where
+    ListAgents: FnMut() -> ListAgentsFut,
+    ListAgentsFut: Future<Output = anyhow::Result<codec::ListAgentsResponse>>,
+{
+    let initial = list_agents()
+        .await?
+        .agents
+        .into_iter()
+        .find(|agent| agent.pane_id == pane_id)
+        .ok_or_else(|| anyhow::anyhow!("spawned agent but could not reload it from the mux"))?;
+    ensure_spawned_agent_is_running(&initial, agent_name)?;
+
+    smol::Timer::after(Duration::from_millis(stabilization_delay_ms)).await;
+
+    let stabilized = list_agents()
+        .await?
+        .agents
+        .into_iter()
+        .find(|agent| agent.pane_id == pane_id)
+        .ok_or_else(|| anyhow::anyhow!("agent {agent_name} disappeared shortly after startup"))?;
+    ensure_spawned_agent_is_running(&stabilized, agent_name)?;
+    Ok(stabilized)
+}
+
+fn ensure_spawned_agent_is_running(agent: &AgentSnapshot, agent_name: &str) -> anyhow::Result<()> {
+    if !agent.runtime.alive || matches!(agent.runtime.status, AgentStatus::Exited) {
+        let detail = pending_observer_detail(&agent.metadata, &agent.runtime)
+            .or_else(|| agent.runtime.attention_reason.clone())
+            .unwrap_or_else(|| "harness exited before the observer could attach".to_string());
+        bail!("agent {agent_name} exited shortly after startup: {detail}");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -2077,9 +2149,24 @@ mod test {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
+    use std::sync::Mutex;
     use tempfile::TempDir;
     use termwiz::surface::{CursorShape, CursorVisibility};
     use wezterm_term::TerminalSize;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn set_env_var(key: &str, value: &str) {
+        unsafe {
+            std::env::set_var(key, value);
+        }
+    }
+
+    fn remove_env_var(key: &str) {
+        unsafe {
+            std::env::remove_var(key);
+        }
+    }
 
     fn size(cols: usize, rows: usize) -> TerminalSize {
         TerminalSize {
@@ -2375,6 +2462,37 @@ mod test {
     }
 
     #[test]
+    fn collect_agent_watch_events_falls_back_to_pending_observer_hint() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        set_env_var(
+            "WEZTERM_AGENT_CODEX_DIR",
+            temp.path().to_string_lossy().as_ref(),
+        );
+
+        let mut agent = sample_agent(30, "alpha");
+        agent.runtime.status = mux::agent::AgentStatus::Starting;
+        agent.runtime.observer_started_at =
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap());
+
+        let mut seen = HashMap::new();
+        let events = collect_agent_watch_events(&mut seen, &[agent]);
+
+        remove_env_var("WEZTERM_AGENT_CODEX_DIR");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].message,
+            "codex rollout session file has not appeared yet"
+        );
+        assert_eq!(events[0].transport, "pty");
+        assert_eq!(
+            events[0].observer_hint.as_deref(),
+            Some("codex rollout session file has not appeared yet")
+        );
+    }
+
+    #[test]
     fn watch_run_with_streams_initial_and_changed_messages() {
         let command = WatchAgentsCommand {
             format: CliOutputFormatKind::Table,
@@ -2433,6 +2551,93 @@ mod test {
                 "reviewer\tcodex\t[plan final-answer] done\n"
             )
         );
+    }
+
+    #[test]
+    fn watch_event_json_uses_explicit_runtime_field_names() {
+        let mut agent = sample_agent(30, "reviewer");
+        agent.runtime.transport = mux::agent::AgentTransport::ObservedPty;
+        agent.runtime.progress_summary = Some("done".to_string());
+        agent.runtime.harness_mode = Some("plan".to_string());
+        agent.runtime.turn_phase = Some("final_answer".to_string());
+        let event = AgentWatchEvent::from_agent(&agent).unwrap();
+
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            json.get("transport").and_then(|v| v.as_str()),
+            Some("observed-pty")
+        );
+        assert_eq!(
+            json.get("harness_mode").and_then(|v| v.as_str()),
+            Some("plan")
+        );
+        assert_eq!(
+            json.get("turn_phase").and_then(|v| v.as_str()),
+            Some("final_answer")
+        );
+        assert!(json.get("mode").is_none());
+        assert!(json.get("phase").is_none());
+    }
+
+    #[test]
+    fn reload_spawned_agent_after_startup_reports_disappeared_pane() {
+        let list_calls = Rc::new(RefCell::new(0usize));
+        let err = promise::spawn::block_on(reload_spawned_agent_after_startup(
+            &mut {
+                let list_calls = Rc::clone(&list_calls);
+                move || {
+                    let list_calls = Rc::clone(&list_calls);
+                    async move {
+                        let idx = {
+                            let mut calls = list_calls.borrow_mut();
+                            *calls += 1;
+                            *calls
+                        };
+                        Ok(ListAgentsResponse {
+                            agents: if idx == 1 {
+                                vec![sample_agent(30, "reviewer")]
+                            } else {
+                                vec![]
+                            },
+                        })
+                    }
+                }
+            },
+            30,
+            "reviewer",
+            0,
+        ))
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("agent reviewer disappeared shortly after startup"));
+    }
+
+    #[test]
+    fn reload_spawned_agent_after_startup_reports_exited_harness() {
+        let mut exited = sample_agent(30, "reviewer");
+        exited.runtime.alive = false;
+        exited.runtime.status = mux::agent::AgentStatus::Exited;
+
+        let err = promise::spawn::block_on(reload_spawned_agent_after_startup(
+            &mut move || {
+                let exited = exited.clone();
+                async move {
+                    Ok(ListAgentsResponse {
+                        agents: vec![exited],
+                    })
+                }
+            },
+            30,
+            "reviewer",
+            0,
+        ))
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("agent reviewer exited shortly after startup"));
     }
 
     #[test]
