@@ -1,6 +1,6 @@
 ### Color Scheme
 
-wakterm ships with over 700 color schemes available from
+wakterm ships with over 1000 color schemes available from
 [iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes#screenshots),
 [base16](https://github.com/chriskempson/base16-schemes-source),
 [Gogh](https://gogh-co.github.io/Gogh/) and
@@ -17,7 +17,7 @@ config.color_scheme = 'Batman'
 return config
 ```
 
-You can find a list of available color schemes and screenshots
+You can browse, search, and preview the available color schemes
 in [The Color Schemes Section](../colorschemes/index.md).
 
 If you'd like to automatically adjust your color scheme based on the
@@ -548,4 +548,3 @@ through to `1.0` (completely opaque).
 ```lua
 config.text_background_opacity = 0.3
 ```
-
