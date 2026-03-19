@@ -1,3 +1,5 @@
+## SSH
+
 wakterm uses an embedded ssh library to provide an integrated SSH client.  The
 client can be used to make ad-hoc SSH connections to remote hosts
 by invoking the client like this:
@@ -7,6 +9,11 @@ $ wakterm ssh wez@my.server
 ```
 
 (checkout `wakterm ssh -h` for more options).
+
+Use `wakterm ssh` when you want a straightforward remote shell or command.
+If you want reconnectable, persistent remote tabs that survive client
+disconnects, use an SSH domain or TLS domain from the
+[multiplexing page](multiplexing.md) instead.
 
 When invoked in this way, wakterm may prompt you for SSH authentication
 and once a connection is established, open a new terminal window with
@@ -19,9 +26,9 @@ create.
 SSH sessions created in this way are non-persistent and all associated
 tabs will die if your network connection is interrupted.
 
-Take a look at [the multiplexing section](multiplexing.md) for an
-alternative configuration that connects to a remote wakterm instance
-and preserves your tabs.
+Take a look at [the multiplexing section](multiplexing.md) for the
+persistent alternative that connects to a remote wakterm instance and
+preserves your tabs.
 
 The [ssh_backend](config/lua/config/ssh_backend.md) configuration can
 be used to specify which ssh library is used.
@@ -76,4 +83,3 @@ example shows how to specify the private key to use when connecting to
 ```bash
 wakterm ssh -oIdentityFile=/secret/id_ed25519 some-host
 ```
-
