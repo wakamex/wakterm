@@ -822,6 +822,14 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             menubar: &[],
             icon: None,
         },
+        PromptRenameTab => CommandDef {
+            brief: "Rename current tab".into(),
+            doc: "Prompts for a new title for the current tab".into(),
+            keys: vec![],
+            args: &[ArgType::ActiveTab],
+            menubar: &["Window"],
+            icon: Some("md_rename_box"),
+        },
         QuickSelect => CommandDef {
             brief: "Enter QuickSelect mode".into(),
             doc: "Activates the quick selection UI for the current pane".into(),

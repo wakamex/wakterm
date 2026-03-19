@@ -644,6 +644,7 @@ pub enum KeyAssignment {
     ActivateWindowRelative(isize),
     ActivateWindowRelativeNoWrap(isize),
     PromptInputLine(PromptInputLine),
+    PromptRenameTab,
     InputSelector(InputSelector),
     Confirmation(Confirmation),
 }

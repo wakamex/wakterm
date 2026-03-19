@@ -269,6 +269,18 @@ impl UserData for TabInformation {
     }
 }
 
+fn prompt_rename_tab_initial_value(explicit_tab_title: &str, pane_title: &str) -> String {
+    if !explicit_tab_title.is_empty() {
+        return explicit_tab_title.to_string();
+    }
+
+    if !pane_title.is_empty() {
+        return pane_title.to_string();
+    }
+
+    String::new()
+}
+
 /// Data used when synchronously formatting pane and window titles
 #[derive(Debug, Clone)]
 pub struct PaneInformation {
@@ -2340,6 +2352,36 @@ impl TermWindow {
         promise::spawn::spawn(future).detach();
     }
 
+    fn show_prompt_rename_tab(&mut self) {
+        let tab = match self.get_active_mux_tab() {
+            Some(tab) => tab,
+            None => return,
+        };
+
+        let active_pane = self.get_active_pane_no_overlay();
+        let pane_title = active_pane
+            .as_ref()
+            .map(|pane| pane.get_title())
+            .unwrap_or_default();
+        let initial_value = prompt_rename_tab_initial_value(&tab.get_title(), &pane_title);
+
+        let description = "Enter new name for tab".to_string();
+        let prompt = "> ".to_string();
+        let tab_id = tab.tab_id();
+
+        let (overlay, future) = start_overlay(self, &tab, move |_tab_id, term| {
+            crate::overlay::prompt::show_rename_tab_prompt_overlay(
+                term,
+                description,
+                prompt,
+                Some(initial_value),
+                tab_id,
+            )
+        });
+        self.assign_overlay(tab_id, overlay);
+        promise::spawn::spawn(future).detach();
+    }
+
     fn show_confirmation(&mut self, args: &Confirmation) {
         let tab = match self.get_active_mux_tab() {
             Some(tab) => tab,
@@ -3167,6 +3209,7 @@ impl TermWindow {
                 self.set_modal(Rc::new(modal));
             }
             PromptInputLine(args) => self.show_prompt_input_line(args),
+            PromptRenameTab => self.show_prompt_rename_tab(),
             InputSelector(args) => self.show_input_selector(args),
             Confirmation(args) => self.show_confirmation(args),
         };
@@ -3637,5 +3680,25 @@ impl Drop for TermWindow {
                 fe.forget_known_window(&window);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::prompt_rename_tab_initial_value;
+
+    #[test]
+    fn rename_prompt_prefers_explicit_tab_title() {
+        assert_eq!(prompt_rename_tab_initial_value("my-tab", "zsh"), "my-tab");
+    }
+
+    #[test]
+    fn rename_prompt_prefers_meaningful_pane_title() {
+        assert_eq!(prompt_rename_tab_initial_value("", "zsh"), "zsh");
+    }
+
+    #[test]
+    fn rename_prompt_returns_empty_when_no_titles_exist() {
+        assert_eq!(prompt_rename_tab_initial_value("", ""), "");
     }
 }

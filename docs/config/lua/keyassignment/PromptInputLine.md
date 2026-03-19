@@ -13,6 +13,10 @@ from the user.
 When the user enters the line, emits an event that allows you to act
 upon the input.
 
+If you just want to rename the current tab, prefer
+[PromptRenameTab](PromptRenameTab.md), which provides a built-in prompt for
+that purpose.
+
 `PromptInputLine` accepts four fields:
 
 * `description` - the text to show at the top of the display area. You may

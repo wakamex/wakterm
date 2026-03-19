@@ -1,0 +1,105 @@
+# `KeyAssignment` enumeration
+
+A `KeyAssignment` represents a pre-defined function that can be applied
+to control the Window, Tab, Pane state typically when a key or mouse event
+is triggered.
+
+Internally, in the underlying Rust code, `KeyAssignment` is an enum
+type with a variant for each possible action known to wakterm.  In Lua,
+enums get represented as a table with a single key corresponding to
+the variant name.
+
+In most cases the [`wakterm.action`](../wakterm/action.md) function is
+used to create an instance of `KeyAssignment` and make it a bit more
+clear and convenient.
+
+## Available Key Assignments
+
+
+
+
+  - [ActivateCommandPalette](ActivateCommandPalette.md)
+  - [ActivateCopyMode](ActivateCopyMode.md)
+  - [ActivateKeyTable](ActivateKeyTable.md)
+  - [ActivateLastTab](ActivateLastTab.md)
+  - [ActivatePaneByIndex](ActivatePaneByIndex.md)
+  - [ActivatePaneDirection](ActivatePaneDirection.md)
+  - [ActivateTab](ActivateTab.md)
+  - [ActivateTabRelative](ActivateTabRelative.md)
+  - [ActivateTabRelativeNoWrap](ActivateTabRelativeNoWrap.md)
+  - [ActivateWindow](ActivateWindow.md)
+  - [ActivateWindowRelative](ActivateWindowRelative.md)
+  - [ActivateWindowRelativeNoWrap](ActivateWindowRelativeNoWrap.md)
+  - [AdjustPaneSize](AdjustPaneSize.md)
+  - [AttachDomain](AttachDomain.md)
+  - [CharSelect](CharSelect.md)
+  - [ClearKeyTableStack](ClearKeyTableStack.md)
+  - [ClearScrollback](ClearScrollback.md)
+  - [ClearSelection](ClearSelection.md)
+  - [CloseCurrentPane](CloseCurrentPane.md)
+  - [CloseCurrentTab](CloseCurrentTab.md)
+  - [CompleteSelection](CompleteSelection.md)
+  - [CompleteSelectionOrOpenLinkAtMouseCursor](CompleteSelectionOrOpenLinkAtMouseCursor.md)
+  - [Confirmation](Confirmation.md)
+  - [Copy](Copy.md)
+  - [CopyTo](CopyTo.md)
+  - [DecreaseFontSize](DecreaseFontSize.md)
+  - [DetachDomain](DetachDomain.md)
+  - [DisableDefaultAssignment](DisableDefaultAssignment.md)
+  - [EmitEvent](EmitEvent.md)
+  - [ExtendSelectionToMouseCursor](ExtendSelectionToMouseCursor.md)
+  - [Hide](Hide.md)
+  - [HideApplication](HideApplication.md)
+  - [IncreaseFontSize](IncreaseFontSize.md)
+  - [InputSelector](InputSelector.md)
+  - [MoveTab](MoveTab.md)
+  - [MoveTabRelative](MoveTabRelative.md)
+  - [Multiple](Multiple.md)
+  - [Nop](Nop.md)
+  - [OpenLinkAtMouseCursor](OpenLinkAtMouseCursor.md)
+  - [PaneSelect](PaneSelect.md)
+  - [Paste](Paste.md)
+  - [PasteFrom](PasteFrom.md)
+  - [PastePrimarySelection](PastePrimarySelection.md)
+  - [PopKeyTable](PopKeyTable.md)
+  - [PromptInputLine](PromptInputLine.md)
+  - [PromptRenameTab](PromptRenameTab.md)
+  - [QuickSelect](QuickSelect.md)
+  - [QuickSelectArgs](QuickSelectArgs.md)
+  - [QuitApplication](QuitApplication.md)
+  - [ReloadConfiguration](ReloadConfiguration.md)
+  - [ResetFontAndWindowSize](ResetFontAndWindowSize.md)
+  - [ResetFontSize](ResetFontSize.md)
+  - [ResetTerminal](ResetTerminal.md)
+  - [RotatePanes](RotatePanes.md)
+  - [ScrollByCurrentEventWheelDelta](ScrollByCurrentEventWheelDelta.md)
+  - [ScrollByLine](ScrollByLine.md)
+  - [ScrollByPage](ScrollByPage.md)
+  - [ScrollToBottom](ScrollToBottom.md)
+  - [ScrollToPrompt](ScrollToPrompt.md)
+  - [ScrollToTop](ScrollToTop.md)
+  - [Search](Search.md)
+  - [SelectTextAtMouseCursor](SelectTextAtMouseCursor.md)
+  - [SendKey](SendKey.md)
+  - [SendString](SendString.md)
+  - [SetPaneZoomState](SetPaneZoomState.md)
+  - [SetWindowLevel](SetWindowLevel.md)
+  - [Show](Show.md)
+  - [ShowDebugOverlay](ShowDebugOverlay.md)
+  - [ShowLauncher](ShowLauncher.md)
+  - [ShowLauncherArgs](ShowLauncherArgs.md)
+  - [ShowTabNavigator](ShowTabNavigator.md)
+  - [SpawnCommandInNewTab](SpawnCommandInNewTab.md)
+  - [SpawnCommandInNewWindow](SpawnCommandInNewWindow.md)
+  - [SpawnTab](SpawnTab.md)
+  - [SpawnWindow](SpawnWindow.md)
+  - [SplitHorizontal](SplitHorizontal.md)
+  - [SplitPane](SplitPane.md)
+  - [SplitVertical](SplitVertical.md)
+  - [StartWindowDrag](StartWindowDrag.md)
+  - [SwitchToWorkspace](SwitchToWorkspace.md)
+  - [SwitchWorkspaceRelative](SwitchWorkspaceRelative.md)
+  - [ToggleAlwaysOnBottom](ToggleAlwaysOnBottom.md)
+  - [ToggleAlwaysOnTop](ToggleAlwaysOnTop.md)
+  - [ToggleFullScreen](ToggleFullScreen.md)
+  - [TogglePaneZoomState](TogglePaneZoomState.md)

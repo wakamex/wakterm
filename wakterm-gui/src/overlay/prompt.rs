@@ -1,5 +1,6 @@
 use crate::scripting::guiwin::GuiWin;
 use config::keyassignment::{KeyAssignment, PromptInputLine};
+use mux::{tab::TabId, Mux};
 use mux::termwiztermtab::TermWizTerminal;
 use mux_lua::MuxPane;
 use std::rc::Rc;
@@ -73,6 +74,36 @@ pub fn show_line_prompt_overlay(
 
     promise::spawn::spawn_into_main_thread(async move {
         trampoline(name, window, pane, line);
+        anyhow::Result::<()>::Ok(())
+    })
+    .detach();
+
+    Ok(())
+}
+
+pub fn show_rename_tab_prompt_overlay(
+    mut term: TermWizTerminal,
+    description: String,
+    prompt: String,
+    initial_value: Option<String>,
+    tab_id: TabId,
+) -> anyhow::Result<()> {
+    term.no_grab_mouse_in_raw_mode();
+    let mut text = description.replace("\r\n", "\n").replace("\n", "\r\n");
+    text.push_str("\r\n");
+    term.render(&[Change::Text(text)])?;
+
+    let mut host = PromptHost::new();
+    let mut editor = LineEditor::new(&mut term);
+    editor.set_prompt(&prompt);
+    let line = editor.read_line_with_optional_initial_value(&mut host, initial_value.as_deref())?;
+
+    promise::spawn::spawn_into_main_thread(async move {
+        if let Some(line) = line {
+            if let Some(tab) = Mux::get().get_tab(tab_id) {
+                tab.set_title(&line);
+            }
+        }
         anyhow::Result::<()>::Ok(())
     })
     .detach();
