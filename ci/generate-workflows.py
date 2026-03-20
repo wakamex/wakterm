@@ -131,7 +131,7 @@ class ActionStep(Step):
 class CacheStep(ActionStep):
     def __init__(self, name, path, key, id=None):
         super().__init__(
-            name, action="actions/cache@v4", params={"path": path, "key": key}, id=id
+            name, action="actions/cache@v5", params={"path": path, "key": key}, id=id
         )
 
 
@@ -145,11 +145,7 @@ class CheckoutStep(ActionStep):
         params = {}
         if submodules:
             params["submodules"] = "recursive"
-        # Newer versions of the checkout action use a binary-incompatible node
-        # binary, so we are pinned back on v3
-        # https://github.com/actions/checkout/issues/1442
-        version = "v3" if container is not None and "centos7" in container else "v4"
-        super().__init__(name, action=f"actions/checkout@{version}", params=params)
+        super().__init__(name, action="actions/checkout@v6", params=params)
 
 
 class InstallCrateStep(ActionStep):
@@ -552,7 +548,7 @@ rustup default {toolchain}
         return steps + [
             ActionStep(
                 "Upload artifact",
-                action="actions/upload-artifact@v4",
+                action="actions/upload-artifact@v7",
                 params={"name": self.name, "path": paths},
             ),
         ]
@@ -614,7 +610,7 @@ rustup default {toolchain}
         return steps + [
             ActionStep(
                 "Upload artifact",
-                action="actions/upload-artifact@v4",
+                action="actions/upload-artifact@v7",
                 params={"name": self.name, "path": paths, "retention-days": 5},
             ),
         ]
@@ -644,7 +640,7 @@ rustup default {toolchain}
         return [
             ActionStep(
                 "Download artifact",
-                action="actions/download-artifact@v4",
+                action="actions/download-artifact@v8",
                 params={"name": self.name},
             ),
             checksum,
@@ -680,7 +676,7 @@ rustup default {toolchain}
         return steps + [
             ActionStep(
                 "Download artifact",
-                action="actions/download-artifact@v4",
+                action="actions/download-artifact@v8",
                 params={"name": self.name},
             ),
             checksum,
@@ -706,7 +702,7 @@ rustup default {toolchain}
         return [
             ActionStep(
                 "Checkout flathub/org.wezfurlong.wakterm",
-                action="actions/checkout@v4",
+                action="actions/checkout@v6",
                 params={
                     "repository": "flathub/org.wezfurlong.wakterm",
                     "path": "flathub",
@@ -732,7 +728,7 @@ rustup default {toolchain}
             steps += [
                 ActionStep(
                     "Checkout winget-pkgs",
-                    action="actions/checkout@v4",
+                    action="actions/checkout@v6",
                     params={
                         "repository": "wez/winget-pkgs",
                         "path": "winget-pkgs",
@@ -768,7 +764,7 @@ rustup default {toolchain}
             steps += [
                 ActionStep(
                     "Checkout homebrew tap",
-                    action="actions/checkout@v4",
+                    action="actions/checkout@v6",
                     params={
                         "repository": "wez/homebrew-wakterm",
                         "path": "homebrew-wakterm",
@@ -781,7 +777,7 @@ rustup default {toolchain}
                 ),
                 ActionStep(
                     "Commit homebrew tap changes",
-                    action="stefanzweifel/git-auto-commit-action@v5",
+                    action="stefanzweifel/git-auto-commit-action@v7",
                     params={
                         "commit_message": "Automated update to match latest tag",
                         "repository": "homebrew-wakterm",
@@ -792,7 +788,7 @@ rustup default {toolchain}
             steps += [
                 ActionStep(
                     "Checkout linuxbrew tap",
-                    action="actions/checkout@v4",
+                    action="actions/checkout@v6",
                     params={
                         "repository": "wez/homebrew-wakterm-linuxbrew",
                         "path": "linuxbrew-wakterm",
@@ -805,7 +801,7 @@ rustup default {toolchain}
                 ),
                 ActionStep(
                     "Commit linuxbrew tap changes",
-                    action="stefanzweifel/git-auto-commit-action@v5",
+                    action="stefanzweifel/git-auto-commit-action@v7",
                     params={
                         "commit_message": "Automated update to match latest tag",
                         "repository": "linuxbrew-wakterm",

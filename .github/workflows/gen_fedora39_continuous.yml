@@ -55,7 +55,7 @@ jobs:
         shell: bash
         run: "git config --global --add safe.directory /__w/wakterm/wakterm"
       - name: "checkout repo"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: "recursive"
       - name: "Install Rust"
@@ -63,7 +63,7 @@ jobs:
       - name: "Compile with sccache"
         uses: mozilla-actions/sccache-action@v0.0.9
       - name: "Cache Rust Dependencies"
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: cache-cargo-vendor
         with:
           path: |
@@ -108,7 +108,7 @@ jobs:
           mv ~/rpmbuild/RPMS/*/wakterm-mux-server-*.rpm wakterm-mux-server-nightly-fedora39.rpm
           mv ~/rpmbuild/RPMS/*/wakterm-*.rpm wakterm-nightly-fedora39.rpm
       - name: "Upload artifact"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: "fedora39"
           path: "wakterm-*.rpm"
@@ -128,9 +128,9 @@ jobs:
         shell: bash
         run: "git config --global --add safe.directory /__w/wakterm/wakterm"
       - name: "checkout repo"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: "Download artifact"
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: "fedora39"
       - name: "Checksum"

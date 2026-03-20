@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - name: "checkout repo"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: "recursive"
       - name: "Install Rust (ARM)"
@@ -29,7 +29,7 @@ jobs:
       - name: "Compile with sccache"
         uses: mozilla-actions/sccache-action@v0.0.9
       - name: "Cache Rust Dependencies"
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         id: cache-cargo-vendor
         with:
           path: |
@@ -85,7 +85,7 @@ jobs:
         shell: bash
         run: "bash ci/deploy.sh"
       - name: "Upload artifact"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: "macos"
           path: "wakterm-*.zip"
@@ -101,9 +101,9 @@ jobs:
 
     steps:
       - name: "checkout repo"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: "Checkout homebrew tap"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: "wez/homebrew-wakterm"
           path: "homebrew-wakterm"
@@ -112,12 +112,12 @@ jobs:
         shell: bash
         run: "cp wakterm.rb homebrew-wakterm/Casks/wakterm.rb"
       - name: "Commit homebrew tap changes"
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@v7
         with:
           commit_message: "Automated update to match latest tag"
           repository: "homebrew-wakterm"
       - name: "Download artifact"
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: "macos"
       - name: "Checksum"

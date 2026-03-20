@@ -11,15 +11,15 @@ jobs:
     if: github.repository == 'wakamex/wakterm'
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/nix-installer-action@v21
       - name: Cache build artifacts
-        uses: DeterminateSystems/flakehub-cache-action@main
+        uses: DeterminateSystems/flakehub-cache-action@v3.17.0
       - name: Check flake
-        uses: DeterminateSystems/flake-checker-action@main
+        uses: DeterminateSystems/flake-checker-action@v12
       - name: Update flake.lock
-        uses: DeterminateSystems/update-flake-lock@main
+        uses: DeterminateSystems/update-flake-lock@v28
         with:
           token: "${{ secrets.FLAKE_LOCK_GH_PAT }}"
           pr-title: 'Update flake.lock' # Title of PR to be created
