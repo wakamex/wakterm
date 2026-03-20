@@ -37,6 +37,22 @@ pub fn matcher_pattern(s: &str) -> Pattern {
     )
 }
 
+pub fn delete_previous_word(text: &mut String) -> bool {
+    let original_len = text.len();
+
+    while text.chars().last().is_some_and(char::is_whitespace) {
+        text.pop();
+    }
+    while text.chars().last().is_some_and(|c| !c.is_whitespace()) {
+        text.pop();
+    }
+    while text.chars().last().is_some_and(char::is_whitespace) {
+        text.pop();
+    }
+
+    text.len() != original_len
+}
+
 struct SelectorState {
     active_idx: usize,
     max_items: usize,
@@ -288,6 +304,19 @@ impl SelectorState {
                     self.filtering = true;
                 }
                 InputEvent::Key(KeyEvent {
+                    key: KeyCode::Backspace | KeyCode::Delete,
+                    modifiers: Modifiers::ALT,
+                })
+                | InputEvent::Key(KeyEvent {
+                    key: KeyCode::Char('W'),
+                    modifiers: Modifiers::CTRL,
+                }) if self.filtering => {
+                    if !delete_previous_word(&mut self.filter_term) && !self.always_fuzzy {
+                        self.filtering = false;
+                    }
+                    self.update_filter();
+                }
+                InputEvent::Key(KeyEvent {
                     key: KeyCode::Backspace,
                     ..
                 }) => {
@@ -445,4 +474,23 @@ pub fn selector(
     state.update_filter();
     state.render(&mut term)?;
     state.run_loop(&mut term)
+}
+
+#[cfg(test)]
+mod test {
+    use super::delete_previous_word;
+
+    #[test]
+    fn delete_previous_word_removes_last_word_and_separator() {
+        let mut text = String::from("foo bar");
+        assert!(delete_previous_word(&mut text));
+        assert_eq!(text, "foo");
+    }
+
+    #[test]
+    fn delete_previous_word_handles_trailing_whitespace() {
+        let mut text = String::from("foo bar   ");
+        assert!(delete_previous_word(&mut text));
+        assert_eq!(text, "foo");
+    }
 }

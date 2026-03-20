@@ -8,12 +8,12 @@
 use crate::commands::derive_command_from_key_assignment;
 use crate::inputmap::InputMap;
 use crate::overlay::quickselect;
-use crate::overlay::selector::{matcher_pattern, matcher_score};
+use crate::overlay::selector::{delete_previous_word, matcher_pattern, matcher_score};
 use crate::termwindow::TermWindowNotif;
 use config::configuration;
 use config::keyassignment::{KeyAssignment, SpawnCommand, SpawnTabDomain};
 use mux::domain::{DomainId, DomainState};
-use mux::pane::PaneId;
+use mux::pane::{CachePolicy, PaneId};
 use mux::termwiztermtab::TermWizTerminal;
 use mux::window::WindowId;
 use mux::Mux;
@@ -63,6 +63,13 @@ pub struct LauncherArgs {
     alphabet: String,
 }
 
+fn cwd_leaf_label(cwd: Option<&url::Url>) -> Option<String> {
+    cwd?.path_segments()?
+        .filter(|segment| !segment.is_empty())
+        .next_back()
+        .map(ToOwned::to_owned)
+}
+
 impl LauncherArgs {
     /// Must be called on the Mux thread!
     pub async fn new(
@@ -98,10 +105,17 @@ impl LauncherArgs {
                 .enumerate()
                 .map(|(tab_idx, tab)| {
                     let tab_title = mux.effective_tab_title(tab.tab_id());
+                    let active_pane = tab.get_active_pane().expect("tab to have a pane");
                     let title = if tab_title.is_empty() {
-                        tab.get_active_pane()
-                            .expect("tab to have a pane")
-                            .get_title()
+                        // The TABS launcher is the tab navigator; when a tab has
+                        // no explicit title, the cwd leaf is a better discriminator
+                        // than the default shell process name.
+                        cwd_leaf_label(
+                            active_pane
+                                .get_current_working_dir(CachePolicy::AllowStale)
+                                .as_ref(),
+                        )
+                        .unwrap_or_else(|| active_pane.get_title())
                     } else {
                         tab_title
                     };
@@ -551,6 +565,19 @@ impl LauncherState {
                     self.filtering = true;
                 }
                 InputEvent::Key(KeyEvent {
+                    key: KeyCode::Backspace | KeyCode::Delete,
+                    modifiers: Modifiers::ALT,
+                })
+                | InputEvent::Key(KeyEvent {
+                    key: KeyCode::Char('W'),
+                    modifiers: Modifiers::CTRL,
+                }) if self.filtering => {
+                    if !delete_previous_word(&mut self.filter_term) && !self.always_fuzzy {
+                        self.filtering = false;
+                    }
+                    self.update_filter();
+                }
+                InputEvent::Key(KeyEvent {
                     key: KeyCode::Backspace,
                     ..
                 }) => {
@@ -675,4 +702,21 @@ pub fn launcher(
     state.update_filter();
     state.render(&mut term)?;
     state.run_loop(&mut term)
+}
+
+#[cfg(test)]
+mod test {
+    use super::cwd_leaf_label;
+
+    #[test]
+    fn cwd_leaf_label_uses_last_path_component() {
+        let cwd = url::Url::parse("ssh://host/home/mihai/project").unwrap();
+        assert_eq!(cwd_leaf_label(Some(&cwd)).as_deref(), Some("project"));
+    }
+
+    #[test]
+    fn cwd_leaf_label_ignores_root_paths() {
+        let cwd = url::Url::parse("file:///").unwrap();
+        assert_eq!(cwd_leaf_label(Some(&cwd)), None);
+    }
 }
