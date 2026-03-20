@@ -332,6 +332,7 @@ impl SessionHandler {
                 mut client_id,
                 view_id,
                 is_proxy,
+                client_version_string,
             }) => {
                 if is_proxy {
                     if self.proxy_client_id.is_none() {
@@ -352,12 +353,22 @@ impl SessionHandler {
                             format!("{} (via proxy pid {})", client_id.hostname, proxy_id.pid);
                     }
 
-                    log::info!(
-                        "Client connected: {} from {} (pid {})",
-                        client_id.hostname,
-                        client_id.username,
-                        client_id.pid,
-                    );
+                    if let Some(client_version_string) = client_version_string {
+                        log::info!(
+                            "Client connected: {} from {} (pid {}, version {})",
+                            client_id.hostname,
+                            client_id.username,
+                            client_id.pid,
+                            client_version_string,
+                        );
+                    } else {
+                        log::info!(
+                            "Client connected: {} from {} (pid {})",
+                            client_id.hostname,
+                            client_id.username,
+                            client_id.pid,
+                        );
+                    }
                     let client_id = Arc::new(client_id);
                     let view_id = Arc::new(view_id);
                     self.client_id.replace(client_id.clone());

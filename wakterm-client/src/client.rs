@@ -1254,6 +1254,7 @@ impl Client {
                     client_id: self.client_id.clone(),
                     view_id: self.view_id.clone(),
                     is_proxy: false,
+                    client_version_string: Some(config::wakterm_version().to_owned()),
                 })
                 .await?;
                 Ok(info)
