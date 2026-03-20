@@ -115,7 +115,5 @@ extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/wakamex/wakterm
-    - icon: fontawesome/brands/mastodon
-      link: https://fosstodon.org/@wez
     - icon: fontawesome/brands/twitter
-      link: https://twitter.com/wezfurlong
+      link: https://twitter.com/mihai673
