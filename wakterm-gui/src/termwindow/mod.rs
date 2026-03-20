@@ -3685,7 +3685,57 @@ impl Drop for TermWindow {
 
 #[cfg(test)]
 mod test {
-    use super::prompt_rename_tab_initial_value;
+    use super::{PaneInformation, Progress, TabInformation, prompt_rename_tab_initial_value};
+    use std::collections::HashMap;
+
+    fn pane_with_title(title: &str) -> PaneInformation {
+        PaneInformation {
+            pane_id: 0,
+            pane_index: 0,
+            is_active: true,
+            is_zoomed: false,
+            has_unseen_output: false,
+            left: 0,
+            top: 0,
+            width: 0,
+            height: 0,
+            pixel_width: 0,
+            pixel_height: 0,
+            title: title.to_string(),
+            user_vars: HashMap::new(),
+            progress: Progress::default(),
+        }
+    }
+
+    fn tab_info(tab_title: &str, active_pane_title: Option<&str>) -> TabInformation {
+        TabInformation {
+            tab_id: 0,
+            tab_index: 0,
+            is_active: true,
+            is_last_active: false,
+            active_pane: active_pane_title.map(pane_with_title),
+            window_id: 0,
+            tab_title: tab_title.to_string(),
+        }
+    }
+
+    #[test]
+    fn effective_title_prefers_explicit_tab_title() {
+        let tab = tab_info("my-tab", Some("zsh"));
+        assert_eq!(tab.effective_title(), "my-tab");
+    }
+
+    #[test]
+    fn effective_title_uses_active_pane_title_when_tab_title_is_empty() {
+        let tab = tab_info("", Some("wezterm"));
+        assert_eq!(tab.effective_title(), "wezterm");
+    }
+
+    #[test]
+    fn effective_title_returns_empty_when_neither_title_exists() {
+        let tab = tab_info("", None);
+        assert_eq!(tab.effective_title(), "");
+    }
 
     #[test]
     fn rename_prompt_prefers_explicit_tab_title() {
