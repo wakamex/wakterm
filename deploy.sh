@@ -3,24 +3,24 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR"
-DEST="$HOME/wakterm-test"
+DEST="${DEST:-$HOME/.local/bin}"
 TARGET_ROOT="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 SRC="$TARGET_ROOT/release"
 
 usage() {
-    echo "Usage: ./deploy.sh [--restart] [--no-save] [--wipe-session] [--clean]"
+    echo "Usage: ./deploy.sh [--restart] [--no-save] [--wipe-session] [--clean] [--dest DIR]"
     echo ""
     echo "  (no flags)  Build, save manual layout snapshot, copy binaries"
     echo "  --restart   Also kill the mux server (Mac reconnect triggers new binary)"
     echo "  --no-save   Skip wakterm cli save-layout (use when layout/session state is known bad)"
     echo "  --wipe-session  Remove runtime session.json after restart for a clean session"
     echo "  --clean     Run cargo clean for deployed crates before building"
+    echo "  --dest DIR  Deploy binaries into this directory (default: $DEST)"
     echo ""
     echo "After --restart, reconnect from Mac then run:"
     echo "  cd $REPO_ROOT && target/release/wakterm cli restore-layout"
     echo ""
-    echo "To install the deployed binaries into ~/.local/bin:"
-    echo "  ./install.sh"
+    echo "This script deploys binaries directly into ~/.local/bin."
     echo "To install them system-wide instead:"
     echo "  sudo ./install.sh --system"
     echo ""
@@ -32,14 +32,37 @@ RESTART=false
 SAVE_SESSION=true
 WIPE_SESSION=false
 CLEAN_BUILD=false
-for arg in "$@"; do
-    case "$arg" in
-        --restart) RESTART=true ;;
-        --no-save) SAVE_SESSION=false ;;
-        --wipe-session) WIPE_SESSION=true ;;
-        --clean) CLEAN_BUILD=true ;;
-        --help|-h) usage; exit 0 ;;
-        *) echo "Unknown arg: $arg"; usage; exit 1 ;;
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --restart)
+            RESTART=true
+            shift
+            ;;
+        --no-save)
+            SAVE_SESSION=false
+            shift
+            ;;
+        --wipe-session)
+            WIPE_SESSION=true
+            shift
+            ;;
+        --clean)
+            CLEAN_BUILD=true
+            shift
+            ;;
+        --dest)
+            DEST="$2"
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown arg: $1"
+            usage
+            exit 1
+            ;;
     esac
 done
 
@@ -108,6 +131,7 @@ else
 fi
 
 echo "=== Step 3: Deploy binaries ==="
+mkdir -p "$DEST"
 for bin in wakterm wakterm-gui wakterm-mux-server; do
     rm -f "$DEST/$bin"
     cp "$SRC/$bin" "$DEST/$bin"
@@ -165,8 +189,7 @@ else
 fi
 
 echo ""
-echo "To install the deployed binaries into ~/.local/bin:"
-echo "  ./install.sh"
+echo "Binaries are now installed in $DEST."
 echo "To install them system-wide instead:"
 echo "  sudo ./install.sh --system"
 echo "To install or refresh the standalone user service:"

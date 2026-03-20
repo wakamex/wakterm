@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$SCRIPT_DIR"
 owner_user="${SUDO_USER:-$USER}"
 owner_home="$(getent passwd "$owner_user" | cut -d: -f6)"
-source_dir="${SOURCE_DIR:-$owner_home/wakterm-test}"
+source_dir="${SOURCE_DIR:-${CARGO_TARGET_DIR:-$REPO_ROOT/target}/release}"
 mode="user"
 user_prefix_default="${owner_home}/.local/bin"
 system_prefix_default="/usr/local/bin"
