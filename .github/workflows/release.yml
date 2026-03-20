@@ -1,0 +1,164 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "20*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: ubuntu
+            name: ubuntu-latest
+            runs_on: ubuntu-latest
+            artifact_name: release-ubuntu
+            artifact_glob: |
+              wakterm-*.deb
+              wakterm-*.xz
+          - id: macos
+            name: macos-latest
+            runs_on: macos-latest
+            artifact_name: release-macos
+            artifact_glob: |
+              wakterm-*.zip
+          - id: windows
+            name: windows-latest
+            runs_on: windows-latest
+            artifact_name: release-windows
+            artifact_glob: |
+              wakterm-*.zip
+              wakterm-*.exe
+
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTUP_WINDOWS_PATH_ADD_BIN: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        if: matrix.id != 'windows'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust
+        if: matrix.id == 'windows'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.id }}
+
+      - name: Install cargo-nextest from Cargo
+        uses: baptiste0928/cargo-install@v3
+        with:
+          crate: cargo-nextest
+          cache-key: release-${{ matrix.id }}
+
+      - name: Install Linux system deps
+        if: matrix.id == 'ubuntu'
+        run: |
+          sudo apt-get update
+          env CI=yes ./get-deps --testing
+
+      - name: Install macOS targets
+        if: matrix.id == 'macos'
+        shell: bash
+        run: |
+          rustup target add aarch64-apple-darwin
+          rustup target add x86_64-apple-darwin
+
+      - name: Build, test, and package
+        if: matrix.id == 'ubuntu'
+        shell: bash
+        run: |
+          cargo build --release \
+            -p wakterm \
+            -p wakterm-gui \
+            -p wakterm-mux-server \
+            -p strip-ansi-escapes
+          cargo nextest run --all --no-fail-fast
+          bash ci/deploy.sh
+
+      - name: Build, test, and package
+        if: matrix.id == 'macos'
+        shell: bash
+        run: |
+          for target in x86_64-apple-darwin aarch64-apple-darwin; do
+            cargo build --target "$target" --release -p wakterm
+            cargo build --target "$target" --release -p wakterm-gui
+            cargo build --target "$target" --release -p wakterm-mux-server
+            cargo build --target "$target" --release -p strip-ansi-escapes
+          done
+          cargo nextest run --all --no-fail-fast --target=x86_64-apple-darwin
+          bash ci/deploy.sh
+
+      - name: Build, test, and package
+        if: matrix.id == 'windows'
+        shell: cmd
+        run: |
+          PATH C:\Strawberry\perl\bin;%PATH%
+          cargo build --release -p wakterm -p wakterm-gui -p wakterm-mux-server -p strip-ansi-escapes
+          cargo nextest run --all --no-fail-fast
+
+      - name: Package Windows artifacts
+        if: matrix.id == 'windows'
+        shell: bash
+        run: bash ci/deploy.sh
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_glob }}
+
+  publish:
+    name: publish-release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(wakterm-*.deb wakterm-*.xz wakterm-*.zip wakterm-*.exe)
+          for f in "${files[@]}"; do
+            sha256sum "$f" > "$f.sha256"
+          done
+
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: bash ci/create-release.sh "${GITHUB_REF_NAME}"
+
+      - name: Upload release artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(wakterm-*.deb wakterm-*.xz wakterm-*.zip wakterm-*.exe *.sha256)
+          gh release upload --clobber "${GITHUB_REF_NAME}" "${files[@]}"

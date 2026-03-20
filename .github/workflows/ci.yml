@@ -1,0 +1,123 @@
+name: ci
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.lock"
+      - "**/Cargo.toml"
+      - ".cargo/config.toml"
+      - ".github/workflows/ci.yml"
+      - "assets/fonts/**/*"
+      - "assets/icon/*"
+      - "assets/macos/**/*"
+      - "assets/open-wakterm-here"
+      - "assets/shell-completion/**/*"
+      - "assets/shell-integration/**/*"
+      - "assets/wakterm-nautilus.py"
+      - "assets/wakterm.appdata.xml"
+      - "assets/wakterm.desktop"
+      - "assets/windows/**/*"
+      - "get-deps"
+      - "termwiz/data/wakterm.terminfo"
+  push:
+    branches:
+      - main
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.lock"
+      - "**/Cargo.toml"
+      - ".cargo/config.toml"
+      - ".github/workflows/ci.yml"
+      - "assets/fonts/**/*"
+      - "assets/icon/*"
+      - "assets/macos/**/*"
+      - "assets/open-wakterm-here"
+      - "assets/shell-completion/**/*"
+      - "assets/shell-integration/**/*"
+      - "assets/wakterm-nautilus.py"
+      - "assets/wakterm.appdata.xml"
+      - "assets/wakterm.desktop"
+      - "assets/windows/**/*"
+      - "get-deps"
+      - "termwiz/data/wakterm.terminfo"
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: ubuntu
+            name: ubuntu-latest
+            runs_on: ubuntu-latest
+            nextest_key: ubuntu-latest
+          - id: macos
+            name: macos-latest
+            runs_on: macos-latest
+            nextest_key: macos-latest
+          - id: windows
+            name: windows-latest
+            runs_on: windows-latest
+            nextest_key: windows-latest
+
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTUP_WINDOWS_PATH_ADD_BIN: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        if: matrix.id != 'windows'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust
+        if: matrix.id == 'windows'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-${{ matrix.id }}
+
+      - name: Install cargo-nextest from Cargo
+        uses: baptiste0928/cargo-install@v3
+        with:
+          crate: cargo-nextest
+          cache-key: ci-${{ matrix.nextest_key }}
+
+      - name: Install Linux system deps
+        if: matrix.id == 'ubuntu'
+        run: |
+          sudo apt-get update
+          env CI=yes ./get-deps --testing
+
+      - name: Build and test
+        if: matrix.id != 'windows'
+        shell: bash
+        run: |
+          cargo build --release \
+            -p wakterm \
+            -p wakterm-gui \
+            -p wakterm-mux-server \
+            -p strip-ansi-escapes
+          cargo nextest run --all --no-fail-fast
+
+      - name: Build and test
+        if: matrix.id == 'windows'
+        shell: cmd
+        run: |
+          PATH C:\Strawberry\perl\bin;%PATH%
+          cargo build --release -p wakterm -p wakterm-gui -p wakterm-mux-server -p strip-ansi-escapes
+          cargo nextest run --all --no-fail-fast
