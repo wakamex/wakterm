@@ -2279,16 +2279,15 @@ impl TermWindow {
 
     fn move_tab(&mut self, tab_idx: usize) -> anyhow::Result<()> {
         let mux = Mux::get();
+        let active = self
+            .get_active_tab_index()
+            .ok_or_else(|| anyhow!("window has no active tab for this client"))?;
         let mut window = mux
             .get_window_mut(self.mux_window_id)
             .ok_or_else(|| anyhow!("no such window"))?;
 
         let max = window.len();
         ensure!(max > 0, "no more tabs");
-
-        let active = self
-            .get_active_tab_index()
-            .ok_or_else(|| anyhow!("window has no active tab for this client"))?;
 
         ensure!(tab_idx < max, "cannot move a tab out of range");
 
