@@ -33,6 +33,11 @@ channel still ship that version.
 
 All upstream WezTerm packages are frozen at the February 2024 release.
 
+### Relationship to upstream
+
+96% of wakterm's Rust source is upstream WezTerm code.
+The fork adds ~15k net lines focused on mux reliability, session persistence, and agent harnesses.
+
 ### Why fewer targets?
 
 wakterm focuses build and test effort on the three platforms its maintainer
