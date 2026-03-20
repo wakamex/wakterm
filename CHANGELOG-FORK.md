@@ -55,6 +55,14 @@ All changes relative to upstream `wakterm/wakterm` main at `05343b387`.
 
 - **Improve `wakterm cli list` table layout** ([a5a9966](https://github.com/wakamex/wakterm/commit/a5a996685))
 
+### Docs Site
+
+- **Replace colorscheme index pages with interactive browser** ([839988a](https://github.com/wakamex/wakterm/commit/839988a5a))
+  Removed hundreds of static colorscheme pages and replaced them with a searchable, filterable browser with live previews.
+
+- **Modernize docs site** ([839988a](https://github.com/wakamex/wakterm/commit/839988a5a))
+  Dropped legacy asciinema player, mdbook assets, and custom CSS. Trimmed global page load cost.
+
 ## Bug Fixes
 
 ### Resize / Split Tree
