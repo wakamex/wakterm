@@ -204,6 +204,13 @@ and inspect a full preview without loading thousands of embedded terminal player
         <option value="light">Light</option>
       </select>
     </label>
+    <label class="scheme-browser__field scheme-browser__field--match">
+      <span>Match colors</span>
+      <span class="scheme-browser__match-row">
+        <input type="text" placeholder="#040506, #b6aa99, #ff9800" data-scheme-match>
+        <input type="color" value="#1a1b26" data-scheme-picker title="Pick a color to match">
+      </span>
+    </label>
   </div>
   <p class="scheme-browser__summary" data-scheme-summary></p>
   <div class="scheme-browser__layout">
@@ -251,6 +258,7 @@ TOC = [
         "config/files.md",
         children=[
             Page("Colors & Appearance", "config/appearance.md"),
+            GenColorScheme("Color Schemes", "colorschemes"),
             Page("Launching Programs", "config/launch.md"),
             Page("Fonts", "config/fonts.md"),
             Page("Font Shaping", "config/font-shaping.md"),
@@ -261,7 +269,6 @@ TOC = [
             Page("Keyboard Encoding", "config/key-encoding.md"),
             Page("Mouse Binding", "config/mouse.md"),
             Page("Plugins", "config/plugins.md"),
-            GenColorScheme("Color Schemes", "colorschemes"),
             Gen("Recipes", "recipes", extract_title=True),
         ],
     ),

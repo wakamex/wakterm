@@ -7,6 +7,8 @@
   var searchEl = root.querySelector("[data-scheme-search]");
   var sourceEl = root.querySelector("[data-scheme-source]");
   var appearanceEl = root.querySelector("[data-scheme-appearance]");
+  var matchEl = root.querySelector("[data-scheme-match]");
+  var pickerEl = root.querySelector("[data-scheme-picker]");
   var summaryEl = root.querySelector("[data-scheme-summary]");
   var listEl = root.querySelector("[data-scheme-list]");
   var detailEl = root.querySelector("[data-scheme-detail]");
@@ -33,6 +35,70 @@
 
   function normalize(text) {
     return String(text || "").toLowerCase();
+  }
+
+  // -- CIELAB color math --
+  var labCache = {};
+
+  function hexToRgb(hex) {
+    hex = hex.replace(/^#/, "");
+    if (hex.length === 3) {
+      hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+    }
+    var n = parseInt(hex, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+
+  function linearize(c) {
+    c /= 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  }
+
+  function hexToLab(hex) {
+    if (labCache[hex]) return labCache[hex];
+    var rgb = hexToRgb(hex);
+    var r = linearize(rgb[0]), g = linearize(rgb[1]), b = linearize(rgb[2]);
+    var x = (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047;
+    var y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b;
+    var z = (0.0193339 * r + 0.1191920 * g + 0.9503041 * b) / 1.08883;
+    function f(t) { return t > 0.008856 ? Math.pow(t, 1 / 3) : 7.787 * t + 16 / 116; }
+    var lab = [116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z))];
+    labCache[hex] = lab;
+    return lab;
+  }
+
+  function deltaE(a, b) {
+    var dL = a[0] - b[0], da = a[1] - b[1], db = a[2] - b[2];
+    return Math.sqrt(dL * dL + da * da + db * db);
+  }
+
+  function parseMatchColors(text) {
+    return text.split(/[,;\s]+/).map(function (t) {
+      t = t.trim().toLowerCase();
+      if (t && t[0] !== "#") t = "#" + t;
+      return t;
+    }).filter(function (t) {
+      return /^#[0-9a-f]{6}$/.test(t) || /^#[0-9a-f]{3}$/.test(t);
+    }).map(function (t) {
+      if (t.length === 4) return "#" + t[1] + t[1] + t[2] + t[2] + t[3] + t[3];
+      return t;
+    });
+  }
+
+  function scoreScheme(item, targetLabs) {
+    var palette = [item.bg, item.fg, item.cursor, item.selection_bg, item.selection_fg]
+      .concat(item.ansi).concat(item.brights);
+    var paletteLabs = palette.map(hexToLab);
+    var total = 0;
+    for (var i = 0; i < targetLabs.length; i++) {
+      var minDist = Infinity;
+      for (var j = 0; j < paletteLabs.length; j++) {
+        var d = deltaE(targetLabs[i], paletteLabs[j]);
+        if (d < minDist) minDist = d;
+      }
+      total += minDist;
+    }
+    return total / targetLabs.length;
   }
 
   function currentQuery() {
@@ -90,6 +156,9 @@
     if (appearanceEl.value) {
       pieces.push(appearanceEl.value);
     }
+    if (parseMatchColors(matchEl.value).length > 0) {
+      pieces.push("ranked by similarity");
+    }
     summaryEl.textContent = pieces.join(" · ");
   }
 
@@ -115,6 +184,14 @@
     } else {
       next.searchParams.delete("appearance");
     }
+    var matchHexes = parseMatchColors(matchEl.value);
+    if (matchHexes.length) {
+      next.searchParams.set("match", matchHexes.map(function (c) {
+        return c.replace("#", "");
+      }).join(","));
+    } else {
+      next.searchParams.delete("match");
+    }
     next.searchParams.delete("scheme");
     next.hash = state.selected ? state.selected : "";
     history.replaceState(null, "", next);
@@ -130,14 +207,24 @@
       .map(function (item) {
         var active = item.ident === state.selected ? " is-active" : "";
         var mini = [item.bg, item.fg].concat(item.ansi.slice(1, 5));
+        var scoreBadge = "";
+        if (item._matchScore !== undefined) {
+          scoreBadge =
+            '<span class="scheme-browser__match-score">\u0394E ' +
+            item._matchScore.toFixed(1) +
+            "</span>";
+        }
         return (
           '<button class="scheme-browser__item' +
           active +
           '" data-scheme-select="' +
           item.ident +
           '">' +
+          '<span class="scheme-browser__item-header">' +
           '<span class="scheme-browser__item-name">' +
           escapeHtml(item.name) +
+          "</span>" +
+          scoreBadge +
           "</span>" +
           '<span class="scheme-browser__item-meta">' +
           escapeHtml(item.source) +
@@ -273,6 +360,22 @@
       return haystack.indexOf(query) !== -1;
     });
 
+    var matchHexes = parseMatchColors(matchEl.value);
+    var matchLabs = matchHexes.map(hexToLab);
+
+    if (matchLabs.length > 0) {
+      state.filtered.forEach(function (item) {
+        item._matchScore = scoreScheme(item, matchLabs);
+      });
+      state.filtered.sort(function (a, b) {
+        return a._matchScore - b._matchScore;
+      });
+    } else {
+      state.filtered.forEach(function (item) {
+        item._matchScore = undefined;
+      });
+    }
+
     ensureSelected();
     renderSummary();
     renderList();
@@ -308,9 +411,16 @@
     syncUrl();
   });
 
-  [searchEl, sourceEl, appearanceEl].forEach(function (el) {
+  [searchEl, sourceEl, appearanceEl, matchEl].forEach(function (el) {
     el.addEventListener("input", applyFilters);
     el.addEventListener("change", applyFilters);
+  });
+
+  pickerEl.addEventListener("input", function () {
+    var color = pickerEl.value;
+    var existing = matchEl.value.trim();
+    matchEl.value = existing ? existing + ", " + color : color;
+    applyFilters();
   });
 
   window.addEventListener("hashchange", function () {
@@ -332,6 +442,8 @@
       searchEl.value = urlState.searchParams.get("q") || "";
       sourceEl.value = urlState.searchParams.get("source") || "";
       appearanceEl.value = urlState.searchParams.get("appearance") || "";
+      matchEl.value = (urlState.searchParams.get("match") || "")
+        .split(",").filter(Boolean).map(function (c) { return "#" + c; }).join(", ");
 
       applyFilters();
     })
