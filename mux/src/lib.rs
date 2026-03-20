@@ -2152,6 +2152,10 @@ impl Mux {
             tab.log_runtime_invariant_errors("mux.split_pane");
         }
 
+        self.set_active_pane_for_current_identity(window_id, tab_id, pane.pane_id())
+            .ok();
+        self.record_focus_for_current_identity(pane.pane_id());
+
         // FIXME: clipboard
 
         let dims = pane.get_dimensions();
@@ -3452,6 +3456,84 @@ mod test {
             mux.get_active_tab_for_window_for_client(view_b.as_ref(), window_id)
                 .map(|tab| tab.tab_id()),
             Some(tab_c.tab_id())
+        );
+    }
+
+    #[test]
+    fn split_pane_moves_focus_to_new_pane_for_current_identity() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+
+        let (client_a, view_a) = register_test_client(&mux, "split-view-a");
+        let (_client_b, view_b) = register_test_client(&mux, "split-view-b");
+
+        let _identity = mux.with_identity(Some(client_a.clone()));
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new(50, size, domain.id);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        mux.set_active_tab_for_client_view(view_a.as_ref(), window_id, tab.tab_id())
+            .unwrap();
+        mux.set_active_pane_for_client_view(view_a.as_ref(), window_id, tab.tab_id(), pane_id)
+            .unwrap();
+        mux.set_active_tab_for_client_view(view_b.as_ref(), window_id, tab.tab_id())
+            .unwrap();
+        mux.set_active_pane_for_client_view(view_b.as_ref(), window_id, tab.tab_id(), pane_id)
+            .unwrap();
+        mux.record_focus_for_client(client_a.as_ref(), pane_id);
+
+        let (new_pane, _size) = smol::block_on(mux.split_pane(
+            pane_id,
+            SplitRequest {
+                direction: crate::tab::SplitDirection::Horizontal,
+                target_is_second: true,
+                size: crate::tab::SplitSize::Percent(50),
+                top_level: false,
+            },
+            SplitSource::Spawn {
+                command: None,
+                command_dir: None,
+            },
+            SpawnTabDomain::CurrentPaneDomain,
+        ))
+        .unwrap();
+
+        let new_pane_id = new_pane.pane_id();
+
+        assert_ne!(new_pane_id, pane_id);
+        assert_eq!(tab.get_active_pane().unwrap().pane_id(), new_pane_id);
+        let view_a_state = mux.client_window_view_state_for_view(view_a.as_ref());
+        let view_b_state = mux.client_window_view_state_for_view(view_b.as_ref());
+        assert_eq!(
+            view_a_state
+                .get(&window_id)
+                .and_then(|window| window.tabs.get(&tab.tab_id()))
+                .and_then(|tab| tab.active_pane_id),
+            Some(new_pane_id)
+        );
+        assert_eq!(
+            view_b_state
+                .get(&window_id)
+                .and_then(|window| window.tabs.get(&tab.tab_id()))
+                .and_then(|tab| tab.active_pane_id),
+            Some(pane_id)
         );
     }
 }
