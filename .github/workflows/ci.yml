@@ -121,3 +121,44 @@ jobs:
           PATH C:\Strawberry\perl\bin;%PATH%
           cargo build --release -p wakterm -p wakterm-gui -p wakterm-mux-server -p strip-ansi-escapes
           cargo nextest run --all --no-fail-fast
+
+  build-test-fedora:
+    name: fedora-latest
+    runs-on: ubuntu-latest
+    container: fedora:latest
+
+    env:
+      CARGO_INCREMENTAL: "0"
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install container prerequisites
+        run: dnf install -y ca-certificates curl git
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install Linux system deps
+        run: env CI=yes ./get-deps --testing
+
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked
+
+      - name: Build and test
+        run: |
+          cargo build --release \
+            -p wakterm \
+            -p wakterm-gui \
+            -p wakterm-mux-server \
+            -p strip-ansi-escapes
+          cargo nextest run --all --no-fail-fast
