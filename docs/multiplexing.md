@@ -1,12 +1,18 @@
 !!! note
-    *multiplexing is still a young feature and is evolving rapidly.  Your feedback is welcomed!*
+    wakterm puts extra emphasis on multiplexer reliability and persistence.
+    Layout save and restore, multi-client stability, and agent harness panes
+    all build on the same mux foundation described here.
 
 ## Multiplexing
 
-The out-of-the-box experience with `wakterm` allows you to multiplex local tabs
-and windows which will persist until they are closed.  With a little extra
-configuration you can enable local terminal multiplexing with features similar
-to those in [tmux](https://github.com/tmux/tmux/wiki) or [screen](https://en.wikipedia.org/wiki/GNU_Screen).
+Multiplexing is the part of wakterm that lets panes, tabs, and windows live in
+long-running domains instead of being tied to a single GUI process.
+
+Out of the box, `wakterm` already multiplexes local tabs and windows. With a
+little extra configuration, you can also connect to local or remote domains in
+a way that feels closer to [tmux](https://github.com/tmux/tmux/wiki) or
+[screen](https://en.wikipedia.org/wiki/GNU_Screen), but with native mouse,
+clipboard, scrollback, and GUI integration.
 
 Multiplexing in `wakterm` is based around the concept of *multiplexing domains*;
 a domain is a distinct set of windows and tabs.  When wakterm starts up it
@@ -20,11 +26,22 @@ the mouse, clipboard and scrollback features of the terminal.
 Key bindings allow you to spawn new tabs in the default local domain,
 the domain of the current tab, or a specific numbered domain.
 
+### Fork Highlights
+
+* Local layouts can be saved and restored with `wakterm cli save-layout` and
+  `wakterm cli restore-layout`
+* The built-in session persistence path can automatically restore split trees,
+  working directories, titles, and active-tab selection after a mux restart
+* Multi-client resize handling is more stable, with fewer redraw storms,
+  flicker loops, and split-tree disagreements
+* Agent harness panes such as Claude, Codex, Gemini, and OpenCode live inside
+  the same mux model, so tabs can mix regular terminals and agent panes
+
 ## SSH Domains
 
 *wakterm also supports [regular ad-hoc ssh connections](ssh.md).
-This section of the docs refers to running a wakterm daemon on the remote end
-of a multiplexing session that uses ssh as a channel*
+This section is about durable multiplexed sessions that run a wakterm daemon on
+the remote side and use SSH as the transport.*
 
 A connection to a remote wakterm multiplexer made via an ssh connection is
 referred to as an *SSH domain*.  **A compatible version of wakterm must be

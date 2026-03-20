@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-import base64
 import glob
 import json
 import os
 import re
 import subprocess
 import sys
+from urllib.parse import urlparse
 
 
 class Page(object):
@@ -14,24 +14,18 @@ class Page(object):
         self.filename = filename
         self.children = children or []
 
-    def render(self, output, depth=0, mode="mdbook"):
+    def render(self, output, depth=0):
         indent = "  " * depth
         bullet = "- " if depth > 0 else ""
-        if mode == "mdbook":
-            if self.filename:
-                output.write(f"{indent}{bullet}[{self.title}]({self.filename})\n")
-        elif mode == "mkdocs":
-            if depth > 0:
-                if len(self.children) == 0:
-                    output.write(f'{indent}{bullet}"{self.title}": {self.filename}\n')
-                else:
-                    output.write(f'{indent}{bullet}"{self.title}":\n')
-                    if self.filename:
-                        output.write(
-                            f'{indent}  {bullet}"{self.title}": {self.filename}\n'
-                        )
+        if depth > 0:
+            if len(self.children) == 0:
+                output.write(f'{indent}{bullet}"{self.title}": {self.filename}\n')
+            else:
+                output.write(f'{indent}{bullet}"{self.title}":\n')
+                if self.filename:
+                    output.write(f'{indent}  {bullet}"{self.title}": {self.filename}\n')
         for kid in self.children:
-            kid.render(output, depth + 1, mode)
+            kid.render(output, depth + 1)
 
 
 # autogenerate an index page from the contents of a directory
@@ -42,7 +36,7 @@ class Gen(object):
         self.index = index
         self.extract_title = extract_title
 
-    def render(self, output, depth=0, mode="mdbook"):
+    def render(self, output, depth=0):
         names = sorted(glob.glob(f"{self.dirname}/*.md"))
         children = []
         for filename in names:
@@ -58,7 +52,7 @@ class Gen(object):
 
         index_filename = f"{self.dirname}/index.md"
         index_page = Page(self.title, index_filename, children=children)
-        index_page.render(output, depth, mode)
+        index_page.render(output, depth)
         with open(f"{self.dirname}/index.md", "w") as idx:
             if self.index:
                 idx.write(self.index)
@@ -90,108 +84,46 @@ def load_scheme(scheme):
         "fg": scheme["colors"]["foreground"],
         "bg": scheme["colors"]["background"],
         "metadata": scheme["metadata"],
+        "ansi": scheme["colors"]["ansi"],
+        "brights": scheme["colors"]["brights"],
+        "cursor": scheme["colors"].get(
+            "cursor_border", scheme["colors"].get("cursor_bg", scheme["colors"]["foreground"])
+        ),
+        "selection_fg": scheme["colors"].get("selection_fg", scheme["colors"]["background"]),
+        "selection_bg": scheme["colors"].get("selection_bg", scheme["colors"]["foreground"]),
     }
-
-    # <https://github.com/asciinema/asciinema-player/wiki/Custom-terminal-themes>
-    css = f"""
-.asciinema-theme-{ident} .asciinema-terminal {{
-    color: {data["fg"]};
-    background-color: {data["bg"]};
-    border-color: {data["bg"]};
-}}
-
-.asciinema-theme-{ident} .fg-bg {{
-    color: {data["bg"]};
-}}
-
-.asciinema-theme-{ident} .bg-fg {{
-    background-color: {data["fg"]};
-}}
-"""
-
-    if "cursor_border" in scheme["colors"]:
-        data["cursor"] = scheme["colors"]["cursor_border"]
-
-        css += f"""
-.asciinema-theme-{ident} .cursor-b {{
-    background-color: {data["cursor"]} !important;
-}}
-"""
-
-    if "selection_fg" in scheme["colors"] and "selection_bg" in scheme["colors"]:
-        selection_bg = scheme["colors"]["selection_bg"]
-        selection_fg = scheme["colors"]["selection_fg"]
-
-        css += f"""
-.asciinema-theme-{ident} .asciinema-terminal ::selection {{
-    color: {selection_fg};
-    background-color: {selection_bg};
-}}
-"""
-
-    for idx, color in enumerate(colors):
-        css += f"""
-.asciinema-theme-{ident} .fg-{idx} {{
-    color: {color};
-}}
-.asciinema-theme-{ident} .bg-{idx} {{
-    background-color: {color};
-}}
-"""
-
-    data["css"] = css
+    data["all_colors"] = colors
     return data
 
 
-def screen_shot_table(scheme):
-    T = "gYw"
-    lines = [
-        scheme["name"],
-        "",
-        "         def     40m     41m     42m     43m     44m     45m     46m     47m",
-    ]
-    for fg_space in [
-        "    m",
-        "   1m",
-        "  30m",
-        "1;30m",
-        "  31m",
-        "1;31m",
-        "  32m",
-        "1;32m",
-        "  33m",
-        "1;33m",
-        "  34m",
-        "1;34m",
-        "  35m",
-        "1;35m",
-        "  36m",
-        "1;36m",
-        "  37m",
-        "1;37m",
-    ]:
-        fg = fg_space.strip()
-        line = f" {fg_space} \033[{fg}  {T}  "
+def hex_luminance(color):
+    color = color.lstrip("#")
+    if len(color) != 6:
+        return 0
+    r = int(color[0:2], 16)
+    g = int(color[2:4], 16)
+    b = int(color[4:6], 16)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
 
-        for bg in ["40m", "41m", "42m", "43m", "44m", "45m", "46m", "47m"]:
-            line += f" \033[{fg}\033[{bg}  {T}  \033[0m"
-        lines.append(line)
 
-    lines.append("")
-    lines.append("")
+def classify_appearance(color):
+    return "light" if hex_luminance(color) > 140 else "dark"
 
-    screen = "\r\n".join(lines)
 
-    header = {
-        "version": 2,
-        "width": 80,
-        "height": 24,
-        "title": scheme["name"],
-    }
-    header = json.dumps(header, sort_keys=True)
-    data = json.dumps([0.0, "o", screen])
-
-    return base64.b64encode(f"{header}\n{data}\n".encode("UTF-8")).decode("UTF-8")
+def classify_source(metadata):
+    url = metadata.get("origin_url", "")
+    hostname = urlparse(url).netloc.lower()
+    if "terminal.sexy" in hostname:
+        return "terminal.sexy"
+    if "gogh" in hostname:
+        return "Gogh"
+    if "base16" in hostname:
+        return "base16"
+    if "iterm2colorschemes" in hostname or "mbadolato" in hostname:
+        return "iTerm2"
+    if hostname:
+        return hostname.replace("www.", "")
+    return "Other"
 
 
 class GenColorScheme(object):
@@ -200,126 +132,89 @@ class GenColorScheme(object):
         self.dirname = dirname
         self.index = index
 
-    def render(self, output, depth=0, mode="mdbook"):
+    def render(self, output, depth=0):
         with open("colorschemes/data.json") as f:
             scheme_data = json.load(f)
-        by_prefix = {}
-        by_name = {}
-        for scheme in scheme_data:
-            scheme = load_scheme(scheme)
-            prefix = scheme["prefix"]
-            if prefix not in by_prefix:
-                by_prefix[prefix] = []
-            by_prefix[prefix].append(scheme)
-            by_name[scheme["name"]] = scheme
+        schemes = []
+        for raw in scheme_data:
+            scheme = load_scheme(raw)
+            entry = {
+                "name": scheme["name"],
+                "ident": scheme["ident"],
+                "prefix": scheme["prefix"],
+                "appearance": classify_appearance(scheme["bg"]),
+                "source": classify_source(scheme["metadata"]),
+                "author": scheme["metadata"].get("author"),
+                "aliases": scheme["metadata"].get("aliases", []),
+                "origin_url": scheme["metadata"].get("origin_url"),
+                "wakterm_version": scheme["metadata"].get("wakterm_version"),
+                "fg": scheme["fg"],
+                "bg": scheme["bg"],
+                "cursor": scheme["cursor"],
+                "selection_fg": scheme["selection_fg"],
+                "selection_bg": scheme["selection_bg"],
+                "ansi": scheme["ansi"],
+                "brights": scheme["brights"],
+            }
+            schemes.append(entry)
 
-        style_filename = f"{self.dirname}/scheme.css"
-        with open(style_filename, "w") as style_file:
-            for scheme in by_name.values():
-                style_file.write(scheme["css"])
-                style_file.write("\n")
-        js_filename = f"{self.dirname}/scheme.js"
-        with open(js_filename, "w") as js_file:
-            data_by_scheme = {}
-            for scheme in by_name.values():
-                ident = scheme["ident"]
-                data = screen_shot_table(scheme)
-                data_by_scheme[ident] = data
+        schemes.sort(key=lambda item: item["name"].lower())
 
-            js_file.write(f"SCHEME_DATA = {json.dumps(data_by_scheme)};\n")
-            js_file.write(
-                f"""
-function load_scheme_player(ident) {{
-  var data = SCHEME_DATA[ident];
-  AsciinemaPlayer.create(
-    'data:text/plain;base64,' + data,
-    document.getElementById(ident + '-player'), {{
-    theme: ident,
-    autoPlay: true,
-  }});
-}}
-"""
-            )
-
-        children = []
-        for scheme_prefix in sorted(by_prefix.keys()):
-            scheme_filename = f"{self.dirname}/{scheme_prefix}/index.md"
-            os.makedirs(os.path.dirname(scheme_filename), exist_ok=True)
-            children.append(Page(scheme_prefix, scheme_filename))
-
-            with open(scheme_filename, "w") as idx:
-                idents_to_load = []
-
-                idx.write(
-                    f"""---
-title: Color Schemes with first letter "{scheme_prefix}"
----
-
-"""
-                )
-
-                for scheme in by_prefix[scheme_prefix]:
-                    title = scheme["name"]
-                    idx.write(f"## {title}\n")
-
-                    data = screen_shot_table(scheme)
-                    ident = scheme["ident"]
-                    idents_to_load.append(ident)
-
-                    idx.write(
-                        f"""
-<div id="{ident}-player"></div>
-"""
-                    )
-
-                    author = scheme["metadata"].get("author", None)
-                    if author:
-                        idx.write(f"Author: `{author}`<br/>\n")
-                    origin_url = scheme["metadata"].get("origin_url", None)
-                    if origin_url:
-                        idx.write(f"Source: <{origin_url}><br/>\n")
-                    version = scheme["metadata"].get("wakterm_version", None)
-                    if version and version != "Always":
-                        idx.write(f"{{{{since('{version}')}}}}<br/>\n")
-
-                    aliases = scheme["metadata"]["aliases"]
-                    if len(aliases) > 0:
-                        alias_list = []
-                        for a in aliases:
-                            alias_list.append(f"`{a}`")
-                        aliases = ", ".join(alias_list)
-                        idx.write(f"This scheme is also known as {aliases}.<br/>\n")
-
-                    idx.write("\nTo use this scheme, add this to your config:\n")
-                    idx.write(
-                        f"""
-```lua
-config.color_scheme = '{title}'
-```
-
-"""
-                    )
-
-                idents_to_load = json.dumps(idents_to_load)
-                idx.write(
-                    f"""
-<script>
-document.addEventListener("DOMContentLoaded", function() {{
-  {idents_to_load}.forEach(ident => load_scheme_player(ident));
-}});
-</script>
-"""
-                )
+        os.makedirs(self.dirname, exist_ok=True)
+        with open(f"{self.dirname}/catalog.json", "w") as catalog:
+            json.dump(schemes, catalog)
 
         index_filename = f"{self.dirname}/index.md"
-        index_page = Page(self.title, index_filename, children=children)
-        index_page.render(output, depth, mode)
+        index_page = Page(self.title, index_filename)
+        index_page.render(output, depth)
 
-        with open(f"{self.dirname}/index.md", "w") as idx:
-            idx.write(f"{len(scheme_data)} Color schemes listed by first letter\n\n")
-            for page in children:
-                upper = page.title.upper()
-                idx.write(f"  - [{upper}]({page.title}/index.md)\n")
+        with open(index_filename, "w") as idx:
+            idx.write(
+                f"""---
+hide:
+  - toc
+---
+
+<link rel="stylesheet" href="/colorschemes/browser.css">
+<script defer src="/colorschemes/browser.js"></script>
+
+# Color Scheme Browser
+
+wakterm ships with {len(schemes)} built-in color schemes.
+Use the browser below to search by name, filter by source or appearance,
+and inspect a full preview without loading thousands of embedded terminal players.
+
+<div class="scheme-browser" data-scheme-browser>
+  <div class="scheme-browser__controls">
+    <label class="scheme-browser__field">
+      <span>Search</span>
+      <input type="search" placeholder="Batman, Gogh, nord..." data-scheme-search>
+    </label>
+    <label class="scheme-browser__field">
+      <span>Source</span>
+      <select data-scheme-source>
+        <option value="">All sources</option>
+      </select>
+    </label>
+    <label class="scheme-browser__field">
+      <span>Appearance</span>
+      <select data-scheme-appearance>
+        <option value="">All themes</option>
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+      </select>
+    </label>
+  </div>
+  <p class="scheme-browser__summary" data-scheme-summary></p>
+  <div class="scheme-browser__layout">
+    <div class="scheme-browser__list" data-scheme-list></div>
+    <div class="scheme-browser__detail" data-scheme-detail>
+      <p class="scheme-browser__loading">Loading color schemes…</p>
+    </div>
+  </div>
+</div>
+"""
+            )
 
 
 TOC = [
@@ -504,10 +399,4 @@ with open("../mkdocs.yml", "w") as f:
     f.write("INHERIT: docs/mkdocs-base.yml\n")
     f.write("nav:\n")
     for page in TOC:
-        page.render(f, depth=1, mode="mkdocs")
-
-
-with open("SUMMARY.md", "w") as f:
-    f.write("[root](index.md)\n")
-    for page in TOC:
-        page.render(f, depth=1, mode="mdbook")
+        page.render(f, depth=1)
