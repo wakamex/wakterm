@@ -637,6 +637,7 @@ rustup default {toolchain}
                     "Upload to gemfury",
                     f"for f in wakterm*.deb ; do curl -i -F package=@$f https://$FURY_TOKEN@push.fury.io/wez/ ; done",
                     env={"FURY_TOKEN": "${{ secrets.FURY_TOKEN }}"},
+                    condition="secrets.FURY_TOKEN != ''",
                 ),
             ]
 
@@ -672,6 +673,7 @@ rustup default {toolchain}
                     "Upload to gemfury",
                     f"for f in wakterm*.deb ; do curl -i -F package=@$f https://$FURY_TOKEN@push.fury.io/wez/ ; done",
                     env={"FURY_TOKEN": "${{ secrets.FURY_TOKEN }}"},
+                    condition="secrets.FURY_TOKEN != ''",
                 ),
             ]
 
@@ -1082,12 +1084,15 @@ jobs:
             # in broken releases that can't automatically be repaired
             # <https://github.com/cli/cli/issues/4863>
             if uploader:
+                upload_if = "github.repository == 'wakamex/wakterm'"
+                if is_continuous:
+                    upload_if += " && vars.WAKTERM_ENABLE_NIGHTLY_UPLOADS == 'true'"
                 f.write(
-                    """
+                    f"""
   upload:
     runs-on: ubuntu-latest
     needs: build
-    if: github.repository == 'wakamex/wakterm'
+    if: {upload_if}
     permissions:
       contents: write
       pages: write

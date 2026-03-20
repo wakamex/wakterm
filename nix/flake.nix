@@ -52,6 +52,7 @@
         nativeBuildInputs =
           with pkgs;
           [
+            git
             installShellFiles
             ncurses # tic for terminfo
             pkg-config

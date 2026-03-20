@@ -120,7 +120,7 @@ jobs:
   upload:
     runs-on: ubuntu-latest
     needs: build
-    if: github.repository == 'wakamex/wakterm'
+    if: github.repository == 'wakamex/wakterm' && vars.WAKTERM_ENABLE_NIGHTLY_UPLOADS == 'true'
     permissions:
       contents: write
       pages: write
