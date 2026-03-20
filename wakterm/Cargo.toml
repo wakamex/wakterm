@@ -36,6 +36,7 @@ termwiz-funcs.workspace = true
 termwiz.workspace = true
 textwrap.workspace  =true
 umask.workspace = true
+unicode-segmentation.workspace = true
 url.workspace = true
 uuid.workspace = true
 wakterm-client.workspace = true

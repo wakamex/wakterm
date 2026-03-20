@@ -8,8 +8,8 @@ The default output is tabular:
 
 ```
 $ wakterm cli list
-WINID TABID PANEID WORKSPACE SIZE  TITLE                          CWD
-    0     0      0 default   80x24 wakterm cli list  -- wez@foo:~ file://foo/home/wez/
+WINID TABID PANEID WORKSPACE  SIZE PANE                         TAB  CWD
+    0     0      0 default   80x24 wakterm cli list -- wez@foo:~ main file://foo/home/wez/
 ```
 
 Each row describes a pane.  The meaning of the fields are:
@@ -19,8 +19,12 @@ Each row describes a pane.  The meaning of the fields are:
 * `PANEID` - the pane id
 * `WORKSPACE` - the workspace that the pane is associated with
 * `SIZE` - the dimensions of the pane, measured in terminal cell columns x rows
-* `TITLE` - the pane title
+* `PANE` - the pane title
+* `TAB` - the tab title
 * `CWD` - the current working directory associated with the pane
+
+Long `PANE` and `TAB` values are truncated in the default table output to keep
+the later columns aligned. Use `--format json` for the full values.
 
 {{since('20220624-141144-bd1b7c5d')}}
 
