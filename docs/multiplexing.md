@@ -14,12 +14,25 @@ a domain is a distinct set of windows and tabs.  When wakterm starts up it
 creates a default *local domain* to manage the windows and tabs in the UI, but it
 can also be configured to start or connect to additional domains.
 
+Out of the box, a GUI starts with its own built-in `local` domain. Separate
+clients only share panes, tabs, and windows when they attach to the same
+explicit domain, such as a unix domain, `SSHMUX:` domain, or TLS domain.
+When multiple clients attach to the same domain, the domain contents are
+shared, but each client still keeps its own view state such as focus and the
+active tab.
+
 Once connected to a domain, `wakterm` can attach its windows and tabs to the
 local native UI, providing a more natural experience for interacting with
 the mouse, clipboard and scrollback features of the terminal.
 
 Key bindings allow you to spawn new tabs in the default local domain,
 the domain of the current tab, or a specific numbered domain.
+
+The word `local` is always relative to the mux host, not necessarily to the
+human or client machine using wakterm.
+For a normal desktop GUI, `local` means processes on the same machine as the
+GUI. If a Windows GUI connects to a Linux mux over `SSHMUX:`, that remote
+Linux mux's `local` domain means processes running on Linux, not on Windows.
 
 ### Fork Highlights
 
@@ -37,6 +50,11 @@ the domain of the current tab, or a specific numbered domain.
 *wakterm also supports [regular ad-hoc ssh connections](ssh.md).
 This section is about durable multiplexed sessions that run a wakterm daemon on
 the remote side and use SSH as the transport.*
+
+If you want a quick rule of thumb:
+
+* `wakterm ssh host` or `SSH:host` is plain SSH. It is not a shared persistent mux session.
+* `wakterm connect host` for a configured SSH domain, or `wakterm connect SSHMUX:host`, attaches to a shared persistent remote mux domain.
 
 A connection to a remote wakterm multiplexer made via an ssh connection is
 referred to as an *SSH domain*.  **A compatible version of wakterm must be

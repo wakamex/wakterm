@@ -12,7 +12,17 @@ tags:
 
 When starting the GUI (not using the `serial` or `connect` subcommands), by default wakterm will set the built-in `"local"` domain as the default multiplexing domain.
 
-The `"local"` domain represents processes that are spawned directly on the local system.
+The `"local"` domain represents processes that are spawned directly on the mux
+host, not necessarily on the human or client machine using wakterm.
+
+In the common case of starting the GUI normally, that means processes on the
+same machine as the GUI. If a Windows GUI is attached to a Linux mux server,
+that remote mux's `"local"` domain means processes running on Linux, not on
+Windows.
+
+The built-in `"local"` domain is the default out-of-the-box GUI experience.
+Shared multi-client sessions happen when multiple clients attach to the same
+explicit unix, SSH, or TLS multiplexing domain.
 
 Windows users, particularly those who use
 [WSL](https://docs.microsoft.com/en-us/windows/wsl/about), may wish to override
