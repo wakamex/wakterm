@@ -216,6 +216,10 @@ mod test {
         }
     }
 
+    fn test_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(name)
+    }
+
     fn leaf(
         window_id: mux::window::WindowId,
         tab_id: TabId,
@@ -231,7 +235,7 @@ mod test {
             title: String::new(),
             size: pane_size,
             working_dir: Some(SerdeUrl {
-                url: url::Url::from_file_path("/tmp").unwrap(),
+                url: url::Url::from_file_path(test_path("activate-tab")).unwrap(),
             }),
             is_active_pane,
             is_zoomed_pane: false,

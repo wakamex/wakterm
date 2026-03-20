@@ -1201,6 +1201,10 @@ mod test {
         }
     }
 
+    fn test_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(name)
+    }
+
     fn leaf(
         window_id: WindowId,
         tab_id: TabId,
@@ -1216,7 +1220,7 @@ mod test {
             title: format!("pane-{pane_id}"),
             size: pane_size,
             working_dir: Some(SerdeUrl {
-                url: url::Url::from_file_path("/tmp").unwrap(),
+                url: url::Url::from_file_path(test_path("domain-pane")).unwrap(),
             }),
             is_active_pane,
             is_zoomed_pane: false,

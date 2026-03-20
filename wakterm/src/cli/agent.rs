@@ -790,6 +790,21 @@ fn auto_worktree_path(repo_root: &Path, name: &str) -> PathBuf {
         .join(name)
 }
 
+fn simplify_path(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let path_string = path.to_string_lossy();
+        if let Some(stripped) = path_string.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+        if let Some(stripped) = path_string.strip_prefix("//?/") {
+            return PathBuf::from(stripped);
+        }
+    }
+
+    path
+}
+
 fn normalize_path(path: &Path) -> anyhow::Result<PathBuf> {
     let path = if path.is_absolute() {
         path.to_path_buf()
@@ -798,9 +813,11 @@ fn normalize_path(path: &Path) -> anyhow::Result<PathBuf> {
             .context("resolving current directory")?
             .join(path)
     };
+    let path = simplify_path(path);
 
     if path.exists() {
         path.canonicalize()
+            .map(simplify_path)
             .with_context(|| format!("canonicalizing {}", path.display()))
     } else {
         Ok(path)
@@ -921,7 +938,9 @@ fn capture_command_output(cmd: &mut ProcessCommand, description: &str) -> anyhow
 }
 
 fn path_to_string(path: &Path) -> String {
-    path.to_string_lossy().to_string()
+    simplify_path(path.to_path_buf())
+        .to_string_lossy()
+        .to_string()
 }
 
 fn command_builder_from_cmd(cmd: &str) -> anyhow::Result<CommandBuilder> {
@@ -2150,7 +2169,6 @@ mod test {
     use mux::tab::{PaneEntry, PaneNode, SerdeUrl, SplitDirection, SplitDirectionAndSize};
     use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::convert::TryFrom;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
@@ -2183,6 +2201,22 @@ mod test {
         }
     }
 
+    fn test_path<P: AsRef<Path>>(path: P) -> PathBuf {
+        std::env::temp_dir().join(path)
+    }
+
+    fn test_path_string<P: AsRef<Path>>(path: P) -> String {
+        path_to_string(&test_path(path))
+    }
+
+    fn pane_path(pane_id: PaneId) -> PathBuf {
+        test_path(format!("pane-{pane_id}"))
+    }
+
+    fn pane_path_string(pane_id: PaneId) -> String {
+        path_to_string(&pane_path(pane_id))
+    }
+
     fn leaf(
         window_id: mux::window::WindowId,
         tab_id: mux::tab::TabId,
@@ -2195,7 +2229,9 @@ mod test {
             agent_metadata: None,
             title: format!("pane-{pane_id}"),
             size: size(80, 24),
-            working_dir: Some(SerdeUrl::try_from(format!("file:///tmp/pane-{pane_id}")).unwrap()),
+            working_dir: Some(SerdeUrl {
+                url: url::Url::from_file_path(pane_path(pane_id)).unwrap(),
+            }),
             is_active_pane: true,
             is_zoomed_pane: false,
             workspace: "default".to_string(),
@@ -2237,7 +2273,7 @@ mod test {
                 agent_id: format!("id-{name}"),
                 name: name.to_string(),
                 launch_cmd: "codex".to_string(),
-                declared_cwd: format!("file:///tmp/{name}"),
+                declared_cwd: test_path_string(name),
                 created_at: Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
                 repo_root: None,
                 worktree: None,
@@ -2308,7 +2344,7 @@ mod test {
         fs::write(repo.join("README.md"), "hello\n").unwrap();
         run_git(&repo, &["add", "README.md"]);
         run_git(&repo, &["commit", "-m", "init"]);
-        (temp, repo)
+        (temp, normalize_path(&repo).unwrap())
     }
 
     #[test]
@@ -3035,7 +3071,7 @@ mod test {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].metadata.name, "reviewer");
         assert_eq!(calls[0].metadata.launch_cmd, "codex --profile fast");
-        assert_eq!(calls[0].metadata.declared_cwd, "/tmp/pane-30");
+        assert_eq!(calls[0].metadata.declared_cwd, pane_path_string(30));
         assert!(!calls[0].metadata.managed_checkout);
     }
 
@@ -3121,7 +3157,11 @@ mod test {
         assert_eq!(split_calls.len(), 1);
         assert_eq!(split_calls[0].pane_id, 30);
         assert_eq!(split_calls[0].tab_size, Some(root_size));
-        assert_eq!(split_calls[0].command_dir.as_deref(), Some("/tmp/pane-30"));
+        let pane_30_cwd = pane_path_string(30);
+        assert_eq!(
+            split_calls[0].command_dir.as_deref(),
+            Some(pane_30_cwd.as_str())
+        );
         assert_eq!(
             split_calls[0].split_request.direction,
             SplitDirection::Horizontal
@@ -3133,7 +3173,7 @@ mod test {
         assert_eq!(set_calls.len(), 1);
         assert_eq!(set_calls[0].pane_id, 44);
         assert_eq!(set_calls[0].metadata.name, "reviewer");
-        assert_eq!(set_calls[0].metadata.declared_cwd, "/tmp/pane-30");
+        assert_eq!(set_calls[0].metadata.declared_cwd, pane_30_cwd);
         assert_eq!(set_calls[0].metadata.launch_cmd, "codex --model gpt-5");
         assert!(!set_calls[0].metadata.managed_checkout);
     }
@@ -3216,7 +3256,11 @@ mod test {
         assert_eq!(spawn_calls[0].window_id, Some(10));
         assert_eq!(spawn_calls[0].current_pane_id, Some(30));
         assert_eq!(spawn_calls[0].size, root_size);
-        assert_eq!(spawn_calls[0].command_dir.as_deref(), Some("/tmp/pane-30"));
+        let pane_30_cwd = pane_path_string(30);
+        assert_eq!(
+            spawn_calls[0].command_dir.as_deref(),
+            Some(pane_30_cwd.as_str())
+        );
 
         let title_calls = title_calls.borrow();
         assert_eq!(title_calls.len(), 1);
@@ -3423,8 +3467,8 @@ mod test {
         assert_eq!(agent.metadata.name, "scrape-api");
         assert!(expected_worktree.exists());
         assert!(git_worktree_exists(&repo_root, &expected_worktree).unwrap());
-        let repo_root_string = repo_root.to_string_lossy().to_string();
-        let worktree_string = expected_worktree.to_string_lossy().to_string();
+        let repo_root_string = path_to_string(&repo_root);
+        let worktree_string = path_to_string(&expected_worktree);
 
         let spawn_calls = spawn_calls.borrow();
         assert_eq!(spawn_calls.len(), 1);
@@ -3678,7 +3722,7 @@ mod test {
             repo: None,
             worktree: WorktreeMode::None,
             branch: None,
-            cwd: Some("/tmp/agent-start".into()),
+            cwd: Some(test_path_string("agent-start").into()),
             cmd: None,
         };
 
@@ -3751,12 +3795,13 @@ mod test {
         assert_eq!(set_calls.len(), 1);
         assert_eq!(set_calls[0].pane_id, 30);
         assert_eq!(set_calls[0].metadata.name, "codex");
-        assert_eq!(set_calls[0].metadata.declared_cwd, "/tmp/agent-start");
+        let start_cwd = test_path_string("agent-start");
+        assert_eq!(set_calls[0].metadata.declared_cwd, start_cwd);
 
         let paste_calls = paste_calls.borrow();
         assert_eq!(paste_calls.len(), 1);
         assert_eq!(paste_calls[0].pane_id, 30);
-        assert_eq!(paste_calls[0].data, "cd /tmp/agent-start && codex");
+        assert_eq!(paste_calls[0].data, format!("cd {start_cwd} && codex"));
 
         let key_calls = key_calls.borrow();
         assert_eq!(key_calls.len(), 1);
@@ -3871,7 +3916,7 @@ mod test {
             repo: None,
             worktree: WorktreeMode::None,
             branch: None,
-            cwd: Some("/tmp/agent-start".into()),
+            cwd: Some(test_path_string("agent-start").into()),
             cmd: None,
         };
 
@@ -3915,6 +3960,7 @@ mod test {
 
         let paste_calls = paste_calls.borrow();
         assert_eq!(paste_calls.len(), 1);
-        assert_eq!(paste_calls[0].data, "cd /tmp/agent-start && exec codex");
+        let start_cwd = test_path_string("agent-start");
+        assert_eq!(paste_calls[0].data, format!("cd {start_cwd} && exec codex"));
     }
 }

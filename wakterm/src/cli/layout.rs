@@ -470,6 +470,16 @@ mod test {
         }
     }
 
+    fn test_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(name)
+    }
+
+    fn saved_test_path(name: &str) -> String {
+        url_to_path_string(SerdeUrl {
+            url: url::Url::from_file_path(test_path(name)).unwrap(),
+        })
+    }
+
     fn leaf(
         window_id: WindowId,
         tab_id: TabId,
@@ -477,7 +487,7 @@ mod test {
         left_col: usize,
         top_row: usize,
         pane_size: TerminalSize,
-        cwd: &str,
+        cwd: &Path,
         is_active_pane: bool,
         is_zoomed_pane: bool,
     ) -> PaneNode {
@@ -531,9 +541,39 @@ mod test {
 
     #[test]
     fn converts_l_shaped_tree_to_saved_layout() {
-        let left = leaf(1, 2, 10, 0, 0, size(124, 68), "/tmp/left", false, false);
-        let top = leaf(1, 2, 11, 125, 0, size(125, 33), "/tmp/top", false, false);
-        let bottom = leaf(1, 2, 12, 125, 34, size(125, 34), "/tmp/bottom", true, true);
+        let left = leaf(
+            1,
+            2,
+            10,
+            0,
+            0,
+            size(124, 68),
+            &test_path("left"),
+            false,
+            false,
+        );
+        let top = leaf(
+            1,
+            2,
+            11,
+            125,
+            0,
+            size(125, 33),
+            &test_path("top"),
+            false,
+            false,
+        );
+        let bottom = leaf(
+            1,
+            2,
+            12,
+            125,
+            34,
+            size(125, 34),
+            &test_path("bottom"),
+            true,
+            true,
+        );
         let right = split(
             top,
             bottom,
@@ -555,7 +595,8 @@ mod test {
 
         let saved = SavedPaneTree::from_pane_node(root).unwrap();
         assert!(saved.contains_active());
-        assert_eq!(saved.first_leaf_cwd(), Some("/tmp/left"));
+        let left_cwd = saved_test_path("left");
+        assert_eq!(saved.first_leaf_cwd(), Some(left_cwd.as_str()));
 
         match saved {
             SavedPaneTree::Split {
@@ -572,9 +613,9 @@ mod test {
 
     #[test]
     fn layout_groups_tabs_by_window() {
-        let tab0 = leaf(1, 2, 10, 0, 0, size(250, 68), "/tmp/a", true, false);
-        let tab1 = leaf(1, 3, 11, 0, 0, size(250, 68), "/tmp/b", true, false);
-        let tab2 = leaf(9, 4, 12, 0, 0, size(250, 68), "/tmp/c", true, false);
+        let tab0 = leaf(1, 2, 10, 0, 0, size(250, 68), &test_path("a"), true, false);
+        let tab1 = leaf(1, 3, 11, 0, 0, size(250, 68), &test_path("b"), true, false);
+        let tab2 = leaf(9, 4, 12, 0, 0, size(250, 68), &test_path("c"), true, false);
         let response = ListPanesResponse {
             tabs: vec![tab0, tab1, tab2],
             tab_titles: vec!["one".into(), "two".into(), "three".into()],
@@ -622,7 +663,17 @@ mod test {
 
     #[test]
     fn saved_layout_preserves_agent_metadata_on_leaf() {
-        let mut leaf = leaf(1, 2, 10, 0, 0, size(80, 24), "/tmp/agent", true, false);
+        let mut leaf = leaf(
+            1,
+            2,
+            10,
+            0,
+            0,
+            size(80, 24),
+            &test_path("agent"),
+            true,
+            false,
+        );
         if let PaneNode::Leaf(entry) = &mut leaf {
             entry.agent_metadata = Some(sample_agent_metadata("reviewer"));
         }
@@ -635,7 +686,8 @@ mod test {
                 is_active,
                 is_zoomed,
             } => {
-                assert_eq!(cwd.as_deref(), Some("/tmp/agent"));
+                let agent_cwd = saved_test_path("agent");
+                assert_eq!(cwd.as_deref(), Some(agent_cwd.as_str()));
                 assert_eq!(
                     agent_metadata
                         .as_ref()
@@ -651,7 +703,7 @@ mod test {
 
     #[test]
     fn layout_uses_raw_tab_titles_not_display_titles() {
-        let tab0 = leaf(1, 2, 10, 0, 0, size(250, 68), "/tmp/a", true, false);
+        let tab0 = leaf(1, 2, 10, 0, 0, size(250, 68), &test_path("a"), true, false);
         let response = ListPanesResponse {
             tabs: vec![tab0],
             tab_titles: vec!["scrape".into()],
