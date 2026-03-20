@@ -34,6 +34,7 @@ impl ProxyCommand {
             client_id: ClientId::new(),
             view_id: ClientViewId::persistent(),
             is_proxy: true,
+            client_version_string: Some(config::wakterm_version().to_owned()),
         });
         let serial = 1;
         pdu.encode(&mut stream, serial)?;

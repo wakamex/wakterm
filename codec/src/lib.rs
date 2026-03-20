@@ -978,11 +978,54 @@ pub struct WindowWorkspaceChanged {
     pub workspace: String,
 }
 
-#[derive(Deserialize, Serialize, PartialEq, Debug)]
+#[derive(Serialize, PartialEq, Debug)]
 pub struct SetClientId {
     pub client_id: ClientId,
     pub view_id: ClientViewId,
     pub is_proxy: bool,
+    pub client_version_string: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for SetClientId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct SetClientIdVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for SetClientIdVisitor {
+            type Value = SetClientId;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a SetClientId struct")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let client_id = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                let view_id = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                let is_proxy = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?;
+                let client_version_string = seq.next_element()?.unwrap_or_default();
+
+                Ok(SetClientId {
+                    client_id,
+                    view_id,
+                    is_proxy,
+                    client_version_string,
+                })
+            }
+        }
+
+        deserializer.deserialize_tuple(3, SetClientIdVisitor)
+    }
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
@@ -1618,6 +1661,66 @@ mod test {
             LegacyTabTitleChanged {
                 tab_id: 7,
                 title: "wezterm".to_string(),
+            }
+        );
+    }
+
+    #[derive(Deserialize, Serialize, PartialEq, Debug)]
+    struct LegacySetClientId {
+        client_id: ClientId,
+        view_id: ClientViewId,
+        is_proxy: bool,
+    }
+
+    fn test_client_id() -> ClientId {
+        ClientId {
+            hostname: "example-host".to_string(),
+            username: "example-user".to_string(),
+            pid: 1234,
+            epoch: 5678,
+            id: 9,
+            ssh_auth_sock: Some("/tmp/ssh-auth.sock".to_string()),
+        }
+    }
+
+    #[test]
+    fn set_client_id_accepts_legacy_payload_without_client_version() {
+        let legacy = LegacySetClientId {
+            client_id: test_client_id(),
+            view_id: ClientViewId("client-view".to_string()),
+            is_proxy: false,
+        };
+        let (data, is_compressed) = serialize(&legacy).unwrap();
+        let decoded: SetClientId = deserialize(data.as_slice(), is_compressed).unwrap();
+
+        assert_eq!(
+            decoded,
+            SetClientId {
+                client_id: test_client_id(),
+                view_id: ClientViewId("client-view".to_string()),
+                is_proxy: false,
+                client_version_string: None,
+            }
+        );
+    }
+
+    #[test]
+    fn set_client_id_legacy_decoder_ignores_client_version() {
+        let current = SetClientId {
+            client_id: test_client_id(),
+            view_id: ClientViewId("client-view".to_string()),
+            is_proxy: false,
+            client_version_string: Some("wakterm 20260320".to_string()),
+        };
+        let (data, is_compressed) = serialize(&current).unwrap();
+        let decoded: LegacySetClientId = deserialize(data.as_slice(), is_compressed).unwrap();
+
+        assert_eq!(
+            decoded,
+            LegacySetClientId {
+                client_id: test_client_id(),
+                view_id: ClientViewId("client-view".to_string()),
+                is_proxy: false,
             }
         );
     }
