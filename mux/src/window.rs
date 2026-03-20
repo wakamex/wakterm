@@ -86,6 +86,12 @@ impl Window {
         self.invalidate();
     }
 
+    pub fn move_by_idx(&mut self, from: usize, to: usize) -> Arc<Tab> {
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, Arc::clone(&tab));
+        tab
+    }
+
     pub fn push(&mut self, tab: &Arc<Tab>) {
         self.check_that_tab_isnt_already_in_window(tab);
         self.tabs.push(Arc::clone(tab));
@@ -184,5 +190,44 @@ impl Window {
         if invalidated {
             self.invalidate();
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::Window;
+    use crate::{Mux, Tab};
+    use std::sync::Arc;
+    use wakterm_term::TerminalSize;
+
+    #[test]
+    fn move_by_idx_reorders_tabs_without_duplication() {
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+
+        let tab_a = Arc::new(Tab::new(&size));
+        let tab_b = Arc::new(Tab::new(&size));
+        let tab_c = Arc::new(Tab::new(&size));
+
+        let mut window = Window::new(None, None);
+        window.push(&tab_a);
+        window.push(&tab_b);
+        window.push(&tab_c);
+
+        let moved = window.move_by_idx(2, 0);
+
+        assert_eq!(moved.tab_id(), tab_c.tab_id());
+        assert_eq!(
+            window.iter().map(|tab| tab.tab_id()).collect::<Vec<_>>(),
+            vec![tab_c.tab_id(), tab_a.tab_id(), tab_b.tab_id()]
+        );
     }
 }

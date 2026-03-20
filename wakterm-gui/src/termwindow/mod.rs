@@ -2292,12 +2292,11 @@ impl TermWindow {
 
         ensure!(tab_idx < max, "cannot move a tab out of range");
 
-        let tab_inst = window.remove_by_idx(active);
-        let moved_tab_id = tab_inst.tab_id();
-        window.insert(tab_idx, &tab_inst);
+        let moved_tab_id = window.move_by_idx(active, tab_idx).tab_id();
 
         drop(window);
         mux.set_active_tab_for_current_identity(self.mux_window_id, moved_tab_id)?;
+        mux.notify(MuxNotification::WindowInvalidated(self.mux_window_id));
         self.update_title();
         self.update_scrollbar();
 
