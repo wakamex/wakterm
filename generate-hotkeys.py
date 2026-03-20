@@ -23,77 +23,248 @@ def git_show(ref, path):
         return None
 
 
-def extract_command_blocks(content):
-    """Extract (match_arm, CommandDef_block) pairs from commands.rs.
+def git_show_first(ref, *paths):
+    for path in paths:
+        content = git_show(ref, path)
+        if content is not None:
+            return content
+    return None
 
-    Returns list of {arm, brief, keys_raw, keys_parsed}.
-    The 'arm' is the full match pattern (e.g., 'ActivateTab(3)').
-    """
+
+def find_matching_brace(content, open_brace_idx):
+    depth = 1
+    p = open_brace_idx + 1
+    while p < len(content) and depth > 0:
+        if content[p] == "{":
+            depth += 1
+        elif content[p] == "}":
+            depth -= 1
+        p += 1
+    return p
+
+
+def split_top_level(text, separator):
+    parts = []
+    start = 0
+    i = 0
+    paren = brace = bracket = 0
+    in_string = False
+    in_line_comment = False
+    in_block_comment = 0
+
+    while i < len(text):
+        if in_line_comment:
+            if text[i] == "\n":
+                in_line_comment = False
+            i += 1
+            continue
+
+        if in_block_comment:
+            if text.startswith("/*", i):
+                in_block_comment += 1
+                i += 2
+                continue
+            if text.startswith("*/", i):
+                in_block_comment -= 1
+                i += 2
+                continue
+            i += 1
+            continue
+
+        if in_string:
+            if text[i] == "\\":
+                i += 2
+                continue
+            if text[i] == '"':
+                in_string = False
+            i += 1
+            continue
+
+        if text.startswith("//", i):
+            in_line_comment = True
+            i += 2
+            continue
+        if text.startswith("/*", i):
+            in_block_comment = 1
+            i += 2
+            continue
+
+        if text[i] == '"':
+            in_string = True
+            i += 1
+            continue
+
+        if text[i] == "(":
+            paren += 1
+        elif text[i] == ")":
+            paren -= 1
+        elif text[i] == "{":
+            brace += 1
+        elif text[i] == "}":
+            brace -= 1
+        elif text[i] == "[":
+            bracket += 1
+        elif text[i] == "]":
+            bracket -= 1
+
+        if (
+            paren == 0
+            and brace == 0
+            and bracket == 0
+            and text.startswith(separator, i)
+        ):
+            parts.append(text[start:i])
+            start = i + len(separator)
+            i += len(separator)
+            continue
+
+        i += 1
+
+    parts.append(text[start:])
+    return parts
+
+
+def scan_match_arms(match_body):
+    arms = []
+    start = 0
+    arrow = None
+    i = 0
+    paren = brace = bracket = 0
+    in_string = False
+    in_line_comment = False
+    in_block_comment = 0
+
+    while i < len(match_body):
+        if in_line_comment:
+            if match_body[i] == "\n":
+                in_line_comment = False
+            i += 1
+            continue
+
+        if in_block_comment:
+            if match_body.startswith("/*", i):
+                in_block_comment += 1
+                i += 2
+                continue
+            if match_body.startswith("*/", i):
+                in_block_comment -= 1
+                i += 2
+                continue
+            i += 1
+            continue
+
+        if in_string:
+            if match_body[i] == "\\":
+                i += 2
+                continue
+            if match_body[i] == '"':
+                in_string = False
+            i += 1
+            continue
+
+        if match_body.startswith("//", i):
+            in_line_comment = True
+            i += 2
+            continue
+        if match_body.startswith("/*", i):
+            in_block_comment = 1
+            i += 2
+            continue
+
+        if match_body[i] == '"':
+            in_string = True
+            i += 1
+            continue
+
+        if (
+            paren == 0
+            and brace == 0
+            and bracket == 0
+            and arrow is None
+            and match_body.startswith("=>", i)
+        ):
+            arrow = i
+            i += 2
+            continue
+
+        if (
+            paren == 0
+            and brace == 0
+            and bracket == 0
+            and arrow is not None
+            and match_body[i] == ","
+        ):
+            pattern = match_body[start:arrow].strip()
+            expr = match_body[arrow + 2 : i].strip()
+            if pattern and expr:
+                arms.append((pattern, expr))
+            start = i + 1
+            arrow = None
+            i += 1
+            continue
+
+        if match_body[i] == "(":
+            paren += 1
+        elif match_body[i] == ")":
+            paren -= 1
+        elif match_body[i] == "{":
+            brace += 1
+        elif match_body[i] == "}":
+            brace -= 1
+        elif match_body[i] == "[":
+            bracket += 1
+        elif match_body[i] == "]":
+            bracket -= 1
+
+        i += 1
+
+    if arrow is not None:
+        pattern = match_body[start:arrow].strip()
+        expr = match_body[arrow + 2 :].strip()
+        if pattern and expr:
+            arms.append((pattern, expr))
+
+    return arms
+
+
+def extract_command_blocks(content):
+    """Extract top-level match arms and their first CommandDef block."""
     results = []
 
-    # Find the derive_command_from_key_assignment function body
     func_match = re.search(
         r"fn derive_command_from_key_assignment.*?Some\(match action \{",
-        content, re.DOTALL,
+        content,
+        re.DOTALL,
     )
     if not func_match:
         return results
 
-    func_start = func_match.end()
+    match_body_start = func_match.end()
+    match_body_end = find_matching_brace(content, match_body_start - 1) - 1
+    match_body = content[match_body_start:match_body_end]
 
-    # Find the end of the match (closing }))
-    # We'll iterate through "=> CommandDef {" occurrences
-    pos = func_start
+    for pattern, expr in scan_match_arms(match_body):
+        arm_text = " ".join(
+            line.strip()
+            for line in pattern.splitlines()
+            if line.strip() and not line.strip().startswith("//")
+        )
 
-    while True:
-        idx = content.find("=> CommandDef {", pos)
-        if idx < 0:
-            break
+        cmd_idx = expr.find("CommandDef {")
+        if cmd_idx < 0:
+            continue
 
-        # Extract the match arm: text between previous block end and "=>"
-        # The arm starts after the previous "}," and ends at "=>"
-        arm_region = content[pos:idx].strip()
+        block_start = cmd_idx + len("CommandDef {")
+        block_end = find_matching_brace(expr, cmd_idx + len("CommandDef ")) - 1
+        block = expr[block_start:block_end]
 
-        # Clean up: remove trailing whitespace, comments
-        # The arm might span multiple lines with | alternatives
-        arm_lines = []
-        for line in arm_region.split("\n"):
-            line = line.strip()
-            if line.startswith("//") or not line:
-                continue
-            # Remove trailing comma from previous block
-            if line == "},":
-                continue
-            arm_lines.append(line)
-
-        arm_text = " ".join(arm_lines).strip()
-        # Remove leading punctuation, pipes, commas from previous block
-        arm_text = re.sub(r"^[,|\s]+", "", arm_text)
-        # Remove trailing => if present
-        arm_text = re.sub(r"\s*=>$", "", arm_text)
-
-        # Find the CommandDef block end
-        block_start = idx + len("=> CommandDef {")
-        depth = 1
-        p = block_start
-        while p < len(content) and depth > 0:
-            if content[p] == "{":
-                depth += 1
-            elif content[p] == "}":
-                depth -= 1
-            p += 1
-        block = content[block_start : p - 1]
-
-        # Extract brief
         brief_m = re.search(r'brief:\s*"([^"]*(?:\\.[^"]*)*)"', block)
         brief = brief_m.group(1) if brief_m else ""
         brief = re.sub(r"\\\n\s*", " ", brief).strip()
 
-        # Extract raw keys vec
         keys_m = re.search(r"keys:\s*vec!\[(.*?)\]", block, re.DOTALL)
         keys_raw = keys_m.group(1).strip() if keys_m else ""
 
-        # Parse individual key bindings
         keys_parsed = []
         if keys_raw:
             for km in re.finditer(
@@ -109,21 +280,17 @@ def extract_command_blocks(content):
                 key = km.group(2)
                 keys_parsed.append((mods, key))
 
-        # Normalize the arm text into a clean action identifier
-        # e.g., "ActivateTab(3)" stays as-is
-        # "CopyTextTo { text: _, destination: ClipboardCopyDestination::Clipboard }"
-        # → "CopyTo(Clipboard)" or similar
         action = normalize_action(arm_text)
 
-        results.append({
-            "action": action,
-            "arm": arm_text,
-            "brief": brief,
-            "keys_raw": keys_raw,
-            "keys_parsed": keys_parsed,
-        })
-
-        pos = p
+        results.append(
+            {
+                "action": action,
+                "arm": arm_text,
+                "brief": brief,
+                "keys_raw": keys_raw,
+                "keys_parsed": keys_parsed,
+            }
+        )
 
     return results
 
@@ -141,7 +308,9 @@ def normalize_action(arm_text):
     """
     # Strip alternative patterns and anything after =>
     arm = arm_text.split("=>")[0].strip()
-    arm = arm.split("|")[0].strip()
+    alts = [part.strip() for part in split_top_level(arm, "|") if part.strip()]
+    if alts:
+        arm = alts[-1]
 
     # Remove SpawnCommand details
     arm = re.sub(r"\(SpawnCommand\s*\{[^}]*\}\)", "", arm)
@@ -223,16 +392,25 @@ def main():
         upstream_hash = None
 
     # Parse fork
-    fork_src = git_show("HEAD", "wakterm-gui/src/commands.rs")
+    fork_src = git_show_first("HEAD", "wakterm-gui/src/commands.rs", "wezterm-gui/src/commands.rs")
     if not fork_src:
-        with open("wakterm-gui/src/commands.rs") as f:
-            fork_src = f.read()
+        for path in ("wakterm-gui/src/commands.rs", "wezterm-gui/src/commands.rs"):
+            try:
+                with open(path) as f:
+                    fork_src = f.read()
+                    break
+            except FileNotFoundError:
+                continue
     fork_blocks = extract_command_blocks(fork_src)
 
     # Parse upstream
     upstream_blocks = []
     if upstream_hash:
-        upstream_src = git_show("upstream/main", "wakterm-gui/src/commands.rs")
+        upstream_src = git_show_first(
+            "upstream/main",
+            "wakterm-gui/src/commands.rs",
+            "wezterm-gui/src/commands.rs",
+        )
         if upstream_src:
             upstream_blocks = extract_command_blocks(upstream_src)
 
