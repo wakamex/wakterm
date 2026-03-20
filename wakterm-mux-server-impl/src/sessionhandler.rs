@@ -361,11 +361,14 @@ impl SessionHandler {
                     let client_id = Arc::new(client_id);
                     let view_id = Arc::new(view_id);
                     self.client_id.replace(client_id.clone());
+                    let send_response = send_response.clone();
                     spawn_into_main_thread(async move {
                         let mux = Mux::get();
                         mux.register_client(client_id, view_id);
+                        send_response(Ok(Pdu::UnitResponse(UnitResponse {})));
                     })
                     .detach();
+                    return;
                 }
                 send_response(Ok(Pdu::UnitResponse(UnitResponse {})))
             }
@@ -1532,6 +1535,18 @@ mod test {
             }
         }
 
+        fn new_unregistered() -> Self {
+            let (tx, rx) = smol::channel::unbounded();
+            let sender = PduSender::new(move |decoded| {
+                tx.try_send(decoded).unwrap();
+                Ok(())
+            });
+            Self {
+                handler: SessionHandler::new(sender),
+                responses: rx,
+            }
+        }
+
         fn request(&mut self, executor: &SimpleExecutor, pdu: Pdu) -> Pdu {
             self.handler.process_one(DecodedPdu { pdu, serial: 1 });
             loop {
@@ -1624,6 +1639,72 @@ mod test {
         mux.register_client(client_id.clone(), view_id.clone());
         let harness = HandlerHarness::new(client_id.clone());
         (client_id, view_id, harness)
+    }
+
+    #[test]
+    fn set_client_id_waits_for_client_registration_before_replying() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let _layout = build_test_layout(&mux);
+        let client_id = Arc::new(ClientId::new());
+        let view_id = Arc::new(ClientViewId("view-a".to_string()));
+        let mut harness = HandlerHarness::new_unregistered();
+
+        harness.handler.process_one(DecodedPdu {
+            pdu: Pdu::SetClientId(SetClientId {
+                client_id: client_id.as_ref().clone(),
+                view_id: view_id.as_ref().clone(),
+                is_proxy: false,
+            }),
+            serial: 1,
+        });
+
+        assert!(
+            harness.responses.try_recv().is_err(),
+            "SetClientId should not reply before register_client runs"
+        );
+        assert!(
+            mux.iter_clients()
+                .into_iter()
+                .all(|info| info.client_id.as_ref() != client_id.as_ref()),
+            "client should not be visible until the main-thread registration task runs"
+        );
+
+        let mut saw_registered = false;
+        let response = loop {
+            if mux
+                .iter_clients()
+                .into_iter()
+                .any(|info| info.client_id.as_ref() == client_id.as_ref())
+            {
+                saw_registered = true;
+            }
+            if let Ok(decoded) = harness.responses.try_recv() {
+                break decoded;
+            }
+            executor.tick().unwrap();
+        };
+
+        assert!(
+            saw_registered
+                || mux
+                    .iter_clients()
+                    .into_iter()
+                    .any(|info| info.client_id.as_ref() == client_id.as_ref()),
+            "client should be registered before SetClientId replies"
+        );
+
+        match response {
+            DecodedPdu {
+                pdu: Pdu::UnitResponse(_),
+                ..
+            } => {}
+            other => panic!("expected UnitResponse after registration, got {:?}", other),
+        }
     }
 
     fn sample_agent_metadata(name: &str) -> AgentMetadata {
