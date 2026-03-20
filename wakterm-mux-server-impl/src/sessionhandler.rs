@@ -1670,6 +1670,7 @@ mod test {
                 client_id: client_id.as_ref().clone(),
                 view_id: view_id.as_ref().clone(),
                 is_proxy: false,
+                client_version_string: None,
             }),
             serial: 1,
         });
