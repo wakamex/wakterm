@@ -2,6 +2,8 @@
 use crate::os::windows::event::EventHandle;
 #[cfg(target_os = "macos")]
 use core_foundation::runloop::*;
+#[cfg(target_os = "macos")]
+use dispatch2::DispatchQueue;
 use promise::spawn::{Runnable, SpawnFunc};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -13,19 +15,6 @@ use {
     filedescriptor::{FileDescriptor, Pipe},
     std::os::unix::io::AsRawFd,
 };
-
-#[cfg(target_os = "macos")]
-type DispatchQueue = *mut std::ffi::c_void;
-
-#[cfg(target_os = "macos")]
-extern "C" {
-    fn dispatch_get_main_queue() -> DispatchQueue;
-    fn dispatch_async_f(
-        queue: DispatchQueue,
-        context: *mut std::ffi::c_void,
-        work: extern "C" fn(*mut std::ffi::c_void),
-    );
-}
 
 lazy_static::lazy_static! {
     pub(crate) static ref SPAWN_QUEUE: Arc<SpawnQueue> = Arc::new(SpawnQueue::new().expect("failed to create SpawnQueue"));
@@ -269,13 +258,7 @@ impl SpawnQueue {
         self.queue_func(f, high_pri);
         log::debug!("mac spawn queue enqueued task high_pri={high_pri}");
         if !self.scheduled.swap(true, Ordering::AcqRel) {
-            unsafe {
-                dispatch_async_f(
-                    dispatch_get_main_queue(),
-                    std::ptr::null_mut(),
-                    Self::drain_on_main_queue,
-                );
-            }
+            DispatchQueue::main().exec_async(|| Self::drain_on_main_queue(std::ptr::null_mut()));
         }
         Self::queue_wakeup();
     }
