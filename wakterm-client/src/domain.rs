@@ -1099,33 +1099,44 @@ impl Domain for ClientDomain {
         ui.async_run_and_log_error({
             let ui = ui.clone();
             async move {
-                let mut cloned_ui = ui.clone();
-                let client = spawn_into_new_thread(move || match &config {
-                    ClientDomainConfig::Unix(unix) => {
-                        let initial = true;
-                        let no_auto_start = false;
-                        Client::new_unix_domain(
-                            Some(domain_id),
-                            unix,
-                            initial,
-                            &mut cloned_ui,
-                            no_auto_start,
-                        )
-                    }
-                    ClientDomainConfig::Tls(tls) => Client::new_tls(domain_id, tls, &mut cloned_ui),
-                    ClientDomainConfig::Ssh(ssh) => Client::new_ssh(domain_id, ssh, &mut cloned_ui),
+                let ui_for_connect = ui.clone();
+                let (client, panes) = spawn_into_new_thread(move || {
+                    let mut cloned_ui = ui_for_connect.clone();
+                    let client = match &config {
+                        ClientDomainConfig::Unix(unix) => {
+                            let initial = true;
+                            let no_auto_start = false;
+                            Client::new_unix_domain(
+                                Some(domain_id),
+                                unix,
+                                initial,
+                                &mut cloned_ui,
+                                no_auto_start,
+                            )?
+                        }
+                        ClientDomainConfig::Tls(tls) => {
+                            Client::new_tls(domain_id, tls, &mut cloned_ui)?
+                        }
+                        ClientDomainConfig::Ssh(ssh) => {
+                            Client::new_ssh(domain_id, ssh, &mut cloned_ui)?
+                        }
+                    };
+
+                    smol::block_on(async move {
+                        cloned_ui.output_str("Checking server version\n");
+                        client.verify_version_compat(&cloned_ui).await?;
+
+                        cloned_ui.output_str("Version check OK!  Requesting pane list...\n");
+                        let panes = client.list_panes().await?;
+                        cloned_ui.output_str(&format!(
+                            "Server has {} tabs.  Attaching to local UI...\n",
+                            panes.tabs.len()
+                        ));
+                        Ok::<_, anyhow::Error>((client, panes))
+                    })
                 })
                 .await?;
 
-                ui.output_str("Checking server version\n");
-                client.verify_version_compat(&ui).await?;
-
-                ui.output_str("Version check OK!  Requesting pane list...\n");
-                let panes = client.list_panes().await?;
-                ui.output_str(&format!(
-                    "Server has {} tabs.  Attaching to local UI...\n",
-                    panes.tabs.len()
-                ));
                 ClientDomain::finish_attach(domain_id, client, panes, window_id)
             }
         })
