@@ -1215,6 +1215,10 @@ impl SessionHandler {
             }
         }
     }
+
+    pub fn wants_mux_notifications(&self) -> bool {
+        self.client_id.is_some()
+    }
 }
 
 // Dancing around a little bit here; we can't directly spawn_into_main_thread the domain_spawn
