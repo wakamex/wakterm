@@ -475,12 +475,15 @@ async fn client_thread_async(
     ) -> anyhow::Result<()> {
         let serial = *next_serial;
         *next_serial += 1;
+        let pdu_name = pdu.pdu_name();
+        log::debug!("client thread sending serial {} {}", serial, pdu_name);
         promises.map.insert(serial, promise);
 
         pdu.encode_async(stream, serial)
             .await
             .context("encoding a PDU to send to the server")?;
         stream.flush().await.context("flushing PDU to server")?;
+        log::debug!("client thread flushed serial {} {}", serial, pdu_name);
         Ok(())
     }
 
@@ -1301,6 +1304,11 @@ impl Client {
         &self,
         ui: &ConnectionUI,
     ) -> anyhow::Result<GetCodecVersionResponse> {
+        log::debug!(
+            "verify_version_compat starting for client {:?} view {:?}",
+            self.client_id,
+            self.view_id
+        );
         match self
             .get_codec_version(GetCodecVersion {})
             .or(async {
@@ -1310,6 +1318,11 @@ impl Client {
             .await
         {
             Ok(info) if info.codec_vers == CODEC_VERSION => {
+                log::debug!(
+                    "verify_version_compat got codec version {} from {}",
+                    info.codec_vers,
+                    info.version_string
+                );
                 log::trace!(
                     "Server version is {} (codec version {})",
                     info.version_string,
