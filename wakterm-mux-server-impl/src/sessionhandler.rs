@@ -459,7 +459,8 @@ impl SessionHandler {
                         move || {
                             let mux = Mux::get();
                             let _identity = mux.with_identity(client_id);
-                            let view_state = mux.client_window_view_state_for_current_identity();
+                            let mut view_state =
+                                mux.client_window_view_state_for_current_identity();
                             let mut tabs = vec![];
                             let mut tab_titles = vec![];
                             let mut tab_badges = vec![];
@@ -467,14 +468,21 @@ impl SessionHandler {
                             for window_id in mux.iter_windows().into_iter() {
                                 let window = mux.get_window(window_id).unwrap();
                                 window_titles.insert(window_id, window.get_title().to_string());
+                                let window_state = view_state.entry(window_id).or_default();
                                 for tab in window.iter() {
-                                let active_pane_id =
-                                    view_state.get(&window_id).and_then(|window_state| {
+                                    if window_state.active_tab_id.is_none() {
+                                        window_state.active_tab_id = Some(tab.tab_id());
+                                    }
+                                    let tab_state = window_state.tabs.entry(tab.tab_id()).or_default();
+                                    if tab_state.active_pane_id.is_none() {
+                                        tab_state.active_pane_id =
+                                            tab.get_active_pane().map(|pane| pane.pane_id());
+                                    }
+                                    let active_pane_id =
                                         window_state
                                             .tabs
                                             .get(&tab.tab_id())
                                             .and_then(|tab_state| tab_state.active_pane_id)
-                                        })
                                         .or_else(|| tab.get_active_pane().map(|pane| pane.pane_id()));
                                     let mut tree =
                                         tab.codec_pane_tree_with_active_pane_id(active_pane_id);

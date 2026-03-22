@@ -639,6 +639,19 @@ impl ClientDomain {
         let client_window_view_state = panes.client_window_view_state.clone();
         let mut fallback_window_view_state: HashMap<WindowId, (WindowId, TabId, PaneId)> =
             HashMap::new();
+        let has_usable_window_view_state = |remote_window_id: WindowId| {
+            client_window_view_state
+                .get(&remote_window_id)
+                .and_then(|window_state| {
+                    let tab_id = window_state.active_tab_id?;
+                    let pane_id = window_state
+                        .tabs
+                        .get(&tab_id)
+                        .and_then(|tab_state| tab_state.active_pane_id)?;
+                    Some((tab_id, pane_id))
+                })
+                .is_some()
+        };
 
         for ((tabroot, tab_title), tab_badge) in panes
             .tabs
@@ -748,7 +761,7 @@ impl ClientDomain {
                     if window.idx_by_id(tab.tab_id()).is_none() {
                         window.push(&tab);
                     }
-                    if !client_window_view_state.contains_key(&remote_window_id) {
+                    if !has_usable_window_view_state(remote_window_id) {
                         if let Some(active_pane) = tab.get_active_pane() {
                             fallback_window_view_state.entry(remote_window_id).or_insert((
                                 local_window_id,
@@ -785,7 +798,7 @@ impl ClientDomain {
                             local_window_id,
                         );
                         mux.add_tab_to_window(&tab, local_window_id)?;
-                        if !client_window_view_state.contains_key(&remote_window_id) {
+                        if !has_usable_window_view_state(remote_window_id) {
                             if let Some(active_pane) = tab.get_active_pane() {
                                 fallback_window_view_state.entry(remote_window_id).or_insert((
                                     local_window_id,
@@ -812,7 +825,7 @@ impl ClientDomain {
                 let local_window_id = mux.new_empty_window(workspace.take(), position);
                 inner.record_remote_to_local_window_mapping(remote_window_id, *local_window_id);
                 mux.add_tab_to_window(&tab, *local_window_id)?;
-                if !client_window_view_state.contains_key(&remote_window_id) {
+                if !has_usable_window_view_state(remote_window_id) {
                     if let Some(active_pane) = tab.get_active_pane() {
                         fallback_window_view_state.entry(remote_window_id).or_insert((
                             *local_window_id,
