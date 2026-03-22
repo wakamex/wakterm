@@ -468,13 +468,14 @@ impl SessionHandler {
                                 let window = mux.get_window(window_id).unwrap();
                                 window_titles.insert(window_id, window.get_title().to_string());
                                 for tab in window.iter() {
-                                    let active_pane_id =
-                                        view_state.get(&window_id).and_then(|window_state| {
-                                            window_state
-                                                .tabs
-                                                .get(&tab.tab_id())
-                                                .and_then(|tab_state| tab_state.active_pane_id)
-                                        });
+                                let active_pane_id =
+                                    view_state.get(&window_id).and_then(|window_state| {
+                                        window_state
+                                            .tabs
+                                            .get(&tab.tab_id())
+                                            .and_then(|tab_state| tab_state.active_pane_id)
+                                        })
+                                        .or_else(|| tab.get_active_pane().map(|pane| pane.pane_id()));
                                     let mut tree =
                                         tab.codec_pane_tree_with_active_pane_id(active_pane_id);
                                     mux.annotate_pane_tree_with_agent_metadata(&mut tree);

@@ -637,6 +637,8 @@ impl ClientDomain {
             .collect();
 
         let client_window_view_state = panes.client_window_view_state.clone();
+        let mut fallback_window_view_state: HashMap<WindowId, (WindowId, TabId, PaneId)> =
+            HashMap::new();
 
         for ((tabroot, tab_title), tab_badge) in panes
             .tabs
@@ -746,6 +748,15 @@ impl ClientDomain {
                     if window.idx_by_id(tab.tab_id()).is_none() {
                         window.push(&tab);
                     }
+                    if !client_window_view_state.contains_key(&remote_window_id) {
+                        if let Some(active_pane) = tab.get_active_pane() {
+                            fallback_window_view_state.entry(remote_window_id).or_insert((
+                                local_window_id,
+                                tab.tab_id(),
+                                active_pane.pane_id(),
+                            ));
+                        }
+                    }
                     log::debug!(
                         "process_pane_list synced remote tab {} into existing local window {}",
                         remote_tab_id,
@@ -774,6 +785,15 @@ impl ClientDomain {
                             local_window_id,
                         );
                         mux.add_tab_to_window(&tab, local_window_id)?;
+                        if !client_window_view_state.contains_key(&remote_window_id) {
+                            if let Some(active_pane) = tab.get_active_pane() {
+                                fallback_window_view_state.entry(remote_window_id).or_insert((
+                                    local_window_id,
+                                    tab.tab_id(),
+                                    active_pane.pane_id(),
+                                ));
+                            }
+                        }
                         log::debug!(
                             "process_pane_list attached remote tab {} to primary local window {}",
                             remote_tab_id,
@@ -792,6 +812,15 @@ impl ClientDomain {
                 let local_window_id = mux.new_empty_window(workspace.take(), position);
                 inner.record_remote_to_local_window_mapping(remote_window_id, *local_window_id);
                 mux.add_tab_to_window(&tab, *local_window_id)?;
+                if !client_window_view_state.contains_key(&remote_window_id) {
+                    if let Some(active_pane) = tab.get_active_pane() {
+                        fallback_window_view_state.entry(remote_window_id).or_insert((
+                            *local_window_id,
+                            tab.tab_id(),
+                            active_pane.pane_id(),
+                        ));
+                    }
+                }
                 log::debug!(
                     "process_pane_list created local window {} for remote window {} tab {}",
                     *local_window_id,
@@ -848,6 +877,30 @@ impl ClientDomain {
                         if let Some(pane) = mux.get_pane(local_active_pane_id) {
                             tab.set_active_pane(&pane, mux::tab::NotifyMux::No);
                         }
+                    }
+                }
+            }
+        }
+
+        for (remote_window_id, (local_window_id, local_tab_id, local_pane_id)) in
+            fallback_window_view_state
+        {
+            log::debug!(
+                "process_pane_list seeding fallback view state for remote window {}",
+                remote_window_id
+            );
+            if mux
+                .set_active_tab_for_current_identity(local_window_id, local_tab_id)
+                .is_ok()
+            {
+                let _ = mux.set_active_pane_for_current_identity(
+                    local_window_id,
+                    local_tab_id,
+                    local_pane_id,
+                );
+                if let Some(tab) = mux.get_tab(local_tab_id) {
+                    if let Some(pane) = mux.get_pane(local_pane_id) {
+                        tab.set_active_pane(&pane, mux::tab::NotifyMux::No);
                     }
                 }
             }
@@ -1375,6 +1428,22 @@ mod test {
         }
     }
 
+    fn panes_response_without_view_state(tabs: Vec<PaneNode>) -> ListPanesResponse {
+        ListPanesResponse {
+            tab_titles: tabs
+                .iter()
+                .map(|node| match node {
+                    PaneNode::Leaf(entry) => format!("tab-{}", entry.tab_id),
+                    _ => "tab".to_string(),
+                })
+                .collect(),
+            tab_badges: tabs.iter().map(|_| AgentTabBadgeState::default()).collect(),
+            tabs,
+            window_titles: HashMap::from([(1, "remote-window".to_string())]),
+            client_window_view_state: HashMap::new(),
+        }
+    }
+
     fn make_dummy_client(
         local_domain_id: DomainId,
         view_name: &str,
@@ -1601,6 +1670,43 @@ mod test {
         let local_window_id = inner.remote_to_local_window(1).unwrap();
         let local_tab_id = inner.remote_to_local_tab_id(102).unwrap();
         let local_pane_id = inner.remote_to_local_pane_id(1002).unwrap();
+
+        let _identity = mux.with_identity(Some(client_id));
+        assert_eq!(
+            mux.get_active_tab_for_window_for_current_identity(local_window_id)
+                .map(|tab| tab.tab_id()),
+            Some(local_tab_id)
+        );
+        assert_eq!(
+            mux.get_active_pane_for_window_for_current_identity(local_window_id)
+                .map(|pane| pane.pane_id()),
+            Some(local_pane_id)
+        );
+    }
+
+    #[test]
+    fn first_reconcile_without_view_state_seeds_fallback_active_pane() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        ensure_test_executor();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let (_domain, inner, client_id, _view_id) = install_client_domain(&mux, "fallback-view");
+
+        let tab_a = leaf(1, 101, 1001, size(120, 40), false);
+        let tab_b = leaf(1, 102, 1002, size(120, 40), false);
+
+        apply_panes(
+            &mux,
+            inner.clone(),
+            client_id.clone(),
+            panes_response_without_view_state(vec![tab_a, tab_b]),
+        );
+
+        let local_window_id = inner.remote_to_local_window(1).unwrap();
+        let local_tab_id = inner.remote_to_local_tab_id(101).unwrap();
+        let local_pane_id = inner.remote_to_local_pane_id(1001).unwrap();
 
         let _identity = mux.with_identity(Some(client_id));
         assert_eq!(
