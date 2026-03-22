@@ -28,6 +28,13 @@ pub struct Connection {
 }
 
 impl Connection {
+    fn on_main_thread() -> bool {
+        unsafe {
+            let is_main_thread: BOOL = msg_send![class!(NSThread), isMainThread];
+            is_main_thread == YES
+        }
+    }
+
     pub(crate) fn create_new() -> anyhow::Result<Self> {
         // Ensure that the SPAWN_QUEUE is created; it will have nothing
         // to run right now.
@@ -71,6 +78,25 @@ impl Connection {
     {
         let mut prom = promise::Promise::new();
         let future = prom.get_future().unwrap();
+
+        if Self::on_main_thread() {
+            let next = match Self::get().unwrap().window_by_id(window_id) {
+                Some(handle) => match handle.try_borrow_mut() {
+                    Ok(mut inner) => Some(f(&mut inner)),
+                    Err(_) => None,
+                },
+                None => {
+                    prom.err(anyhow::anyhow!("window id {} is invalid", window_id));
+                    return future;
+                }
+            };
+
+            if let Some(result) = next {
+                prom.result(result);
+                return future;
+            }
+        }
+
         promise::spawn::spawn_into_main_thread(async move {
             let mut f = Some(f);
             loop {
