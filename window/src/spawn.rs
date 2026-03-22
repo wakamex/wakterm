@@ -245,7 +245,7 @@ impl SpawnQueue {
     }
 
     extern "C" fn drain_on_main_queue(_: *mut std::ffi::c_void) {
-        log::debug!("mac spawn queue dispatch drain fired");
+        log::trace!("mac spawn queue dispatch drain fired");
         // Process a single queued runnable per dispatch callback. We post
         // one callback per enqueue, which avoids races where tasks are
         // queued after `run()` observes an empty queue but before the
@@ -256,7 +256,7 @@ impl SpawnQueue {
 
     fn spawn_impl(&self, f: SpawnFunc, high_pri: bool) {
         self.queue_func(f, high_pri);
-        log::debug!("mac spawn queue enqueued task high_pri={high_pri}");
+        log::trace!("mac spawn queue enqueued task high_pri={high_pri}");
         unsafe {
             let app = NSApp();
             let delegate: id = msg_send![app, delegate];
@@ -276,7 +276,7 @@ impl SpawnQueue {
 
     fn run_impl(&self) -> bool {
         if let Some(func) = self.pop_func() {
-            log::debug!("mac spawn queue running queued task");
+            log::trace!("mac spawn queue running queued task");
             func();
         }
         self.has_any_queued()
