@@ -550,11 +550,11 @@ impl TermWindow {
 
     fn focus_changed(&mut self, focused: bool, window: &Window) {
         log::trace!("Setting focus to {:?}", focused);
-        log::debug!("focus_changed start focused={focused}");
+        log::trace!("focus_changed start focused={focused}");
         self.focused = if focused { Some(Instant::now()) } else { None };
         self.quad_generation += 1;
         self.load_os_parameters();
-        log::debug!("focus_changed loaded os parameters focused={focused}");
+        log::trace!("focus_changed loaded os parameters focused={focused}");
 
         if self.focused.is_none() {
             self.last_mouse_click = None;
@@ -566,21 +566,21 @@ impl TermWindow {
                 state.mouse_terminal_coords.take();
             }
         }
-        log::debug!("focus_changed updated mouse state focused={focused}");
+        log::trace!("focus_changed updated mouse state focused={focused}");
 
         // Reset the cursor blink phase
         self.prev_cursor.bump();
-        log::debug!("focus_changed bumped cursor focused={focused}");
+        log::trace!("focus_changed bumped cursor focused={focused}");
 
         // force cursor to be repainted
-        log::debug!("focus_changed invalidating window focused={focused}");
+        log::trace!("focus_changed invalidating window focused={focused}");
         window.invalidate();
-        log::debug!("focus_changed invalidated window focused={focused}");
+        log::trace!("focus_changed invalidated window focused={focused}");
 
         if let Some(pane) = self.get_active_pane_or_overlay() {
             let pane_id = pane.pane_id();
             if focused {
-                log::debug!(
+                log::trace!(
                     "focus_changed recording focus for identity focused={focused} pane_id={pane_id}"
                 );
                 let mux = Mux::get();
@@ -591,24 +591,24 @@ impl TermWindow {
                         );
                     }
                 }
-                log::debug!(
+                log::trace!(
                     "focus_changed recorded focus for identity focused={focused} pane_id={pane_id}"
                 );
             }
-            log::debug!("focus_changed calling pane.focus_changed focused={focused} pane_id={pane_id}");
+            log::trace!("focus_changed calling pane.focus_changed focused={focused} pane_id={pane_id}");
             pane.focus_changed(focused);
-            log::debug!("focus_changed pane.focus_changed returned focused={focused} pane_id={pane_id}");
+            log::trace!("focus_changed pane.focus_changed returned focused={focused} pane_id={pane_id}");
         } else {
-            log::debug!("focus_changed no active pane focused={focused}");
+            log::trace!("focus_changed no active pane focused={focused}");
         }
 
-        log::debug!("focus_changed updating title focused={focused}");
+        log::trace!("focus_changed updating title focused={focused}");
         self.update_title();
-        log::debug!("focus_changed updated title focused={focused}");
-        log::debug!("focus_changed emitting window-focus-changed focused={focused}");
+        log::trace!("focus_changed updated title focused={focused}");
+        log::trace!("focus_changed emitting window-focus-changed focused={focused}");
         self.emit_window_event("window-focus-changed", None);
-        log::debug!("focus_changed emitted window-focus-changed focused={focused}");
-        log::debug!("focus_changed complete focused={focused}");
+        log::trace!("focus_changed emitted window-focus-changed focused={focused}");
+        log::trace!("focus_changed complete focused={focused}");
     }
 
     fn created(&mut self, ctx: RenderContext) -> anyhow::Result<()> {
@@ -1118,7 +1118,7 @@ impl TermWindow {
     }
 
     fn do_paint(&mut self, window: &Window) -> bool {
-        log::debug!(
+        log::trace!(
             "do_paint start dims={}x{} resizes_pending={} repaint_pending={}",
             self.dimensions.pixel_width,
             self.dimensions.pixel_height,
@@ -1137,7 +1137,7 @@ impl TermWindow {
             return false;
         }
 
-        log::debug!("do_paint creating frame");
+        log::trace!("do_paint creating frame");
         let mut frame = glium::Frame::new(
             Rc::clone(&gl),
             (
@@ -1145,11 +1145,11 @@ impl TermWindow {
                 self.dimensions.pixel_height as u32,
             ),
         );
-        log::debug!("do_paint frame created");
+        log::trace!("do_paint frame created");
         self.paint_impl(&mut RenderFrame::Glium(&mut frame));
-        log::debug!("do_paint finishing frame");
+        log::trace!("do_paint finishing frame");
         let ok = window.finish_frame(frame).is_ok();
-        log::debug!("do_paint finish_frame complete ok={ok}");
+        log::trace!("do_paint finish_frame complete ok={ok}");
         ok
     }
 
