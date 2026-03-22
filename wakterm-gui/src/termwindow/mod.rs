@@ -281,6 +281,34 @@ fn prompt_rename_tab_initial_value(explicit_tab_title: &str, pane_title: &str) -
     String::new()
 }
 
+fn default_window_title(
+    active_tab: Option<&TabInformation>,
+    active_pane: Option<&PaneInformation>,
+    num_tabs: usize,
+) -> String {
+    let zoom_prefix = if active_pane.is_some_and(|pane| pane.is_zoomed) {
+        "[Z] "
+    } else {
+        ""
+    };
+
+    let title = active_tab
+        .map(TabInformation::effective_title)
+        .or_else(|| active_pane.map(|pane| pane.title.clone()))
+        .unwrap_or_default();
+
+    if title.is_empty() {
+        return title;
+    }
+
+    match active_tab {
+        Some(tab) if num_tabs > 1 => {
+            format!("{zoom_prefix}[{}/{}] {}", tab.tab_index + 1, num_tabs, title)
+        }
+        Some(_) | None => format!("{zoom_prefix}{title}"),
+    }
+}
+
 /// Data used when synchronously formatting pane and window titles
 #[derive(Debug, Clone)]
 pub struct PaneInformation {
@@ -2131,23 +2159,7 @@ impl TermWindow {
 
         let title = match title {
             Some(title) => title,
-            None => {
-                if let (Some(pos), Some(tab)) = (active_pane, active_tab) {
-                    if num_tabs == 1 {
-                        format!("{}{}", if pos.is_zoomed { "[Z] " } else { "" }, pos.title)
-                    } else {
-                        format!(
-                            "{}[{}/{}] {}",
-                            if pos.is_zoomed { "[Z] " } else { "" },
-                            tab.tab_index + 1,
-                            num_tabs,
-                            pos.title
-                        )
-                    }
-                } else {
-                    "".to_string()
-                }
-            }
+            None => default_window_title(active_tab.as_ref(), active_pane.as_ref(), num_tabs),
         };
 
         if let Some(window) = self.window.as_ref() {
@@ -3786,7 +3798,10 @@ impl Drop for TermWindow {
 
 #[cfg(test)]
 mod test {
-    use super::{prompt_rename_tab_initial_value, PaneInformation, Progress, TabInformation};
+    use super::{
+        default_window_title, prompt_rename_tab_initial_value, PaneInformation, Progress,
+        TabInformation,
+    };
     use std::collections::HashMap;
 
     fn pane_with_title(title: &str) -> PaneInformation {
@@ -3836,6 +3851,28 @@ mod test {
     fn effective_title_returns_empty_when_neither_title_exists() {
         let tab = tab_info("", None);
         assert_eq!(tab.effective_title(), "");
+    }
+
+    #[test]
+    fn default_window_title_prefers_explicit_tab_title() {
+        let tab = tab_info("my-tab", Some("zsh"));
+        let pane = pane_with_title("zsh");
+        assert_eq!(default_window_title(Some(&tab), Some(&pane), 1), "my-tab");
+    }
+
+    #[test]
+    fn default_window_title_includes_tab_index_for_multiple_tabs() {
+        let mut tab = tab_info("build", Some("bash"));
+        tab.tab_index = 1;
+        let pane = pane_with_title("bash");
+        assert_eq!(default_window_title(Some(&tab), Some(&pane), 3), "[2/3] build");
+    }
+
+    #[test]
+    fn default_window_title_falls_back_to_active_pane_title() {
+        let tab = tab_info("", Some("wezterm"));
+        let pane = pane_with_title("wezterm");
+        assert_eq!(default_window_title(Some(&tab), Some(&pane), 1), "wezterm");
     }
 
     #[test]
