@@ -4,7 +4,7 @@ use crate::macos::{nsstring, nsstring_to_str};
 use crate::menu::{Menu, MenuItem};
 use crate::{ApplicationEvent, Connection};
 use cocoa::appkit::NSApplicationTerminateReply;
-use cocoa::base::{id, nil};
+use cocoa::base::id;
 use cocoa::foundation::NSInteger;
 use config::keyassignment::KeyAssignment;
 use config::WindowCloseConfirmation;
@@ -72,18 +72,7 @@ extern "C" fn application_did_finish_launching(this: &mut Object, _sel: Sel, _no
     log::debug!("application_did_finish_launching");
     unsafe {
         (*this).set_ivar("launched", YES);
-        let timer: id = msg_send![class!(NSTimer), scheduledTimerWithTimeInterval: 0.01f64
-            target: this
-            selector: sel!(waktermPumpSpawnQueue:)
-            userInfo: nil
-            repeats: YES
-        ];
-        let (): () = msg_send![timer, setTolerance: 0.01f64];
     }
-}
-
-extern "C" fn application_did_update(_this: &mut Object, _sel: Sel, _notif: *mut Object) {
-    while crate::spawn::SPAWN_QUEUE.run() {}
 }
 
 extern "C" fn wakterm_pump_spawn_queue(_this: &mut Object, _sel: Sel, _timer: *mut Object) {
@@ -176,10 +165,6 @@ fn get_class() -> &'static Class {
             cls.add_method(
                 sel!(applicationDidFinishLaunching:),
                 application_did_finish_launching as extern "C" fn(&mut Object, Sel, *mut Object),
-            );
-            cls.add_method(
-                sel!(applicationDidUpdate:),
-                application_did_update as extern "C" fn(&mut Object, Sel, *mut Object),
             );
             cls.add_method(
                 sel!(waktermPumpSpawnQueue:),
