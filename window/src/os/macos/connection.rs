@@ -84,7 +84,7 @@ impl Connection {
                         prom.result(f.take().unwrap()(&mut inner));
                         break;
                     }
-                    Err(_) => smol::Timer::after(Duration::from_millis(1)).await,
+                    Err(_) => async_io::Timer::after(Duration::from_millis(1)).await,
                 }
             }
         })
