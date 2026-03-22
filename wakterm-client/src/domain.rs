@@ -1145,6 +1145,51 @@ impl Domain for ClientDomain {
             let ui = ui.clone();
             async move {
                 let ui_for_connect = ui.clone();
+                #[cfg(target_os = "macos")]
+                let (client, panes) = {
+                    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                    std::thread::spawn(move || {
+                        let mut cloned_ui = ui_for_connect.clone();
+                        let result = (|| -> anyhow::Result<(Client, ListPanesResponse)> {
+                            let client = match &config {
+                                ClientDomainConfig::Unix(unix) => {
+                                    let initial = true;
+                                    let no_auto_start = false;
+                                    Client::new_unix_domain(
+                                        Some(domain_id),
+                                        unix,
+                                        initial,
+                                        &mut cloned_ui,
+                                        no_auto_start,
+                                    )?
+                                }
+                                ClientDomainConfig::Tls(tls) => {
+                                    Client::new_tls(domain_id, tls, &mut cloned_ui)?
+                                }
+                                ClientDomainConfig::Ssh(ssh) => {
+                                    Client::new_ssh(domain_id, ssh, &mut cloned_ui)?
+                                }
+                            };
+
+                            smol::block_on(async move {
+                                cloned_ui.output_str("Checking server version\n");
+                                client.verify_version_compat(&cloned_ui).await?;
+
+                                cloned_ui.output_str("Version check OK!  Requesting pane list...\n");
+                                let panes = client.list_panes().await?;
+                                cloned_ui.output_str(&format!(
+                                    "Server has {} tabs.  Attaching to local UI...\n",
+                                    panes.tabs.len()
+                                ));
+                                Ok::<_, anyhow::Error>((client, panes))
+                            })
+                        })();
+                        let _ = tx.send(result);
+                    });
+                    rx.recv().map_err(|err| anyhow!("attach worker failed: {}", err))??
+                };
+
+                #[cfg(not(target_os = "macos"))]
                 let (client, panes) = spawn_into_new_thread(move || {
                     let mut cloned_ui = ui_for_connect.clone();
                     let client = match &config {
