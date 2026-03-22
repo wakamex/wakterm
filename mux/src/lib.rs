@@ -697,11 +697,11 @@ impl Mux {
         self.set_agent_metadata_with_initial_refresh(pane_id, metadata, InitialAgentRefresh::Async)
     }
 
-    fn set_agent_metadata_with_initial_refresh(
+    fn install_agent_metadata_runtime(
         &self,
         pane_id: PaneId,
         metadata: AgentMetadata,
-        initial_refresh: InitialAgentRefresh,
+        runtime: AgentRuntimeSnapshot,
     ) -> anyhow::Result<()> {
         self.detected_agent_panes.write().remove(&pane_id);
         let pane = self
@@ -731,11 +731,7 @@ impl Mux {
         }
 
         names.insert(metadata.name.clone(), pane_id);
-        let mut runtime = self
-            .agent_runtime_by_pane
-            .write()
-            .remove(&pane_id)
-            .unwrap_or_else(|| AgentRuntimeSnapshot::new(&metadata));
+        let mut runtime = runtime;
         for seen in self.agent_attention_seen_by_view.write().values_mut() {
             seen.remove(&pane_id);
         }
@@ -743,11 +739,28 @@ impl Mux {
         runtime.foreground_process_name = foreground_process_name.clone();
         runtime.tty_name = tty_name;
         runtime.terminal_progress = terminal_progress;
-        prime_runtime_for_new_agent(&mut runtime, &metadata, foreground_process_name.as_deref());
+        runtime.harness = infer_harness(&metadata.launch_cmd, foreground_process_name.as_deref());
         self.agent_runtime_by_pane.write().insert(pane_id, runtime);
         metadata_by_pane.insert(pane_id, Arc::new(metadata));
-        drop(metadata_by_pane);
-        drop(names);
+        Ok(())
+    }
+
+    fn set_agent_metadata_with_initial_refresh(
+        &self,
+        pane_id: PaneId,
+        metadata: AgentMetadata,
+        initial_refresh: InitialAgentRefresh,
+    ) -> anyhow::Result<()> {
+        let foreground_process_name = self
+            .get_pane(pane_id)
+            .and_then(|pane| pane.get_foreground_process_name(CachePolicy::AllowStale));
+        let mut runtime = self
+            .agent_runtime_by_pane
+            .write()
+            .remove(&pane_id)
+            .unwrap_or_else(|| AgentRuntimeSnapshot::new(&metadata));
+        prime_runtime_for_new_agent(&mut runtime, &metadata, foreground_process_name.as_deref());
+        self.install_agent_metadata_runtime(pane_id, metadata, runtime)?;
 
         match initial_refresh {
             InitialAgentRefresh::Sync => self.refresh_agent_runtime_for_pane(pane_id, true),
@@ -1077,7 +1090,17 @@ impl Mux {
             branch: None,
             managed_checkout: false,
         };
-        let _ = self.set_agent_metadata(pane_id, metadata);
+        if self
+            .install_agent_metadata_runtime(pane_id, metadata, state.runtime)
+            .is_ok()
+        {
+            self.refresh_agent_runtime_for_pane_with_update(
+                pane_id,
+                false,
+                AgentRefreshPolicy::Throttled,
+                |_| {},
+            );
+        }
     }
 
     fn should_refresh_harness_runtime(
@@ -4433,6 +4456,114 @@ mod test {
             Some(session_path.as_str())
         );
         assert!(mux.get_agent_metadata_for_pane(pane_id).is_some());
+    }
+
+    #[test]
+    fn auto_adopt_preserves_confirmed_runtime_until_async_refresh() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let day = Utc::now();
+        let dir = temp
+            .path()
+            .join(format!("{:04}", day.year_ce().1))
+            .join(format!("{:02}", day.month()))
+            .join(format!("{:02}", day.day()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = dir.join("rollout-auto-adopt-preserve.jsonl");
+        std::fs::write(
+            &session,
+            concat!(
+                "{\"payload\":{\"cwd\":\"/tmp/auto-adopt-preserve-project\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"collaboration_mode_kind\":\"default\"}}\n",
+                "{\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[]}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:02Z\",\"payload\":{\"type\":\"agent_message\",\"phase\":\"final_answer\"}}\n",
+                "{\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:00:03Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:04Z\",\"payload\":{\"type\":\"task_complete\",\"last_agent_message\":\"done\"}}\n"
+            ),
+        )
+        .unwrap();
+        unsafe {
+            std::env::set_var("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        }
+
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let _config = TestConfigGuard::new_with_auto_adopt("attention", "🤖 ", false);
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new_detected(
+            147,
+            size,
+            domain.id,
+            "codex",
+            "/tmp/auto-adopt-preserve-project",
+            "/usr/bin/codex",
+            &["codex"],
+        );
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let initial_agents = mux.list_agents();
+        assert_eq!(initial_agents.len(), 1);
+        assert!(matches!(initial_agents[0].origin, AgentOrigin::Detected));
+
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_runtime_by_pane
+                    .read()
+                    .get(&pane_id)
+                    .and_then(|runtime| runtime.session_path.as_deref())
+                    .is_some()
+                    && mux.get_agent_metadata_for_pane(pane_id).is_none()
+            },
+            "confirmed detected session",
+        );
+
+        let preserved_session = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .and_then(|runtime| runtime.session_path.clone())
+            .expect("confirmed detected session path");
+        std::fs::remove_file(&session).unwrap();
+
+        let mut config = config::Config::default();
+        config.agent_tab_badge_mode = "attention".to_string();
+        config.agent_tab_badge = "🤖 ".to_string();
+        config.agent_auto_adopt_on_confirmed_session_match = true;
+        config::use_this_configuration(config);
+
+        mux.maybe_auto_adopt_detected_agent(pane_id);
+
+        assert!(mux.get_agent_metadata_for_pane(pane_id).is_some());
+        let runtime = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .expect("adopted runtime");
+        assert_eq!(runtime.session_path.as_deref(), Some(preserved_session.as_str()));
+        assert_eq!(runtime.transport, crate::agent::AgentTransport::ObservedPty);
+
+        unsafe {
+            std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");
+        }
     }
 
     #[test]
