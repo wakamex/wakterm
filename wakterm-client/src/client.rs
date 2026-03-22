@@ -427,6 +427,11 @@ fn client_thread(
     local_domain_id: Option<DomainId>,
     rx: &mut Receiver<ReaderMessage>,
 ) -> anyhow::Result<()> {
+    log::debug!(
+        "client thread starting for domain {:?} reconnectable={}",
+        local_domain_id,
+        reconnectable.reconnectable()
+    );
     block_on(client_thread_async(reconnectable, local_domain_id, rx))
 }
 
@@ -1172,6 +1177,11 @@ impl Reconnectable {
 
 impl Client {
     fn new(local_domain_id: Option<DomainId>, mut reconnectable: Reconnectable) -> Self {
+        log::debug!(
+            "Client::new starting for domain {:?} config={}",
+            local_domain_id,
+            reconnectable.config.name()
+        );
         let client_domain_config = reconnectable.config.clone();
         let is_reconnectable = reconnectable.reconnectable();
         let is_local = reconnectable.is_local();
@@ -1264,6 +1274,13 @@ impl Client {
                 .detach();
             }
         });
+
+        log::debug!(
+            "Client::new returning for domain {:?} reconnectable={} local={}",
+            local_domain_id,
+            is_reconnectable,
+            is_local
+        );
 
         Self {
             sender,
@@ -1406,10 +1423,21 @@ impl Client {
         ssh_dom: &SshDomain,
         ui: &mut ConnectionUI,
     ) -> anyhow::Result<Self> {
+        log::debug!(
+            "Client::new_ssh starting for domain {} host {}",
+            local_domain_id,
+            ssh_dom.remote_address
+        );
         let mut reconnectable = Reconnectable::new(ClientDomainConfig::Ssh(ssh_dom.clone()), None);
         let no_auto_start = true;
         reconnectable.connect(true, ui, no_auto_start)?;
-        Ok(Self::new(Some(local_domain_id), reconnectable))
+        log::debug!(
+            "Client::new_ssh transport connected for domain {}; constructing client",
+            local_domain_id
+        );
+        let client = Self::new(Some(local_domain_id), reconnectable);
+        log::debug!("Client::new_ssh returning for domain {}", local_domain_id);
+        Ok(client)
     }
 
     pub async fn send_pdu(&self, pdu: Pdu) -> anyhow::Result<Pdu> {

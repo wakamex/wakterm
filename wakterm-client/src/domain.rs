@@ -16,6 +16,7 @@ use portable_pty::CommandBuilder;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use smol::future::FutureExt as _;
 use wakterm_term::TerminalSize;
 
 pub struct ClientInner {
@@ -1099,7 +1100,10 @@ impl Domain for ClientDomain {
             let ui = ui.clone();
             async move {
                 let mut cloned_ui = ui.clone();
-                let client = smol::unblock(move || match &config {
+                log::debug!("starting client construction for domain {}", domain_id);
+                let start = std::time::Instant::now();
+                let construction = smol::unblock(move || -> anyhow::Result<Client> {
+                    match &config {
                     ClientDomainConfig::Unix(unix) => {
                         let initial = true;
                         let no_auto_start = false;
@@ -1113,9 +1117,30 @@ impl Domain for ClientDomain {
                     }
                     ClientDomainConfig::Tls(tls) => Client::new_tls(domain_id, tls, &mut cloned_ui),
                     ClientDomainConfig::Ssh(ssh) => Client::new_ssh(domain_id, ssh, &mut cloned_ui),
+                }
+                });
+                let client = construction
+                .or(async {
+                    smol::Timer::after(std::time::Duration::from_secs(20)).await;
+                    Err(anyhow::anyhow!(
+                        "timed out waiting for client construction to complete for domain {}",
+                        domain_id
+                    ))
                 })
-                .await?;
-                log::debug!("client construction completed; starting version check");
+                .await
+                .map_err(|err| {
+                    log::error!(
+                        "client construction failed for domain {} after {:?}: {:#}",
+                        domain_id,
+                        start.elapsed(),
+                        err
+                    );
+                    err
+                })?;
+                log::debug!(
+                    "client construction completed in {:?}; starting version check",
+                    start.elapsed()
+                );
 
                 ui.output_str("Checking server version\n");
                 client.verify_version_compat(&ui).await?;
