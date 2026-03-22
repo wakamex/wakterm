@@ -1,8 +1,8 @@
 use crate::agent::{
-    default_launch_cmd_for_harness, derive_runtime_status, detect_harness_process, infer_harness,
-    prime_runtime_for_new_agent, refresh_runtime_from_harness, finalize_runtime_snapshot,
-    AgentMetadata, AgentOrigin,
-    AgentRuntimeSnapshot, AgentSnapshot, AgentTabBadgeState,
+    default_launch_cmd_for_harness, derive_runtime_status, detect_harness_process,
+    finalize_runtime_snapshot, infer_harness, prime_runtime_for_new_agent,
+    refresh_runtime_from_harness, AgentMetadata, AgentOrigin, AgentRuntimeSnapshot, AgentSnapshot,
+    AgentTabBadgeState,
 };
 use crate::client::{ClientId, ClientInfo, ClientViewId, ClientViewState, ClientWindowViewState};
 use crate::pane::{CachePolicy, Pane, PaneId};
@@ -18,7 +18,7 @@ use filedescriptor::{poll, pollfd, socketpair, AsRawSocketDescriptor, FileDescri
 #[cfg(unix)]
 use libc::{c_int, SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
 use log::error;
-use metrics::histogram;
+use metrics::{counter, histogram};
 use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
@@ -30,6 +30,7 @@ use std::io::{Read, Write};
 #[cfg(windows)]
 use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -114,7 +115,9 @@ pub struct Mux {
     panes: RwLock<HashMap<PaneId, Arc<dyn Pane>>>,
     agent_panes_by_name: RwLock<HashMap<String, PaneId>>,
     agent_metadata_by_pane: RwLock<HashMap<PaneId, Arc<AgentMetadata>>>,
+    detected_agent_panes: RwLock<HashSet<PaneId>>,
     agent_runtime_by_pane: RwLock<HashMap<PaneId, AgentRuntimeSnapshot>>,
+    agent_observer_state_by_pane: RwLock<HashMap<PaneId, AgentObserverState>>,
     agent_attention_seen_by_view: RwLock<HashMap<ClientViewId, HashMap<PaneId, DateTime<Utc>>>>,
     windows: RwLock<HashMap<WindowId, Window>>,
     default_domain: RwLock<Option<Arc<dyn Domain>>>,
@@ -127,6 +130,7 @@ pub struct Mux {
     identity: RwLock<Option<Arc<ClientId>>>,
     num_panes_by_workspace: RwLock<HashMap<String, usize>>,
     main_thread_id: std::thread::ThreadId,
+    agent_observer_tx: Sender<AgentObserverRequest>,
     agent: Option<AgentProxy>,
 }
 
@@ -142,7 +146,6 @@ enum AgentTabBadgeMode {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AgentRefreshPolicy {
-    Immediate,
     Throttled,
 }
 
@@ -163,6 +166,31 @@ struct DetectedAgentState {
     declared_cwd: String,
     runtime: AgentRuntimeSnapshot,
     detection_source: String,
+}
+
+#[derive(Clone)]
+struct AgentObserverRequest {
+    pane_id: PaneId,
+    generation: u64,
+    requested_at: Instant,
+    metadata: AgentMetadata,
+    runtime: AgentRuntimeSnapshot,
+}
+
+struct AgentObserverUpdate {
+    pane_id: PaneId,
+    generation: u64,
+    runtime: AgentRuntimeSnapshot,
+    queue_delay: Duration,
+    refresh_elapsed: Duration,
+}
+
+#[derive(Default)]
+struct AgentObserverState {
+    latest_generation: u64,
+    inflight_generation: Option<u64>,
+    pending_request: Option<AgentObserverRequest>,
+    last_requested_at: Option<DateTime<Utc>>,
 }
 
 /// This function applies parsed actions to the pane and notifies any
@@ -411,6 +439,54 @@ fn read_from_pane_pty(
     dead.store(true, Ordering::Relaxed);
 }
 
+fn spawn_agent_observer_worker() -> Sender<AgentObserverRequest> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || run_agent_observer_worker(rx));
+    tx
+}
+
+fn run_agent_observer_worker(rx: Receiver<AgentObserverRequest>) {
+    let mut pending = HashMap::<PaneId, AgentObserverRequest>::new();
+
+    loop {
+        let request = match rx.recv() {
+            Ok(request) => request,
+            Err(_) => return,
+        };
+        pending.insert(request.pane_id, request);
+
+        while let Ok(request) = rx.try_recv() {
+            pending.insert(request.pane_id, request);
+        }
+
+        for request in pending.drain().map(|(_, request)| request) {
+            counter!("mux.agent_observer.refresh.rate").increment(1);
+            let started = Instant::now();
+            let mut runtime = request.runtime;
+            refresh_runtime_from_harness(&mut runtime, &request.metadata);
+            let refresh_elapsed = started.elapsed();
+            let queue_delay = started.saturating_duration_since(request.requested_at);
+            histogram!("mux.agent_observer.refresh.latency").record(refresh_elapsed);
+            histogram!("mux.agent_observer.refresh.queue_delay").record(queue_delay);
+
+            let update = AgentObserverUpdate {
+                pane_id: request.pane_id,
+                generation: request.generation,
+                runtime,
+                queue_delay,
+                refresh_elapsed,
+            };
+
+            promise::spawn::spawn_into_main_thread(async move {
+                if let Some(mux) = Mux::try_get() {
+                    mux.apply_agent_observer_update(update);
+                }
+            })
+            .detach();
+        }
+    }
+}
+
 lazy_static::lazy_static! {
     static ref MUX: Mutex<Option<Arc<Mux>>> = Mutex::new(None);
 }
@@ -496,13 +572,16 @@ impl Mux {
         } else {
             None
         };
+        let agent_observer_tx = spawn_agent_observer_worker();
 
         Self {
             tabs: RwLock::new(HashMap::new()),
             panes: RwLock::new(HashMap::new()),
             agent_panes_by_name: RwLock::new(HashMap::new()),
             agent_metadata_by_pane: RwLock::new(HashMap::new()),
+            detected_agent_panes: RwLock::new(HashSet::new()),
             agent_runtime_by_pane: RwLock::new(HashMap::new()),
+            agent_observer_state_by_pane: RwLock::new(HashMap::new()),
             agent_attention_seen_by_view: RwLock::new(HashMap::new()),
             windows: RwLock::new(HashMap::new()),
             default_domain: RwLock::new(default_domain),
@@ -515,6 +594,7 @@ impl Mux {
             identity: RwLock::new(None),
             num_panes_by_workspace: RwLock::new(HashMap::new()),
             main_thread_id: std::thread::current().id(),
+            agent_observer_tx,
             agent,
         }
     }
@@ -600,6 +680,7 @@ impl Mux {
         pane_id: PaneId,
         metadata: AgentMetadata,
     ) -> anyhow::Result<()> {
+        self.detected_agent_panes.write().remove(&pane_id);
         let pane = self
             .get_pane(pane_id)
             .ok_or_else(|| anyhow!("pane {} is invalid", pane_id))?;
@@ -657,6 +738,7 @@ impl Mux {
         };
         self.agent_panes_by_name.write().remove(&metadata.name);
         self.agent_runtime_by_pane.write().remove(&pane_id);
+        self.agent_observer_state_by_pane.write().remove(&pane_id);
         for seen in self.agent_attention_seen_by_view.write().values_mut() {
             seen.remove(&pane_id);
         }
@@ -773,17 +855,39 @@ impl Mux {
         })
     }
 
+    fn clear_detected_agent_info(&self, pane_id: PaneId) {
+        self.detected_agent_panes.write().remove(&pane_id);
+        if self.get_agent_metadata_for_pane(pane_id).is_none() {
+            self.agent_runtime_by_pane.write().remove(&pane_id);
+            self.agent_observer_state_by_pane.write().remove(&pane_id);
+        }
+    }
+
     fn detect_agent_state_for_pane(&self, pane_id: PaneId) -> Option<DetectedAgentState> {
         if self.get_agent_metadata_for_pane(pane_id).is_some() {
+            self.detected_agent_panes.write().remove(&pane_id);
             return None;
         }
 
-        let pane = self.get_pane(pane_id)?;
-        let (_domain_id, window_id, tab_id) = self.resolve_pane_id(pane_id)?;
-        let window = self.get_window(window_id)?;
+        let Some(pane) = self.get_pane(pane_id) else {
+            self.clear_detected_agent_info(pane_id);
+            return None;
+        };
+        let Some((_domain_id, window_id, tab_id)) = self.resolve_pane_id(pane_id) else {
+            self.clear_detected_agent_info(pane_id);
+            return None;
+        };
+        let Some(window) = self.get_window(window_id) else {
+            self.clear_detected_agent_info(pane_id);
+            return None;
+        };
         let foreground_process_name = pane.get_foreground_process_name(CachePolicy::AllowStale);
         let foreground_process_info = pane.get_foreground_process_info(CachePolicy::AllowStale);
-        let declared_cwd = Self::pane_declared_cwd(&pane, foreground_process_info.as_ref())?;
+        let Some(declared_cwd) = Self::pane_declared_cwd(&pane, foreground_process_info.as_ref())
+        else {
+            self.clear_detected_agent_info(pane_id);
+            return None;
+        };
         let process_match = detect_harness_process(
             foreground_process_info.as_ref(),
             foreground_process_name.as_deref(),
@@ -800,13 +904,18 @@ impl Mux {
             title_harness.clone()
         };
         if matches!(harness, crate::agent::AgentHarness::Unknown) {
+            self.clear_detected_agent_info(pane_id);
             return None;
         }
 
-        let launch_cmd = process_match
+        let Some(launch_cmd) = process_match
             .as_ref()
             .map(|matched| matched.launch_cmd.clone())
-            .or_else(|| default_launch_cmd_for_harness(&harness).map(str::to_string))?;
+            .or_else(|| default_launch_cmd_for_harness(&harness).map(str::to_string))
+        else {
+            self.clear_detected_agent_info(pane_id);
+            return None;
+        };
         let metadata = AgentMetadata {
             agent_id: format!("detected-pane-{pane_id}"),
             name: format!("detected-{pane_id}"),
@@ -818,13 +927,17 @@ impl Mux {
             branch: None,
             managed_checkout: false,
         };
-        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        let mut runtime = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_else(|| AgentRuntimeSnapshot::new(&metadata));
         runtime.alive = !pane.is_dead();
         runtime.foreground_process_name = foreground_process_name;
         runtime.tty_name = pane.tty_name();
         runtime.terminal_progress = pane.get_progress();
-        refresh_runtime_from_harness(&mut runtime, &metadata);
-        runtime.status = derive_runtime_status(&runtime);
+        runtime.harness = harness.clone();
 
         let mut source = vec![];
         if !matches!(process_harness, crate::agent::AgentHarness::Unknown) {
@@ -840,8 +953,23 @@ impl Mux {
             || (matches!(process_harness, crate::agent::AgentHarness::Unknown)
                 && matches!(title_harness, crate::agent::AgentHarness::Unknown))
         {
+            self.clear_detected_agent_info(pane_id);
             return None;
         }
+
+        let detection_source = source.join("+");
+        self.schedule_agent_observer_refresh(
+            pane_id,
+            &metadata,
+            &runtime,
+            AgentRefreshPolicy::Throttled,
+        );
+        finalize_runtime_snapshot(&mut runtime);
+        runtime.status = derive_runtime_status(&runtime);
+        self.agent_runtime_by_pane
+            .write()
+            .insert(pane_id, runtime.clone());
+        self.detected_agent_panes.write().insert(pane_id);
 
         Some(DetectedAgentState {
             pane_id,
@@ -852,7 +980,7 @@ impl Mux {
             launch_cmd: metadata.launch_cmd,
             declared_cwd: metadata.declared_cwd,
             runtime,
-            detection_source: source.join("+"),
+            detection_source,
         })
     }
 
@@ -922,14 +1050,13 @@ impl Mux {
     }
 
     fn should_refresh_harness_runtime(
-        runtime: &AgentRuntimeSnapshot,
+        observer_state: &AgentObserverState,
         policy: AgentRefreshPolicy,
         now: DateTime<Utc>,
     ) -> bool {
         match policy {
-            AgentRefreshPolicy::Immediate => true,
-            AgentRefreshPolicy::Throttled => runtime
-                .last_harness_refresh_at
+            AgentRefreshPolicy::Throttled => observer_state
+                .last_requested_at
                 .map(|last| {
                     (now - last)
                         .to_std()
@@ -937,6 +1064,154 @@ impl Mux {
                         .unwrap_or(true)
                 })
                 .unwrap_or(true),
+        }
+    }
+
+    fn dispatch_agent_observer_request(&self, request: AgentObserverRequest) {
+        if self.agent_observer_tx.send(request).is_err() {
+            log::error!("agent observer worker is no longer available");
+        }
+    }
+
+    fn note_sync_agent_observer_refresh(&self, pane_id: PaneId, refreshed_at: DateTime<Utc>) {
+        let mut observer_state_by_pane = self.agent_observer_state_by_pane.write();
+        let observer_state = observer_state_by_pane.entry(pane_id).or_default();
+        observer_state.last_requested_at = Some(refreshed_at);
+        observer_state.pending_request = None;
+        observer_state.inflight_generation = None;
+    }
+
+    fn schedule_agent_observer_refresh(
+        &self,
+        pane_id: PaneId,
+        metadata: &AgentMetadata,
+        runtime: &AgentRuntimeSnapshot,
+        refresh_policy: AgentRefreshPolicy,
+    ) {
+        let now = Utc::now();
+        let request = {
+            let mut observer_state_by_pane = self.agent_observer_state_by_pane.write();
+            let observer_state = observer_state_by_pane.entry(pane_id).or_default();
+            if !Self::should_refresh_harness_runtime(observer_state, refresh_policy, now) {
+                counter!("mux.agent_observer.refresh.skipped.rate").increment(1);
+                return;
+            }
+
+            observer_state.latest_generation += 1;
+            observer_state.last_requested_at = Some(now);
+            let request = AgentObserverRequest {
+                pane_id,
+                generation: observer_state.latest_generation,
+                requested_at: Instant::now(),
+                metadata: metadata.clone(),
+                runtime: runtime.clone(),
+            };
+
+            if observer_state.inflight_generation.is_some() {
+                if observer_state.pending_request.replace(request).is_some() {
+                    counter!("mux.agent_observer.refresh.replaced_pending.rate").increment(1);
+                } else {
+                    counter!("mux.agent_observer.refresh.coalesced.rate").increment(1);
+                }
+                return;
+            }
+
+            observer_state.inflight_generation = Some(request.generation);
+            request
+        };
+
+        counter!("mux.agent_observer.refresh.scheduled.rate").increment(1);
+        self.dispatch_agent_observer_request(request);
+    }
+
+    fn apply_agent_observer_update(&self, update: AgentObserverUpdate) {
+        let next_request = {
+            let mut observer_state_by_pane = self.agent_observer_state_by_pane.write();
+            let Some(observer_state) = observer_state_by_pane.get_mut(&update.pane_id) else {
+                counter!("mux.agent_observer.refresh.dropped_no_state.rate").increment(1);
+                return;
+            };
+
+            if observer_state.inflight_generation == Some(update.generation) {
+                observer_state.inflight_generation = None;
+            }
+
+            let is_stale = update.generation < observer_state.latest_generation;
+            let next_request = observer_state.pending_request.take().map(|request| {
+                observer_state.inflight_generation = Some(request.generation);
+                request
+            });
+
+            if is_stale {
+                counter!("mux.agent_observer.refresh.stale.rate").increment(1);
+            }
+
+            (is_stale, next_request)
+        };
+
+        if let Some(request) = next_request.1 {
+            self.dispatch_agent_observer_request(request);
+        }
+
+        if next_request.0 {
+            return;
+        }
+
+        let Some((_domain_id, _window_id, tab_id)) = self.resolve_pane_id(update.pane_id) else {
+            counter!("mux.agent_observer.refresh.dropped_missing_pane.rate").increment(1);
+            return;
+        };
+        if self.get_agent_metadata_for_pane(update.pane_id).is_none()
+            && !self.detected_agent_panes.read().contains(&update.pane_id)
+        {
+            counter!("mux.agent_observer.refresh.dropped_missing_target.rate").increment(1);
+            return;
+        }
+
+        let (before_title, after_title) = {
+            let mut runtime_by_pane = self.agent_runtime_by_pane.write();
+            let Some(runtime) = runtime_by_pane.get_mut(&update.pane_id) else {
+                counter!("mux.agent_observer.refresh.dropped_missing_runtime.rate").increment(1);
+                return;
+            };
+
+            let before_title = Self::title_fingerprint(runtime);
+            runtime.harness = update.runtime.harness;
+            runtime.transport = update.runtime.transport;
+            runtime.observed_at = update.runtime.observed_at;
+            runtime.session_path = update.runtime.session_path;
+            runtime.progress_summary = update.runtime.progress_summary;
+            runtime.harness_mode = update.runtime.harness_mode;
+            runtime.turn_phase = update.runtime.turn_phase;
+            runtime.turn_state = update.runtime.turn_state;
+            runtime.last_turn_completed_at = update.runtime.last_turn_completed_at;
+            runtime.observer_error = update.runtime.observer_error;
+            runtime.observer_started_at = update.runtime.observer_started_at;
+            runtime.last_harness_refresh_at = update.runtime.last_harness_refresh_at;
+            finalize_runtime_snapshot(runtime);
+            runtime.status = derive_runtime_status(runtime);
+            (before_title, Self::title_fingerprint(runtime))
+        };
+
+        histogram!("mux.agent_observer.refresh.apply.queue_delay").record(update.queue_delay);
+        histogram!("mux.agent_observer.refresh.apply.latency").record(update.refresh_elapsed);
+        counter!("mux.agent_observer.refresh.applied.rate").increment(1);
+
+        if Self::agent_auto_adopt_on_confirmed_session_match()
+            && self.get_agent_metadata_for_pane(update.pane_id).is_none()
+            && self.detected_agent_panes.read().contains(&update.pane_id)
+            && self
+                .agent_runtime_by_pane
+                .read()
+                .get(&update.pane_id)
+                .and_then(|runtime| runtime.session_path.as_deref())
+                .is_some()
+        {
+            self.maybe_auto_adopt_detected_agent(update.pane_id);
+        }
+
+        if before_title != after_title {
+            self.notify_tab_title_changed(tab_id);
         }
     }
 
@@ -952,7 +1227,7 @@ impl Mux {
         self.refresh_agent_runtime_for_pane_with_update(
             pane_id,
             true,
-            AgentRefreshPolicy::Immediate,
+            AgentRefreshPolicy::Throttled,
             |runtime| {
                 let now = chrono::Utc::now();
                 runtime.last_input_at = Some(now);
@@ -993,12 +1268,54 @@ impl Mux {
     }
 
     fn refresh_agent_runtime_for_pane(&self, pane_id: PaneId, notify_title: bool) {
-        self.refresh_agent_runtime_for_pane_with_update(
-            pane_id,
-            notify_title,
-            AgentRefreshPolicy::Immediate,
-            |_| {},
+        self.refresh_agent_runtime_for_pane_sync_with_update(pane_id, notify_title, |_| {});
+    }
+
+    fn refresh_agent_runtime_for_pane_sync_with_update<F>(
+        &self,
+        pane_id: PaneId,
+        notify_title: bool,
+        update: F,
+    ) where
+        F: FnOnce(&mut AgentRuntimeSnapshot),
+    {
+        let Some(metadata) = self.get_agent_metadata_for_pane(pane_id) else {
+            return;
+        };
+        let Some(pane) = self.get_pane(pane_id) else {
+            return;
+        };
+        let Some((_, _, tab_id)) = self.resolve_pane_id(pane_id) else {
+            return;
+        };
+        let mut runtime = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_else(|| AgentRuntimeSnapshot::new(metadata.as_ref()));
+        let before_title = notify_title.then(|| Self::title_fingerprint(&runtime));
+        update(&mut runtime);
+        runtime.alive = !pane.is_dead();
+        runtime.foreground_process_name = pane.get_foreground_process_name(CachePolicy::AllowStale);
+        runtime.tty_name = pane.tty_name();
+        runtime.terminal_progress = pane.get_progress();
+        runtime.harness = infer_harness(
+            &metadata.launch_cmd,
+            runtime.foreground_process_name.as_deref(),
         );
+        refresh_runtime_from_harness(&mut runtime, metadata.as_ref());
+        runtime.status = derive_runtime_status(&runtime);
+        let refreshed_at = runtime.last_harness_refresh_at;
+        let after_title = notify_title.then(|| Self::title_fingerprint(&runtime));
+        self.agent_runtime_by_pane.write().insert(pane_id, runtime);
+        if let Some(refreshed_at) = refreshed_at {
+            self.note_sync_agent_observer_refresh(pane_id, refreshed_at);
+        }
+
+        if notify_title && before_title != after_title {
+            self.notify_tab_title_changed(tab_id);
+        }
     }
 
     fn refresh_agent_runtime_for_pane_with_update<F>(
@@ -1035,12 +1352,8 @@ impl Mux {
             &metadata.launch_cmd,
             runtime.foreground_process_name.as_deref(),
         );
-        let now = Utc::now();
-        if Self::should_refresh_harness_runtime(&runtime, refresh_policy, now) {
-            refresh_runtime_from_harness(&mut runtime, metadata.as_ref());
-        } else {
-            finalize_runtime_snapshot(&mut runtime);
-        }
+        self.schedule_agent_observer_refresh(pane_id, metadata.as_ref(), &runtime, refresh_policy);
+        finalize_runtime_snapshot(&mut runtime);
         runtime.status = derive_runtime_status(&runtime);
         let after_title = notify_title.then(|| Self::title_fingerprint(&runtime));
         self.agent_runtime_by_pane.write().insert(pane_id, runtime);
@@ -1061,7 +1374,12 @@ impl Mux {
             .collect::<Vec<_>>();
         for pane_id in pane_ids {
             if self.get_agent_metadata_for_pane(pane_id).is_some() {
-                self.refresh_agent_runtime_for_pane(pane_id, false);
+                self.refresh_agent_runtime_for_pane_with_update(
+                    pane_id,
+                    false,
+                    AgentRefreshPolicy::Throttled,
+                    |_| {},
+                );
             } else {
                 self.maybe_auto_adopt_detected_agent(pane_id);
             }
@@ -1204,7 +1522,9 @@ impl Mux {
             let runtime = if self.get_agent_metadata_for_pane(pane_id).is_some() {
                 runtime_by_pane.get(&pane_id)
             } else {
-                detected_runtime = self.detect_agent_state_for_pane(pane_id).map(|state| state.runtime);
+                detected_runtime = self
+                    .detect_agent_state_for_pane(pane_id)
+                    .map(|state| state.runtime);
                 detected_runtime.as_ref()
             };
             if let Some(runtime) = runtime {
@@ -1287,7 +1607,12 @@ impl Mux {
         metadata: &AgentMetadata,
         pane: &Arc<dyn Pane>,
     ) -> AgentRuntimeSnapshot {
-        self.refresh_agent_runtime_for_pane(pane_id, false);
+        self.refresh_agent_runtime_for_pane_with_update(
+            pane_id,
+            false,
+            AgentRefreshPolicy::Throttled,
+            |_| {},
+        );
         self.agent_runtime_by_pane
             .read()
             .get(&pane_id)
@@ -1303,8 +1628,7 @@ impl Mux {
                     &metadata.launch_cmd,
                     runtime.foreground_process_name.as_deref(),
                 );
-                refresh_runtime_from_harness(&mut runtime, metadata);
-                runtime.status = derive_runtime_status(&runtime);
+                finalize_runtime_snapshot(&mut runtime);
                 runtime
             })
     }
@@ -2002,6 +2326,7 @@ impl Mux {
         let mut changed = false;
         let pane_location = self.resolve_pane_id(pane_id);
         self.clear_agent_metadata(pane_id);
+        self.agent_observer_state_by_pane.write().remove(&pane_id);
         if let Some(pane) = self.panes.write().remove(&pane_id).clone() {
             log::debug!("killing pane {}", pane_id);
             pane.kill();
@@ -3278,6 +3603,24 @@ mod test {
         }
     }
 
+    fn wait_for_main_thread_work<F>(
+        executor: &promise::spawn::SimpleExecutor,
+        mut ready: F,
+        context: &str,
+    ) where
+        F: FnMut() -> bool,
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !ready() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {}",
+                context
+            );
+            executor.tick().expect("run queued main-thread work");
+        }
+    }
+
     #[test]
     fn agent_metadata_is_listed_and_cleared_when_pane_is_removed() {
         let _test_lock = TEST_MUX_LOCK.lock();
@@ -3404,7 +3747,7 @@ mod test {
     #[test]
     fn repeated_output_throttles_harness_refresh() {
         let _test_lock = TEST_MUX_LOCK.lock();
-        let _executor = promise::spawn::SimpleExecutor::new();
+        let executor = promise::spawn::SimpleExecutor::new();
         let _env_lock = ENV_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
@@ -3491,6 +3834,18 @@ mod test {
 
         std::thread::sleep(AGENT_HARNESS_REFRESH_THROTTLE + Duration::from_millis(50));
         mux.record_agent_output(pane_id);
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_runtime_by_pane
+                    .read()
+                    .get(&pane_id)
+                    .and_then(|runtime| runtime.last_harness_refresh_at)
+                    .map(|refreshed_at| refreshed_at > first_refresh)
+                    .unwrap_or(false)
+            },
+            "throttled harness refresh",
+        );
         let refreshed_again = mux
             .agent_runtime_by_pane
             .read()
@@ -3498,6 +3853,220 @@ mod test {
             .and_then(|runtime| runtime.last_harness_refresh_at)
             .expect("refresh after throttle window");
         assert!(refreshed_again > first_refresh);
+
+        unsafe {
+            std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");
+        }
+    }
+
+    #[test]
+    fn list_agents_does_not_refresh_adopted_observer_synchronously() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let day = Utc::now();
+        let dir = temp
+            .path()
+            .join(format!("{:04}", day.year_ce().1))
+            .join(format!("{:02}", day.month()))
+            .join(format!("{:02}", day.day()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = dir.join("rollout-list-agents.jsonl");
+        std::fs::write(
+            &session,
+            concat!(
+                "{\"payload\":{\"cwd\":\"/tmp/list-agents-project\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"collaboration_mode_kind\":\"default\"}}\n",
+                "{\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[]}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:02Z\",\"payload\":{\"type\":\"agent_message\",\"phase\":\"commentary\"}}\n"
+            ),
+        )
+        .unwrap();
+        unsafe {
+            std::env::set_var("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        }
+
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new_detected(
+            148,
+            size,
+            domain.id,
+            "codex",
+            "/tmp/list-agents-project",
+            "/usr/bin/codex",
+            &["codex"],
+        );
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        mux.set_agent_metadata(
+            pane_id,
+            AgentMetadata {
+                agent_id: "agent-list-agents".to_string(),
+                name: "list-agents".to_string(),
+                launch_cmd: "codex".to_string(),
+                declared_cwd: "/tmp/list-agents-project".to_string(),
+                created_at: Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
+                repo_root: None,
+                worktree: None,
+                branch: None,
+                managed_checkout: false,
+            },
+        )
+        .unwrap();
+
+        let first_refresh = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .and_then(|runtime| runtime.last_harness_refresh_at)
+            .expect("initial harness refresh");
+
+        std::thread::sleep(AGENT_HARNESS_REFRESH_THROTTLE + Duration::from_millis(50));
+
+        let agents = mux.list_agents();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(
+            agents[0].runtime.last_harness_refresh_at,
+            Some(first_refresh)
+        );
+
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_runtime_by_pane
+                    .read()
+                    .get(&pane_id)
+                    .and_then(|runtime| runtime.last_harness_refresh_at)
+                    .map(|refreshed_at| refreshed_at > first_refresh)
+                    .unwrap_or(false)
+            },
+            "async list_agents observer refresh",
+        );
+
+        unsafe {
+            std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");
+        }
+    }
+
+    #[test]
+    fn refresh_agent_runtime_for_tab_queues_observer_refresh() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let day = Utc::now();
+        let dir = temp
+            .path()
+            .join(format!("{:04}", day.year_ce().1))
+            .join(format!("{:02}", day.month()))
+            .join(format!("{:02}", day.day()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = dir.join("rollout-refresh-tab.jsonl");
+        std::fs::write(
+            &session,
+            concat!(
+                "{\"payload\":{\"cwd\":\"/tmp/refresh-tab-project\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"collaboration_mode_kind\":\"default\"}}\n",
+                "{\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[]}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:02Z\",\"payload\":{\"type\":\"agent_message\",\"phase\":\"commentary\"}}\n"
+            ),
+        )
+        .unwrap();
+        unsafe {
+            std::env::set_var("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        }
+
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new_detected(
+            149,
+            size,
+            domain.id,
+            "codex",
+            "/tmp/refresh-tab-project",
+            "/usr/bin/codex",
+            &["codex"],
+        );
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        mux.set_agent_metadata(
+            pane_id,
+            AgentMetadata {
+                agent_id: "agent-refresh-tab".to_string(),
+                name: "refresh-tab".to_string(),
+                launch_cmd: "codex".to_string(),
+                declared_cwd: "/tmp/refresh-tab-project".to_string(),
+                created_at: Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
+                repo_root: None,
+                worktree: None,
+                branch: None,
+                managed_checkout: false,
+            },
+        )
+        .unwrap();
+
+        let first_refresh = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .and_then(|runtime| runtime.last_harness_refresh_at)
+            .expect("initial harness refresh");
+
+        std::thread::sleep(AGENT_HARNESS_REFRESH_THROTTLE + Duration::from_millis(50));
+
+        mux.refresh_agent_runtime_for_tab(tab.tab_id());
+        let queued_refresh = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .and_then(|runtime| runtime.last_harness_refresh_at)
+            .expect("queued harness refresh timestamp");
+        assert_eq!(queued_refresh, first_refresh);
+
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_runtime_by_pane
+                    .read()
+                    .get(&pane_id)
+                    .and_then(|runtime| runtime.last_harness_refresh_at)
+                    .map(|refreshed_at| refreshed_at > first_refresh)
+                    .unwrap_or(false)
+            },
+            "async tab observer refresh",
+        );
 
         unsafe {
             std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");
@@ -3554,7 +4123,7 @@ mod test {
     #[test]
     fn confirmed_detected_sessions_can_auto_adopt() {
         let _test_lock = TEST_MUX_LOCK.lock();
-        let _executor = promise::spawn::SimpleExecutor::new();
+        let executor = promise::spawn::SimpleExecutor::new();
         let _env_lock = ENV_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
@@ -3611,6 +4180,14 @@ mod test {
         mux.add_tab_and_active_pane(&tab).unwrap();
         mux.add_tab_to_window(&tab, window_id).unwrap();
 
+        let initial_agents = mux.list_agents();
+        assert_eq!(initial_agents.len(), 1);
+        assert!(matches!(initial_agents[0].origin, AgentOrigin::Detected));
+        wait_for_main_thread_work(
+            &executor,
+            || mux.get_agent_metadata_for_pane(pane_id).is_some(),
+            "detected agent auto-adoption",
+        );
         let agents = mux.list_agents();
         unsafe {
             std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");
@@ -3621,7 +4198,10 @@ mod test {
         let agent = &agents[0];
         assert!(matches!(agent.origin, AgentOrigin::Adopted));
         assert_eq!(agent.metadata.name, "auto_adopt_project_codex");
-        assert_eq!(agent.runtime.session_path.as_deref(), Some(session_path.as_str()));
+        assert_eq!(
+            agent.runtime.session_path.as_deref(),
+            Some(session_path.as_str())
+        );
         assert!(mux.get_agent_metadata_for_pane(pane_id).is_some());
     }
 
