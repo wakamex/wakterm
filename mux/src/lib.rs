@@ -3043,9 +3043,14 @@ impl Mux {
             tab.log_runtime_invariant_errors("mux.split_pane");
         }
 
-        self.set_active_pane_for_current_identity(window_id, tab_id, pane.pane_id())
-            .ok();
-        self.record_focus_for_current_identity(pane.pane_id());
+        let current_client_id = self.identity.read().as_ref().cloned();
+        if let Some(client_id) = current_client_id {
+            self.set_focused_pane_for_client(client_id.as_ref(), pane.pane_id())
+                .ok();
+        } else {
+            self.set_active_pane_for_current_identity(window_id, tab_id, pane.pane_id())
+                .ok();
+        }
 
         // FIXME: clipboard
 
@@ -5203,6 +5208,11 @@ mod test {
                 .get(&window_id)
                 .and_then(|window| window.tabs.get(&tab.tab_id()))
                 .and_then(|tab| tab.active_pane_id),
+            Some(new_pane_id)
+        );
+        assert_eq!(
+            mux.resolve_focused_pane(client_a.as_ref())
+                .map(|(_, _, _, pane_id)| pane_id),
             Some(new_pane_id)
         );
         assert_eq!(
