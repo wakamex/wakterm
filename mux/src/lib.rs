@@ -149,6 +149,12 @@ enum AgentRefreshPolicy {
     Throttled,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InitialAgentRefresh {
+    Sync,
+    Async,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AgentTitleFingerprint {
     turn_state: crate::agent::AgentTurnState,
@@ -680,6 +686,23 @@ impl Mux {
         pane_id: PaneId,
         metadata: AgentMetadata,
     ) -> anyhow::Result<()> {
+        self.set_agent_metadata_with_initial_refresh(pane_id, metadata, InitialAgentRefresh::Sync)
+    }
+
+    pub fn restore_agent_metadata(
+        &self,
+        pane_id: PaneId,
+        metadata: AgentMetadata,
+    ) -> anyhow::Result<()> {
+        self.set_agent_metadata_with_initial_refresh(pane_id, metadata, InitialAgentRefresh::Async)
+    }
+
+    fn set_agent_metadata_with_initial_refresh(
+        &self,
+        pane_id: PaneId,
+        metadata: AgentMetadata,
+        initial_refresh: InitialAgentRefresh,
+    ) -> anyhow::Result<()> {
         self.detected_agent_panes.write().remove(&pane_id);
         let pane = self
             .get_pane(pane_id)
@@ -726,7 +749,15 @@ impl Mux {
         drop(metadata_by_pane);
         drop(names);
 
-        self.refresh_agent_runtime_for_pane(pane_id, true);
+        match initial_refresh {
+            InitialAgentRefresh::Sync => self.refresh_agent_runtime_for_pane(pane_id, true),
+            InitialAgentRefresh::Async => self.refresh_agent_runtime_for_pane_with_update(
+                pane_id,
+                false,
+                AgentRefreshPolicy::Throttled,
+                |_| {},
+            ),
+        }
         Ok(())
     }
 
@@ -3853,6 +3884,103 @@ mod test {
             .and_then(|runtime| runtime.last_harness_refresh_at)
             .expect("refresh after throttle window");
         assert!(refreshed_again > first_refresh);
+
+        unsafe {
+            std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");
+        }
+    }
+
+    #[test]
+    fn restore_agent_metadata_queues_initial_harness_refresh() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let day = Utc::now();
+        let dir = temp
+            .path()
+            .join(format!("{:04}", day.year_ce().1))
+            .join(format!("{:02}", day.month()))
+            .join(format!("{:02}", day.day()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = dir.join("rollout-restore-agent.jsonl");
+        std::fs::write(
+            &session,
+            concat!(
+                "{\"payload\":{\"cwd\":\"/tmp/restore-agent-project\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"collaboration_mode_kind\":\"default\"}}\n",
+                "{\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[]}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:02Z\",\"payload\":{\"type\":\"agent_message\",\"phase\":\"commentary\"}}\n"
+            ),
+        )
+        .unwrap();
+        unsafe {
+            std::env::set_var("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        }
+
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new_detected(
+            150,
+            size,
+            domain.id,
+            "codex",
+            "/tmp/restore-agent-project",
+            "/usr/bin/codex",
+            &["codex"],
+        );
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        mux.restore_agent_metadata(
+            pane_id,
+            AgentMetadata {
+                agent_id: "agent-restore".to_string(),
+                name: "restore".to_string(),
+                launch_cmd: "codex".to_string(),
+                declared_cwd: "/tmp/restore-agent-project".to_string(),
+                created_at: Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
+                repo_root: None,
+                worktree: None,
+                branch: None,
+                managed_checkout: false,
+            },
+        )
+        .unwrap();
+
+        let initial_refresh = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .and_then(|runtime| runtime.last_harness_refresh_at);
+        assert_eq!(initial_refresh, None);
+
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_runtime_by_pane
+                    .read()
+                    .get(&pane_id)
+                    .and_then(|runtime| runtime.last_harness_refresh_at)
+                    .is_some()
+            },
+            "async restored agent refresh",
+        );
 
         unsafe {
             std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");

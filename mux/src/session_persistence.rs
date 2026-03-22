@@ -296,7 +296,7 @@ fn restore_node<'a>(
                 if let Some(metadata) = entry.agent_metadata.clone() {
                     if let Some(positioned) = tab.iter_panes().get(*leaf_index) {
                         Mux::get()
-                            .set_agent_metadata(positioned.pane.pane_id(), metadata)
+                            .restore_agent_metadata(positioned.pane.pane_id(), metadata)
                             .context("restoring pane agent metadata")?;
                     }
                 }
