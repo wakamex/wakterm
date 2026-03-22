@@ -1930,6 +1930,10 @@ impl Mux {
             .resolve_pane_id(pane_id)
             .ok_or_else(|| anyhow::anyhow!("can't find {pane_id} in the mux"))?;
 
+        log::debug!(
+            "focus_pane_and_containing_tab start pane_id={pane_id} window_id={window_id} tab_id={tab_id}"
+        );
+
         self.set_active_pane_for_current_identity(window_id, tab_id, pane_id)?;
         if let Some(view_id) = self.active_view_id() {
             self.acknowledge_agent_attention_for_view(view_id.as_ref(), pane_id);
@@ -1941,6 +1945,10 @@ impl Mux {
             .ok_or_else(|| anyhow::anyhow!("tab {tab_id} not found"))?;
 
         tab.set_active_pane(&pane, NotifyMux::No);
+
+        log::debug!(
+            "focus_pane_and_containing_tab complete pane_id={pane_id} window_id={window_id} tab_id={tab_id}"
+        );
 
         Ok(())
     }

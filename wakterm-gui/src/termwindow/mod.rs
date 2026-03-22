@@ -1324,6 +1324,7 @@ impl TermWindow {
                     window_id: _,
                     tab_id,
                 } => {
+                    log::debug!("termwindow handling TabAddedToWindow tab_id={tab_id}");
                     let mux = Mux::get();
                     let mut size = self.terminal_size;
                     if let Some(tab) = mux.get_tab(tab_id) {
@@ -1354,7 +1355,8 @@ impl TermWindow {
                 MuxNotification::PaneOutput(pane_id) => {
                     self.mux_pane_output_event(pane_id);
                 }
-                MuxNotification::WindowInvalidated(_) => {
+                MuxNotification::WindowInvalidated(window_id) => {
+                    log::debug!("termwindow handling WindowInvalidated window_id={window_id}");
                     window.invalidate();
                     self.update_title_post_status();
                 }
@@ -1367,18 +1369,23 @@ impl TermWindow {
                 MuxNotification::SaveToDownloads { .. } => {
                     // Handled by frontend
                 }
-                MuxNotification::PaneFocused(_) => {
+                MuxNotification::PaneFocused(pane_id) => {
+                    log::debug!("termwindow handling PaneFocused pane_id={pane_id}");
                     // Also handled by clientpane
                     self.update_title_post_status();
                 }
-                MuxNotification::TabResized(_) => {
+                MuxNotification::TabResized(tab_id) => {
+                    log::debug!("termwindow handling TabResized tab_id={tab_id}");
                     // Resize/topology changes need a full repaint so that
                     // pane backgrounds and glyphs don't linger in regions
                     // that now belong to a different pane.
                     window.invalidate();
                     self.update_title_post_status();
                 }
-                MuxNotification::TabTitleChanged { .. } => {
+                MuxNotification::TabTitleChanged { tab_id, ref title } => {
+                    log::debug!(
+                        "termwindow handling TabTitleChanged tab_id={tab_id} title={title:?}"
+                    );
                     self.update_title_post_status();
                 }
                 MuxNotification::PaneAdded(_)
