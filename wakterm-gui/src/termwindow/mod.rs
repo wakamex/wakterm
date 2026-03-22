@@ -550,9 +550,11 @@ impl TermWindow {
 
     fn focus_changed(&mut self, focused: bool, window: &Window) {
         log::trace!("Setting focus to {:?}", focused);
+        log::debug!("focus_changed start focused={focused}");
         self.focused = if focused { Some(Instant::now()) } else { None };
         self.quad_generation += 1;
         self.load_os_parameters();
+        log::debug!("focus_changed loaded os parameters focused={focused}");
 
         if self.focused.is_none() {
             self.last_mouse_click = None;
@@ -564,22 +566,42 @@ impl TermWindow {
                 state.mouse_terminal_coords.take();
             }
         }
+        log::debug!("focus_changed updated mouse state focused={focused}");
 
         // Reset the cursor blink phase
         self.prev_cursor.bump();
+        log::debug!("focus_changed bumped cursor focused={focused}");
 
         // force cursor to be repainted
+        log::debug!("focus_changed invalidating window focused={focused}");
         window.invalidate();
+        log::debug!("focus_changed invalidated window focused={focused}");
 
         if let Some(pane) = self.get_active_pane_or_overlay() {
+            let pane_id = pane.pane_id();
             if focused {
+                log::debug!(
+                    "focus_changed recording focus for identity focused={focused} pane_id={pane_id}"
+                );
                 Mux::get().record_focus_for_current_identity(pane.pane_id());
+                log::debug!(
+                    "focus_changed recorded focus for identity focused={focused} pane_id={pane_id}"
+                );
             }
+            log::debug!("focus_changed calling pane.focus_changed focused={focused} pane_id={pane_id}");
             pane.focus_changed(focused);
+            log::debug!("focus_changed pane.focus_changed returned focused={focused} pane_id={pane_id}");
+        } else {
+            log::debug!("focus_changed no active pane focused={focused}");
         }
 
+        log::debug!("focus_changed updating title focused={focused}");
         self.update_title();
+        log::debug!("focus_changed updated title focused={focused}");
+        log::debug!("focus_changed emitting window-focus-changed focused={focused}");
         self.emit_window_event("window-focus-changed", None);
+        log::debug!("focus_changed emitted window-focus-changed focused={focused}");
+        log::debug!("focus_changed complete focused={focused}");
     }
 
     fn created(&mut self, ctx: RenderContext) -> anyhow::Result<()> {
