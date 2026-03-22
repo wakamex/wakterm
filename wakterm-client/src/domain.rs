@@ -13,7 +13,6 @@ use mux::tab::{SplitRequest, Tab, TabId};
 use mux::window::WindowId;
 use mux::{Mux, MuxNotification};
 use portable_pty::CommandBuilder;
-use promise::spawn::spawn_into_new_thread;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1100,7 +1099,7 @@ impl Domain for ClientDomain {
             let ui = ui.clone();
             async move {
                 let mut cloned_ui = ui.clone();
-                let client = spawn_into_new_thread(move || match &config {
+                let client = smol::unblock(move || match &config {
                     ClientDomainConfig::Unix(unix) => {
                         let initial = true;
                         let no_auto_start = false;
