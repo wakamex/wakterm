@@ -1086,6 +1086,13 @@ impl TermWindow {
     }
 
     fn do_paint(&mut self, window: &Window) -> bool {
+        log::debug!(
+            "do_paint start dims={}x{} resizes_pending={} repaint_pending={}",
+            self.dimensions.pixel_width,
+            self.dimensions.pixel_height,
+            self.resizes_pending,
+            self.is_repaint_pending
+        );
         let gl = match self.gl.as_ref() {
             Some(gl) => gl,
             None => return false,
@@ -1098,6 +1105,7 @@ impl TermWindow {
             return false;
         }
 
+        log::debug!("do_paint creating frame");
         let mut frame = glium::Frame::new(
             Rc::clone(&gl),
             (
@@ -1105,8 +1113,12 @@ impl TermWindow {
                 self.dimensions.pixel_height as u32,
             ),
         );
+        log::debug!("do_paint frame created");
         self.paint_impl(&mut RenderFrame::Glium(&mut frame));
-        window.finish_frame(frame).is_ok()
+        log::debug!("do_paint finishing frame");
+        let ok = window.finish_frame(frame).is_ok();
+        log::debug!("do_paint finish_frame complete ok={ok}");
+        ok
     }
 
     fn do_paint_webgpu(&mut self) -> anyhow::Result<bool> {
