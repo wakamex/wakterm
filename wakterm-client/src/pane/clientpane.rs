@@ -513,22 +513,17 @@ impl Pane for ClientPane {
             input_serial = inner.input_serial;
             inner.predict_from_key_event(key, mods);
         }
-        let client = Arc::clone(&self.client);
         let remote_pane_id = self.remote_pane_id;
-        promise::spawn::spawn(async move {
-            client
-                .client
-                .key_down(SendKeyDown {
-                    pane_id: remote_pane_id,
-                    event: KeyEvent {
-                        key,
-                        modifiers: mods,
-                    },
-                    input_serial,
-                })
-                .await
-        })
-        .detach();
+        self.client
+            .client
+            .send_pdu_no_wait(Pdu::SendKeyDown(SendKeyDown {
+                pane_id: remote_pane_id,
+                event: KeyEvent {
+                    key,
+                    modifiers: mods,
+                },
+                input_serial,
+            }))?;
         self.renderable.lock().inner.borrow_mut().update_last_send();
         Ok(())
     }

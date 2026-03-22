@@ -19,7 +19,7 @@ use portable_pty::Child;
 use smol::channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
 use smol::prelude::*;
 use smol::{block_on, Async};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::marker::Unpin;
 use std::net::TcpStream;
@@ -47,6 +47,9 @@ enum ReaderMessage {
     SendPdu {
         pdu: Pdu,
         promise: Sender<anyhow::Result<Pdu>>,
+    },
+    SendPduNoWait {
+        pdu: Pdu,
     },
     Readable,
 }
@@ -444,6 +447,7 @@ async fn client_thread_async(
 
     struct Promises {
         map: HashMap<u64, Sender<anyhow::Result<Pdu>>>,
+        ignored_responses: HashSet<u64>,
     }
 
     impl Promises {
@@ -462,6 +466,7 @@ async fn client_thread_async(
     }
     let mut promises = Promises {
         map: HashMap::new(),
+        ignored_responses: HashSet::new(),
     };
 
     let mut stream = reconnectable.take_stream().unwrap();
@@ -471,13 +476,17 @@ async fn client_thread_async(
         promises: &mut Promises,
         next_serial: &mut u64,
         pdu: Pdu,
-        promise: Sender<anyhow::Result<Pdu>>,
+        promise: Option<Sender<anyhow::Result<Pdu>>>,
     ) -> anyhow::Result<()> {
         let serial = *next_serial;
         *next_serial += 1;
         let pdu_name = pdu.pdu_name();
         log::debug!("client thread sending serial {} {}", serial, pdu_name);
-        promises.map.insert(serial, promise);
+        if let Some(promise) = promise {
+            promises.map.insert(serial, promise);
+        } else {
+            promises.ignored_responses.insert(serial);
+        }
 
         pdu.encode_async(stream, serial)
             .await
@@ -490,8 +499,18 @@ async fn client_thread_async(
     loop {
         match rx.try_recv() {
             Ok(ReaderMessage::SendPdu { pdu, promise }) => {
-                send_queued_pdu(&mut stream, &mut promises, &mut next_serial, pdu, promise)
-                    .await?;
+                send_queued_pdu(
+                    &mut stream,
+                    &mut promises,
+                    &mut next_serial,
+                    pdu,
+                    Some(promise),
+                )
+                .await?;
+                continue;
+            }
+            Ok(ReaderMessage::SendPduNoWait { pdu }) => {
+                send_queued_pdu(&mut stream, &mut promises, &mut next_serial, pdu, None).await?;
                 continue;
             }
             Ok(ReaderMessage::Readable) => {}
@@ -508,8 +527,17 @@ async fn client_thread_async(
 
         match smol::future::or(rx_msg, wait_for_read).await {
             Ok(ReaderMessage::SendPdu { pdu, promise }) => {
-                send_queued_pdu(&mut stream, &mut promises, &mut next_serial, pdu, promise)
-                    .await?;
+                send_queued_pdu(
+                    &mut stream,
+                    &mut promises,
+                    &mut next_serial,
+                    pdu,
+                    Some(promise),
+                )
+                .await?;
+            }
+            Ok(ReaderMessage::SendPduNoWait { pdu }) => {
+                send_queued_pdu(&mut stream, &mut promises, &mut next_serial, pdu, None).await?;
             }
             Ok(ReaderMessage::Readable) => {
                 match Pdu::decode_async(&mut stream, Some(next_serial)).await {
@@ -535,6 +563,12 @@ async fn client_thread_async(
                             if promise.try_send(Ok(decoded.pdu)).is_err() {
                                 return Err(NotReconnectableError::ClientWasDestroyed.into());
                             }
+                        } else if promises.ignored_responses.remove(&decoded.serial) {
+                            log::debug!(
+                                "client thread dropped no-wait response serial {} {}",
+                                decoded.serial,
+                                decoded.pdu.pdu_name()
+                            );
                         } else {
                             let reason =
                                 format!("got serial {:?} without a corresponding promise", decoded);
@@ -1480,6 +1514,21 @@ impl Client {
             self.view_id
         );
         result
+    }
+
+    pub fn send_pdu_no_wait(&self, pdu: Pdu) -> anyhow::Result<()> {
+        let pdu_name = pdu.pdu_name();
+        self.sender
+            .try_send(ReaderMessage::SendPduNoWait { pdu })
+            .map_err(|_| ChannelSendError)
+            .context("send_pdu_no_wait send")?;
+        log::debug!(
+            "send_pdu_no_wait queued {} on client {:?} view {:?}",
+            pdu_name,
+            self.client_id,
+            self.view_id
+        );
+        Ok(())
     }
 
     pub async fn resolve_pane_id(&self, pane_id: Option<PaneId>) -> anyhow::Result<PaneId> {
