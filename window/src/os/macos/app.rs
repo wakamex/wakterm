@@ -75,6 +75,10 @@ extern "C" fn application_did_finish_launching(this: &mut Object, _sel: Sel, _no
     }
 }
 
+extern "C" fn application_did_update(_this: &mut Object, _sel: Sel, _notif: *mut Object) {
+    while crate::spawn::SPAWN_QUEUE.run() {}
+}
+
 extern "C" fn application_open_untitled_file(
     this: &mut Object,
     _sel: Sel,
@@ -161,6 +165,10 @@ fn get_class() -> &'static Class {
             cls.add_method(
                 sel!(applicationDidFinishLaunching:),
                 application_did_finish_launching as extern "C" fn(&mut Object, Sel, *mut Object),
+            );
+            cls.add_method(
+                sel!(applicationDidUpdate:),
+                application_did_update as extern "C" fn(&mut Object, Sel, *mut Object),
             );
             cls.add_method(
                 sel!(application:openFile:),
