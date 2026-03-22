@@ -159,6 +159,7 @@ impl crate::TermWindow {
     }
 
     pub fn paint_pass(&mut self) -> anyhow::Result<()> {
+        log::debug!("paint_pass start");
         {
             let gl_state = self.render_state.as_ref().unwrap();
             for layer in gl_state.layers.borrow().iter() {
@@ -170,6 +171,7 @@ impl crate::TermWindow {
         self.ui_items.clear();
 
         let panes = self.get_panes_to_render();
+        log::debug!("paint_pass panes_to_render={}", panes.len());
         let focused = self.focused.is_some();
         let window_is_transparent =
             !self.window_background.is_empty() || self.config.window_background_opacity != 1.0;
@@ -245,20 +247,37 @@ impl crate::TermWindow {
             )
             .context("filled_rectangle for window background")?;
         }
+        log::debug!("paint_pass background complete");
 
         for pos in panes {
+            log::debug!(
+                "paint_pass pane start pane_id={} active={} top={} left={} size={}x{}",
+                pos.pane.pane_id(),
+                pos.is_active,
+                pos.top,
+                pos.left,
+                pos.width,
+                pos.height
+            );
             if pos.is_active {
                 self.update_text_cursor(&pos);
                 if focused {
+                    log::debug!("paint_pass pane {} advising focus", pos.pane.pane_id());
                     pos.pane.advise_focus();
+                    log::debug!(
+                        "paint_pass pane {} recording focus for identity",
+                        pos.pane.pane_id()
+                    );
                     mux::Mux::get().record_focus_for_current_identity(pos.pane.pane_id());
                 }
             }
             self.paint_pane(&pos, &mut layers).context("paint_pane")?;
+            log::debug!("paint_pass pane complete pane_id={}", pos.pane.pane_id());
         }
 
         if let Some(pane) = self.get_active_pane_or_overlay() {
             let splits = self.get_splits();
+            log::debug!("paint_pass splits={}", splits.len());
             for split in &splits {
                 self.paint_split(&mut layers, split, &pane)
                     .context("paint_split")?;
@@ -266,13 +285,17 @@ impl crate::TermWindow {
         }
 
         if self.show_tab_bar {
+            log::debug!("paint_pass painting tab bar");
             self.paint_tab_bar(&mut layers).context("paint_tab_bar")?;
         }
 
+        log::debug!("paint_pass painting borders");
         self.paint_window_borders(&mut layers)
             .context("paint_window_borders")?;
         drop(layers);
+        log::debug!("paint_pass painting modal");
         self.paint_modal().context("paint_modal")?;
+        log::debug!("paint_pass complete");
 
         Ok(())
     }

@@ -34,6 +34,7 @@ impl crate::TermWindow {
         pos: &PositionedPane,
         layers: &mut TripleLayerQuadAllocator,
     ) -> anyhow::Result<()> {
+        log::debug!("paint_pane start pane_id={}", pos.pane.pane_id());
         if self.config.use_box_model_render {
             return self.paint_pane_box_model(pos);
         }
@@ -568,6 +569,11 @@ impl crate::TermWindow {
             }
 
             pos.pane.with_lines_mut(stable_range.clone(), &mut render);
+            log::debug!(
+                "paint_pane with_lines complete pane_id={} range={:?}",
+                pos.pane.pane_id(),
+                stable_range
+            );
             if let Some(error) = render.error.take() {
                 return Err(error).context("error while calling with_lines_mut");
             }
@@ -580,6 +586,7 @@ impl crate::TermWindow {
         */
         metrics::histogram!("paint_pane.lines").record(start.elapsed());
         log::trace!("lines elapsed {:?}", start.elapsed());
+        log::debug!("paint_pane complete pane_id={}", pos.pane.pane_id());
 
         Ok(())
     }
