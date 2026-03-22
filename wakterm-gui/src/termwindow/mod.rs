@@ -3523,8 +3523,13 @@ impl TermWindow {
         tab.set_active_idx_no_notify(pane_index);
 
         let mux = Mux::get();
-        if let Err(err) = mux.reconcile_focused_pane_for_current_identity(pane_id) {
-            log::error!("failed to reconcile focused pane {pane_id}: {err:#}");
+        if let Some(client_id) = mux.active_identity() {
+            if let Err(err) = mux.set_focused_pane_for_client(client_id.as_ref(), pane_id) {
+                log::error!("failed to set focused pane {pane_id}: {err:#}");
+            }
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.invalidate();
         }
     }
 
@@ -3534,8 +3539,10 @@ impl TermWindow {
         let after = tab.get_active_pane().map(|pane| pane.pane_id());
         if let Some(pane_id) = after.filter(|pane_id| Some(*pane_id) != before) {
             let mux = Mux::get();
-            if let Err(err) = mux.reconcile_focused_pane_for_current_identity(pane_id) {
-                log::error!("failed to reconcile focused pane {pane_id}: {err:#}");
+            if let Some(client_id) = mux.active_identity() {
+                if let Err(err) = mux.set_focused_pane_for_client(client_id.as_ref(), pane_id) {
+                    log::error!("failed to set focused pane {pane_id}: {err:#}");
+                }
             }
         }
     }
