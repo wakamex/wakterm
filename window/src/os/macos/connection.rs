@@ -81,13 +81,12 @@ impl Connection {
                 }
 
                 let next = {
-                    let Some(handle) = Connection::get().unwrap().window_by_id(window_id) else {
-                        NextStep::MissingWindow
-                    };
-
-                    match handle.try_borrow_mut() {
-                        Ok(mut inner) => NextStep::Complete(f.take().unwrap()(&mut inner)),
-                        Err(_) => NextStep::Retry,
+                    match Connection::get().unwrap().window_by_id(window_id) {
+                        Some(handle) => match handle.try_borrow_mut() {
+                            Ok(mut inner) => NextStep::Complete(f.take().unwrap()(&mut inner)),
+                            Err(_) => NextStep::Retry,
+                        },
+                        None => NextStep::MissingWindow,
                     }
                 };
 
