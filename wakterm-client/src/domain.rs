@@ -6,6 +6,7 @@ use codec::{ListPanesResponse, SpawnV2, SplitPane};
 use config::keyassignment::SpawnTabDomain;
 use config::{configuration, SshDomain, TlsDomainClient, UnixDomain};
 use mux::agent::AgentTabBadgeState;
+use mux::client::ClientId;
 use mux::connui::{ConnectionUI, ConnectionUIParams};
 use mux::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
 use mux::pane::{Pane, PaneId};
@@ -593,12 +594,34 @@ impl ClientDomain {
         }
     }
 
+    fn reconcile_client_identity(mux: &Arc<Mux>) -> Option<Arc<ClientId>> {
+        if let Some(client_id) = mux.active_identity() {
+            return Some(client_id);
+        }
+
+        let clients = mux.iter_clients();
+        if clients.len() == 1 {
+            let client_id = clients[0].client_id.clone();
+            log::debug!(
+                "process_pane_list using sole registered client identity {:?}",
+                client_id
+            );
+            return Some(client_id);
+        }
+
+        None
+    }
+
     fn process_pane_list(
         inner: Arc<ClientInner>,
         panes: ListPanesResponse,
         mut primary_window_id: Option<WindowId>,
     ) -> anyhow::Result<()> {
         let mux = Mux::get();
+        let reconcile_client_id = Self::reconcile_client_identity(&mux);
+        let _identity = reconcile_client_id
+            .as_ref()
+            .map(|client_id| mux.with_identity(Some(client_id.clone())));
         log::debug!(
             "process_pane_list start: domain={} tabs={} window_titles={} view_windows={}",
             inner.local_domain_id,
@@ -763,11 +786,9 @@ impl ClientDomain {
                     }
                     if !has_usable_window_view_state(remote_window_id) {
                         if let Some(active_pane) = tab.get_active_pane() {
-                            fallback_window_view_state.entry(remote_window_id).or_insert((
-                                local_window_id,
-                                tab.tab_id(),
-                                active_pane.pane_id(),
-                            ));
+                            fallback_window_view_state
+                                .entry(remote_window_id)
+                                .or_insert((local_window_id, tab.tab_id(), active_pane.pane_id()));
                         }
                     }
                     log::debug!(
@@ -800,11 +821,13 @@ impl ClientDomain {
                         mux.add_tab_to_window(&tab, local_window_id)?;
                         if !has_usable_window_view_state(remote_window_id) {
                             if let Some(active_pane) = tab.get_active_pane() {
-                                fallback_window_view_state.entry(remote_window_id).or_insert((
-                                    local_window_id,
-                                    tab.tab_id(),
-                                    active_pane.pane_id(),
-                                ));
+                                fallback_window_view_state
+                                    .entry(remote_window_id)
+                                    .or_insert((
+                                        local_window_id,
+                                        tab.tab_id(),
+                                        active_pane.pane_id(),
+                                    ));
                             }
                         }
                         log::debug!(
@@ -827,11 +850,9 @@ impl ClientDomain {
                 mux.add_tab_to_window(&tab, *local_window_id)?;
                 if !has_usable_window_view_state(remote_window_id) {
                     if let Some(active_pane) = tab.get_active_pane() {
-                        fallback_window_view_state.entry(remote_window_id).or_insert((
-                            *local_window_id,
-                            tab.tab_id(),
-                            active_pane.pane_id(),
-                        ));
+                        fallback_window_view_state
+                            .entry(remote_window_id)
+                            .or_insert((*local_window_id, tab.tab_id(), active_pane.pane_id()));
                     }
                 }
                 log::debug!(
@@ -889,6 +910,7 @@ impl ClientDomain {
                     if let Some(tab) = mux.get_tab(local_tab_id) {
                         if let Some(pane) = mux.get_pane(local_active_pane_id) {
                             tab.set_active_pane(&pane, mux::tab::NotifyMux::No);
+                            mux.record_focus_for_current_identity(local_active_pane_id);
                         }
                     }
                 }
@@ -914,6 +936,7 @@ impl ClientDomain {
                 if let Some(tab) = mux.get_tab(local_tab_id) {
                     if let Some(pane) = mux.get_pane(local_pane_id) {
                         tab.set_active_pane(&pane, mux::tab::NotifyMux::No);
+                        mux.record_focus_for_current_identity(local_pane_id);
                     }
                 }
             }
@@ -945,7 +968,10 @@ impl ClientDomain {
             }
         }
 
-        log::debug!("process_pane_list complete for domain {}", inner.local_domain_id);
+        log::debug!(
+            "process_pane_list complete for domain {}",
+            inner.local_domain_id
+        );
         Ok(())
     }
 
@@ -978,7 +1004,10 @@ impl ClientDomain {
         ));
         *domain.inner.lock().unwrap() = Some(Arc::clone(&inner));
 
-        log::debug!("finish_attach processing pane list for domain {}", domain_id);
+        log::debug!(
+            "finish_attach processing pane list for domain {}",
+            domain_id
+        );
         Self::process_pane_list(inner, panes, primary_window_id)?;
         log::debug!("finish_attach complete for domain {}", domain_id);
 
@@ -1241,7 +1270,8 @@ impl Domain for ClientDomain {
                                 cloned_ui.output_str("Checking server version\n");
                                 client.verify_version_compat(&cloned_ui).await?;
 
-                                cloned_ui.output_str("Version check OK!  Requesting pane list...\n");
+                                cloned_ui
+                                    .output_str("Version check OK!  Requesting pane list...\n");
                                 let panes = client.list_panes().await?;
                                 cloned_ui.output_str(&format!(
                                     "Server has {} tabs.  Attaching to local UI...\n",
@@ -1252,7 +1282,8 @@ impl Domain for ClientDomain {
                         })();
                         let _ = tx.send(result);
                     });
-                    rx.recv().map_err(|err| anyhow!("attach worker failed: {}", err))??
+                    rx.recv()
+                        .map_err(|err| anyhow!("attach worker failed: {}", err))??
                 };
 
                 #[cfg(not(target_os = "macos"))]
@@ -1509,6 +1540,15 @@ mod test {
         ClientDomain::process_pane_list(inner, panes, None).unwrap();
     }
 
+    fn apply_panes_without_identity(
+        mux: &Arc<Mux>,
+        inner: Arc<ClientInner>,
+        panes: ListPanesResponse,
+    ) {
+        let _ = mux;
+        ClientDomain::process_pane_list(inner, panes, None).unwrap();
+    }
+
     #[test]
     fn mirrored_domains_keep_active_tabs_divergent_across_reconcile_lifecycle() {
         let _test_lock = TEST_MUX_LOCK.lock();
@@ -1730,6 +1770,48 @@ mod test {
         assert_eq!(
             mux.get_active_pane_for_window_for_current_identity(local_window_id)
                 .map(|pane| pane.pane_id()),
+            Some(local_pane_id)
+        );
+    }
+
+    #[test]
+    fn first_reconcile_without_active_identity_uses_registered_client_focus() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        ensure_test_executor();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let (_domain, inner, client_id, _view_id) =
+            install_client_domain(&mux, "implicit-focus-view");
+
+        let tab = leaf(1, 101, 1001, size(120, 40), false);
+        apply_panes_without_identity(
+            &mux,
+            inner.clone(),
+            panes_response_without_view_state(vec![tab]),
+        );
+
+        let local_window_id = inner.remote_to_local_window(1).unwrap();
+        let local_tab_id = inner.remote_to_local_tab_id(101).unwrap();
+        let local_pane_id = inner.remote_to_local_pane_id(1001).unwrap();
+
+        let _identity = mux.with_identity(Some(client_id.clone()));
+        assert_eq!(
+            mux.get_active_tab_for_window_for_current_identity(local_window_id)
+                .map(|tab| tab.tab_id()),
+            Some(local_tab_id)
+        );
+        assert_eq!(
+            mux.get_active_pane_for_window_for_current_identity(local_window_id)
+                .map(|pane| pane.pane_id()),
+            Some(local_pane_id)
+        );
+        assert_eq!(
+            mux.iter_clients()
+                .into_iter()
+                .find(|info| info.client_id.as_ref() == client_id.as_ref())
+                .and_then(|info| info.focused_pane_id),
             Some(local_pane_id)
         );
     }
