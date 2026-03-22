@@ -232,11 +232,13 @@ impl SpawnQueue {
 
     fn spawn_impl(&self, f: SpawnFunc, high_pri: bool) {
         self.queue_func(f, high_pri);
+        log::debug!("mac spawn queue enqueued task high_pri={high_pri}");
         Self::queue_wakeup();
     }
 
     fn run_impl(&self) -> bool {
         if let Some(func) = self.pop_func() {
+            log::debug!("mac spawn queue running queued task");
             func();
         }
         self.has_any_queued()
