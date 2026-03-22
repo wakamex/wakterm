@@ -887,12 +887,22 @@ impl ClientDomain {
             let Some(local_tab_id) = inner.remote_to_local_tab_id(remote_tab_id) else {
                 continue;
             };
+            log::debug!(
+                "process_pane_list setting active tab local_window={} local_tab={}",
+                local_window_id,
+                local_tab_id
+            );
             if mux
                 .set_active_tab_for_current_identity(local_window_id, local_tab_id)
                 .is_err()
             {
                 continue;
             }
+            log::debug!(
+                "process_pane_list set active tab local_window={} local_tab={}",
+                local_window_id,
+                local_tab_id
+            );
 
             if let Some(remote_active_pane_id) = window_view_state
                 .tabs
@@ -902,15 +912,26 @@ impl ClientDomain {
                 if let Some(local_active_pane_id) =
                     inner.remote_to_local_pane_id(remote_active_pane_id)
                 {
+                    log::debug!(
+                        "process_pane_list setting active pane local_window={} local_tab={} local_pane={}",
+                        local_window_id,
+                        local_tab_id,
+                        local_active_pane_id
+                    );
                     let _ = mux.set_active_pane_for_current_identity(
                         local_window_id,
                         local_tab_id,
                         local_active_pane_id,
                     );
+                    log::debug!(
+                        "process_pane_list set active pane local_window={} local_tab={} local_pane={}",
+                        local_window_id,
+                        local_tab_id,
+                        local_active_pane_id
+                    );
                     if let Some(tab) = mux.get_tab(local_tab_id) {
                         if let Some(pane) = mux.get_pane(local_active_pane_id) {
                             tab.set_active_pane(&pane, mux::tab::NotifyMux::No);
-                            mux.record_focus_for_current_identity(local_active_pane_id);
                         }
                     }
                 }
@@ -936,7 +957,6 @@ impl ClientDomain {
                 if let Some(tab) = mux.get_tab(local_tab_id) {
                     if let Some(pane) = mux.get_pane(local_pane_id) {
                         tab.set_active_pane(&pane, mux::tab::NotifyMux::No);
-                        mux.record_focus_for_current_identity(local_pane_id);
                     }
                 }
             }
@@ -1805,13 +1825,6 @@ mod test {
         assert_eq!(
             mux.get_active_pane_for_window_for_current_identity(local_window_id)
                 .map(|pane| pane.pane_id()),
-            Some(local_pane_id)
-        );
-        assert_eq!(
-            mux.iter_clients()
-                .into_iter()
-                .find(|info| info.client_id.as_ref() == client_id.as_ref())
-                .and_then(|info| info.focused_pane_id),
             Some(local_pane_id)
         );
     }
