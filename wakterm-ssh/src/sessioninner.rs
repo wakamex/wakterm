@@ -665,6 +665,11 @@ impl SessionInner {
                         Ok(true)
                     }
                     SessionRequest::Exec(exec, reply) => {
+                        log::debug!(
+                            "ssh session thread handling exec request: command={:?} agent_forwarding={}",
+                            exec.command_line,
+                            exec.request_agent_forwarding
+                        );
                         dispatch(reply, || self.exec(sess, exec), "exec")
                     }
                     SessionRequest::SignalChannel(info) => {

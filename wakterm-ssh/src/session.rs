@@ -177,6 +177,11 @@ impl Session {
         env: Option<HashMap<String, String>>,
         request_agent_forwarding: bool,
     ) -> anyhow::Result<ExecResult> {
+        log::debug!(
+            "ssh session exec requested: command={:?} agent_forwarding={}",
+            command_line,
+            request_agent_forwarding
+        );
         let (reply, rx) = bounded(1);
         self.tx
             .send(SessionRequest::Exec(
@@ -189,7 +194,9 @@ impl Session {
             ))
             .await
             .map_err(|_| DeadSession)?;
+        log::debug!("ssh session exec request sent; waiting for reply");
         let mut exec = rx.recv().await??;
+        log::debug!("ssh session exec reply received");
         exec.child.tx.replace(self.tx.clone());
         Ok(exec)
     }
