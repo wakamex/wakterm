@@ -13,10 +13,10 @@ use mux::tab::{SplitRequest, Tab, TabId};
 use mux::window::WindowId;
 use mux::{Mux, MuxNotification};
 use portable_pty::CommandBuilder;
+use promise::spawn::spawn_into_new_thread;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use smol::future::FutureExt as _;
 use wakterm_term::TerminalSize;
 
 pub struct ClientInner {
@@ -1100,69 +1100,22 @@ impl Domain for ClientDomain {
             let ui = ui.clone();
             async move {
                 let mut cloned_ui = ui.clone();
-                log::debug!("starting client construction for domain {}", domain_id);
-                let start = std::time::Instant::now();
-                let (tx, rx) = smol::channel::bounded(1);
-                std::thread::spawn(move || {
-                    let result = (|| -> anyhow::Result<Client> {
-                        match &config {
-                            ClientDomainConfig::Unix(unix) => {
-                                let initial = true;
-                                let no_auto_start = false;
-                                Client::new_unix_domain(
-                                    Some(domain_id),
-                                    unix,
-                                    initial,
-                                    &mut cloned_ui,
-                                    no_auto_start,
-                                )
-                            }
-                            ClientDomainConfig::Tls(tls) => {
-                                Client::new_tls(domain_id, tls, &mut cloned_ui)
-                            }
-                            ClientDomainConfig::Ssh(ssh) => {
-                                Client::new_ssh(domain_id, ssh, &mut cloned_ui)
-                            }
-                        }
-                    })();
-                    cloned_ui.output_str("Client construction thread finished\r\n");
-                    smol::block_on(async move {
-                        if tx.send(result).await.is_ok() {
-                            log::debug!("client construction result sent for domain {}", domain_id);
-                        } else {
-                            log::debug!(
-                                "client construction receiver dropped before result for domain {}",
-                                domain_id
-                            );
-                        }
-                    });
-                });
-                let client: Client = async {
-                    let result = rx.recv().await.map_err(anyhow::Error::from)?;
-                    result
-                }
-                .or(async {
-                    smol::Timer::after(std::time::Duration::from_secs(20)).await;
-                    Err(anyhow::anyhow!(
-                        "timed out waiting for client construction to complete for domain {}",
-                        domain_id
-                    ))
+                let client = spawn_into_new_thread(move || match &config {
+                    ClientDomainConfig::Unix(unix) => {
+                        let initial = true;
+                        let no_auto_start = false;
+                        Client::new_unix_domain(
+                            Some(domain_id),
+                            unix,
+                            initial,
+                            &mut cloned_ui,
+                            no_auto_start,
+                        )
+                    }
+                    ClientDomainConfig::Tls(tls) => Client::new_tls(domain_id, tls, &mut cloned_ui),
+                    ClientDomainConfig::Ssh(ssh) => Client::new_ssh(domain_id, ssh, &mut cloned_ui),
                 })
-                .await
-                .map_err(|err| {
-                    log::error!(
-                        "client construction failed for domain {} after {:?}: {:#}",
-                        domain_id,
-                        start.elapsed(),
-                        err
-                    );
-                    err
-                })?;
-                ui.output_str("Client construction handoff received\r\n");
-                log::debug!(
-                    "client construction completed in {:?}; starting version check",
-                    start.elapsed()
-                );
+                .await?;
 
                 ui.output_str("Checking server version\n");
                 client.verify_version_compat(&ui).await?;
