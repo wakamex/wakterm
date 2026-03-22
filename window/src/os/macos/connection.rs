@@ -18,6 +18,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::AtomicUsize;
+use std::time::Duration;
 
 pub struct Connection {
     ns_app: id,
@@ -71,9 +72,20 @@ impl Connection {
         let mut prom = promise::Promise::new();
         let future = prom.get_future().unwrap();
         promise::spawn::spawn_into_main_thread(async move {
-            if let Some(handle) = Connection::get().unwrap().window_by_id(window_id) {
-                let mut inner = handle.borrow_mut();
-                prom.result(f(&mut inner));
+            let mut f = Some(f);
+            loop {
+                let Some(handle) = Connection::get().unwrap().window_by_id(window_id) else {
+                    prom.err(anyhow::anyhow!("window id {} is invalid", window_id));
+                    break;
+                };
+
+                match handle.try_borrow_mut() {
+                    Ok(mut inner) => {
+                        prom.result(f.take().unwrap()(&mut inner));
+                        break;
+                    }
+                    Err(_) => smol::Timer::after(Duration::from_millis(1)).await,
+                }
             }
         })
         .detach();
