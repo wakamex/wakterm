@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Context as _};
 use config::{create_user_owned_dirs, UnixDomain};
-use promise::spawn::spawn_into_main_thread;
 use wakterm_uds::UnixListener;
 
 pub struct LocalListener {
@@ -21,13 +20,15 @@ impl LocalListener {
         for stream in self.listener.incoming() {
             match stream {
                 Ok(stream) => {
-                    spawn_into_main_thread(async move {
-                        crate::dispatch::process(stream).await.map_err(|e| {
-                            log::error!("{:#}", e);
-                            e
+                    let _ = std::thread::spawn(move || {
+                        promise::spawn::block_on(async move {
+                            crate::dispatch::process(stream).await.map_err(|e| {
+                                log::error!("{:#}", e);
+                                e
+                            })
                         })
-                    })
-                    .detach();
+                        .ok();
+                    });
                 }
                 Err(err) => {
                     log::error!("accept failed: {}", err);
