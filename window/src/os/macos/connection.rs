@@ -35,6 +35,26 @@ impl Connection {
         }
     }
 
+    pub(crate) fn try_with_window_inner_now<
+        R,
+        F: FnOnce(&mut WindowInner) -> anyhow::Result<R>,
+    >(
+        window_id: usize,
+        f: F,
+    ) -> Option<anyhow::Result<R>> {
+        if !Self::on_main_thread() {
+            return None;
+        }
+
+        match Self::get().unwrap().window_by_id(window_id) {
+            Some(handle) => match handle.try_borrow_mut() {
+                Ok(mut inner) => Some(f(&mut inner)),
+                Err(_) => None,
+            },
+            None => Some(Err(anyhow::anyhow!("window id {} is invalid", window_id))),
+        }
+    }
+
     pub(crate) fn create_new() -> anyhow::Result<Self> {
         // Ensure that the SPAWN_QUEUE is created; it will have nothing
         // to run right now.
@@ -78,27 +98,9 @@ impl Connection {
     {
         let mut prom = promise::Promise::new();
         let future = prom.get_future().unwrap();
-        let mut f = Some(f);
-
-        if Self::on_main_thread() {
-            let next = match Self::get().unwrap().window_by_id(window_id) {
-                Some(handle) => match handle.try_borrow_mut() {
-                    Ok(mut inner) => Some(f.take().unwrap()(&mut inner)),
-                    Err(_) => None,
-                },
-                None => {
-                    prom.err(anyhow::anyhow!("window id {} is invalid", window_id));
-                    return future;
-                }
-            };
-
-            if let Some(result) = next {
-                prom.result(result);
-                return future;
-            }
-        }
 
         promise::spawn::spawn_into_main_thread(async move {
+            let mut f = Some(f);
             loop {
                 enum NextStep<R> {
                     Complete(anyhow::Result<R>),

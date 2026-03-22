@@ -777,6 +777,15 @@ impl WindowOps for Window {
     }
 
     fn invalidate(&self) {
+        if let Some(result) = Connection::try_with_window_inner_now(self.id, |inner| {
+            inner.invalidate();
+            Ok(())
+        }) {
+            if let Err(err) = result {
+                log::error!("invalidate: {err:#}");
+            }
+            return;
+        }
         Connection::with_window_inner(self.id, |inner| {
             inner.invalidate();
             Ok(())
