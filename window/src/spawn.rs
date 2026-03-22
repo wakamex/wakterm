@@ -6,11 +6,26 @@ use promise::spawn::{Runnable, SpawnFunc};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(all(unix, not(target_os = "macos")))]
 use {
     filedescriptor::{FileDescriptor, Pipe},
     std::os::unix::io::AsRawFd,
 };
+
+#[cfg(target_os = "macos")]
+type DispatchQueue = *mut std::ffi::c_void;
+
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn dispatch_get_main_queue() -> DispatchQueue;
+    fn dispatch_async_f(
+        queue: DispatchQueue,
+        context: *mut std::ffi::c_void,
+        work: extern "C" fn(*mut std::ffi::c_void),
+    );
+}
 
 lazy_static::lazy_static! {
     pub(crate) static ref SPAWN_QUEUE: Arc<SpawnQueue> = Arc::new(SpawnQueue::new().expect("failed to create SpawnQueue"));
@@ -24,6 +39,9 @@ struct InstrumentedSpawnFunc {
 pub(crate) struct SpawnQueue {
     spawned_funcs: Mutex<VecDeque<InstrumentedSpawnFunc>>,
     spawned_funcs_low_pri: Mutex<VecDeque<InstrumentedSpawnFunc>>,
+
+    #[cfg(target_os = "macos")]
+    scheduled: AtomicBool,
 
     #[cfg(windows)]
     pub event_handle: EventHandle,
@@ -211,6 +229,7 @@ impl SpawnQueue {
         Ok(Self {
             spawned_funcs,
             spawned_funcs_low_pri,
+            scheduled: AtomicBool::new(false),
         })
     }
 
@@ -230,9 +249,34 @@ impl SpawnQueue {
         }
     }
 
+    extern "C" fn drain_on_main_queue(_: *mut std::ffi::c_void) {
+        log::debug!("mac spawn queue dispatch drain fired");
+        loop {
+            while SPAWN_QUEUE.run() {}
+            SPAWN_QUEUE.scheduled.store(false, Ordering::Release);
+
+            if !SPAWN_QUEUE.has_any_queued() {
+                break;
+            }
+
+            if SPAWN_QUEUE.scheduled.swap(true, Ordering::AcqRel) {
+                break;
+            }
+        }
+    }
+
     fn spawn_impl(&self, f: SpawnFunc, high_pri: bool) {
         self.queue_func(f, high_pri);
         log::debug!("mac spawn queue enqueued task high_pri={high_pri}");
+        if !self.scheduled.swap(true, Ordering::AcqRel) {
+            unsafe {
+                dispatch_async_f(
+                    dispatch_get_main_queue(),
+                    std::ptr::null_mut(),
+                    Self::drain_on_main_queue,
+                );
+            }
+        }
         Self::queue_wakeup();
     }
 
