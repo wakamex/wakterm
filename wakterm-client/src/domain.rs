@@ -1102,24 +1102,33 @@ impl Domain for ClientDomain {
                 let mut cloned_ui = ui.clone();
                 log::debug!("starting client construction for domain {}", domain_id);
                 let start = std::time::Instant::now();
-                let construction = smol::unblock(move || -> anyhow::Result<Client> {
+                let (tx, rx) = smol::channel::bounded(1);
+                std::thread::spawn(move || {
+                    let result = (|| -> anyhow::Result<Client> {
                     match &config {
-                    ClientDomainConfig::Unix(unix) => {
-                        let initial = true;
-                        let no_auto_start = false;
-                        Client::new_unix_domain(
-                            Some(domain_id),
-                            unix,
-                            initial,
-                            &mut cloned_ui,
-                            no_auto_start,
-                        )
+                        ClientDomainConfig::Unix(unix) => {
+                            let initial = true;
+                            let no_auto_start = false;
+                            Client::new_unix_domain(
+                                Some(domain_id),
+                                unix,
+                                initial,
+                                &mut cloned_ui,
+                                no_auto_start,
+                            )
+                        }
+                        ClientDomainConfig::Tls(tls) => {
+                            Client::new_tls(domain_id, tls, &mut cloned_ui)
+                        }
+                        ClientDomainConfig::Ssh(ssh) => Client::new_ssh(domain_id, ssh, &mut cloned_ui),
                     }
-                    ClientDomainConfig::Tls(tls) => Client::new_tls(domain_id, tls, &mut cloned_ui),
-                    ClientDomainConfig::Ssh(ssh) => Client::new_ssh(domain_id, ssh, &mut cloned_ui),
-                }
+                    })();
+                    let _ = tx.try_send(result);
                 });
-                let client = construction
+                let client: Client = async {
+                    let result = rx.recv().await.map_err(anyhow::Error::from)?;
+                    result
+                }
                 .or(async {
                     smol::Timer::after(std::time::Duration::from_secs(20)).await;
                     Err(anyhow::anyhow!(
