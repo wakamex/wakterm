@@ -460,7 +460,13 @@ impl super::TermWindow {
 
         let pane = match self.get_active_pane_or_overlay() {
             Some(pane) => pane,
-            None => return,
+            None => {
+                log::debug!(
+                    "raw_key_event_impl: no active pane for window {}",
+                    self.mux_window_id
+                );
+                return;
+            }
         };
 
         // First, try to match raw physical key
@@ -599,7 +605,13 @@ impl super::TermWindow {
     pub fn key_event_impl(&mut self, window_key: KeyEvent, context: &dyn WindowOps) {
         let pane = match self.get_active_pane_or_overlay() {
             Some(pane) => pane,
-            None => return,
+            None => {
+                log::debug!(
+                    "key_event_impl: no active pane for window {}",
+                    self.mux_window_id
+                );
+                return;
+            }
         };
 
         // The leader key is a kind of modal modifier key.

@@ -3427,11 +3427,27 @@ impl TermWindow {
     fn get_active_mux_tab(&self) -> Option<Arc<Tab>> {
         let mux = Mux::get();
         mux.get_active_tab_for_window_for_current_identity(self.mux_window_id)
+            .or_else(|| {
+                let window = mux.get_window(self.mux_window_id)?;
+                if window.len() == 1 {
+                    window.get_by_idx(0).cloned()
+                } else {
+                    None
+                }
+            })
     }
 
     fn get_active_tab_index(&self) -> Option<usize> {
         let mux = Mux::get();
         mux.get_active_tab_idx_for_window_for_current_identity(self.mux_window_id)
+            .or_else(|| {
+                let window = mux.get_window(self.mux_window_id)?;
+                if window.len() == 1 {
+                    Some(0)
+                } else {
+                    None
+                }
+            })
     }
 
     fn get_last_active_tab_index(&self) -> Option<usize> {
@@ -3442,6 +3458,10 @@ impl TermWindow {
     fn get_active_pane_no_overlay(&self) -> Option<Arc<dyn Pane>> {
         let mux = Mux::get();
         mux.get_active_pane_for_window_for_current_identity(self.mux_window_id)
+            .or_else(|| {
+                self.get_active_mux_tab()
+                    .and_then(|tab| tab.get_active_pane())
+            })
     }
 
     /// Returns a Pane that we can interact with; this will typically be
