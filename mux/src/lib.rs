@@ -1944,6 +1944,16 @@ impl Mux {
         Ok(())
     }
 
+    fn set_focused_pane_for_current_identity_lightweight(
+        &self,
+        pane_id: PaneId,
+    ) -> anyhow::Result<()> {
+        let Some(client_id) = self.active_identity() else {
+            return Ok(());
+        };
+        self.set_focused_pane_for_client(client_id.as_ref(), pane_id)
+    }
+
     /// Called by PaneFocused event handlers to reconcile a remote
     /// pane focus event and apply its effects locally
     pub fn focus_pane_and_containing_tab(&self, pane_id: PaneId) -> anyhow::Result<()> {
@@ -3043,14 +3053,8 @@ impl Mux {
             tab.log_runtime_invariant_errors("mux.split_pane");
         }
 
-        let current_client_id = self.identity.read().as_ref().cloned();
-        if let Some(client_id) = current_client_id {
-            self.set_focused_pane_for_client(client_id.as_ref(), pane.pane_id())
-                .ok();
-        } else {
-            self.set_active_pane_for_current_identity(window_id, tab_id, pane.pane_id())
-                .ok();
-        }
+        self.set_focused_pane_for_current_identity_lightweight(pane.pane_id())
+            .ok();
 
         // FIXME: clipboard
 
@@ -3118,6 +3122,8 @@ impl Mux {
         pane.resize(size)?;
         self.add_tab_and_active_pane(&tab)?;
         self.add_tab_to_window(&tab, window_id)?;
+        self.set_focused_pane_for_current_identity_lightweight(pane_id)
+            .ok();
 
         if src_tab.is_dead() {
             self.remove_tab(src_tab.tab_id());
@@ -5142,7 +5148,7 @@ mod test {
     }
 
     #[test]
-    fn split_pane_moves_focus_to_new_pane_for_current_identity() {
+    fn lightweight_focus_bookkeeping_moves_focus_only_for_current_identity() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
         let domain = Arc::new(FakeDomain::new());
@@ -5164,63 +5170,52 @@ mod test {
         let _identity = mux.with_identity(Some(client_a.clone()));
         let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
 
-        let tab = Arc::new(Tab::new(&size));
-        let pane = FakePane::new(50, size, domain.id);
-        let pane_id = pane.pane_id();
-        tab.assign_pane(&pane);
-        mux.add_tab_and_active_pane(&tab).unwrap();
-        mux.add_tab_to_window(&tab, window_id).unwrap();
+        let tab_a = Arc::new(Tab::new(&size));
+        let pane_a = FakePane::new(50, size, domain.id);
+        let pane_a_id = pane_a.pane_id();
+        tab_a.assign_pane(&pane_a);
+        mux.add_tab_and_active_pane(&tab_a).unwrap();
+        mux.add_tab_to_window(&tab_a, window_id).unwrap();
 
-        mux.set_active_tab_for_client_view(view_a.as_ref(), window_id, tab.tab_id())
-            .unwrap();
-        mux.set_active_pane_for_client_view(view_a.as_ref(), window_id, tab.tab_id(), pane_id)
-            .unwrap();
-        mux.set_active_tab_for_client_view(view_b.as_ref(), window_id, tab.tab_id())
-            .unwrap();
-        mux.set_active_pane_for_client_view(view_b.as_ref(), window_id, tab.tab_id(), pane_id)
-            .unwrap();
-        mux.record_focus_for_client(client_a.as_ref(), pane_id);
+        let tab_b = Arc::new(Tab::new(&size));
+        let pane_b = FakePane::new(51, size, domain.id);
+        let pane_b_id = pane_b.pane_id();
+        tab_b.assign_pane(&pane_b);
+        mux.add_tab_and_active_pane(&tab_b).unwrap();
+        mux.add_tab_to_window(&tab_b, window_id).unwrap();
 
-        let (new_pane, _size) = smol::block_on(mux.split_pane(
-            pane_id,
-            SplitRequest {
-                direction: crate::tab::SplitDirection::Horizontal,
-                target_is_second: true,
-                size: crate::tab::SplitSize::Percent(50),
-                top_level: false,
-            },
-            SplitSource::Spawn {
-                command: None,
-                command_dir: None,
-            },
-            SpawnTabDomain::CurrentPaneDomain,
-        ))
-        .unwrap();
+        mux.set_active_tab_for_client_view(view_a.as_ref(), window_id, tab_a.tab_id())
+            .unwrap();
+        mux.set_active_pane_for_client_view(view_a.as_ref(), window_id, tab_a.tab_id(), pane_a_id)
+            .unwrap();
+        mux.set_active_tab_for_client_view(view_b.as_ref(), window_id, tab_a.tab_id())
+            .unwrap();
+        mux.set_active_pane_for_client_view(view_b.as_ref(), window_id, tab_a.tab_id(), pane_a_id)
+            .unwrap();
 
-        let new_pane_id = new_pane.pane_id();
+        mux.set_focused_pane_for_current_identity_lightweight(pane_b_id)
+            .unwrap();
 
-        assert_ne!(new_pane_id, pane_id);
-        assert_eq!(tab.get_active_pane().unwrap().pane_id(), new_pane_id);
         let view_a_state = mux.client_window_view_state_for_view(view_a.as_ref());
         let view_b_state = mux.client_window_view_state_for_view(view_b.as_ref());
         assert_eq!(
             view_a_state
                 .get(&window_id)
-                .and_then(|window| window.tabs.get(&tab.tab_id()))
+                .and_then(|window| window.tabs.get(&tab_b.tab_id()))
                 .and_then(|tab| tab.active_pane_id),
-            Some(new_pane_id)
+            Some(pane_b_id)
         );
         assert_eq!(
             mux.resolve_focused_pane(client_a.as_ref())
                 .map(|(_, _, _, pane_id)| pane_id),
-            Some(new_pane_id)
+            Some(pane_b_id)
         );
         assert_eq!(
             view_b_state
                 .get(&window_id)
-                .and_then(|window| window.tabs.get(&tab.tab_id()))
+                .and_then(|window| window.tabs.get(&tab_a.tab_id()))
                 .and_then(|tab| tab.active_pane_id),
-            Some(pane_id)
+            Some(pane_a_id)
         );
     }
 

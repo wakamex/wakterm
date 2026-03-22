@@ -208,8 +208,6 @@ impl PaneSelector {
                             {
                                 log::error!("failed to move_pane_to_new_tab: {err:#}");
                             }
-
-                            mux.focus_pane_and_containing_tab(pane_id).ok();
                         })
                         .detach();
                     }
