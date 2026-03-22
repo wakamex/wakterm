@@ -527,6 +527,11 @@ async fn client_thread_async(
                                     e
                                 })?;
                         } else if let Some(promise) = promises.map.remove(&decoded.serial) {
+                            log::debug!(
+                                "client thread delivering serial {} {} to waiter",
+                                decoded.serial,
+                                decoded.pdu.pdu_name()
+                            );
                             if promise.try_send(Ok(decoded.pdu)).is_err() {
                                 return Err(NotReconnectableError::ClientWasDestroyed.into());
                             }
@@ -1454,13 +1459,27 @@ impl Client {
     }
 
     pub async fn send_pdu(&self, pdu: Pdu) -> anyhow::Result<Pdu> {
+        let pdu_name = pdu.pdu_name();
         let (promise, rx) = bounded(1);
         self.sender
             .send(ReaderMessage::SendPdu { pdu, promise })
             .await
             .map_err(|_| ChannelSendError)
             .context("send_pdu send")?;
-        rx.recv().await.context("send_pdu recv")?
+        log::debug!(
+            "send_pdu waiting for response {} on client {:?} view {:?}",
+            pdu_name,
+            self.client_id,
+            self.view_id
+        );
+        let result = rx.recv().await.context("send_pdu recv")?;
+        log::debug!(
+            "send_pdu received response {} on client {:?} view {:?}",
+            pdu_name,
+            self.client_id,
+            self.view_id
+        );
+        result
     }
 
     pub async fn resolve_pane_id(&self, pane_id: Option<PaneId>) -> anyhow::Result<PaneId> {
