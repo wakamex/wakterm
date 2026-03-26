@@ -801,6 +801,25 @@ impl Mux {
         self.agent_metadata_by_pane.read().get(&pane_id).cloned()
     }
 
+    pub fn cached_agent_harness_for_pane(
+        &self,
+        pane_id: PaneId,
+    ) -> Option<crate::agent::AgentHarness> {
+        if let Some(runtime) = self.agent_runtime_by_pane.read().get(&pane_id) {
+            if !matches!(runtime.harness, crate::agent::AgentHarness::Unknown) {
+                return Some(runtime.harness.clone());
+            }
+        }
+
+        let metadata = self.get_agent_metadata_for_pane(pane_id)?;
+        let harness = infer_harness(&metadata.launch_cmd, None);
+        if matches!(harness, crate::agent::AgentHarness::Unknown) {
+            None
+        } else {
+            Some(harness)
+        }
+    }
+
     fn agent_auto_adopt_on_confirmed_session_match() -> bool {
         configuration().agent_auto_adopt_on_confirmed_session_match
     }

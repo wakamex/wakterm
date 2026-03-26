@@ -1,9 +1,9 @@
-use crate::termwindow::{PaneInformation, TabInformation, UIItem, UIItemType};
+use crate::termwindow::{PaneInformation, TabHarnessIcon, TabInformation, UIItem, UIItemType};
 use config::{ConfigHandle, TabBarColors};
 use finl_unicode::grapheme_clusters::Graphemes;
 use mlua::FromLua;
-use termwiz::cell::{unicode_column_width, Cell, CellAttributes};
-use termwiz::color::{AnsiColor, ColorSpec};
+use termwiz::cell::{unicode_column_width, AttributeChange, Cell, CellAttributes};
+use termwiz::color::{AnsiColor, ColorAttribute, ColorSpec};
 use termwiz::escape::csi::Sgr;
 use termwiz::escape::parser::Parser;
 use termwiz::escape::{Action, ControlCode, CSI};
@@ -32,6 +32,9 @@ pub enum TabBarItem {
 pub struct TabEntry {
     pub item: TabBarItem,
     pub title: Line,
+    pub icon: Option<TabHarnessIcon>,
+    pub title_bg: Option<ColorAttribute>,
+    pub title_fg: Option<ColorAttribute>,
     x: usize,
     width: usize,
 }
@@ -40,6 +43,47 @@ pub struct TabEntry {
 struct TitleText {
     items: Vec<FormatItem>,
     len: usize,
+    title_bg: Option<ColorAttribute>,
+    title_fg: Option<ColorAttribute>,
+}
+
+fn first_explicit_colors(items: &[FormatItem]) -> (Option<ColorAttribute>, Option<ColorAttribute>) {
+    let mut bg = None;
+    let mut fg = None;
+
+    for item in items {
+        match item {
+            FormatItem::Background(color) if bg.is_none() => {
+                let attr: ColorAttribute = ColorSpec::from(color.clone()).into();
+                if attr != ColorAttribute::Default {
+                    bg = Some(attr);
+                }
+            }
+            FormatItem::Foreground(color) if fg.is_none() => {
+                let attr: ColorAttribute = ColorSpec::from(color.clone()).into();
+                if attr != ColorAttribute::Default {
+                    fg = Some(attr);
+                }
+            }
+            FormatItem::Attribute(AttributeChange::Background(attr)) if bg.is_none() => {
+                if *attr != ColorAttribute::Default {
+                    bg = Some(*attr);
+                }
+            }
+            FormatItem::Attribute(AttributeChange::Foreground(attr)) if fg.is_none() => {
+                if *attr != ColorAttribute::Default {
+                    fg = Some(*attr);
+                }
+            }
+            _ => {}
+        }
+
+        if bg.is_some() && fg.is_some() {
+            break;
+        }
+    }
+
+    (bg, fg)
 }
 
 fn call_format_tab_title(
@@ -73,6 +117,7 @@ fn call_format_tab_title(
                 mlua::Value::Nil => Ok(None),
                 mlua::Value::Table(_) => {
                     let items = <Vec<FormatItem>>::from_lua(v, &*lua)?;
+                    let (title_bg, title_fg) = first_explicit_colors(&items);
 
                     let esc = format_as_escapes(items.clone())?;
                     let line = parse_status_text(&esc, CellAttributes::default());
@@ -80,6 +125,8 @@ fn call_format_tab_title(
                     Ok(Some(TitleText {
                         items,
                         len: line.len(),
+                        title_bg,
+                        title_fg,
                     }))
                 }
                 _ => {
@@ -88,6 +135,8 @@ fn call_format_tab_title(
                     Ok(Some(TitleText {
                         len: line.len(),
                         items: vec![FormatItem::Text(s)],
+                        title_bg: None,
+                        title_fg: None,
                     }))
                 }
             }
@@ -189,6 +238,14 @@ fn compute_tab_title(
                     }
                 }
 
+                if !config.use_fancy_tab_bar {
+                    if let Some(icon) = tab.harness_icon {
+                    let graphic = format!("{} ", icon.as_glyph());
+                    len += unicode_column_width(&graphic, None);
+                    items.push(FormatItem::Text(graphic));
+                    }
+                }
+
                 // We have a preferred soft minimum on tab width to make it
                 // easier to click on tab titles, but we'll still go below
                 // this if there are too many tabs to fit the window at
@@ -207,7 +264,12 @@ fn compute_tab_title(
                 items.push(FormatItem::Text(title));
             };
 
-            TitleText { len, items }
+            TitleText {
+                len,
+                items,
+                title_bg: None,
+                title_fg: None,
+            }
         }
     }
 }
@@ -225,6 +287,9 @@ impl TabBarState {
             items: vec![TabEntry {
                 item: TabBarItem::None,
                 title: Line::from_text(" ", &CellAttributes::blank(), 1, None),
+                icon: None,
+                title_bg: None,
+                title_fg: None,
                 x: 1,
                 width: 1,
             }],
@@ -318,6 +383,9 @@ impl TabBarState {
             items.push(TabEntry {
                 item: TabBarItem::WindowButton(*button),
                 title: title.to_owned(),
+                icon: None,
+                title_bg: None,
+                title_fg: None,
                 x: *x,
                 width,
             });
@@ -445,6 +513,9 @@ impl TabBarState {
             items.push(TabEntry {
                 item: TabBarItem::LeftStatus,
                 title: left_status_line.clone(),
+                icon: None,
+                title_bg: None,
+                title_fg: None,
                 x,
                 width: left_status_line.len(),
             });
@@ -479,14 +550,7 @@ impl TabBarState {
             let tab_start_idx = x;
 
             let esc = format_as_escapes(tab_title.items.clone()).expect("already parsed ok above");
-            let mut tab_line = parse_status_text(
-                &esc,
-                if config.use_fancy_tab_bar {
-                    CellAttributes::default()
-                } else {
-                    cell_attrs.clone()
-                },
-            );
+            let mut tab_line = parse_status_text(&esc, cell_attrs.clone());
 
             let title = tab_line.clone();
             if tab_line.len() > tab_width_max {
@@ -498,6 +562,9 @@ impl TabBarState {
             items.push(TabEntry {
                 item: TabBarItem::Tab { tab_idx, active },
                 title,
+                icon: tab_info[tab_idx].harness_icon,
+                title_bg: tab_title.title_bg,
+                title_fg: tab_title.title_fg,
                 x: tab_start_idx,
                 width,
             });
@@ -520,6 +587,9 @@ impl TabBarState {
             items.push(TabEntry {
                 item: TabBarItem::NewTabButton,
                 title: new_tab_button.clone(),
+                icon: None,
+                title_bg: None,
+                title_fg: None,
                 x: button_start,
                 width,
             });
@@ -582,6 +652,9 @@ impl TabBarState {
         items.push(TabEntry {
             item: TabBarItem::RightStatus,
             title: right_status_line.clone(),
+            icon: None,
+            title_bg: None,
+            title_fg: None,
             x,
             width: status_space_available,
         });
@@ -726,4 +799,58 @@ pub fn parse_status_text(text: &str, default_cell: CellAttributes) -> Line {
     });
     flush_print(&mut print_buffer, &mut cells, &pen);
     Line::from_cells(cells, SEQ_ZERO)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{first_explicit_colors, parse_status_text};
+    use termwiz::cell::{AttributeChange, CellAttributes};
+    use termwiz::color::AnsiColor;
+    use termwiz_funcs::FormatItem;
+
+    #[test]
+    fn reset_foreground_uses_default_cell_foreground() {
+        let mut default_cell = CellAttributes::blank();
+        default_cell.set_foreground(AnsiColor::Lime);
+
+        let line = parse_status_text("\x1b[31mA\x1b[39mB", default_cell);
+
+        assert_eq!(
+            line.get_cell(0).unwrap().attrs().foreground(),
+            AnsiColor::Maroon.into()
+        );
+        assert_eq!(
+            line.get_cell(1).unwrap().attrs().foreground(),
+            AnsiColor::Lime.into()
+        );
+    }
+
+    #[test]
+    fn reset_background_uses_default_cell_background() {
+        let mut default_cell = CellAttributes::blank();
+        default_cell.set_background(AnsiColor::Navy);
+
+        let line = parse_status_text("\x1b[41mA\x1b[49mB", default_cell);
+
+        assert_eq!(
+            line.get_cell(0).unwrap().attrs().background(),
+            AnsiColor::Maroon.into()
+        );
+        assert_eq!(
+            line.get_cell(1).unwrap().attrs().background(),
+            AnsiColor::Navy.into()
+        );
+    }
+
+    #[test]
+    fn first_explicit_colors_finds_attribute_background_and_foreground() {
+        let (bg, fg) = first_explicit_colors(&[
+            FormatItem::Attribute(AttributeChange::Background(AnsiColor::Olive.into())),
+            FormatItem::Attribute(AttributeChange::Foreground(AnsiColor::Teal.into())),
+            FormatItem::Text(" tab ".to_string()),
+        ]);
+
+        assert_eq!(bg, Some(AnsiColor::Olive.into()));
+        assert_eq!(fg, Some(AnsiColor::Teal.into()));
+    }
 }
