@@ -160,8 +160,8 @@ impl crate::TermWindow {
                     bottom: Dimension::Cells(0.),
                 })
                 .padding(BoxDimension {
-                    left: Dimension::Cells(0.25),
-                    right: Dimension::Cells(0.25),
+                    left: Dimension::Cells(0.15),
+                    right: Dimension::Cells(0.15),
                     top: Dimension::Cells(0.),
                     bottom: Dimension::Cells(0.05),
                 })
@@ -186,10 +186,10 @@ impl crate::TermWindow {
                         bottom: Dimension::Cells(0.),
                     })
                     .padding(BoxDimension {
-                        left: Dimension::Cells(0.25),
-                        right: Dimension::Cells(0.25),
+                        left: Dimension::Cells(0.15),
+                        right: Dimension::Cells(0.15),
                         top: Dimension::Cells(0.),
-                        bottom: Dimension::Cells(0.05),
+                        bottom: Dimension::Cells(0.03),
                     })
                     .border(BoxDimension::new(Dimension::Pixels(1.)))
                     .colors(ElementColors {
@@ -214,10 +214,10 @@ impl crate::TermWindow {
                         bottom: Dimension::Cells(0.),
                     })
                     .padding(BoxDimension {
-                        left: Dimension::Cells(0.25),
-                        right: Dimension::Cells(0.25),
+                        left: Dimension::Cells(0.15),
+                        right: Dimension::Cells(0.15),
                         top: Dimension::Cells(0.),
-                        bottom: Dimension::Cells(0.05),
+                        bottom: Dimension::Cells(0.03),
                     })
                     .border(BoxDimension::new(Dimension::Pixels(1.)))
                     .colors({
@@ -442,18 +442,12 @@ impl crate::TermWindow {
         let palette = self.palette.as_ref().unwrap_or(&fallback_palette);
         let layer = gl_state.layer_for_zindex(11)?;
         let mut layers = layer.quad_allocator();
-        let height_context = DimensionContext {
-            dpi: self.dimensions.dpi as f32,
-            pixel_max: self.dimensions.pixel_height as f32,
-            pixel_cell: metrics.cell_size.height as f32,
-        };
         let width_context = DimensionContext {
             dpi: self.dimensions.dpi as f32,
             pixel_max: self.dimensions.pixel_width as f32,
             pixel_cell: metrics.cell_size.width as f32,
         };
-        let tab_top_margin = Dimension::Cells(0.2).evaluate_as_pixels(height_context);
-        let tab_left_padding = Dimension::Cells(0.5).evaluate_as_pixels(width_context);
+        let tab_left_padding = Dimension::Cells(0.15).evaluate_as_pixels(width_context);
         let icon_slot_width = harness_icon_slot_width(tab_bar_height);
 
         for item in ui_items {
@@ -476,11 +470,11 @@ impl crate::TermWindow {
                     && matches!(self.current_mouse_capture, None | Some(MouseCapture::UI))
             });
             let color = harness_icon_color(entry, &colors, palette, hovered);
-            let visible_top = item.y as f32 + tab_top_margin;
-            let visible_height = (item.height as f32 - tab_top_margin).max(0.0);
-            let icon_size = (visible_height - 2.0).max(0.0);
-            let icon_x = item.x as f32 + 1.0 + tab_left_padding + (icon_slot_width - icon_size) / 2.0;
-            let icon_y = visible_top + (visible_height - icon_size) / 2.0;
+            let item_height = item.height as f32;
+            let icon_size = (item_height - 2.0).max(0.0);
+            let icon_x =
+                item.x as f32 + tab_left_padding + (icon_slot_width - icon_size).max(0.0) / 2.0;
+            let icon_y = item.y as f32 + (item_height - icon_size) / 2.0;
             self.poly_quad(
                 &mut layers,
                 1,
@@ -572,11 +566,11 @@ fn make_harness_icon_spacer(
 }
 
 fn harness_icon_slot_width(tab_bar_height: f32) -> f32 {
-    tab_bar_height
+    tab_bar_height * 0.88
 }
 
 fn harness_icon_gap(metrics: &RenderMetrics) -> f32 {
-    metrics.cell_size.width as f32 * 0.2
+    metrics.cell_size.width as f32 * 0.08
 }
 
 fn harness_icon_poly(icon: TabHarnessIcon) -> &'static [Poly] {
