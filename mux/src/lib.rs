@@ -1700,26 +1700,121 @@ impl Mux {
             })
     }
 
-    fn build_agent_snapshot(
+    fn cached_runtime_snapshot_for_agent(
         &self,
         pane_id: PaneId,
-        metadata: Arc<AgentMetadata>,
+        metadata: &AgentMetadata,
+        pane: &Arc<dyn Pane>,
+    ) -> AgentRuntimeSnapshot {
+        let mut runtime = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_else(|| AgentRuntimeSnapshot::new(metadata));
+        runtime.alive = !pane.is_dead();
+        runtime.tty_name = runtime.tty_name.or_else(|| pane.tty_name());
+        runtime.terminal_progress = pane.get_progress();
+        finalize_runtime_snapshot(&mut runtime);
+        runtime.status = derive_runtime_status(&runtime);
+        runtime
+    }
+
+    fn snapshot_with_runtime(
+        &self,
+        pane_id: PaneId,
+        metadata: AgentMetadata,
+        runtime: AgentRuntimeSnapshot,
+        origin: AgentOrigin,
+        detection_source: Option<String>,
     ) -> Option<AgentSnapshot> {
         let pane = self.get_pane(pane_id)?;
         let (_domain_id, window_id, tab_id) = self.resolve_pane_id(pane_id)?;
         let window = self.get_window(window_id)?;
-        let runtime = self.runtime_snapshot_for_agent(pane_id, metadata.as_ref(), &pane);
         Some(AgentSnapshot {
-            metadata: (*metadata).clone(),
+            metadata,
             runtime,
             pane_id,
             tab_id,
             window_id,
             workspace: window.get_workspace().to_string(),
             domain_id: pane.domain_id(),
-            origin: AgentOrigin::Adopted,
-            detection_source: None,
+            origin,
+            detection_source,
         })
+    }
+
+    fn build_agent_snapshot(
+        &self,
+        pane_id: PaneId,
+        metadata: Arc<AgentMetadata>,
+    ) -> Option<AgentSnapshot> {
+        let pane = self.get_pane(pane_id)?;
+        let runtime = self.runtime_snapshot_for_agent(pane_id, metadata.as_ref(), &pane);
+        self.snapshot_with_runtime(
+            pane_id,
+            (*metadata).clone(),
+            runtime,
+            AgentOrigin::Adopted,
+            None,
+        )
+    }
+
+    fn build_cached_agent_snapshot(
+        &self,
+        pane_id: PaneId,
+        metadata: Arc<AgentMetadata>,
+    ) -> Option<AgentSnapshot> {
+        let pane = self.get_pane(pane_id)?;
+        let runtime = self.cached_runtime_snapshot_for_agent(pane_id, metadata.as_ref(), &pane);
+        self.snapshot_with_runtime(
+            pane_id,
+            (*metadata).clone(),
+            runtime,
+            AgentOrigin::Adopted,
+            None,
+        )
+    }
+
+    fn build_cached_detected_agent_snapshot(
+        &self,
+        pane_id: PaneId,
+        taken_names: &mut HashSet<String>,
+    ) -> Option<AgentSnapshot> {
+        if self.get_agent_metadata_for_pane(pane_id).is_some() {
+            return None;
+        }
+
+        let pane = self.get_pane(pane_id)?;
+        let runtime = self.agent_runtime_by_pane.read().get(&pane_id).cloned()?;
+        if matches!(runtime.harness, crate::agent::AgentHarness::Unknown) {
+            return None;
+        }
+
+        let declared_cwd = Self::pane_declared_cwd(&pane, None).unwrap_or_default();
+        let base_name = Self::detected_agent_name_base(&runtime.harness, &declared_cwd);
+        let name = Self::next_available_agent_name(taken_names, &base_name);
+        taken_names.insert(name.clone());
+        let launch_cmd = default_launch_cmd_for_harness(&runtime.harness)?.to_string();
+        let created_at = Self::detected_agent_created_at(&runtime);
+
+        self.snapshot_with_runtime(
+            pane_id,
+            AgentMetadata {
+                agent_id: format!("detected-pane-{pane_id}"),
+                name,
+                launch_cmd,
+                declared_cwd,
+                created_at,
+                repo_root: None,
+                worktree: None,
+                branch: None,
+                managed_checkout: false,
+            },
+            runtime,
+            AgentOrigin::Detected,
+            Some("cached".to_string()),
+        )
     }
 
     pub fn list_agents(&self) -> Vec<AgentSnapshot> {
@@ -1750,7 +1845,7 @@ impl Mux {
             }
             should_scan
         };
-        let pane_ids = if full_detected_scan {
+        let mut pane_ids = if full_detected_scan {
             self.panes.read().keys().copied().collect::<Vec<_>>()
         } else {
             self.detected_agent_panes
@@ -1759,6 +1854,7 @@ impl Mux {
                 .copied()
                 .collect::<Vec<_>>()
         };
+        pane_ids.sort_unstable();
         for pane_id in pane_ids {
             if self.get_agent_metadata_for_pane(pane_id).is_some() {
                 continue;
@@ -1771,6 +1867,38 @@ impl Mux {
             let name = Self::next_available_agent_name(&taken_names, &base_name);
             taken_names.insert(name.clone());
             agents.push(Self::detected_agent_snapshot_from_state(state, name));
+        }
+        agents.sort_by(|a, b| {
+            a.metadata
+                .name
+                .cmp(&b.metadata.name)
+                .then_with(|| a.pane_id.cmp(&b.pane_id))
+        });
+        agents
+    }
+
+    pub fn list_agents_cached(&self) -> Vec<AgentSnapshot> {
+        let metadata_by_pane = self.agent_metadata_by_pane.read().clone();
+        let mut agents = metadata_by_pane
+            .into_iter()
+            .filter_map(|(pane_id, metadata)| self.build_cached_agent_snapshot(pane_id, metadata))
+            .collect::<Vec<_>>();
+        let mut taken_names = agents
+            .iter()
+            .map(|agent| agent.metadata.name.clone())
+            .collect::<HashSet<_>>();
+        let mut pane_ids = self
+            .detected_agent_panes
+            .read()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        pane_ids.sort_unstable();
+        for pane_id in pane_ids {
+            if let Some(agent) = self.build_cached_detected_agent_snapshot(pane_id, &mut taken_names)
+            {
+                agents.push(agent);
+            }
         }
         agents.sort_by(|a, b| {
             a.metadata
@@ -4283,6 +4411,106 @@ mod test {
                     .unwrap_or(false)
             },
             "async list_agents observer refresh",
+        );
+
+        unsafe {
+            std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");
+        }
+    }
+
+    #[test]
+    fn list_agents_cached_does_not_refresh_adopted_observer() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let day = Utc::now();
+        let dir = temp
+            .path()
+            .join(format!("{:04}", day.year_ce().1))
+            .join(format!("{:02}", day.month()))
+            .join(format!("{:02}", day.day()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = dir.join("rollout-list-agents-cached.jsonl");
+        std::fs::write(
+            &session,
+            concat!(
+                "{\"payload\":{\"cwd\":\"/tmp/list-agents-cached-project\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"collaboration_mode_kind\":\"default\"}}\n",
+                "{\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[]}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:02Z\",\"payload\":{\"type\":\"agent_message\",\"phase\":\"commentary\"}}\n"
+            ),
+        )
+        .unwrap();
+        unsafe {
+            std::env::set_var("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        }
+
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new_detected(
+            149,
+            size,
+            domain.id,
+            "codex",
+            "/tmp/list-agents-cached-project",
+            "/usr/bin/codex",
+            &["codex"],
+        );
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        mux.set_agent_metadata(
+            pane_id,
+            AgentMetadata {
+                agent_id: "agent-list-agents-cached".to_string(),
+                name: "list-agents-cached".to_string(),
+                launch_cmd: "codex".to_string(),
+                declared_cwd: "/tmp/list-agents-cached-project".to_string(),
+                created_at: Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
+                repo_root: None,
+                worktree: None,
+                branch: None,
+                managed_checkout: false,
+            },
+        )
+        .unwrap();
+
+        let first_refresh = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .and_then(|runtime| runtime.last_harness_refresh_at)
+            .expect("initial harness refresh");
+
+        std::thread::sleep(AGENT_HARNESS_REFRESH_THROTTLE + Duration::from_millis(50));
+
+        let agents = mux.list_agents_cached();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(
+            agents[0].runtime.last_harness_refresh_at,
+            Some(first_refresh)
+        );
+        assert_eq!(
+            mux.agent_runtime_by_pane
+                .read()
+                .get(&pane_id)
+                .and_then(|runtime| runtime.last_harness_refresh_at),
+            Some(first_refresh)
         );
 
         unsafe {

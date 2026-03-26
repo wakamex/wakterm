@@ -463,7 +463,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 58;
+pub const CODEC_VERSION: usize = 59;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -536,6 +536,8 @@ pdu! {
     ListAgentsResponse: 67,
     SetAgentMetadata: 68,
     ClearAgentMetadata: 69,
+    ListAgentsCached: 70,
+    ListAgentsCachedResponse: 71,
 }
 
 impl Pdu {
@@ -683,6 +685,14 @@ pub struct ListAgents {}
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct ListAgentsResponse {
+    pub agents: Vec<AgentSnapshot>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ListAgentsCached {}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ListAgentsCachedResponse {
     pub agents: Vec<AgentSnapshot>,
 }
 

@@ -1561,6 +1561,7 @@ impl Client {
     rpc!(ping, Ping = (), Pong);
     rpc!(list_panes, ListPanes = (), ListPanesResponse);
     rpc!(list_agents, ListAgents = (), ListAgentsResponse);
+    rpc!(list_agents_cached, ListAgentsCached = (), ListAgentsCachedResponse);
     rpc!(spawn_v2, SpawnV2, SpawnResponse);
     rpc!(split_pane, SplitPane, SpawnResponse);
     rpc!(

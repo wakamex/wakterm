@@ -444,6 +444,20 @@ impl SessionHandler {
                 })
                 .detach();
             }
+            Pdu::ListAgentsCached(ListAgentsCached {}) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let mux = Mux::get();
+                            Ok(Pdu::ListAgentsCachedResponse(ListAgentsCachedResponse {
+                                agents: mux.list_agents_cached(),
+                            }))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
             Pdu::ListPanes(ListPanes {}) => {
                 let client_id = self.client_id.clone();
                 spawn_into_main_thread(async move {
@@ -1190,6 +1204,7 @@ impl SessionHandler {
             Pdu::Pong { .. }
             | Pdu::ListPanesResponse { .. }
             | Pdu::ListAgentsResponse { .. }
+            | Pdu::ListAgentsCachedResponse { .. }
             | Pdu::SetClipboard { .. }
             | Pdu::NotifyAlert { .. }
             | Pdu::SpawnResponse { .. }

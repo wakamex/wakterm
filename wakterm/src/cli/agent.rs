@@ -1089,9 +1089,23 @@ pub struct WatchAgentsCommand {
 impl WatchAgentsCommand {
     async fn run(&self, client: Client) -> anyhow::Result<()> {
         let mut out = std::io::stdout().lock();
-        self.run_with(|| client.list_agents(), &mut out, None).await
+        let initial_client = client.clone();
+        self.run_with_cached_polls(
+            move || {
+                let client = initial_client.clone();
+                async move { client.list_agents().await }
+            },
+            move || {
+                let client = client.clone();
+                async move { client.list_agents_cached().await }
+            },
+            &mut out,
+            None,
+        )
+        .await
     }
 
+    #[cfg(test)]
     async fn run_with<ListAgents, ListAgentsFut, W: Write>(
         &self,
         mut list_agents: ListAgents,
@@ -1119,6 +1133,57 @@ impl WatchAgentsCommand {
             }
 
             smol::Timer::after(Duration::from_millis(self.poll_ms)).await;
+        }
+    }
+
+    async fn run_with_cached_polls<
+        InitialListAgents,
+        InitialListAgentsFut,
+        PollListAgents,
+        PollListAgentsFut,
+        W: Write,
+    >(
+        &self,
+        mut initial_list_agents: InitialListAgents,
+        mut poll_list_agents: PollListAgents,
+        out: &mut W,
+        max_polls: Option<usize>,
+    ) -> anyhow::Result<()>
+    where
+        InitialListAgents: FnMut() -> InitialListAgentsFut,
+        InitialListAgentsFut: Future<Output = anyhow::Result<codec::ListAgentsResponse>>,
+        PollListAgents: FnMut() -> PollListAgentsFut,
+        PollListAgentsFut: Future<Output = anyhow::Result<codec::ListAgentsCachedResponse>>,
+    {
+        let mut seen = HashMap::new();
+        let mut remaining_polls = max_polls;
+
+        let agents = initial_list_agents().await?.agents;
+        let events = collect_agent_watch_events(&mut seen, &agents);
+        self.write_events(out, &events)?;
+        out.flush()?;
+
+        if let Some(remaining) = remaining_polls.as_mut() {
+            if *remaining <= 1 {
+                return Ok(());
+            }
+            *remaining -= 1;
+        }
+
+        loop {
+            smol::Timer::after(Duration::from_millis(self.poll_ms)).await;
+
+            let agents = poll_list_agents().await?.agents;
+            let events = collect_agent_watch_events(&mut seen, &agents);
+            self.write_events(out, &events)?;
+            out.flush()?;
+
+            if let Some(remaining) = remaining_polls.as_mut() {
+                if *remaining <= 1 {
+                    return Ok(());
+                }
+                *remaining -= 1;
+            }
         }
     }
 
@@ -2765,6 +2830,67 @@ mod test {
                             _ => vec![updated],
                         };
                         Ok(ListAgentsResponse { agents })
+                    }
+                }
+            },
+            &mut out,
+            Some(3),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            concat!(
+                "reviewer\tcodex\t[plan commentary] thinking\n",
+                "reviewer\tcodex\t[plan final-answer] done\n"
+            )
+        );
+    }
+
+    #[test]
+    fn watch_cached_polls_seed_with_full_list_then_stream_cached_changes() {
+        let command = WatchAgentsCommand {
+            format: CliOutputFormatKind::Table,
+            poll_ms: 0,
+        };
+
+        let mut baseline = sample_agent(30, "reviewer");
+        baseline.runtime.progress_summary = Some("thinking".to_string());
+        baseline.runtime.harness_mode = Some("plan".to_string());
+        baseline.runtime.turn_phase = Some("commentary".to_string());
+
+        let mut updated = baseline.clone();
+        updated.runtime.progress_summary = Some("done".to_string());
+        updated.runtime.turn_phase = Some("final_answer".to_string());
+
+        let cached_polls = Rc::new(RefCell::new(0usize));
+        let mut out = Vec::new();
+        promise::spawn::block_on(command.run_with_cached_polls(
+            {
+                let baseline = baseline.clone();
+                move || {
+                    let baseline = baseline.clone();
+                    async move { Ok(ListAgentsResponse { agents: vec![baseline] }) }
+                }
+            },
+            {
+                let cached_polls = Rc::clone(&cached_polls);
+                move || {
+                    let cached_polls = Rc::clone(&cached_polls);
+                    let baseline = baseline.clone();
+                    let updated = updated.clone();
+                    async move {
+                        let idx = {
+                            let mut polls = cached_polls.borrow_mut();
+                            *polls += 1;
+                            *polls
+                        };
+                        let agents = if idx == 1 {
+                            vec![baseline]
+                        } else {
+                            vec![updated]
+                        };
+                        Ok(codec::ListAgentsCachedResponse { agents })
                     }
                 }
             },
