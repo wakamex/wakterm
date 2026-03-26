@@ -2,6 +2,9 @@
 use super::renderstate::*;
 use super::utilsprites::RenderMetrics;
 use crate::colorease::ColorEase;
+use crate::customglyph::{
+    HARNESS_ICON_CLAUDE, HARNESS_ICON_CODEX, HARNESS_ICON_GEMINI, HARNESS_ICON_OPENCODE,
+};
 use crate::frontend::{front_end, try_front_end};
 use crate::inputmap::InputMap;
 use crate::overlay::{
@@ -40,6 +43,7 @@ use config::{
 };
 use lfucache::*;
 use mlua::{FromLua, LuaSerdeExt, UserData, UserDataFields};
+use mux::agent::AgentHarness;
 use mux::pane::{
     CachePolicy, CloseReason, Pane, PaneId, Pattern as MuxPattern, PerformAssignmentResult,
 };
@@ -207,6 +211,45 @@ pub struct PaneState {
 }
 
 /// Data used when synchronously formatting pane and window titles
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabHarnessIcon {
+    Claude,
+    Codex,
+    Gemini,
+    OpenCode,
+}
+
+impl TabHarnessIcon {
+    pub fn from_agent_harness(harness: AgentHarness) -> Option<Self> {
+        match harness {
+            AgentHarness::Claude => Some(Self::Claude),
+            AgentHarness::Codex => Some(Self::Codex),
+            AgentHarness::Gemini => Some(Self::Gemini),
+            AgentHarness::Opencode => Some(Self::OpenCode),
+            AgentHarness::Unknown => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Gemini => "gemini",
+            Self::OpenCode => "opencode",
+        }
+    }
+
+    pub fn as_glyph(self) -> char {
+        match self {
+            Self::Claude => HARNESS_ICON_CLAUDE,
+            Self::Codex => HARNESS_ICON_CODEX,
+            Self::Gemini => HARNESS_ICON_GEMINI,
+            Self::OpenCode => HARNESS_ICON_OPENCODE,
+        }
+    }
+}
+
+/// Data used when synchronously formatting pane and window titles
 #[derive(Debug, Clone)]
 pub struct TabInformation {
     pub tab_id: TabId,
@@ -214,6 +257,7 @@ pub struct TabInformation {
     pub is_active: bool,
     pub is_last_active: bool,
     pub active_pane: Option<PaneInformation>,
+    pub harness_icon: Option<TabHarnessIcon>,
     pub window_id: MuxWindowId,
     pub tab_title: String,
 }
@@ -243,6 +287,9 @@ impl UserData for TabInformation {
             } else {
                 Ok(None)
             }
+        });
+        fields.add_field_method_get("harness_icon", |_, this| {
+            Ok(this.harness_icon.map(|icon| icon.as_str().to_string()))
         });
         fields.add_field_method_get("effective_title", |_, this| Ok(this.effective_title()));
         fields.add_field_method_get("panes", |_, this| {
@@ -3606,6 +3653,7 @@ impl TermWindow {
             .enumerate()
             .map(|(idx, tab)| {
                 let panes = self.get_pos_panes_for_tab(tab);
+                let active_pane = panes.iter().find(|p| p.is_active);
 
                 TabInformation {
                     tab_index: idx,
@@ -3614,10 +3662,11 @@ impl TermWindow {
                     is_last_active: last_active_idx == Some(idx),
                     window_id: self.mux_window_id,
                     tab_title: mux.effective_tab_title(tab.tab_id()),
-                    active_pane: panes
-                        .iter()
-                        .find(|p| p.is_active)
-                        .map(Self::pos_pane_to_pane_info),
+                    harness_icon: active_pane.and_then(|pos| {
+                        mux.cached_agent_harness_for_pane(pos.pane.pane_id())
+                            .and_then(TabHarnessIcon::from_agent_harness)
+                    }),
+                    active_pane: active_pane.map(Self::pos_pane_to_pane_info),
                 }
             })
             .collect()
@@ -3796,6 +3845,7 @@ mod test {
             is_active: true,
             is_last_active: false,
             active_pane: active_pane_title.map(pane_with_title),
+            harness_icon: None,
             window_id: 0,
             tab_title: tab_title.to_string(),
         }

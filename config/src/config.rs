@@ -496,7 +496,7 @@ pub struct Config {
     pub mouse_wheel_scrolls_tabs: bool,
 
     /// If true, tab bar titles are prefixed with the tab index
-    #[dynamic(default = "default_true")]
+    #[dynamic(default)]
     pub show_tab_index_in_tab_bar: bool,
 
     #[dynamic(default = "default_true")]
