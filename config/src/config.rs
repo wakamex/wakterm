@@ -520,6 +520,11 @@ pub struct Config {
     #[dynamic(default)]
     pub tab_bar_color_mode: TabBarColorMode,
 
+    /// Controls whether built-in generated tab colors are drawn from a dark,
+    /// light, or mixed palette family.
+    #[dynamic(default)]
+    pub tab_bar_color_palette: TabBarColorPalette,
+
     /// Specifies the maximum width that a tab can have in the
     /// tab bar.  Defaults to 16 glyphs in width.
     #[dynamic(default = "default_tab_max_width")]
@@ -1939,6 +1944,16 @@ pub enum TabBarColorMode {
 }
 
 impl_lua_conversion_dynamic!(TabBarColorMode);
+
+#[derive(FromDynamic, ToDynamic, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TabBarColorPalette {
+    #[default]
+    Dark,
+    Light,
+    Mixed,
+}
+
+impl_lua_conversion_dynamic!(TabBarColorPalette);
 
 impl DefaultCursorStyle {
     pub fn effective_shape(self, shape: CursorShape) -> CursorShape {

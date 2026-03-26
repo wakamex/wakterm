@@ -1,5 +1,7 @@
 use crate::termwindow::TabInformation;
-use config::{ConfigHandle, RgbaColor, SrgbaTuple, TabBarColorMode, CACHE_DIR};
+use config::{
+    ConfigHandle, RgbaColor, SrgbaTuple, TabBarColorMode, TabBarColorPalette, CACHE_DIR,
+};
 use lazy_static::lazy_static;
 use mux::pane::CachePolicy;
 use mux::Mux;
@@ -56,17 +58,18 @@ pub fn assign_tab_colors(config: &ConfigHandle, tabs: &mut [TabInformation]) {
         .collect();
 
     let unique_keys: BTreeSet<String> = keys_by_tab.iter().map(|(_, key)| key.clone()).collect();
+    let palette = candidate_palette(config.tab_bar_color_palette);
 
     let colors_by_key = match config.tab_bar_color_mode {
         TabBarColorMode::Off => HashMap::new(),
         TabBarColorMode::Hash => unique_keys
             .into_iter()
             .map(|key| {
-                let preferred_idx = preferred_candidate_idx(&key, candidate_palette().len());
-                (key, candidate_palette()[preferred_idx])
+                let preferred_idx = preferred_candidate_idx(&key, palette.len());
+                (key, palette[preferred_idx])
             })
             .collect(),
-        TabBarColorMode::Assign => assigned_colors_for_keys(unique_keys),
+        TabBarColorMode::Assign => assigned_colors_for_keys(unique_keys, palette),
     };
 
     for (idx, key) in keys_by_tab {
@@ -138,13 +141,16 @@ fn cwd_key_from_url(url: &url::Url) -> String {
         .unwrap_or_else(|| url.to_string())
 }
 
-fn assigned_colors_for_keys(keys: BTreeSet<String>) -> HashMap<String, RgbaColor> {
+fn assigned_colors_for_keys(
+    keys: BTreeSet<String>,
+    palette: &'static [RgbaColor],
+) -> HashMap<String, RgbaColor> {
     let cache_path = assignment_cache_path();
     let mut store = ASSIGNMENT_STORE.lock();
     store.ensure_loaded(&cache_path);
 
     let dirty_before = store.assignments.len();
-    let result = assign_colors_for_keys(&mut store.assignments, keys);
+    let result = assign_colors_for_keys(&mut store.assignments, keys, palette);
     let dirty = store.assignments.len() != dirty_before;
 
     if dirty {
@@ -162,6 +168,7 @@ fn assigned_colors_for_keys(keys: BTreeSet<String>) -> HashMap<String, RgbaColor
 fn assign_colors_for_keys(
     assignments: &mut BTreeMap<String, RgbaColor>,
     keys: BTreeSet<String>,
+    palette: &[RgbaColor],
 ) -> HashMap<String, RgbaColor> {
     let mut result = HashMap::new();
 
@@ -169,7 +176,7 @@ fn assign_colors_for_keys(
         let color = if let Some(color) = assignments.get(&key).copied() {
             color
         } else {
-            let color = choose_most_distinct_color(&key, assignments.values().copied());
+            let color = choose_most_distinct_color(&key, assignments.values().copied(), palette);
             assignments.insert(key.clone(), color);
             color
         };
@@ -182,12 +189,13 @@ fn assign_colors_for_keys(
 fn choose_most_distinct_color(
     key: &str,
     existing: impl IntoIterator<Item = RgbaColor>,
+    palette: &[RgbaColor],
 ) -> RgbaColor {
     let existing: Vec<RgbaColor> = existing.into_iter().collect();
-    let preferred_idx = preferred_candidate_idx(key, candidate_palette().len());
+    let preferred_idx = preferred_candidate_idx(key, palette.len());
     let used: HashSet<RgbaColor> = existing.iter().copied().collect();
 
-    let candidates: Vec<(usize, RgbaColor)> = candidate_palette()
+    let candidates: Vec<(usize, RgbaColor)> = palette
         .iter()
         .copied()
         .enumerate()
@@ -195,11 +203,7 @@ fn choose_most_distinct_color(
         .collect();
 
     let candidates = if candidates.is_empty() {
-        candidate_palette()
-            .iter()
-            .copied()
-            .enumerate()
-            .collect::<Vec<_>>()
+        palette.iter().copied().enumerate().collect::<Vec<_>>()
     } else {
         candidates
     };
@@ -213,12 +217,12 @@ fn choose_most_distinct_color(
                 .partial_cmp(&score_b)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| {
-                    circular_distance(*idx_b, preferred_idx, candidate_palette().len())
-                        .cmp(&circular_distance(*idx_a, preferred_idx, candidate_palette().len()))
+                    circular_distance(*idx_b, preferred_idx, palette.len())
+                        .cmp(&circular_distance(*idx_a, preferred_idx, palette.len()))
                 })
         })
         .map(|(_, color)| color)
-        .unwrap_or(candidate_palette()[preferred_idx])
+        .unwrap_or(palette[preferred_idx])
 }
 
 fn min_color_distance(candidate: RgbaColor, existing: &[RgbaColor]) -> f32 {
@@ -254,9 +258,9 @@ fn circular_distance(a: usize, b: usize, len: usize) -> usize {
     forward.min(wrap)
 }
 
-fn candidate_palette() -> &'static [RgbaColor] {
+fn candidate_palette(kind: TabBarColorPalette) -> &'static [RgbaColor] {
     lazy_static! {
-        static ref PALETTE: Vec<RgbaColor> = {
+        static ref MIXED_PALETTE: Vec<RgbaColor> = {
             let rings = [
                 (0.76_f32, 0.92_f32, 0.0_f32),
                 (0.68_f32, 0.82_f32, 0.5_f32 / 72.0_f32),
@@ -272,9 +276,23 @@ fn candidate_palette() -> &'static [RgbaColor] {
             }
             colors
         };
+        static ref DARK_PALETTE: Vec<RgbaColor> = MIXED_PALETTE
+            .iter()
+            .copied()
+            .filter(|color| prefers_light_text(*color))
+            .collect();
+        static ref LIGHT_PALETTE: Vec<RgbaColor> = MIXED_PALETTE
+            .iter()
+            .copied()
+            .filter(|color| prefers_dark_text(*color))
+            .collect();
     }
 
-    PALETTE.as_slice()
+    match kind {
+        TabBarColorPalette::Dark => DARK_PALETTE.as_slice(),
+        TabBarColorPalette::Light => LIGHT_PALETTE.as_slice(),
+        TabBarColorPalette::Mixed => MIXED_PALETTE.as_slice(),
+    }
 }
 
 fn hsv_to_rgba(h: f32, s: f32, v: f32) -> RgbaColor {
@@ -314,6 +332,14 @@ fn contrast_ratio(a: RgbaColor, b: RgbaColor) -> f32 {
     let l2 = relative_luminance(b);
     let (lighter, darker) = if l1 >= l2 { (l1, l2) } else { (l2, l1) };
     (lighter + 0.05) / (darker + 0.05)
+}
+
+fn prefers_dark_text(color: RgbaColor) -> bool {
+    contrast_ratio(color, dark_text()) >= contrast_ratio(color, light_text())
+}
+
+fn prefers_light_text(color: RgbaColor) -> bool {
+    !prefers_dark_text(color)
 }
 
 fn relative_luminance(color: RgbaColor) -> f32 {
@@ -436,10 +462,11 @@ impl AssignmentStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        assign_colors_for_keys, choose_most_distinct_color, cwd_key_from_url, hsv_to_rgba,
-        stable_tab_key, AssignmentStore,
+        assign_colors_for_keys, candidate_palette, choose_most_distinct_color, cwd_key_from_url,
+        hsv_to_rgba, prefers_dark_text, prefers_light_text, stable_tab_key, AssignmentStore,
     };
     use crate::termwindow::{PaneInformation, TabInformation};
+    use config::TabBarColorPalette;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
     use wakterm_term::Progress;
@@ -526,9 +553,13 @@ mod tests {
             hsv_to_rgba(0.33, 0.76, 0.92),
             hsv_to_rgba(0.66, 0.76, 0.92),
         ];
-        let chosen = choose_most_distinct_color("fresh", existing);
+        let palette = candidate_palette(TabBarColorPalette::Mixed);
+        let chosen = choose_most_distinct_color("fresh", existing, palette);
 
-        assert_eq!(chosen, choose_most_distinct_color("fresh", existing));
+        assert_eq!(
+            chosen,
+            choose_most_distinct_color("fresh", existing, palette)
+        );
         assert!(!existing.contains(&chosen));
     }
 
@@ -536,22 +567,45 @@ mod tests {
     fn assign_mode_assigns_unseen_keys_independent_of_input_order() {
         let mut first = BTreeMap::from([("existing".to_string(), hsv_to_rgba(0.0, 0.76, 0.92))]);
         let mut second = first.clone();
+        let palette = candidate_palette(TabBarColorPalette::Mixed);
 
         let first_result = assign_colors_for_keys(
             &mut first,
             Vec::from(["bravo".to_string(), "alpha".to_string()])
                 .into_iter()
                 .collect(),
+            palette,
         );
         let second_result = assign_colors_for_keys(
             &mut second,
             Vec::from(["alpha".to_string(), "bravo".to_string()])
                 .into_iter()
                 .collect(),
+            palette,
         );
 
         assert_eq!(first_result, second_result);
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn dark_palette_prefers_light_text() {
+        assert!(
+            candidate_palette(TabBarColorPalette::Dark)
+                .iter()
+                .copied()
+                .all(prefers_light_text)
+        );
+    }
+
+    #[test]
+    fn light_palette_prefers_dark_text() {
+        assert!(
+            candidate_palette(TabBarColorPalette::Light)
+                .iter()
+                .copied()
+                .all(prefers_dark_text)
+        );
     }
 
     #[test]
