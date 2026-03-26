@@ -288,12 +288,7 @@ fn circular_distance(a: usize, b: usize, len: usize) -> usize {
 
 fn candidate_palette(kind: TabBarColorPalette, bar_background: RgbaColor) -> Vec<RgbaColor> {
     let mut colors = match kind {
-        TabBarColorPalette::Dark => build_oklch_slice(
-            &[0.58, 0.62, 0.66],
-            &[0.11, 0.14, 0.17],
-            &[0.0, 0.5 / 24.0, 1.0 / 24.0],
-            24,
-        ),
+        TabBarColorPalette::Dark => curated_dark_palette(),
         TabBarColorPalette::Light => build_oklch_slice(
             &[0.80, 0.84, 0.88],
             &[0.09, 0.12, 0.15],
@@ -301,12 +296,7 @@ fn candidate_palette(kind: TabBarColorPalette, bar_background: RgbaColor) -> Vec
             24,
         ),
         TabBarColorPalette::Mixed => {
-            let mut colors = build_oklch_slice(
-                &[0.58, 0.62, 0.66],
-                &[0.11, 0.14, 0.17],
-                &[0.0, 0.5 / 24.0, 1.0 / 24.0],
-                24,
-            );
+            let mut colors = curated_dark_palette();
             colors.extend(build_oklch_slice(
                 &[0.80, 0.84, 0.88],
                 &[0.09, 0.12, 0.15],
@@ -330,6 +320,19 @@ fn candidate_palette(kind: TabBarColorPalette, bar_background: RgbaColor) -> Vec
     colors
 }
 
+fn curated_dark_palette() -> Vec<RgbaColor> {
+    [
+        "#8f3b4d", "#a24d2f", "#9c6400", "#8a7600", "#5d8a00", "#007f4f", "#007c7f", "#006fa8",
+        "#2d63c7", "#6b5bd6", "#8f53b0", "#a5477f", "#b34767", "#b35a2c", "#b17a00", "#7f8700",
+        "#3c8a16", "#00886f", "#00839d", "#0078c0", "#4d69d6", "#7a63c8", "#9b57b7", "#b24f98",
+        "#7c4758", "#8a5a3a", "#7c6708", "#56752f", "#22705b", "#256b79", "#3b5e96", "#6a4f95",
+    ]
+    .iter()
+    .copied()
+    .map(hex_color)
+    .collect()
+}
+
 fn build_oklch_slice(
     lightnesses: &[f32],
     chromas: &[f32],
@@ -349,6 +352,14 @@ fn build_oklch_slice(
         }
     }
     colors
+}
+
+fn hex_color(hex: &str) -> RgbaColor {
+    let hex = hex.strip_prefix('#').expect("valid #RRGGBB color");
+    let r = u8::from_str_radix(&hex[0..2], 16).expect("valid hex red");
+    let g = u8::from_str_radix(&hex[2..4], 16).expect("valid hex green");
+    let b = u8::from_str_radix(&hex[4..6], 16).expect("valid hex blue");
+    RgbaColor::from((r, g, b))
 }
 
 fn inactive_rendered_bg(base: RgbaColor, bar_background: RgbaColor) -> RgbaColor {
