@@ -37,6 +37,9 @@ impl super::TermWindow {
     fn leave_ui_item(&mut self, item: &UIItem) {
         match item.item_type {
             UIItemType::TabBar(_) => {
+                if self.config.use_fancy_tab_bar {
+                    self.invalidate_fancy_tab_bar();
+                }
                 self.update_title_post_status();
             }
             UIItemType::CloseTab(_)
@@ -49,7 +52,11 @@ impl super::TermWindow {
 
     fn enter_ui_item(&mut self, item: &UIItem) {
         match item.item_type {
-            UIItemType::TabBar(_) => {}
+            UIItemType::TabBar(_) => {
+                if self.config.use_fancy_tab_bar {
+                    self.invalidate_fancy_tab_bar();
+                }
+            }
             UIItemType::CloseTab(_)
             | UIItemType::AboveScrollThumb
             | UIItemType::BelowScrollThumb
@@ -158,6 +165,21 @@ impl super::TermWindow {
             }
 
             WMEK::Move => {
+                if self.config.use_fancy_tab_bar && self.show_tab_bar {
+                    let border = self.get_os_border();
+                    let tab_bar_y = if self.config.tab_bar_at_bottom {
+                        self.dimensions.pixel_height as isize
+                            - self.tab_bar_pixel_height().unwrap_or(0.) as isize
+                            - border.bottom.get() as isize
+                    } else {
+                        border.top.get() as isize
+                    };
+                    let tab_bar_height = self.tab_bar_pixel_height().unwrap_or(0.) as isize;
+                    if event.coords.y >= tab_bar_y && event.coords.y < tab_bar_y + tab_bar_height {
+                        context.invalidate();
+                    }
+                }
+
                 if let Some(start) = self.window_drag_position.as_ref() {
                     // Dragging the window
                     // Compute the distance since the initial event
@@ -192,23 +214,28 @@ impl super::TermWindow {
         let ui_item = if matches!(self.current_mouse_capture, None | Some(MouseCapture::UI)) {
             let ui_item = self.resolve_ui_item(&event);
 
-            match (self.last_ui_item.take(), &ui_item) {
+            match (prior_ui_item.as_ref(), ui_item.as_ref()) {
                 (Some(prior), Some(item)) => {
-                    if prior != *item || !self.config.use_fancy_tab_bar {
-                        self.leave_ui_item(&prior);
+                    if prior != item || !self.config.use_fancy_tab_bar {
+                        self.last_ui_item = ui_item.clone();
+                        self.leave_ui_item(prior);
                         self.enter_ui_item(item);
                         context.invalidate();
                     }
                 }
                 (Some(prior), None) => {
-                    self.leave_ui_item(&prior);
+                    self.last_ui_item = None;
+                    self.leave_ui_item(prior);
                     context.invalidate();
                 }
                 (None, Some(item)) => {
+                    self.last_ui_item = ui_item.clone();
                     self.enter_ui_item(item);
                     context.invalidate();
                 }
-                (None, None) => {}
+                (None, None) => {
+                    self.last_ui_item = None;
+                }
             }
 
             ui_item

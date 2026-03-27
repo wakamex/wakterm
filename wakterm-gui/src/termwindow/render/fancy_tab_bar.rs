@@ -1,9 +1,10 @@
 use crate::color::LinearRgba;
 use crate::customglyph::*;
+use crate::tab_colors::{tab_render_colors, TabColorVisualState};
 use crate::tabbar::{TabBarItem, TabEntry};
 use crate::termwindow::box_model::*;
 use crate::termwindow::render::window_buttons::window_button_element;
-use crate::termwindow::{MouseCapture, TabHarnessIcon, UIItem, UIItemType};
+use crate::termwindow::{TabHarnessIcon, UIItem, UIItemType};
 use crate::utilsprites::RenderMetrics;
 use config::{Dimension, DimensionContext, TabBarColors};
 use std::rc::Rc;
@@ -88,22 +89,27 @@ impl crate::TermWindow {
             .to_linear()
             .into(),
         };
+        let hovered_tab_idx = match self.last_ui_item.as_ref().map(|item| &item.item_type) {
+            Some(UIItemType::TabBar(TabBarItem::Tab { tab_idx, .. })) => Some(*tab_idx),
+            Some(UIItemType::CloseTab(tab_idx)) => Some(*tab_idx),
+            _ => None,
+        };
 
         let item_to_elem = |item: &TabEntry| -> Element {
-            let bg_color = item
+            let explicit_bg_color = item
                 .title_bg
                 .or_else(|| first_non_default_background(&item.title))
                 .map(|c| palette.resolve_bg(c));
-            let fg_color = item
+            let explicit_fg_color = item
                 .title_fg
                 .or_else(|| first_non_default_foreground(&item.title))
                 .map(|c| palette.resolve_fg(c));
             let title = Element::with_line(&font, &item.title, palette).colors(ElementColors {
                 border: BorderColor::default(),
-                bg: bg_color
+                bg: explicit_bg_color
                     .map(|c| c.to_linear().into())
                     .unwrap_or(InheritableColor::Inherited),
-                text: fg_color
+                text: explicit_fg_color
                     .map(|c| c.to_linear().into())
                     .unwrap_or(InheritableColor::Inherited),
             });
@@ -204,73 +210,122 @@ impl crate::TermWindow {
                     .border(BoxDimension::new(Dimension::Pixels(1.)))
                     .colors(ElementColors {
                         border: BorderColor::new(
-                            bg_color
+                            explicit_bg_color
+                                .or_else(|| {
+                                    item.assigned_color.map(|color| {
+                                        tab_render_colors(
+                                            color,
+                                            colors.background(),
+                                            TabColorVisualState::Active,
+                                        )
+                                        .bg
+                                        .into()
+                                    })
+                                })
                                 .unwrap_or_else(|| active_tab.bg_color.into())
                                 .to_linear(),
                         ),
-                        bg: bg_color
+                        bg: explicit_bg_color
+                            .or_else(|| {
+                                item.assigned_color.map(|color| {
+                                    tab_render_colors(
+                                        color,
+                                        colors.background(),
+                                        TabColorVisualState::Active,
+                                    )
+                                    .bg
+                                    .into()
+                                })
+                            })
                             .unwrap_or_else(|| active_tab.bg_color.into())
                             .to_linear()
                             .into(),
-                        text: fg_color
+                        text: explicit_fg_color
+                            .or_else(|| {
+                                item.assigned_color.map(|color| {
+                                    tab_render_colors(
+                                        color,
+                                        colors.background(),
+                                        TabColorVisualState::Active,
+                                    )
+                                    .fg
+                                    .into()
+                                })
+                            })
                             .unwrap_or_else(|| active_tab.fg_color.into())
                             .to_linear()
                             .into(),
                     }),
-                TabBarItem::Tab { .. } => element
-                    .vertical_align(VerticalAlign::Bottom)
-                    .item_type(UIItemType::TabBar(item.item.clone()))
-                    .margin(BoxDimension {
-                        left: Dimension::Cells(0.),
-                        right: Dimension::Cells(0.),
-                        top: Dimension::Cells(0.),
-                        bottom: Dimension::Cells(0.),
-                    })
-                    .padding(BoxDimension {
-                        left: Dimension::Cells(0.15),
-                        right: Dimension::Cells(0.15),
-                        top: Dimension::Cells(0.),
-                        bottom: Dimension::Cells(0.03),
-                    })
-                    .border(BoxDimension::new(Dimension::Pixels(1.)))
-                    .colors({
-                        let inactive_tab = colors.inactive_tab();
-                        let bg = bg_color
-                            .unwrap_or_else(|| inactive_tab.bg_color.into())
-                            .to_linear();
-                        let edge = colors.inactive_tab_edge().to_linear();
-                        ElementColors {
-                            border: BorderColor {
-                                left: bg,
-                                right: edge,
-                                top: bg,
-                                bottom: bg,
-                            },
-                            bg: bg.into(),
-                            text: fg_color
-                                .unwrap_or_else(|| inactive_tab.fg_color.into())
-                                .to_linear()
-                                .into(),
-                        }
-                    })
-                    .hover_colors({
-                        let inactive_tab_hover = colors.inactive_tab_hover();
-                        Some(ElementColors {
-                            border: BorderColor::new(
-                                bg_color
-                                    .unwrap_or_else(|| inactive_tab_hover.bg_color.into())
-                                    .to_linear(),
-                            ),
-                            bg: bg_color
-                                .unwrap_or_else(|| inactive_tab_hover.bg_color.into())
-                                .to_linear()
-                                .into(),
-                            text: fg_color
-                                .unwrap_or_else(|| inactive_tab_hover.fg_color.into())
-                                .to_linear()
-                                .into(),
+                TabBarItem::Tab { tab_idx, .. } => {
+                    let hovered = hovered_tab_idx == Some(tab_idx);
+                    let visual_state = if hovered {
+                        TabColorVisualState::Hover
+                    } else {
+                        TabColorVisualState::Inactive
+                    };
+                    let inactive_tab = if hovered {
+                        colors.inactive_tab_hover()
+                    } else {
+                        colors.inactive_tab()
+                    };
+                    let edge = if hovered {
+                        colors.inactive_tab_hover().bg_color.to_linear()
+                    } else {
+                        colors.inactive_tab_edge().to_linear()
+                    };
+                    element
+                        .vertical_align(VerticalAlign::Bottom)
+                        .item_type(UIItemType::TabBar(item.item.clone()))
+                        .margin(BoxDimension {
+                            left: Dimension::Cells(0.),
+                            right: Dimension::Cells(0.),
+                            top: Dimension::Cells(0.),
+                            bottom: Dimension::Cells(0.),
                         })
-                    }),
+                        .padding(BoxDimension {
+                            left: Dimension::Cells(0.15),
+                            right: Dimension::Cells(0.15),
+                            top: Dimension::Cells(0.),
+                            bottom: Dimension::Cells(0.03),
+                        })
+                        .border(BoxDimension::new(Dimension::Pixels(1.)))
+                        .colors({
+                            let bg = explicit_bg_color
+                                .or_else(|| {
+                                    item.assigned_color.map(|color| {
+                                        tab_render_colors(color, colors.background(), visual_state)
+                                            .bg
+                                            .into()
+                                    })
+                                })
+                                .unwrap_or_else(|| inactive_tab.bg_color.into())
+                                .to_linear();
+                            ElementColors {
+                                border: BorderColor {
+                                    left: bg,
+                                    right: edge,
+                                    top: bg,
+                                    bottom: bg,
+                                },
+                                bg: bg.into(),
+                                text: explicit_fg_color
+                                    .or_else(|| {
+                                        item.assigned_color.map(|color| {
+                                            tab_render_colors(
+                                                color,
+                                                colors.background(),
+                                                visual_state,
+                                            )
+                                            .fg
+                                            .into()
+                                        })
+                                    })
+                                    .unwrap_or_else(|| inactive_tab.fg_color.into())
+                                    .to_linear()
+                                    .into(),
+                            }
+                        })
+                }
                 TabBarItem::WindowButton(button) => window_button_element(
                     button,
                     self.window_state.contains(window::WindowState::MAXIMIZED),
@@ -468,6 +523,11 @@ impl crate::TermWindow {
         };
         let tab_left_padding = Dimension::Cells(0.15).evaluate_as_pixels(width_context);
         let icon_slot_width = harness_icon_slot_width(tab_bar_height);
+        let hovered_tab_idx = match self.last_ui_item.as_ref().map(|item| &item.item_type) {
+            Some(UIItemType::TabBar(TabBarItem::Tab { tab_idx, .. })) => Some(*tab_idx),
+            Some(UIItemType::CloseTab(tab_idx)) => Some(*tab_idx),
+            _ => None,
+        };
 
         for item in ui_items {
             let tab_idx = match item.item_type {
@@ -484,10 +544,7 @@ impl crate::TermWindow {
                 continue;
             };
 
-            let hovered = self.current_mouse_event.as_ref().is_some_and(|event| {
-                item.hit_test(event.coords.x, event.coords.y)
-                    && matches!(self.current_mouse_capture, None | Some(MouseCapture::UI))
-            });
+            let hovered = hovered_tab_idx == Some(tab_idx);
             let color = harness_icon_color(entry, &colors, palette, hovered);
             let item_height = item.height as f32;
             let icon_size = (item_height - 2.0).max(0.0);

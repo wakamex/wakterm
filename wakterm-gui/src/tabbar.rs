@@ -1,6 +1,6 @@
 use crate::tab_colors::{tab_render_colors, TabColorVisualState};
 use crate::termwindow::{PaneInformation, TabHarnessIcon, TabInformation, UIItem, UIItemType};
-use config::{ColorSpec as ConfigColorSpec, ConfigHandle, TabBarColors};
+use config::{ConfigHandle, RgbaColor, TabBarColors};
 use finl_unicode::grapheme_clusters::Graphemes;
 use mlua::FromLua;
 use termwiz::cell::{unicode_column_width, AttributeChange, Cell, CellAttributes};
@@ -34,6 +34,7 @@ pub struct TabEntry {
     pub item: TabBarItem,
     pub title: Line,
     pub icon: Option<TabHarnessIcon>,
+    pub assigned_color: Option<RgbaColor>,
     pub title_bg: Option<ColorAttribute>,
     pub title_fg: Option<ColorAttribute>,
     x: usize,
@@ -298,6 +299,7 @@ impl TabBarState {
                 item: TabBarItem::None,
                 title: Line::from_text(" ", &CellAttributes::blank(), 1, None),
                 icon: None,
+                assigned_color: None,
                 title_bg: None,
                 title_fg: None,
                 x: 1,
@@ -394,6 +396,7 @@ impl TabBarState {
                 item: TabBarItem::WindowButton(*button),
                 title: title.to_owned(),
                 icon: None,
+                assigned_color: None,
                 title_bg: None,
                 title_fg: None,
                 x: *x,
@@ -524,6 +527,7 @@ impl TabBarState {
                 item: TabBarItem::LeftStatus,
                 title: left_status_line.clone(),
                 icon: None,
+                assigned_color: None,
                 title_bg: None,
                 title_fg: None,
                 x,
@@ -536,7 +540,11 @@ impl TabBarState {
         for (tab_idx, tab_title) in tab_titles.iter().enumerate() {
             let tab_title_len = tab_title.len.min(tab_width_max);
             let active = tab_idx == active_tab_no;
-            let hover = !active && is_tab_hover(mouse_x, x, tab_title_len);
+            let hover = if config.use_fancy_tab_bar {
+                false
+            } else {
+                !active && is_tab_hover(mouse_x, x, tab_title_len)
+            };
 
             // Recompute the title so that it factors in both the hover state
             // and the adjusted maximum tab width based on available space.
@@ -602,12 +610,9 @@ impl TabBarState {
                 item: TabBarItem::Tab { tab_idx, active },
                 title,
                 icon: tab_info[tab_idx].harness_icon,
-                title_bg: tab_title.title_bg.or_else(|| {
-                    assigned_colors.map(|colors| ConfigColorSpec::Color(colors.bg).into())
-                }),
-                title_fg: tab_title.title_fg.or_else(|| {
-                    assigned_colors.map(|colors| ConfigColorSpec::Color(colors.fg).into())
-                }),
+                assigned_color: tab_info[tab_idx].assigned_color,
+                title_bg: tab_title.title_bg,
+                title_fg: tab_title.title_fg,
                 x: tab_start_idx,
                 width,
             });
@@ -631,6 +636,7 @@ impl TabBarState {
                 item: TabBarItem::NewTabButton,
                 title: new_tab_button.clone(),
                 icon: None,
+                assigned_color: None,
                 title_bg: None,
                 title_fg: None,
                 x: button_start,
@@ -696,6 +702,7 @@ impl TabBarState {
             item: TabBarItem::RightStatus,
             title: right_status_line.clone(),
             icon: None,
+            assigned_color: None,
             title_bg: None,
             title_fg: None,
             x,
