@@ -167,7 +167,15 @@ pub fn prime_runtime_for_new_agent(
         return;
     }
 
-    runtime.observer_started_at = Some(metadata.created_at);
+    let preserve_existing_observer_window = runtime.last_input_at.is_some()
+        || runtime.last_output_at.is_some()
+        || runtime.last_progress_at.is_some();
+
+    runtime.observer_started_at = if preserve_existing_observer_window {
+        None
+    } else {
+        Some(metadata.created_at)
+    };
     runtime.last_harness_refresh_at = None;
     runtime.session_path = None;
     runtime.progress_summary = None;
@@ -2547,6 +2555,31 @@ mod test {
         prime_runtime_for_new_agent(&mut runtime, &metadata, Some("claude"));
 
         assert_eq!(runtime.observer_started_at, Some(metadata.created_at));
+        assert_eq!(runtime.session_path, None);
+        assert_eq!(runtime.progress_summary, None);
+        assert_eq!(runtime.turn_state, AgentTurnState::Unknown);
+    }
+
+    #[test]
+    fn prime_runtime_for_new_agent_preserves_existing_activity_for_adopted_panes() {
+        let metadata = AgentMetadata {
+            agent_id: "id".to_string(),
+            name: "delta".to_string(),
+            launch_cmd: "codex".to_string(),
+            declared_cwd: "/tmp/project-d".to_string(),
+            created_at: Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+        };
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.foreground_process_name = Some("codex".to_string());
+        runtime.last_output_at = Some(Utc.with_ymd_and_hms(2026, 3, 17, 11, 55, 0).unwrap());
+
+        prime_runtime_for_new_agent(&mut runtime, &metadata, Some("codex"));
+
+        assert_eq!(runtime.observer_started_at, None);
         assert_eq!(runtime.session_path, None);
         assert_eq!(runtime.progress_summary, None);
         assert_eq!(runtime.turn_state, AgentTurnState::Unknown);
