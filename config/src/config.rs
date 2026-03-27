@@ -525,6 +525,11 @@ pub struct Config {
     #[dynamic(default)]
     pub tab_bar_color_palette: TabBarColorPalette,
 
+    /// Controls how strongly generated tab colors are dimmed for each visual
+    /// state in the tab bar.
+    #[dynamic(default)]
+    pub tab_bar_color_intensity: TabBarColorIntensity,
+
     /// Specifies the maximum width that a tab can have in the
     /// tab bar.  Defaults to 16 glyphs in width.
     #[dynamic(default = "default_tab_max_width")]
@@ -1955,6 +1960,26 @@ pub enum TabBarColorPalette {
 
 impl_lua_conversion_dynamic!(TabBarColorPalette);
 
+#[derive(FromDynamic, ToDynamic, Clone, Copy, Debug, PartialEq)]
+pub struct TabBarColorIntensity {
+    #[dynamic(default = "default_one_point_oh")]
+    pub active: f32,
+    #[dynamic(default = "default_tab_bar_color_hover_intensity")]
+    pub hover: f32,
+    #[dynamic(default = "default_tab_bar_color_inactive_intensity")]
+    pub inactive: f32,
+}
+
+impl Default for TabBarColorIntensity {
+    fn default() -> Self {
+        Self {
+            active: default_one_point_oh(),
+            hover: default_tab_bar_color_hover_intensity(),
+            inactive: default_tab_bar_color_inactive_intensity(),
+        }
+    }
+}
+
 impl DefaultCursorStyle {
     pub fn effective_shape(self, shape: CursorShape) -> CursorShape {
         match shape {
@@ -1969,6 +1994,14 @@ impl DefaultCursorStyle {
             _ => shape,
         }
     }
+}
+
+const fn default_tab_bar_color_hover_intensity() -> f32 {
+    0.6
+}
+
+const fn default_tab_bar_color_inactive_intensity() -> f32 {
+    0.4
 }
 
 const fn linear_ease() -> EasingFunction {

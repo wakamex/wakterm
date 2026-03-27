@@ -198,6 +198,7 @@ impl crate::TermWindow {
                                     color,
                                     colors.background(),
                                     TabColorVisualState::Active,
+                                    &self.config.tab_bar_color_intensity,
                                 )
                                 .bg
                                 .into()
@@ -265,9 +266,14 @@ impl crate::TermWindow {
                     let bg = explicit_bg_color
                         .or_else(|| {
                             item.assigned_color.map(|color| {
-                                tab_render_colors(color, colors.background(), visual_state)
-                                    .bg
-                                    .into()
+                                tab_render_colors(
+                                    color,
+                                    colors.background(),
+                                    visual_state,
+                                    &self.config.tab_bar_color_intensity,
+                                )
+                                .bg
+                                .into()
                             })
                         })
                         .unwrap_or_else(|| inactive_tab.bg_color.into())

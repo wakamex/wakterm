@@ -23,4 +23,7 @@ When assigning colors, wakterm keys each tab by:
 Generated colors are only applied when your `format-tab-title` callback has
 not already set explicit foreground/background colors for the tab.
 
+Use [tab_bar_color_intensity](tab_bar_color_intensity.md) to adjust how much
+generated tab backgrounds are dimmed in the active, hover, and inactive states.
+
 The default is `"Off"`.

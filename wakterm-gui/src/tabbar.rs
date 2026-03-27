@@ -577,7 +577,12 @@ impl TabBarState {
                 } else {
                     TabColorVisualState::Inactive
                 };
-                Some(tab_render_colors(color, colors.background(), state))
+                Some(tab_render_colors(
+                    color,
+                    colors.background(),
+                    state,
+                    &config.tab_bar_color_intensity,
+                ))
             });
 
             let mut cell_attrs = cell_attrs.clone();

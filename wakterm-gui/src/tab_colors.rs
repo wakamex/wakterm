@@ -1,7 +1,7 @@
 use crate::termwindow::TabInformation;
 use config::{
-    ConfigHandle, RgbaColor, SrgbaTuple, TabBarColorMode, TabBarColorPalette, TabBarColors,
-    CACHE_DIR,
+    ConfigHandle, RgbaColor, SrgbaTuple, TabBarColorIntensity, TabBarColorMode, TabBarColorPalette,
+    TabBarColors, CACHE_DIR,
 };
 use lazy_static::lazy_static;
 use mux::pane::CachePolicy;
@@ -93,11 +93,12 @@ pub fn tab_render_colors(
     base: RgbaColor,
     _bar_background: RgbaColor,
     state: TabColorVisualState,
+    intensity: &TabBarColorIntensity,
 ) -> TabRenderColors {
     let bg = match state {
-        TabColorVisualState::Active => base,
-        TabColorVisualState::Hover => dim_srgba(base, 0.6),
-        TabColorVisualState::Inactive => dim_srgba(base, 0.4),
+        TabColorVisualState::Active => dim_srgba(base, intensity.active),
+        TabColorVisualState::Hover => dim_srgba(base, intensity.hover),
+        TabColorVisualState::Inactive => dim_srgba(base, intensity.inactive),
     };
 
     let fg = match state {
@@ -551,11 +552,12 @@ impl AssignmentStore {
 mod tests {
     use super::{
         active_text, assign_colors_for_keys, candidate_palette, choose_most_distinct_color,
-        cwd_key_from_url, hover_text, inactive_rendered_bg, inactive_text, oklch_to_rgba,
-        prefers_dark_text, stable_tab_key, tab_bar_background, tab_render_colors, AssignmentStore,
+        cwd_key_from_url, dim_srgba, hover_text, inactive_rendered_bg, inactive_text,
+        oklch_to_rgba, prefers_dark_text, stable_tab_key, tab_bar_background, tab_render_colors,
+        AssignmentStore,
     };
     use crate::termwindow::{PaneInformation, TabInformation};
-    use config::{ConfigHandle, RgbaColor, TabBarColorPalette};
+    use config::{ConfigHandle, RgbaColor, TabBarColorIntensity, TabBarColorPalette};
     use std::collections::BTreeMap;
     use tempfile::tempdir;
     use wakterm_term::Progress;
@@ -709,6 +711,7 @@ mod tests {
             RgbaColor::from((40, 133, 239)),
             tab_bar_background(&ConfigHandle::default_config()),
             super::TabColorVisualState::Active,
+            &ConfigHandle::default_config().tab_bar_color_intensity,
         );
         assert_eq!(rendered.fg, active_text());
     }
@@ -719,6 +722,7 @@ mod tests {
             RgbaColor::from((255, 146, 126)),
             tab_bar_background(&ConfigHandle::default_config()),
             super::TabColorVisualState::Inactive,
+            &ConfigHandle::default_config().tab_bar_color_intensity,
         );
         assert_eq!(rendered.fg, inactive_text());
         assert_eq!(
@@ -733,8 +737,50 @@ mod tests {
             RgbaColor::from((40, 133, 239)),
             tab_bar_background(&ConfigHandle::default_config()),
             super::TabColorVisualState::Hover,
+            &ConfigHandle::default_config().tab_bar_color_intensity,
         );
         assert_eq!(rendered.fg, hover_text());
+    }
+
+    #[test]
+    fn tab_render_colors_respect_configured_intensity() {
+        let config = ConfigHandle::default_config();
+        let intensity = TabBarColorIntensity {
+            active: 0.9,
+            hover: 0.7,
+            inactive: 0.5,
+        };
+
+        assert_eq!(
+            tab_render_colors(
+                RgbaColor::from((40, 133, 239)),
+                tab_bar_background(&config),
+                super::TabColorVisualState::Active,
+                &intensity,
+            )
+            .bg,
+            dim_srgba(RgbaColor::from((40, 133, 239)), 0.9)
+        );
+        assert_eq!(
+            tab_render_colors(
+                RgbaColor::from((40, 133, 239)),
+                tab_bar_background(&config),
+                super::TabColorVisualState::Hover,
+                &intensity,
+            )
+            .bg,
+            dim_srgba(RgbaColor::from((40, 133, 239)), 0.7)
+        );
+        assert_eq!(
+            tab_render_colors(
+                RgbaColor::from((40, 133, 239)),
+                tab_bar_background(&config),
+                super::TabColorVisualState::Inactive,
+                &intensity,
+            )
+            .bg,
+            dim_srgba(RgbaColor::from((40, 133, 239)), 0.5)
+        );
     }
 
     #[test]
