@@ -275,6 +275,15 @@ fn compute_tab_title(
     }
 }
 
+fn normalize_title_line_for_fancy(line: &Line) -> Line {
+    let mut line = line.clone();
+    for cell in line.cells_mut() {
+        cell.attrs_mut().set_foreground(ColorSpec::Default);
+        cell.attrs_mut().set_background(ColorSpec::Default);
+    }
+    line
+}
+
 fn is_tab_hover(mouse_x: Option<usize>, x: usize, tab_title_len: usize) -> bool {
     return mouse_x
         .map(|mouse_x| mouse_x >= x && mouse_x < x + tab_title_len)
@@ -578,7 +587,11 @@ impl TabBarState {
             let esc = format_as_escapes(tab_title.items.clone()).expect("already parsed ok above");
             let mut tab_line = parse_status_text(&esc, cell_attrs.clone());
 
-            let title = tab_line.clone();
+            let title = if config.use_fancy_tab_bar {
+                normalize_title_line_for_fancy(&tab_line)
+            } else {
+                tab_line.clone()
+            };
             if tab_line.len() > tab_width_max {
                 tab_line.resize(tab_width_max, SEQ_ZERO);
             }
