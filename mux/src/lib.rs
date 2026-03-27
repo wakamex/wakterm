@@ -5314,6 +5314,76 @@ mod test {
     }
 
     #[test]
+    fn adopting_spawned_pane_does_not_consume_next_pane_id() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        smol::block_on(async move {
+            let window_builder = mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+            let window_id = *window_builder;
+
+            let stale = TerminalSize {
+                rows: 1,
+                cols: 1,
+                pixel_width: 8,
+                pixel_height: 16,
+                dpi: 96,
+            };
+            let stale_tab = Arc::new(Tab::new(&stale));
+            let source_pane = FakePane::new(1, stale, domain.id);
+            stale_tab.assign_pane(&source_pane);
+            mux.add_tab_and_active_pane(&stale_tab).unwrap();
+            mux.add_tab_to_window(&stale_tab, window_id).unwrap();
+
+            let desired = TerminalSize {
+                rows: 40,
+                cols: 120,
+                pixel_width: 1200,
+                pixel_height: 800,
+                dpi: 96,
+            };
+
+            let (_first_tab, first_pane, _) = mux
+                .spawn_tab_or_window(
+                    Some(window_id),
+                    config::keyassignment::SpawnTabDomain::DefaultDomain,
+                    None,
+                    None,
+                    desired,
+                    Some(source_pane.pane_id()),
+                    DEFAULT_WORKSPACE.to_string(),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            let first_pane_id = first_pane.pane_id();
+            mux.set_agent_metadata(first_pane_id, sample_agent_metadata("adopted"))
+                .unwrap();
+
+            let (_second_tab, second_pane, _) = mux
+                .spawn_tab_or_window(
+                    Some(window_id),
+                    config::keyassignment::SpawnTabDomain::DefaultDomain,
+                    None,
+                    None,
+                    desired,
+                    Some(first_pane_id),
+                    DEFAULT_WORKSPACE.to_string(),
+                    None,
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(second_pane.pane_id(), first_pane_id + 1);
+        });
+    }
+
+    #[test]
     fn client_views_keep_independent_active_tabs_in_same_window() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
