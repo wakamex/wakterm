@@ -322,10 +322,9 @@ fn candidate_palette(kind: TabBarColorPalette, bar_background: RgbaColor) -> Vec
 
 fn curated_dark_palette() -> Vec<RgbaColor> {
     [
-        "#8f3b4d", "#a24d2f", "#9c6400", "#8a7600", "#5d8a00", "#007f4f", "#007c7f", "#006fa8",
-        "#2d63c7", "#6b5bd6", "#8f53b0", "#a5477f", "#b34767", "#b35a2c", "#b17a00", "#7f8700",
-        "#3c8a16", "#00886f", "#00839d", "#0078c0", "#4d69d6", "#7a63c8", "#9b57b7", "#b24f98",
-        "#7c4758", "#8a5a3a", "#7c6708", "#56752f", "#22705b", "#256b79", "#3b5e96", "#6a4f95",
+        "#2885ef", "#e6b816", "#dd4c62", "#00a66a", "#f695ee", "#00d8f6", "#ae5ecf", "#66da85",
+        "#ff927e", "#988900", "#96b7ff", "#c37000", "#7e70ec", "#cd509f", "#00a4a7", "#b1cc46",
+        "#00dec2", "#519c03", "#ffa242", "#ff8eb9", "#0098d6", "#cea4ff", "#d95800", "#43c9ff",
     ]
     .iter()
     .copied()
