@@ -700,43 +700,24 @@ fn observe_codex(
 
     let prefer_earliest = updated_after.is_some();
     let mut selected: Option<(PathBuf, DateTime<Utc>)> = None;
-    for days_ago in 0..=CODEX_SESSION_LOOKBACK_DAYS {
-        let day = Utc::now() - Duration::days(days_ago);
-        let dir = root
-            .join(format!("{:04}", day.year()))
-            .join(format!("{:02}", day.month()))
-            .join(format!("{:02}", day.day()));
-        if !dir.is_dir() {
+    let mut candidates = Vec::new();
+    collect_codex_rollout_sessions(&root, &mut candidates)?;
+    for path in candidates {
+        if !codex_session_matches_cwd(&path, cwd)? {
             continue;
         }
-
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            if !codex_session_matches_cwd(&path, cwd)? {
-                continue;
-            }
-            let modified_at = DateTime::<Utc>::from(entry.metadata()?.modified()?);
-            if updated_after
-                .map(|cutoff| modified_at < cutoff)
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            match &selected {
-                Some((_, existing_modified))
-                    if (prefer_earliest && *existing_modified <= modified_at)
-                        || (!prefer_earliest && *existing_modified >= modified_at) => {}
-                _ => selected = Some((path, modified_at)),
-            }
+        let modified_at = DateTime::<Utc>::from(fs::metadata(&path)?.modified()?);
+        if updated_after
+            .map(|cutoff| modified_at < cutoff)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        match &selected {
+            Some((_, existing_modified))
+                if (prefer_earliest && *existing_modified <= modified_at)
+                    || (!prefer_earliest && *existing_modified >= modified_at) => {}
+            _ => selected = Some((path, modified_at)),
         }
     }
 
@@ -940,42 +921,19 @@ fn describe_pending_codex_observer(
 
     let mut has_matching_session = false;
     let mut has_recent_matching_session = false;
-    for days_ago in 0..=CODEX_SESSION_LOOKBACK_DAYS {
-        let day = Utc::now() - Duration::days(days_ago);
-        let dir = root
-            .join(format!("{:04}", day.year()))
-            .join(format!("{:02}", day.month()))
-            .join(format!("{:02}", day.day()));
-        if !dir.is_dir() {
+    let mut candidates = Vec::new();
+    collect_codex_rollout_sessions(&root, &mut candidates)?;
+    for path in candidates {
+        if !codex_session_matches_cwd(&path, cwd)? {
             continue;
         }
-
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            if !codex_session_matches_cwd(&path, cwd)? {
-                continue;
-            }
-            has_matching_session = true;
-            let modified_at = DateTime::<Utc>::from(entry.metadata()?.modified()?);
-            if updated_after
-                .map(|cutoff| modified_at >= cutoff)
-                .unwrap_or(true)
-            {
-                has_recent_matching_session = true;
-                break;
-            }
-        }
-
-        if has_recent_matching_session {
+        has_matching_session = true;
+        let modified_at = DateTime::<Utc>::from(fs::metadata(&path)?.modified()?);
+        if updated_after
+            .map(|cutoff| modified_at >= cutoff)
+            .unwrap_or(true)
+        {
+            has_recent_matching_session = true;
             break;
         }
     }
@@ -1088,8 +1046,6 @@ fn codex_sessions_root() -> Option<PathBuf> {
         .or_else(|| home_dir().map(|home| home.join(".codex").join("sessions")))
 }
 
-const CODEX_SESSION_LOOKBACK_DAYS: i64 = 30;
-
 fn gemini_root() -> Option<PathBuf> {
     std::env::var_os("WAKTERM_AGENT_GEMINI_DIR")
         .map(PathBuf::from)
@@ -1141,6 +1097,32 @@ fn codex_session_matches_cwd(path: &Path, cwd: &str) -> anyhow::Result<bool> {
         .and_then(|payload| payload.get("cwd"))
         .and_then(Value::as_str)
         == Some(cwd))
+}
+
+fn collect_codex_rollout_sessions(root: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    if !root.is_dir() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_codex_rollout_sessions(&path, out)?;
+            continue;
+        }
+
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+            .unwrap_or(false)
+        {
+            out.push(path);
+        }
+    }
+
+    Ok(())
 }
 
 fn derive_turn_state(
@@ -2126,6 +2108,36 @@ mod test {
         assert_eq!(
             observed.session_path.as_deref(),
             Some(session.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn describe_pending_codex_observer_checks_older_dated_live_session() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let day = Utc::now() - Duration::days(7);
+        let dir = temp
+            .path()
+            .join(format!("{:04}", day.year_ce().1))
+            .join(format!("{:02}", day.month()))
+            .join(format!("{:02}", day.day()));
+        fs::create_dir_all(&dir).unwrap();
+        let session = dir.join("rollout-live-pending.jsonl");
+        fs::write(
+            &session,
+            "{\"timestamp\":\"2026-03-20T14:04:41.302Z\",\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/tmp/project-live-pending\"}}\n",
+        )
+        .unwrap();
+
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        let detail = describe_pending_codex_observer("/tmp/project-live-pending", None)
+            .unwrap()
+            .unwrap();
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
+
+        assert_eq!(
+            detail,
+            "codex rollout session file exists but observer has not attached yet"
         );
     }
 
