@@ -98,12 +98,9 @@ pub fn tab_render_colors(
         TabColorVisualState::Inactive => mix_srgba(base, bar_background, 0.24),
     };
 
-    let dark_text = dark_text();
-    let light_text = light_text();
-    let fg = if contrast_ratio(bg, dark_text) >= contrast_ratio(bg, light_text) {
-        dark_text
-    } else {
-        light_text
+    let fg = match state {
+        TabColorVisualState::Hover => hover_text(),
+        TabColorVisualState::Inactive => inactive_text(),
     };
 
     TabRenderColors { bg, fg }
@@ -306,9 +303,7 @@ fn candidate_palette(kind: TabBarColorPalette, bar_background: RgbaColor) -> Vec
     };
 
     colors.retain(|color| match kind {
-        TabBarColorPalette::Dark => {
-            prefers_light_text(inactive_rendered_bg(*color, bar_background))
-        }
+        TabBarColorPalette::Dark => true,
         TabBarColorPalette::Light => {
             prefers_dark_text(inactive_rendered_bg(*color, bar_background))
         }
@@ -403,19 +398,8 @@ fn mix_srgba(a: RgbaColor, b: RgbaColor, amount: f32) -> RgbaColor {
     ))
 }
 
-fn contrast_ratio(a: RgbaColor, b: RgbaColor) -> f32 {
-    let l1 = relative_luminance(a);
-    let l2 = relative_luminance(b);
-    let (lighter, darker) = if l1 >= l2 { (l1, l2) } else { (l2, l1) };
-    (lighter + 0.05) / (darker + 0.05)
-}
-
 fn prefers_dark_text(color: RgbaColor) -> bool {
-    contrast_ratio(color, dark_text()) >= contrast_ratio(color, light_text())
-}
-
-fn prefers_light_text(color: RgbaColor) -> bool {
-    !prefers_dark_text(color)
+    relative_luminance(color) >= relative_luminance(light_text())
 }
 
 fn relative_luminance(color: RgbaColor) -> f32 {
@@ -466,8 +450,12 @@ fn assignment_cache_path() -> PathBuf {
     CACHE_DIR.join("tab-bar-color-assignments-v1.json")
 }
 
-fn dark_text() -> RgbaColor {
-    RgbaColor::from(SrgbaTuple(0.11764706, 0.11764706, 0.18039216, 1.0))
+fn inactive_text() -> RgbaColor {
+    RgbaColor::from(SrgbaTuple(0.73333335, 0.73333335, 0.73333335, 1.0))
+}
+
+fn hover_text() -> RgbaColor {
+    RgbaColor::from(SrgbaTuple(0.8666667, 0.8666667, 0.8666667, 1.0))
 }
 
 fn light_text() -> RgbaColor {
@@ -564,11 +552,11 @@ impl AssignmentStore {
 mod tests {
     use super::{
         assign_colors_for_keys, candidate_palette, choose_most_distinct_color, cwd_key_from_url,
-        inactive_rendered_bg, oklch_to_rgba, prefers_dark_text, prefers_light_text, stable_tab_key,
-        tab_bar_background, AssignmentStore,
+        hover_text, inactive_rendered_bg, inactive_text, oklch_to_rgba, prefers_dark_text,
+        stable_tab_key, tab_bar_background, tab_render_colors, AssignmentStore,
     };
     use crate::termwindow::{PaneInformation, TabInformation};
-    use config::{ConfigHandle, TabBarColorPalette};
+    use config::{ConfigHandle, RgbaColor, TabBarColorPalette};
     use std::collections::BTreeMap;
     use tempfile::tempdir;
     use wakterm_term::Progress;
@@ -699,12 +687,12 @@ mod tests {
     }
 
     #[test]
-    fn dark_palette_prefers_light_text() {
+    fn dark_palette_keeps_full_curated_seed_set() {
         let background = tab_bar_background(&ConfigHandle::default_config());
-        assert!(candidate_palette(TabBarColorPalette::Dark, background)
-            .iter()
-            .copied()
-            .all(|color| prefers_light_text(inactive_rendered_bg(color, background))));
+        assert_eq!(
+            candidate_palette(TabBarColorPalette::Dark, background).len(),
+            24
+        );
     }
 
     #[test]
@@ -714,6 +702,26 @@ mod tests {
             .iter()
             .copied()
             .all(|color| prefers_dark_text(inactive_rendered_bg(color, background))));
+    }
+
+    #[test]
+    fn inactive_tab_render_colors_use_fixed_lua_foreground() {
+        let rendered = tab_render_colors(
+            RgbaColor::from((255, 146, 126)),
+            tab_bar_background(&ConfigHandle::default_config()),
+            super::TabColorVisualState::Inactive,
+        );
+        assert_eq!(rendered.fg, inactive_text());
+    }
+
+    #[test]
+    fn hover_tab_render_colors_use_fixed_lua_foreground() {
+        let rendered = tab_render_colors(
+            RgbaColor::from((40, 133, 239)),
+            tab_bar_background(&ConfigHandle::default_config()),
+            super::TabColorVisualState::Hover,
+        );
+        assert_eq!(rendered.fg, hover_text());
     }
 
     #[test]
