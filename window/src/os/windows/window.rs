@@ -107,6 +107,7 @@ unsafe impl Sync for HWindow {}
 pub(crate) struct WindowInner {
     /// Non-owning reference to the window handle
     hwnd: HWindow,
+    placement_registry_name: String,
     events: WindowEventSender,
     gl_state: Option<Rc<glium::backend::Context>>,
     /// Fraction of mouse scroll
@@ -142,6 +143,97 @@ fn rect_width(r: &RECT) -> i32 {
 
 fn rect_height(r: &RECT) -> i32 {
     r.bottom - r.top
+}
+
+const WINDOW_PLACEMENT_REG_PATH: &str = "Software\\WakTerm\\WindowPlacement";
+
+fn window_placement_registry_name(class_name: &str) -> String {
+    let mut name = String::with_capacity(class_name.len());
+    for ch in class_name.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            name.push(ch);
+        } else {
+            name.push('_');
+        }
+    }
+
+    if name.is_empty() {
+        "MainWindow".to_string()
+    } else {
+        name
+    }
+}
+
+fn normalize_window_show_cmd(show_cmd: UINT) -> UINT {
+    match show_cmd as i32 {
+        SW_MINIMIZE | SW_SHOWMINIMIZED | SW_SHOWMINNOACTIVE => SW_SHOWNORMAL as UINT,
+        _ => show_cmd,
+    }
+}
+
+fn format_window_placement(placement: &WINDOWPLACEMENT) -> String {
+    format!(
+        "{},{},{},{},{},{},{},{},{},{}",
+        placement.flags,
+        placement.showCmd,
+        placement.ptMinPosition.x,
+        placement.ptMinPosition.y,
+        placement.ptMaxPosition.x,
+        placement.ptMaxPosition.y,
+        placement.rcNormalPosition.left,
+        placement.rcNormalPosition.top,
+        placement.rcNormalPosition.right,
+        placement.rcNormalPosition.bottom
+    )
+}
+
+fn parse_window_placement(value: &str) -> Option<WINDOWPLACEMENT> {
+    let parts: Vec<_> = value.split(',').collect();
+    if parts.len() != 10 {
+        return None;
+    }
+
+    let flags = parts[0].parse().ok()?;
+    let show_cmd = parts[1].parse().ok()?;
+    let min_x = parts[2].parse().ok()?;
+    let min_y = parts[3].parse().ok()?;
+    let max_x = parts[4].parse().ok()?;
+    let max_y = parts[5].parse().ok()?;
+    let left = parts[6].parse().ok()?;
+    let top = parts[7].parse().ok()?;
+    let right = parts[8].parse().ok()?;
+    let bottom = parts[9].parse().ok()?;
+
+    Some(WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as _,
+        flags,
+        showCmd: normalize_window_show_cmd(show_cmd),
+        ptMinPosition: POINT { x: min_x, y: min_y },
+        ptMaxPosition: POINT { x: max_x, y: max_y },
+        rcNormalPosition: RECT {
+            left,
+            top,
+            right,
+            bottom,
+        },
+    })
+}
+
+fn load_saved_window_placement(registry_name: &str) -> io::Result<Option<WINDOWPLACEMENT>> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let key = match hkcu.open_subkey(WINDOW_PLACEMENT_REG_PATH) {
+        Ok(key) => key,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+
+    let value = match key.get_value::<String, _>(registry_name) {
+        Ok(value) => value,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+
+    Ok(parse_window_placement(&value))
 }
 
 fn adjust_client_to_window_dimensions(
@@ -221,6 +313,57 @@ impl HasWindowHandle for WindowInner {
 }
 
 impl WindowInner {
+    fn placement_for_persistence(&self) -> io::Result<WINDOWPLACEMENT> {
+        let mut placement = if let Some(placement) = self.saved_placement {
+            placement
+        } else {
+            let mut placement = WINDOWPLACEMENT {
+                length: std::mem::size_of::<WINDOWPLACEMENT>() as _,
+                ..Default::default()
+            };
+            if unsafe { GetWindowPlacement(self.hwnd.0, &mut placement) }
+                != winapi::shared::minwindef::TRUE
+            {
+                return Err(IoError::last_os_error());
+            }
+            placement
+        };
+
+        placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as _;
+        placement.showCmd = normalize_window_show_cmd(placement.showCmd);
+        Ok(placement)
+    }
+
+    fn persist_window_placement(&self) {
+        if self.hwnd.0.is_null() {
+            return;
+        }
+
+        let placement = match self.placement_for_persistence() {
+            Ok(placement) => placement,
+            Err(err) => {
+                log::warn!("unable to query window placement: {err:#}");
+                return;
+            }
+        };
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (key, _) = match hkcu.create_subkey(WINDOW_PLACEMENT_REG_PATH) {
+            Ok(created) => created,
+            Err(err) => {
+                log::warn!("unable to open window placement registry key: {err:#}");
+                return;
+            }
+        };
+
+        if let Err(err) = key.set_value(
+            &self.placement_registry_name,
+            &format_window_placement(&placement),
+        ) {
+            log::warn!("unable to persist window placement: {err:#}");
+        }
+    }
+
     fn enable_opengl(&mut self) -> anyhow::Result<Rc<glium::backend::Context>> {
         let conn = Connection::get().unwrap();
 
@@ -418,6 +561,8 @@ impl Window {
         geometry: ResolvedGeometry,
         lparam: *const RefCell<WindowInner>,
     ) -> anyhow::Result<HWND> {
+        let placement_registry_name = window_placement_registry_name(class_name);
+        let should_restore_placement = geometry.x.is_none() && geometry.y.is_none();
         let class_name = wide_string(class_name);
         let h_inst = unsafe { GetModuleHandleW(null()) };
         let class = WNDCLASSW {
@@ -507,6 +652,23 @@ impl Window {
         // completely stick
         schedule_apply_decoration(hwnd, decorations);
 
+        if should_restore_placement {
+            match load_saved_window_placement(&placement_registry_name) {
+                Ok(Some(placement)) => {
+                    if unsafe { SetWindowPlacement(hwnd, &placement) }
+                        != winapi::shared::minwindef::TRUE
+                    {
+                        let err = IoError::last_os_error();
+                        log::warn!("unable to restore saved window placement: {err:#}");
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    log::warn!("unable to read saved window placement: {err:#}");
+                }
+            }
+        }
+
         Ok(hwnd)
     }
 
@@ -531,6 +693,7 @@ impl Window {
 
         let inner = Rc::new(RefCell::new(WindowInner {
             hwnd: HWindow(null_mut()),
+            placement_registry_name: window_placement_registry_name(class_name),
             appearance,
             events,
             gl_state: None,
@@ -615,6 +778,7 @@ fn schedule_show_window(hwnd: HWindow, show: ShowWindowCommand) {
 
 impl WindowInner {
     fn close(&mut self) {
+        self.persist_window_placement();
         let hwnd = self.hwnd;
         promise::spawn::spawn(async move {
             unsafe {
@@ -1539,6 +1703,9 @@ unsafe fn wm_enter_exit_size_move(
         let mut inner = inner.borrow_mut();
         inner.in_size_move = msg == WM_ENTERSIZEMOVE;
         should_size = !inner.in_size_move;
+        if msg == WM_EXITSIZEMOVE {
+            inner.persist_window_placement();
+        }
     }
 
     if should_size {
@@ -1558,6 +1725,12 @@ unsafe fn wm_windowposchanged(
     _lparam: LPARAM,
 ) -> Option<LRESULT> {
     // let pos = &*(lparam as *const WINDOWPOS);
+    if let Some(inner) = rc_from_hwnd(hwnd) {
+        let inner = inner.borrow();
+        if !inner.in_size_move {
+            inner.persist_window_placement();
+        }
+    }
     wm_size(hwnd, 0, 0, 0)?;
     Some(0)
 }
