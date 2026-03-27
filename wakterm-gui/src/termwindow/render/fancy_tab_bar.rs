@@ -192,59 +192,55 @@ impl crate::TermWindow {
                     bg: new_tab_hover.bg_color.to_linear().into(),
                     text: new_tab_hover.fg_color.to_linear().into(),
                 })),
-                TabBarItem::Tab { active, .. } if active => element
-                    .vertical_align(VerticalAlign::Bottom)
-                    .item_type(UIItemType::TabBar(item.item.clone()))
-                    .margin(BoxDimension {
-                        left: Dimension::Cells(0.),
-                        right: Dimension::Cells(0.),
-                        top: Dimension::Cells(0.),
-                        bottom: Dimension::Cells(0.),
-                    })
-                    .padding(BoxDimension {
-                        left: Dimension::Cells(0.15),
-                        right: Dimension::Cells(0.15),
-                        top: Dimension::Cells(0.),
-                        bottom: Dimension::Cells(0.03),
-                    })
-                    .border(BoxDimension::new(Dimension::Pixels(1.)))
-                    .colors(ElementColors {
-                        border: BorderColor::new(
-                            explicit_bg_color
-                                .or_else(|| {
-                                    item.assigned_color.map(|color| {
-                                        tab_render_colors(
-                                            color,
-                                            colors.background(),
-                                            TabColorVisualState::Active,
-                                        )
-                                        .bg
-                                        .into()
-                                    })
-                                })
-                                .unwrap_or_else(|| active_tab.bg_color.into())
-                                .to_linear(),
-                        ),
-                        bg: explicit_bg_color
-                            .or_else(|| {
-                                item.assigned_color.map(|color| {
-                                    tab_render_colors(
-                                        color,
-                                        colors.background(),
-                                        TabColorVisualState::Active,
-                                    )
-                                    .bg
-                                    .into()
-                                })
+                TabBarItem::Tab { active, .. } if active => {
+                    let resolved_bg = explicit_bg_color
+                        .or_else(|| {
+                            item.assigned_color.map(|color| {
+                                tab_render_colors(
+                                    color,
+                                    colors.background(),
+                                    TabColorVisualState::Active,
+                                )
+                                .bg
+                                .into()
                             })
-                            .unwrap_or_else(|| active_tab.bg_color.into())
-                            .to_linear()
-                            .into(),
-                        text: explicit_fg_color
-                            .unwrap_or_else(|| active_tab.fg_color.into())
-                            .to_linear()
-                            .into(),
-                    }),
+                        })
+                        .unwrap_or_else(|| active_tab.bg_color.into())
+                        .to_linear();
+                    let resolved_text = explicit_fg_color
+                        .unwrap_or_else(|| active_tab.fg_color.into())
+                        .to_linear();
+                    if item.icon.is_some() && std::env::var_os("WAKTERM_TRACE_TAB_COLORS").is_some()
+                    {
+                        log::error!(
+                            "fancy_tab_color_trace state=active explicit_fg={:?} wrapper_text={} wrapper_bg={}",
+                            explicit_fg_color.map(|c| c.to_string()),
+                            linear_to_rgb_hex(resolved_text),
+                            linear_to_rgb_hex(resolved_bg),
+                        );
+                    }
+                    element
+                        .vertical_align(VerticalAlign::Bottom)
+                        .item_type(UIItemType::TabBar(item.item.clone()))
+                        .margin(BoxDimension {
+                            left: Dimension::Cells(0.),
+                            right: Dimension::Cells(0.),
+                            top: Dimension::Cells(0.),
+                            bottom: Dimension::Cells(0.),
+                        })
+                        .padding(BoxDimension {
+                            left: Dimension::Cells(0.15),
+                            right: Dimension::Cells(0.15),
+                            top: Dimension::Cells(0.),
+                            bottom: Dimension::Cells(0.03),
+                        })
+                        .border(BoxDimension::new(Dimension::Pixels(1.)))
+                        .colors(ElementColors {
+                            border: BorderColor::new(resolved_bg),
+                            bg: resolved_bg.into(),
+                            text: resolved_text.into(),
+                        })
+                }
                 TabBarItem::Tab { tab_idx, .. } => {
                     let hovered = hovered_tab_idx == Some(tab_idx);
                     let visual_state = if hovered {
@@ -262,6 +258,29 @@ impl crate::TermWindow {
                     } else {
                         colors.inactive_tab_edge().to_linear()
                     };
+                    let bg = explicit_bg_color
+                        .or_else(|| {
+                            item.assigned_color.map(|color| {
+                                tab_render_colors(color, colors.background(), visual_state)
+                                    .bg
+                                    .into()
+                            })
+                        })
+                        .unwrap_or_else(|| inactive_tab.bg_color.into())
+                        .to_linear();
+                    let text = explicit_fg_color
+                        .unwrap_or_else(|| inactive_tab.fg_color.into())
+                        .to_linear();
+                    if item.icon.is_some() && std::env::var_os("WAKTERM_TRACE_TAB_COLORS").is_some()
+                    {
+                        log::error!(
+                            "fancy_tab_color_trace state={} explicit_fg={:?} wrapper_text={} wrapper_bg={}",
+                            if hovered { "hover" } else { "inactive" },
+                            explicit_fg_color.map(|c| c.to_string()),
+                            linear_to_rgb_hex(text),
+                            linear_to_rgb_hex(bg),
+                        );
+                    }
                     element
                         .vertical_align(VerticalAlign::Bottom)
                         .item_type(UIItemType::TabBar(item.item.clone()))
@@ -278,30 +297,15 @@ impl crate::TermWindow {
                             bottom: Dimension::Cells(0.03),
                         })
                         .border(BoxDimension::new(Dimension::Pixels(1.)))
-                        .colors({
-                            let bg = explicit_bg_color
-                                .or_else(|| {
-                                    item.assigned_color.map(|color| {
-                                        tab_render_colors(color, colors.background(), visual_state)
-                                            .bg
-                                            .into()
-                                    })
-                                })
-                                .unwrap_or_else(|| inactive_tab.bg_color.into())
-                                .to_linear();
-                            ElementColors {
-                                border: BorderColor {
-                                    left: bg,
-                                    right: edge,
-                                    top: bg,
-                                    bottom: bg,
-                                },
-                                bg: bg.into(),
-                                text: explicit_fg_color
-                                    .unwrap_or_else(|| inactive_tab.fg_color.into())
-                                    .to_linear()
-                                    .into(),
-                            }
+                        .colors(ElementColors {
+                            border: BorderColor {
+                                left: bg,
+                                right: edge,
+                                top: bg,
+                                bottom: bg,
+                            },
+                            bg: bg.into(),
+                            text: text.into(),
                         })
                 }
                 TabBarItem::WindowButton(button) => window_button_element(
@@ -524,6 +528,14 @@ impl crate::TermWindow {
 
             let hovered = hovered_tab_idx == Some(tab_idx);
             let color = harness_icon_color(entry, &colors, palette, hovered);
+            if std::env::var_os("WAKTERM_TRACE_TAB_COLORS").is_some() {
+                log::error!(
+                    "fancy_tab_icon_trace tab_idx={} hovered={} icon_color={}",
+                    tab_idx,
+                    hovered,
+                    linear_to_rgb_hex(color),
+                );
+            }
             let item_height = item.height as f32;
             let icon_size = (item_height - 2.0).max(0.0);
             let icon_x =
@@ -675,6 +687,16 @@ fn first_non_default_foreground(line: &Line) -> Option<ColorAttribute> {
                 color => Some(color),
             })
     })
+}
+
+fn linear_to_rgb_hex(color: LinearRgba) -> String {
+    let srgb = color.to_srgb();
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        (srgb.0.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (srgb.1.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (srgb.2.clamp(0.0, 1.0) * 255.0).round() as u8
+    )
 }
 
 #[cfg(test)]
