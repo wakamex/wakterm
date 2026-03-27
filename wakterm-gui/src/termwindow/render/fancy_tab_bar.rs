@@ -104,34 +104,30 @@ impl crate::TermWindow {
                 .title_fg
                 .or_else(|| first_non_default_foreground(&item.title))
                 .map(|c| palette.resolve_fg(c));
-            let title = Element::with_line(&font, &item.title, palette).colors(ElementColors {
-                border: BorderColor::default(),
-                bg: explicit_bg_color
-                    .map(|c| c.to_linear().into())
-                    .unwrap_or(InheritableColor::Inherited),
-                text: explicit_fg_color
-                    .map(|c| c.to_linear().into())
-                    .unwrap_or(InheritableColor::Inherited),
-            });
-            let element = match item.item {
-                TabBarItem::Tab { .. } => {
-                    if item.icon.is_some() {
-                        Element::new(
+            let make_title = |forced_text: Option<LinearRgba>| {
+                Element::with_line(&font, &item.title, palette).colors(ElementColors {
+                    border: BorderColor::default(),
+                    bg: explicit_bg_color
+                        .map(|c| c.to_linear().into())
+                        .unwrap_or(InheritableColor::Inherited),
+                    text: forced_text
+                        .map(InheritableColor::from)
+                        .or_else(|| explicit_fg_color.map(|c| c.to_linear().into()))
+                        .unwrap_or(InheritableColor::Inherited),
+                })
+            };
+            let wrap_icon_title = |title: Element| {
+                Element::new(
+                    &font,
+                    ElementContent::Children(vec![
+                        make_harness_icon_spacer(
                             &font,
-                            ElementContent::Children(vec![
-                                make_harness_icon_spacer(
-                                    &font,
-                                    harness_icon_slot_width(tab_bar_height),
-                                    harness_icon_gap(&metrics),
-                                ),
-                                title,
-                            ]),
-                        )
-                    } else {
-                        title
-                    }
-                }
-                _ => title,
+                            harness_icon_slot_width(tab_bar_height),
+                            harness_icon_gap(&metrics),
+                        ),
+                        title,
+                    ]),
+                )
             };
 
             let new_tab = colors.new_tab();
@@ -139,23 +135,25 @@ impl crate::TermWindow {
             let active_tab = colors.active_tab();
 
             match item.item {
-                TabBarItem::RightStatus | TabBarItem::LeftStatus | TabBarItem::None => element
-                    .item_type(UIItemType::TabBar(TabBarItem::None))
-                    .line_height(Some(1.2))
-                    .margin(BoxDimension {
-                        left: Dimension::Cells(0.),
-                        right: Dimension::Cells(0.),
-                        top: Dimension::Cells(0.0),
-                        bottom: Dimension::Cells(0.),
-                    })
-                    .padding(BoxDimension {
-                        left: Dimension::Cells(0.5),
-                        right: Dimension::Cells(0.),
-                        top: Dimension::Cells(0.),
-                        bottom: Dimension::Cells(0.),
-                    })
-                    .border(BoxDimension::new(Dimension::Pixels(0.)))
-                    .colors(bar_colors.clone()),
+                TabBarItem::RightStatus | TabBarItem::LeftStatus | TabBarItem::None => {
+                    make_title(None)
+                        .item_type(UIItemType::TabBar(TabBarItem::None))
+                        .line_height(Some(1.2))
+                        .margin(BoxDimension {
+                            left: Dimension::Cells(0.),
+                            right: Dimension::Cells(0.),
+                            top: Dimension::Cells(0.0),
+                            bottom: Dimension::Cells(0.),
+                        })
+                        .padding(BoxDimension {
+                            left: Dimension::Cells(0.5),
+                            right: Dimension::Cells(0.),
+                            top: Dimension::Cells(0.),
+                            bottom: Dimension::Cells(0.),
+                        })
+                        .border(BoxDimension::new(Dimension::Pixels(0.)))
+                        .colors(bar_colors.clone())
+                }
                 TabBarItem::NewTabButton => Element::new(
                     &font,
                     ElementContent::Poly {
@@ -210,6 +208,12 @@ impl crate::TermWindow {
                     let resolved_text = explicit_fg_color
                         .unwrap_or_else(|| active_tab.fg_color.into())
                         .to_linear();
+                    let title = make_title(item.icon.map(|_| resolved_text));
+                    let element = if item.icon.is_some() {
+                        wrap_icon_title(title)
+                    } else {
+                        title
+                    };
                     if item.icon.is_some() && std::env::var_os("WAKTERM_TRACE_TAB_COLORS").is_some()
                     {
                         log::error!(
@@ -271,6 +275,12 @@ impl crate::TermWindow {
                     let text = explicit_fg_color
                         .unwrap_or_else(|| inactive_tab.fg_color.into())
                         .to_linear();
+                    let title = make_title(item.icon.map(|_| text));
+                    let element = if item.icon.is_some() {
+                        wrap_icon_title(title)
+                    } else {
+                        title
+                    };
                     if item.icon.is_some() && std::env::var_os("WAKTERM_TRACE_TAB_COLORS").is_some()
                     {
                         log::error!(
