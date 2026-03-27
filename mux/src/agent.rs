@@ -700,7 +700,7 @@ fn observe_codex(
 
     let prefer_earliest = updated_after.is_some();
     let mut selected: Option<(PathBuf, DateTime<Utc>)> = None;
-    for days_ago in 0..=6 {
+    for days_ago in 0..=CODEX_SESSION_LOOKBACK_DAYS {
         let day = Utc::now() - Duration::days(days_ago);
         let dir = root
             .join(format!("{:04}", day.year()))
@@ -940,7 +940,7 @@ fn describe_pending_codex_observer(
 
     let mut has_matching_session = false;
     let mut has_recent_matching_session = false;
-    for days_ago in 0..=6 {
+    for days_ago in 0..=CODEX_SESSION_LOOKBACK_DAYS {
         let day = Utc::now() - Duration::days(days_ago);
         let dir = root
             .join(format!("{:04}", day.year()))
@@ -1087,6 +1087,8 @@ fn codex_sessions_root() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| home_dir().map(|home| home.join(".codex").join("sessions")))
 }
+
+const CODEX_SESSION_LOOKBACK_DAYS: i64 = 30;
 
 fn gemini_root() -> Option<PathBuf> {
     std::env::var_os("WAKTERM_AGENT_GEMINI_DIR")
@@ -2090,6 +2092,40 @@ mod test {
         assert_eq!(
             observed.last_turn_completed_at,
             Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 4).unwrap())
+        );
+    }
+
+    #[test]
+    fn observe_codex_finds_live_session_in_older_dated_directory() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let day = Utc::now() - Duration::days(7);
+        let dir = temp
+            .path()
+            .join(format!("{:04}", day.year_ce().1))
+            .join(format!("{:02}", day.month()))
+            .join(format!("{:02}", day.day()));
+        fs::create_dir_all(&dir).unwrap();
+        let session = dir.join("rollout-live-old-dir.jsonl");
+        fs::write(
+            &session,
+            concat!(
+                "{\"timestamp\":\"2026-03-20T14:04:41.302Z\",\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/tmp/project-live\"}}\n",
+                "{\"type\":\"response_item\",\"timestamp\":\"2026-03-27T12:00:03Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"still live\"}]}}\n"
+            ),
+        )
+        .unwrap();
+
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        let observed = observe_codex("/tmp/project-live", None, None)
+            .unwrap()
+            .unwrap();
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
+
+        assert_eq!(observed.progress_summary.as_deref(), Some("still live"));
+        assert_eq!(
+            observed.session_path.as_deref(),
+            Some(session.to_string_lossy().as_ref())
         );
     }
 
