@@ -2,13 +2,13 @@ use crate::domain::DomainId;
 use crate::pane::PaneId;
 use crate::tab::TabId;
 use crate::window::WindowId;
-use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use procinfo::LocalProcessInfo;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use url::Url;
 use wakterm_term::Progress;
@@ -1563,6 +1563,57 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
     })
 }
 
+fn visit_lines_reverse(
+    path: &Path,
+    mut visitor: impl FnMut(&str) -> anyhow::Result<bool>,
+) -> anyhow::Result<()> {
+    const CHUNK_SIZE: usize = 64 * 1024;
+
+    let mut file = fs::File::open(path)?;
+    let mut pos = file.seek(SeekFrom::End(0))?;
+    let mut tail = Vec::new();
+
+    while pos > 0 {
+        let read_len = CHUNK_SIZE.min(pos as usize);
+        pos -= read_len as u64;
+        file.seek(SeekFrom::Start(pos))?;
+
+        let mut chunk = vec![0u8; read_len];
+        file.read_exact(&mut chunk)?;
+        chunk.extend_from_slice(&tail);
+
+        let mut end = chunk.len();
+        while let Some(idx) = chunk[..end].iter().rposition(|&byte| byte == b'\n') {
+            let mut line = &chunk[idx + 1..end];
+            if line.last() == Some(&b'\r') {
+                line = &line[..line.len() - 1];
+            }
+            if !line.is_empty() {
+                if let Ok(line) = std::str::from_utf8(line) {
+                    if visitor(line)? {
+                        return Ok(());
+                    }
+                }
+            }
+            end = idx;
+        }
+
+        tail.clear();
+        tail.extend_from_slice(&chunk[..end]);
+    }
+
+    if tail.last() == Some(&b'\r') {
+        tail.pop();
+    }
+    if !tail.is_empty() {
+        if let Ok(line) = std::str::from_utf8(&tail) {
+            visitor(line)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservationDetails> {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum CodexTaskLifecycle {
@@ -1571,129 +1622,184 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
         Aborted,
     }
 
-    let reader = BufReader::new(fs::File::open(path)?);
     let mut summary = None;
+    let mut summary_fallback = None;
     let mut harness_mode = None;
     let mut turn_phase = None;
+    let mut saw_task_started = false;
+    let mut saw_task_complete = false;
     let mut last_user_at = None;
     let mut last_assistant_at = None;
     let mut last_lifecycle = None;
     let mut last_lifecycle_at = None;
-    for line in reader.lines() {
-        let line = line?;
+    visit_lines_reverse(path, |line| {
         let Ok(record) = serde_json::from_str::<Value>(&line) else {
-            continue;
+            return Ok(false);
         };
         match record.get("type").and_then(Value::as_str) {
             Some("turn_context") => {
-                if let Some(mode) = record
-                    .get("payload")
-                    .and_then(|payload| payload.get("collaboration_mode"))
-                    .and_then(|mode| mode.get("mode"))
-                    .and_then(Value::as_str)
-                {
-                    let mode = mode.trim();
-                    if !mode.is_empty() {
-                        harness_mode = Some(mode.to_string());
+                if harness_mode.is_none() {
+                    if let Some(mode) = record
+                        .get("payload")
+                        .and_then(|payload| payload.get("collaboration_mode"))
+                        .and_then(|mode| mode.get("mode"))
+                        .and_then(Value::as_str)
+                    {
+                        let mode = mode.trim();
+                        if !mode.is_empty() {
+                            harness_mode = Some(mode.to_string());
+                        }
                     }
                 }
             }
             Some("response_item") => {
                 let Some(payload) = record.get("payload") else {
-                    continue;
+                    return Ok(false);
                 };
                 if payload.get("type").and_then(Value::as_str) != Some("message") {
-                    continue;
+                    return Ok(false);
                 }
                 match payload.get("role").and_then(Value::as_str) {
                     Some("assistant") => {
-                        last_assistant_at = parse_record_timestamp(&record).or(last_assistant_at);
-                        let Some(content) = payload.get("content").and_then(Value::as_array) else {
-                            continue;
-                        };
-                        let mut parts = vec![];
-                        for block in content {
-                            if block.get("type").and_then(Value::as_str) == Some("output_text") {
-                                if let Some(text) = block.get("text").and_then(Value::as_str) {
-                                    let text = text.trim();
-                                    if !text.is_empty() {
-                                        parts.push(text.to_string());
+                        if last_assistant_at.is_none() {
+                            last_assistant_at = parse_record_timestamp(&record);
+                        }
+                        if summary.is_none() {
+                            let Some(content) = payload.get("content").and_then(Value::as_array)
+                            else {
+                                return Ok(false);
+                            };
+                            let mut parts = vec![];
+                            for block in content {
+                                if block.get("type").and_then(Value::as_str) == Some("output_text")
+                                {
+                                    if let Some(text) = block.get("text").and_then(Value::as_str) {
+                                        let text = text.trim();
+                                        if !text.is_empty() {
+                                            parts.push(text.to_string());
+                                        }
                                     }
                                 }
                             }
-                        }
-                        if !parts.is_empty() {
-                            summary = Some(truncate_summary(&parts.join("\n")));
+                            if !parts.is_empty() {
+                                summary = Some(truncate_summary(&parts.join("\n")));
+                            }
                         }
                     }
                     Some("user") => {
-                        last_user_at = parse_record_timestamp(&record).or(last_user_at);
+                        if last_user_at.is_none() {
+                            last_user_at = parse_record_timestamp(&record);
+                        }
                     }
                     _ => {}
                 }
             }
             Some("event_msg") => {
                 let Some(payload) = record.get("payload") else {
-                    continue;
+                    return Ok(false);
                 };
                 match payload.get("type").and_then(Value::as_str) {
                     Some("user_message") => {
-                        last_user_at = parse_record_timestamp(&record).or(last_user_at);
+                        if last_user_at.is_none() {
+                            last_user_at = parse_record_timestamp(&record);
+                        }
                     }
                     Some("task_started") => {
-                        last_lifecycle = Some(CodexTaskLifecycle::Running);
-                        last_lifecycle_at = parse_record_timestamp(&record).or(last_lifecycle_at);
-                        if turn_phase.is_none() {
-                            turn_phase = Some("started".to_string());
+                        saw_task_started = true;
+                        if last_lifecycle.is_none() {
+                            last_lifecycle = Some(CodexTaskLifecycle::Running);
                         }
-                        if let Some(mode) = payload
-                            .get("collaboration_mode_kind")
-                            .and_then(Value::as_str)
-                        {
-                            let mode = mode.trim();
-                            if !mode.is_empty() {
-                                harness_mode = Some(mode.to_string());
+                        if last_lifecycle_at.is_none() {
+                            last_lifecycle_at = parse_record_timestamp(&record);
+                        }
+                        if harness_mode.is_none() {
+                            if let Some(mode) = payload
+                                .get("collaboration_mode_kind")
+                                .and_then(Value::as_str)
+                            {
+                                let mode = mode.trim();
+                                if !mode.is_empty() {
+                                    harness_mode = Some(mode.to_string());
+                                }
                             }
                         }
                     }
                     Some("agent_message") => {
-                        last_assistant_at = parse_record_timestamp(&record).or(last_assistant_at);
-                        if let Some(phase) = payload.get("phase").and_then(Value::as_str) {
-                            let phase = phase.trim();
-                            if !phase.is_empty() {
-                                turn_phase = Some(phase.to_string());
+                        if last_assistant_at.is_none() {
+                            last_assistant_at = parse_record_timestamp(&record);
+                        }
+                        if turn_phase.is_none() {
+                            if let Some(phase) = payload.get("phase").and_then(Value::as_str) {
+                                let phase = phase.trim();
+                                if !phase.is_empty() {
+                                    turn_phase = Some(phase.to_string());
+                                }
                             }
                         }
                     }
                     Some("task_complete") => {
-                        last_lifecycle = Some(CodexTaskLifecycle::Completed);
-                        last_lifecycle_at = parse_record_timestamp(&record).or(last_lifecycle_at);
-                        last_assistant_at = parse_record_timestamp(&record).or(last_assistant_at);
-                        if turn_phase.is_none() {
-                            turn_phase = Some("complete".to_string());
+                        saw_task_complete = true;
+                        if last_lifecycle.is_none() {
+                            last_lifecycle = Some(CodexTaskLifecycle::Completed);
                         }
-                        if summary.is_none() {
+                        if last_lifecycle_at.is_none() {
+                            last_lifecycle_at = parse_record_timestamp(&record);
+                        }
+                        if last_assistant_at.is_none() {
+                            last_assistant_at = parse_record_timestamp(&record);
+                        }
+                        if summary.is_none() && summary_fallback.is_none() {
                             if let Some(last_message) =
                                 payload.get("last_agent_message").and_then(Value::as_str)
                             {
                                 let last_message = last_message.trim();
                                 if !last_message.is_empty() {
-                                    summary = Some(truncate_summary(last_message));
+                                    summary_fallback = Some(truncate_summary(last_message));
                                 }
                             }
                         }
                     }
                     Some("turn_aborted") => {
-                        last_lifecycle = Some(CodexTaskLifecycle::Aborted);
-                        last_lifecycle_at = parse_record_timestamp(&record).or(last_lifecycle_at);
-                        turn_phase = Some("aborted".to_string());
+                        if last_lifecycle.is_none() {
+                            last_lifecycle = Some(CodexTaskLifecycle::Aborted);
+                        }
+                        if last_lifecycle_at.is_none() {
+                            last_lifecycle_at = parse_record_timestamp(&record);
+                        }
+                        if turn_phase.is_none() {
+                            turn_phase = Some("aborted".to_string());
+                        }
                     }
                     _ => {}
                 }
             }
             _ => {}
         }
+
+        let phase_settled = turn_phase.is_some() || saw_task_started;
+        let summary_settled = summary.is_some();
+        let harness_mode_settled = harness_mode.is_some();
+        let turn_settled = match last_lifecycle {
+            Some(CodexTaskLifecycle::Running) => true,
+            Some(CodexTaskLifecycle::Completed) | Some(CodexTaskLifecycle::Aborted) => {
+                last_lifecycle_at.is_some()
+            }
+            None => false,
+        };
+        Ok(summary_settled && harness_mode_settled && phase_settled && turn_settled)
+    })?;
+
+    if summary.is_none() {
+        summary = summary_fallback;
     }
+    if turn_phase.is_none() {
+        if saw_task_started {
+            turn_phase = Some("started".to_string());
+        } else if saw_task_complete {
+            turn_phase = Some("complete".to_string());
+        }
+    }
+
     let (mut turn_state, mut last_turn_completed_at) =
         derive_turn_state(last_user_at, last_assistant_at);
     match last_lifecycle {
@@ -1740,7 +1846,7 @@ fn normalize_declared_cwd(cwd: &str) -> String {
 #[cfg(test)]
 mod test {
     use super::*;
-    use chrono::TimeZone;
+    use chrono::{Datelike, TimeZone};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -2210,6 +2316,36 @@ mod test {
 
         assert_eq!(observed.harness_mode.as_deref(), Some("default"));
         assert_eq!(observed.turn_phase.as_deref(), Some("aborted"));
+        assert_eq!(observed.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(
+            observed.last_turn_completed_at,
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 3).unwrap())
+        );
+    }
+
+    #[test]
+    fn read_last_codex_observation_preserves_forward_fallback_semantics() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout-fallbacks.jsonl");
+        fs::write(
+            &session,
+            concat!(
+                "{\"payload\":{\"cwd\":\"/tmp/project-semantic\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"collaboration_mode_kind\":\"default\"}}\n",
+                "{\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:00:01Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"assistant summary wins\"}]}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:03Z\",\"payload\":{\"type\":\"task_complete\",\"last_agent_message\":\"task-complete fallback loses\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        let observed = read_last_codex_observation(&session).unwrap();
+
+        assert_eq!(
+            observed.progress_summary.as_deref(),
+            Some("assistant summary wins")
+        );
+        assert_eq!(observed.harness_mode.as_deref(), Some("default"));
+        assert_eq!(observed.turn_phase.as_deref(), Some("started"));
         assert_eq!(observed.turn_state, AgentTurnState::WaitingOnUser);
         assert_eq!(
             observed.last_turn_completed_at,
