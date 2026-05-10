@@ -75,6 +75,11 @@ impl BlobStorage for SimpleTempDir {
         let mut refs = self.refs.lock().unwrap();
 
         let path = self.path_for_content(content_id)?;
+        if path.exists() {
+            *refs.entry(content_id).or_insert(0) += 1;
+            return Ok(());
+        }
+
         let mut file = tempfile::Builder::new()
             .prefix("new-")
             .rand_bytes(5)
@@ -168,5 +173,42 @@ impl BlobStorage for SimpleTempDir {
 
     fn advise_pid_terminated(&self, _pid: u32) -> Result<(), Error> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::BlobStorage;
+
+    #[test]
+    fn duplicate_store_is_idempotent_for_existing_content() {
+        let storage = SimpleTempDir::new().unwrap();
+        let original = b"already cached image bytes";
+        let content_id = ContentId::for_bytes(original);
+
+        storage.store(content_id, original, LeaseId::new()).unwrap();
+        storage
+            .store(content_id, b"unexpected replacement", LeaseId::new())
+            .unwrap();
+
+        assert_eq!(
+            storage.get_data(content_id, LeaseId::new()).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn duplicate_store_succeeds_while_existing_content_is_open() {
+        let storage = SimpleTempDir::new().unwrap();
+        let data = b"image bytes with an active reader";
+        let content_id = ContentId::for_bytes(data);
+
+        storage.store(content_id, data, LeaseId::new()).unwrap();
+        let _reader = storage.get_reader(content_id, LeaseId::new()).unwrap();
+
+        storage.store(content_id, data, LeaseId::new()).unwrap();
+
+        assert_eq!(storage.get_data(content_id, LeaseId::new()).unwrap(), data);
     }
 }
