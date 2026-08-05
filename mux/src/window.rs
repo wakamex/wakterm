@@ -87,8 +87,12 @@ impl Window {
     }
 
     pub fn move_by_idx(&mut self, from: usize, to: usize) -> Arc<Tab> {
+        if from == to {
+            return Arc::clone(&self.tabs[from]);
+        }
         let tab = self.tabs.remove(from);
         self.tabs.insert(to, Arc::clone(&tab));
+        self.invalidate();
         tab
     }
 

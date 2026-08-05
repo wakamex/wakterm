@@ -687,6 +687,7 @@ impl ClientDomain {
         let client_window_view_state = panes.client_window_view_state.clone();
         let mut fallback_window_view_state: HashMap<WindowId, (WindowId, TabId, PaneId)> =
             HashMap::new();
+        let mut remote_tab_order_by_window: HashMap<WindowId, Vec<TabId>> = HashMap::new();
         let has_usable_window_view_state = |remote_window_id: WindowId| {
             client_window_view_state
                 .get(&remote_window_id)
@@ -723,6 +724,10 @@ impl ClientDomain {
 
                 remote_windows_to_forget.remove(&remote_window_id);
                 remote_tabs_to_forget.remove(&remote_tab_id);
+                remote_tab_order_by_window
+                    .entry(remote_window_id)
+                    .or_default()
+                    .push(remote_tab_id);
 
                 if let Some(tab_id) = inner.remote_to_local_tab_id(remote_tab_id) {
                     match mux.get_tab(tab_id) {
@@ -904,6 +909,8 @@ impl ClientDomain {
             }
         }
 
+        Self::reconcile_remote_tab_order(&mux, &inner, remote_tab_order_by_window);
+
         for (remote_window_id, window_title) in panes.window_titles {
             if let Some(local_window_id) = inner.remote_to_local_window(remote_window_id) {
                 let mut window = mux
@@ -1039,6 +1046,63 @@ impl ClientDomain {
             inner.local_domain_id
         );
         Ok(())
+    }
+
+    fn reconcile_remote_tab_order(
+        mux: &Arc<Mux>,
+        inner: &Arc<ClientInner>,
+        remote_tab_order_by_window: HashMap<WindowId, Vec<TabId>>,
+    ) {
+        for (remote_window_id, remote_tab_ids) in remote_tab_order_by_window {
+            let Some(local_window_id) = inner.remote_to_local_window(remote_window_id) else {
+                continue;
+            };
+            let desired_local_tab_ids = remote_tab_ids
+                .into_iter()
+                .filter_map(|remote_tab_id| inner.remote_to_local_tab_id(remote_tab_id))
+                .collect::<Vec<_>>();
+            if desired_local_tab_ids.len() < 2 {
+                continue;
+            }
+
+            let Some(mut window) = mux.get_window_mut(local_window_id) else {
+                continue;
+            };
+            Self::reorder_window_subset(&mut window, &desired_local_tab_ids);
+        }
+    }
+
+    fn reorder_window_subset(window: &mut mux::window::Window, desired_tab_ids: &[TabId]) {
+        let desired_tab_id_set = desired_tab_ids.iter().copied().collect::<HashSet<_>>();
+        let current_order = window
+            .iter()
+            .filter_map(|tab| {
+                let tab_id = tab.tab_id();
+                desired_tab_id_set.contains(&tab_id).then_some(tab_id)
+            })
+            .collect::<Vec<_>>();
+        if current_order == desired_tab_ids {
+            return;
+        }
+
+        let mut desired = desired_tab_ids.iter().copied();
+        for idx in 0..window.len() {
+            let Some(current_tab_id) = window.get_by_idx(idx).map(|tab| tab.tab_id()) else {
+                break;
+            };
+            if !desired_tab_id_set.contains(&current_tab_id) {
+                continue;
+            }
+            let Some(desired_tab_id) = desired.next() else {
+                break;
+            };
+            if current_tab_id == desired_tab_id {
+                continue;
+            }
+            if let Some(from) = window.idx_by_id(desired_tab_id) {
+                window.move_by_idx(from, idx);
+            }
+        }
     }
 
     fn finish_attach(
