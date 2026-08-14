@@ -311,6 +311,8 @@ impl VTActor for CollectingVTActor {
 const MAX_INTERMEDIATES: usize = 2;
 const MAX_OSC: usize = 64;
 const MAX_PARAMS: usize = 256;
+pub const MAX_OSC_BYTES: usize = 1024 * 1024;
+pub const MAX_APC_BYTES: usize = 4 * 1024 * 1024;
 
 struct OscState {
     #[cfg(any(feature = "std", feature = "alloc"))]
@@ -320,10 +322,20 @@ struct OscState {
     param_indices: [usize; MAX_OSC],
     num_params: usize,
     full: bool,
+    input_bytes: usize,
+    data_truncated: bool,
 }
 
 impl OscState {
     fn put(&mut self, param: char) {
+        let mut encoded = [0u8; 4];
+        let encoded = param.encode_utf8(&mut encoded).as_bytes();
+        if self.input_bytes.saturating_add(encoded.len()) > MAX_OSC_BYTES {
+            self.data_truncated = true;
+            return;
+        }
+        self.input_bytes += encoded.len();
+
         if param == ';' {
             match self.num_params {
                 MAX_OSC => {
@@ -335,10 +347,7 @@ impl OscState {
                 }
             }
         } else if !self.full {
-            let mut buf = [0u8; 8];
-            let extend_result = self
-                .buffer
-                .extend_from_slice(param.encode_utf8(&mut buf).as_bytes());
+            let extend_result = self.buffer.extend_from_slice(encoded);
 
             #[cfg(all(not(feature = "std"), not(feature = "alloc")))]
             {
@@ -373,6 +382,8 @@ pub struct VTParser {
     params_full: bool,
     #[cfg(any(feature = "std", feature = "alloc"))]
     apc_data: Vec<u8>,
+    #[cfg(any(feature = "std", feature = "alloc"))]
+    apc_data_truncated: bool,
 
     utf8_parser: Utf8Parser,
     utf8_return_state: State,
@@ -459,6 +470,8 @@ impl VTParser {
                 param_indices,
                 num_params: 0,
                 full: false,
+                input_bytes: 0,
+                data_truncated: false,
             },
 
             params: [CsiParam::default(); MAX_PARAMS],
@@ -469,6 +482,8 @@ impl VTParser {
             utf8_parser: Utf8Parser::new(),
             #[cfg(any(feature = "std", feature = "alloc"))]
             apc_data: Vec::new(),
+            #[cfg(any(feature = "std", feature = "alloc"))]
+            apc_data_truncated: false,
         }
     }
 
@@ -529,15 +544,16 @@ impl VTParser {
                 self.ignored_excess_intermediates = false;
                 self.osc.num_params = 0;
                 self.osc.full = false;
+                self.osc.input_bytes = 0;
+                self.osc.data_truncated = false;
                 self.num_params = 0;
                 self.params_full = false;
                 self.current_param.take();
                 #[cfg(any(feature = "std", feature = "alloc"))]
                 {
                     self.apc_data.clear();
-                    self.apc_data.shrink_to_fit();
+                    self.apc_data_truncated = false;
                     self.osc.buffer.clear();
-                    self.osc.buffer.shrink_to_fit();
                 }
             }
             Action::Collect => {
@@ -611,15 +627,19 @@ impl VTParser {
             Action::Unhook => actor.dcs_unhook(),
             Action::OscStart => {
                 self.osc.buffer.clear();
-                #[cfg(any(feature = "std", feature = "alloc"))]
-                self.osc.buffer.shrink_to_fit();
                 self.osc.num_params = 0;
                 self.osc.full = false;
+                self.osc.input_bytes = 0;
+                self.osc.data_truncated = false;
             }
             Action::OscPut => self.osc.put(param as char),
 
             Action::OscEnd => {
-                if self.osc.num_params == 0 {
+                if self.osc.data_truncated {
+                    // Ignore the complete command. Dispatching a prefix could
+                    // turn a truncated untrusted string into a different valid
+                    // terminal command.
+                } else if self.osc.num_params == 0 {
                     actor.osc_dispatch(&[]);
                 } else {
                     let mut params: [&[u8]; MAX_OSC] = [b""; MAX_OSC];
@@ -642,16 +662,26 @@ impl VTParser {
                 #[cfg(any(feature = "std", feature = "alloc"))]
                 {
                     self.apc_data.clear();
-                    self.apc_data.shrink_to_fit();
+                    self.apc_data_truncated = false;
                 }
             }
-            Action::ApcPut => {
+            Action::ApcPut =>
+            {
                 #[cfg(any(feature = "std", feature = "alloc"))]
-                self.apc_data.push(param);
+                if self.apc_data.len() < MAX_APC_BYTES {
+                    self.apc_data.push(param);
+                } else {
+                    self.apc_data_truncated = true;
+                }
             }
-            Action::ApcEnd => {
+            Action::ApcEnd =>
+            {
                 #[cfg(any(feature = "std", feature = "alloc"))]
-                actor.apc_dispatch(core::mem::take(&mut self.apc_data));
+                if self.apc_data_truncated {
+                    self.apc_data.clear();
+                } else {
+                    actor.apc_dispatch(core::mem::take(&mut self.apc_data));
+                }
             }
 
             Action::Utf8 => self.next_utf8(actor, param),
@@ -861,6 +891,53 @@ mod test {
         assert_eq!(
             parse_as_vec(b"\x1b]\x07"),
             vec![VTAction::OscDispatch(vec![])]
+        );
+    }
+
+    #[test]
+    fn oversized_osc_is_bounded_dropped_and_parser_recovers() {
+        let mut parser = VTParser::new();
+        let mut actor = CollectingVTActor::default();
+        parser.parse(b"\x1b]0;", &mut actor);
+        let chunk = [b'x'; 4096];
+        for _ in 0..=(MAX_OSC_BYTES / chunk.len()) {
+            parser.parse(&chunk, &mut actor);
+        }
+
+        assert!(parser.osc.buffer.len() <= MAX_OSC_BYTES);
+        assert!(parser.osc.data_truncated);
+        parser.parse(b"\x07ok", &mut actor);
+        assert_eq!(
+            actor.into_vec(),
+            vec![VTAction::Print('o'), VTAction::Print('k')]
+        );
+    }
+
+    #[test]
+    fn oversized_apc_is_bounded_dropped_and_parser_recovers() {
+        let mut parser = VTParser::new();
+        let mut actor = CollectingVTActor::default();
+        parser.parse(b"\x1b_G", &mut actor);
+        let chunk = [b'x'; 4096];
+        for _ in 0..=(MAX_APC_BYTES / chunk.len()) {
+            parser.parse(&chunk, &mut actor);
+        }
+
+        assert!(parser.apc_data.len() <= MAX_APC_BYTES);
+        assert!(parser.apc_data_truncated);
+        parser.parse(b"\x1b\\ok", &mut actor);
+        assert_eq!(
+            actor.into_vec(),
+            vec![
+                VTAction::EscDispatch {
+                    params: vec![],
+                    intermediates: vec![],
+                    ignored_excess_intermediates: false,
+                    byte: b'\\',
+                },
+                VTAction::Print('o'),
+                VTAction::Print('k'),
+            ]
         );
     }
 

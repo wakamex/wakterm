@@ -104,6 +104,16 @@ impl core::fmt::Debug for KittyImageData {
 }
 
 impl KittyImageData {
+    pub fn encoded_len(&self) -> Option<usize> {
+        match self {
+            Self::Direct(data) => Some(data.len()),
+            Self::DirectBin(data) => Some(data.len()),
+            Self::File { data_size, .. }
+            | Self::TemporaryFile { data_size, .. }
+            | Self::SharedMem { data_size, .. } => data_size.map(|size| size as usize),
+        }
+    }
+
     fn from_keys(keys: &BTreeMap<&str, &str>, payload: &[u8]) -> Option<Self> {
         let t = get(keys, "t").unwrap_or("d");
 
@@ -175,46 +185,49 @@ impl KittyImageData {
     /// of the read operaiton.
     #[cfg(feature = "kitty-shm")]
     pub fn load_data(self) -> std::io::Result<Vec<u8>> {
-        use std::io::{Read, Seek};
+        self.load_data_with_limit(usize::MAX)
+    }
+
+    /// Take at most `max_bytes` of image data, rejecting larger sources
+    /// before allocating their declared size.
+    #[cfg(feature = "kitty-shm")]
+    pub fn load_data_with_limit(self, max_bytes: usize) -> std::io::Result<Vec<u8>> {
+        use std::io::Seek;
         fn read_from_file(
             path: &str,
             data_offset: Option<u32>,
             data_size: Option<u32>,
+            max_bytes: usize,
         ) -> std::io::Result<Vec<u8>> {
             let mut f = std::fs::File::open(path)?;
             if let Some(offset) = data_offset {
                 f.seek(std::io::SeekFrom::Start(offset.into()))?;
             }
-            if let Some(len) = data_size {
-                let mut res = vec![0u8; len as usize];
-                f.read_exact(&mut res)?;
-                Ok(res)
-            } else {
-                let mut res = vec![];
-                f.read_to_end(&mut res)?;
-                Ok(res)
-            }
+            read_kitty_data(&mut f, data_size, max_bytes)
         }
 
         match self {
-            Self::Direct(data) => base64_decode(data).or_else(|err| {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("base64 decode: {err:#}"),
-                ))
-            }),
-            Self::DirectBin(bin) => Ok(bin),
+            Self::Direct(data) => {
+                let decoded = base64_decode(data).map_err(|err| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("base64 decode: {err:#}"),
+                    )
+                })?;
+                ensure_kitty_data_size(decoded, max_bytes)
+            }
+            Self::DirectBin(bin) => ensure_kitty_data_size(bin, max_bytes),
             Self::File {
                 path,
                 data_offset,
                 data_size,
-            } => read_from_file(&path, data_offset, data_size),
+            } => read_from_file(&path, data_offset, data_size, max_bytes),
             Self::TemporaryFile {
                 path,
                 data_offset,
                 data_size,
             } => {
-                let data = read_from_file(&path, data_offset, data_size)?;
+                let data = read_from_file(&path, data_offset, data_size, max_bytes)?;
                 // need to sanity check that the path looks like a reasonable
                 // temporary directory path before blindly unlinking it here.
 
@@ -257,9 +270,64 @@ impl KittyImageData {
                 name,
                 data_offset,
                 data_size,
-            } => read_shared_memory_data(&name, data_offset, data_size),
+            } => read_shared_memory_data(&name, data_offset, data_size, max_bytes),
         }
     }
+}
+
+#[cfg(feature = "kitty-shm")]
+fn kitty_data_too_large(size: usize, max_bytes: usize) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("kitty image data is {size} bytes, limit is {max_bytes}"),
+    )
+}
+
+#[cfg(feature = "kitty-shm")]
+fn ensure_kitty_data_size(data: Vec<u8>, max_bytes: usize) -> std::io::Result<Vec<u8>> {
+    if data.len() > max_bytes {
+        Err(kitty_data_too_large(data.len(), max_bytes))
+    } else {
+        Ok(data)
+    }
+}
+
+#[cfg(feature = "kitty-shm")]
+fn read_kitty_data(
+    reader: &mut impl std::io::Read,
+    data_size: Option<u32>,
+    max_bytes: usize,
+) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+
+    if let Some(len) = data_size {
+        let len = len as usize;
+        if len > max_bytes {
+            return Err(kitty_data_too_large(len, max_bytes));
+        }
+        let mut data = Vec::new();
+        data.try_reserve_exact(len).map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::OutOfMemory,
+                format!("allocating {len} kitty image bytes: {err}"),
+            )
+        })?;
+        data.resize(len, 0);
+        reader.read_exact(&mut data)?;
+        return Ok(data);
+    }
+
+    if max_bytes == usize::MAX {
+        let mut data = vec![];
+        reader.read_to_end(&mut data)?;
+        return Ok(data);
+    }
+
+    let mut data = vec![];
+    reader
+        .take(max_bytes.saturating_add(1) as u64)
+        .read_to_end(&mut data)?;
+    ensure_kitty_data_size(data, max_bytes)
 }
 
 #[cfg(all(feature = "kitty-shm", unix, not(target_os = "android")))]
@@ -267,10 +335,11 @@ fn read_shared_memory_data(
     name: &str,
     data_offset: Option<u32>,
     data_size: Option<u32>,
+    max_bytes: usize,
 ) -> std::result::Result<std::vec::Vec<u8>, std::io::Error> {
     use nix::sys::mman::{shm_open, shm_unlink};
     use std::fs::File;
-    use std::io::{Read, Seek};
+    use std::io::Seek;
 
     let fd = shm_open(
         name,
@@ -288,15 +357,7 @@ fn read_shared_memory_data(
     if let Some(offset) = data_offset {
         f.seek(std::io::SeekFrom::Start(offset.into()))?;
     }
-    let data = if let Some(len) = data_size {
-        let mut res = vec![0u8; len as usize];
-        f.read_exact(&mut res)?;
-        res
-    } else {
-        let mut res = vec![];
-        f.read_to_end(&mut res)?;
-        res
-    };
+    let data = read_kitty_data(&mut f, data_size, max_bytes)?;
 
     if let Err(err) = shm_unlink(name) {
         log::warn!(
@@ -313,6 +374,7 @@ fn read_shared_memory_data(
     _name: &str,
     _data_offset: Option<u32>,
     _data_size: Option<u32>,
+    _max_bytes: usize,
 ) -> std::result::Result<std::vec::Vec<u8>, std::io::Error> {
     Err(std::io::ErrorKind::Unsupported.into())
 }
@@ -363,6 +425,7 @@ mod win {
         name: &str,
         data_offset: Option<u32>,
         data_size: Option<u32>,
+        max_bytes: usize,
     ) -> std::result::Result<std::vec::Vec<u8>, std::io::Error> {
         let wide_name = wide_string(&name);
 
@@ -422,6 +485,9 @@ mod win {
         size = size.saturating_sub(offset);
         if let Some(val) = data_size {
             size = size.min(val as usize);
+        }
+        if size > max_bytes {
+            return Err(super::kitty_data_too_large(size, max_bytes));
         }
         let buf_slice = unsafe { std::slice::from_raw_parts(shm.buf.add(offset), size) };
         let data = buf_slice.to_vec();
@@ -1265,5 +1331,22 @@ mod test {
                 },
             }
         );
+    }
+
+    #[cfg(feature = "kitty-shm")]
+    #[test]
+    fn kitty_data_loader_rejects_declared_and_streamed_oversize_data() {
+        let err = KittyImageData::DirectBin(vec![0; 11])
+            .load_data_with_limit(10)
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        let mut empty = std::io::Cursor::new(Vec::<u8>::new());
+        let err = read_kitty_data(&mut empty, Some(11), 10).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        let mut streamed = std::io::Cursor::new(vec![0; 11]);
+        let err = read_kitty_data(&mut streamed, None, 10).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 }

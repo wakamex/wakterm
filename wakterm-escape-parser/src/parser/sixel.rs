@@ -2,13 +2,19 @@ use crate::color::RgbColor;
 use crate::{Sixel, SixelData};
 
 const MAX_PARAMS: usize = 5;
-const MAX_SIXEL_SIZE: usize = 100_000_000;
+const MAX_SIXEL_INPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SIXEL_DATA_ITEMS: usize = 4 * 1024 * 1024;
+const MAX_SIXEL_EXPANDED_SAMPLES: usize = 16 * 1024 * 1024;
+const MAX_SIXEL_PIXELS: usize = 16 * 1024 * 1024;
 
 pub struct SixelBuilder {
     pub sixel: Sixel,
     params: [i64; MAX_PARAMS],
     param_no: usize,
     current_command: u8,
+    input_bytes: usize,
+    expanded_samples: usize,
+    truncated: bool,
 }
 
 impl SixelBuilder {
@@ -39,29 +45,52 @@ impl SixelBuilder {
             param_no: 0,
             params: [-1; MAX_PARAMS],
             current_command: 0,
+            input_bytes: 0,
+            expanded_samples: 0,
+            truncated: false,
         }
     }
 
     pub fn push(&mut self, data: u8) {
+        if self.input_bytes >= MAX_SIXEL_INPUT_BYTES {
+            self.truncated = true;
+            return;
+        }
+        self.input_bytes += 1;
+        if self.truncated {
+            return;
+        }
+
         match data {
             b'$' => {
                 self.finish_command();
-                self.sixel.data.push(SixelData::CarriageReturn);
+                self.push_item(SixelData::CarriageReturn, 0);
             }
             b'-' => {
                 self.finish_command();
-                self.sixel.data.push(SixelData::NewLine);
+                self.push_item(SixelData::NewLine, 0);
             }
             0x3f..=0x7e if self.current_command == b'!' => {
-                self.sixel.data.push(SixelData::Repeat {
-                    repeat_count: self.params[0] as u32,
-                    data: data - 0x3f,
-                });
+                let repeat_count = match u32::try_from(self.params[0]) {
+                    Ok(0) | Err(_) => {
+                        self.truncated = true;
+                        self.finish_command();
+                        return;
+                    }
+                    Ok(repeat_count) => repeat_count,
+                };
+                self.push_item(
+                    SixelData::Repeat {
+                        repeat_count,
+                        data: data - 0x3f,
+                    },
+                    repeat_count as usize,
+                );
                 self.finish_command();
             }
             0x3f..=0x7e => {
                 self.finish_command();
-                self.sixel.data.push(SixelData::Data(data - 0x3f));
+                self.push_item(SixelData::Data(data - 0x3f), 1);
             }
             b'#' | b'!' | b'"' => {
                 self.finish_command();
@@ -93,7 +122,27 @@ impl SixelBuilder {
         }
     }
 
+    fn push_item(&mut self, item: SixelData, expanded_samples: usize) {
+        let next_work = self.expanded_samples.saturating_add(expanded_samples);
+        if self.sixel.data.len() >= MAX_SIXEL_DATA_ITEMS || next_work > MAX_SIXEL_EXPANDED_SAMPLES {
+            self.truncated = true;
+            return;
+        }
+        self.expanded_samples = next_work;
+        self.sixel.data.push(item);
+    }
+
     fn finish_command(&mut self) {
+        if self.truncated {
+            self.param_no = 0;
+            self.params = [-1; MAX_PARAMS];
+            self.current_command = 0;
+            return;
+        }
+        if self.sixel.data.len() >= MAX_SIXEL_DATA_ITEMS {
+            self.truncated = true;
+            return;
+        }
         match self.current_command {
             b'#' if self.param_no >= 4 => {
                 // Define a color
@@ -156,21 +205,18 @@ impl SixelBuilder {
                     // Ideally we'd just use `try_reserve` here, but that is
                     // nightly Rust only at the time of writing this comment:
                     // <https://github.com/rust-lang/rust/issues/48043>
-                    if size > MAX_SIXEL_SIZE || overflow {
+                    if size > MAX_SIXEL_PIXELS || overflow {
                         log::error!(
-                            "Ignoring sixel data {}x{} because {} bytes \
+                            "Ignoring sixel data {}x{} because {} pixels \
                              either overflows or exceeds the max allowed {}",
                             pixel_width,
                             pixel_height,
                             size,
-                            MAX_SIXEL_SIZE
+                            MAX_SIXEL_PIXELS
                         );
-                        self.sixel.pixel_width = None;
-                        self.sixel.pixel_height = None;
-                        self.sixel.data.clear();
+                        self.truncated = true;
                         return;
                     }
-                    self.sixel.data.reserve(size);
                 }
             }
             _ => {}
@@ -180,8 +226,14 @@ impl SixelBuilder {
         self.current_command = 0;
     }
 
-    pub fn finish(&mut self) {
+    pub fn finish(&mut self) -> bool {
         self.finish_command();
+        if self.truncated {
+            self.sixel.data.clear();
+            false
+        } else {
+            true
+        }
     }
 }
 

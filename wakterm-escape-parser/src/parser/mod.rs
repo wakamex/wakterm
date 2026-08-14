@@ -17,10 +17,17 @@ use crate::allocate::*;
 mod sixel;
 use sixel::SixelBuilder;
 
+const MAX_SHORT_DCS_BYTES: usize = 64 * 1024;
+const MAX_TCAP_BYTES: usize = 64 * 1024;
+const INVALID_CONTROL_LOG_BURST: usize = 8;
+const INVALID_CONTROL_SUMMARY_INTERVAL: usize = 1024;
+
 #[derive(Default)]
 struct GetTcapBuilder {
     current: Vec<u8>,
     names: Vec<String>,
+    bytes_seen: usize,
+    truncated: bool,
 }
 
 impl GetTcapBuilder {
@@ -33,6 +40,11 @@ impl GetTcapBuilder {
     }
 
     pub fn push(&mut self, data: u8) {
+        if self.bytes_seen >= MAX_TCAP_BYTES {
+            self.truncated = true;
+            return;
+        }
+        self.bytes_seen += 1;
         if data == b';' {
             self.flush();
         } else {
@@ -40,9 +52,39 @@ impl GetTcapBuilder {
         }
     }
 
-    pub fn finish(mut self) -> Vec<String> {
+    pub fn finish(mut self) -> Option<Vec<String>> {
+        if self.truncated {
+            return None;
+        }
         self.flush();
-        self.names
+        Some(self.names)
+    }
+}
+
+#[derive(Default)]
+struct InvalidControlDiagnostics {
+    emitted: usize,
+    suppressed: usize,
+}
+
+impl InvalidControlDiagnostics {
+    fn record(&mut self, byte: u8) {
+        if self.emitted < INVALID_CONTROL_LOG_BURST {
+            self.emitted += 1;
+            error!(
+                "impossible C0/C1 control code {:?} 0x{:x} was dropped",
+                byte as char, byte
+            );
+            return;
+        }
+
+        self.suppressed += 1;
+        if self.suppressed % INVALID_CONTROL_SUMMARY_INTERVAL == 0 {
+            log::warn!(
+                "suppressed {} additional impossible C0/C1 control codes",
+                INVALID_CONTROL_SUMMARY_INTERVAL
+            );
+        }
     }
 }
 
@@ -50,7 +92,9 @@ impl GetTcapBuilder {
 struct ParseState {
     sixel: Option<SixelBuilder>,
     dcs: Option<ShortDeviceControl>,
+    dcs_truncated: bool,
     get_tcap: Option<GetTcapBuilder>,
+    invalid_control_diagnostics: InvalidControlDiagnostics,
     #[cfg(feature = "tmux_cc")]
     tmux_state: Option<RefCell<crate::tmux_cc::Parser>>,
 }
@@ -215,10 +259,7 @@ impl<'a, F: FnMut(Action)> VTActor for Performer<'a, F> {
     fn execute_c0_or_c1(&mut self, byte: u8) {
         match FromPrimitive::from_u8(byte) {
             Some(code) => (self.callback)(Action::Control(code)),
-            None => error!(
-                "impossible C0/C1 control code {:?} 0x{:x} was dropped",
-                byte as char, byte
-            ),
+            None => self.state.invalid_control_diagnostics.record(byte),
         }
     }
 
@@ -240,6 +281,7 @@ impl<'a, F: FnMut(Action)> VTActor for Performer<'a, F> {
         self.state.sixel.take();
         self.state.get_tcap.take();
         self.state.dcs.take();
+        self.state.dcs_truncated = false;
         if byte == b'q' && intermediates.is_empty() && !ignored_extra_intermediates {
             self.state.sixel.replace(SixelBuilder::new(params));
         } else if byte == b'q' && intermediates == [b'+'] {
@@ -271,7 +313,11 @@ impl<'a, F: FnMut(Action)> VTActor for Performer<'a, F> {
 
     fn dcs_put(&mut self, data: u8) {
         if let Some(dcs) = self.state.dcs.as_mut() {
-            dcs.data.push(data);
+            if dcs.data.len() < MAX_SHORT_DCS_BYTES {
+                dcs.data.push(data);
+            } else {
+                self.state.dcs_truncated = true;
+            }
         } else if let Some(sixel) = self.state.sixel.as_mut() {
             sixel.push(data);
         } else if let Some(tcap) = self.state.get_tcap.as_mut() {
@@ -301,14 +347,20 @@ impl<'a, F: FnMut(Action)> VTActor for Performer<'a, F> {
 
     fn dcs_unhook(&mut self) {
         if let Some(dcs) = self.state.dcs.take() {
-            (self.callback)(Action::DeviceControl(
-                DeviceControlMode::ShortDeviceControl(Box::new(dcs)),
-            ));
+            if !self.state.dcs_truncated {
+                (self.callback)(Action::DeviceControl(
+                    DeviceControlMode::ShortDeviceControl(Box::new(dcs)),
+                ));
+            }
+            self.state.dcs_truncated = false;
         } else if let Some(mut sixel) = self.state.sixel.take() {
-            sixel.finish();
-            (self.callback)(Action::Sixel(Box::new(sixel.sixel)));
+            if sixel.finish() {
+                (self.callback)(Action::Sixel(Box::new(sixel.sixel)));
+            }
         } else if let Some(tcap) = self.state.get_tcap.take() {
-            (self.callback)(Action::XtGetTcap(tcap.finish()));
+            if let Some(names) = tcap.finish() {
+                (self.callback)(Action::XtGetTcap(names));
+            }
         } else {
             (self.callback)(Action::DeviceControl(DeviceControlMode::Exit));
         }
@@ -669,6 +721,121 @@ mod test {
             actions
         );
         assert_eq!(encode(&actions), "\x1b]532534523;hello\x1b\\");
+    }
+
+    #[test]
+    fn invalid_control_diagnostics_are_aggregated() {
+        let mut parser = Parser::new();
+        let input = vec![0x81; INVALID_CONTROL_LOG_BURST + INVALID_CONTROL_SUMMARY_INTERVAL + 7];
+        parser.parse(&input, |_| {});
+
+        let state = parser.state.borrow();
+        assert_eq!(
+            state.invalid_control_diagnostics.emitted,
+            INVALID_CONTROL_LOG_BURST
+        );
+        assert_eq!(
+            state.invalid_control_diagnostics.suppressed,
+            INVALID_CONTROL_SUMMARY_INTERVAL + 7
+        );
+    }
+
+    #[test]
+    fn incomplete_short_dcs_is_bounded_and_dropped() {
+        let mut parser = Parser::new();
+        parser.parse(b"\x1bP$q", |_| {});
+        let chunk = vec![b'x'; 4096];
+        for _ in 0..=(MAX_SHORT_DCS_BYTES / chunk.len()) {
+            parser.parse(&chunk, |_| {});
+        }
+
+        {
+            let state = parser.state.borrow();
+            assert!(state.dcs.as_ref().unwrap().data.len() <= MAX_SHORT_DCS_BYTES);
+            assert!(state.dcs_truncated);
+        }
+
+        let actions = parser.parse_as_vec(b"\x1b\\ok");
+        assert!(!actions.iter().any(|action| matches!(
+            action,
+            Action::DeviceControl(DeviceControlMode::ShortDeviceControl(_))
+        )));
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, Action::Print('o')))
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, Action::Print('k')))
+        );
+    }
+
+    #[test]
+    fn sixel_repeat_bomb_is_dropped() {
+        let mut parser = Parser::new();
+        let actions = parser.parse_as_vec(b"\x1bPq!4294967295@\x1b\\ok");
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, Action::Sixel(_)))
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, Action::Print('o')))
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, Action::Print('k')))
+        );
+    }
+
+    #[test]
+    fn adversarial_binary_stream_keeps_parser_bounded_and_recovers() {
+        let mut parser = Parser::new();
+        let mut chunk = vec![0u8; 128 * 1024];
+        let mut state = 0x9e37_79b9u32;
+        let mut action_count = 0usize;
+
+        for _ in 0..64 {
+            for byte in &mut chunk {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                *byte = state as u8;
+            }
+            parser.parse(&chunk, |_| action_count += 1);
+
+            let state = parser.state.borrow();
+            assert!(
+                state
+                    .dcs
+                    .as_ref()
+                    .map_or(true, |dcs| dcs.data.len() <= MAX_SHORT_DCS_BYTES)
+            );
+            assert!(state.get_tcap.as_ref().map_or(true, |tcap| {
+                tcap.bytes_seen <= MAX_TCAP_BYTES && tcap.current.len() <= MAX_TCAP_BYTES
+            }));
+        }
+
+        assert!(action_count > 0);
+        let actions = parser.parse_as_vec(b"\x1bcok");
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, Action::Print('o')))
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, Action::Print('k')))
+        );
+        assert!(
+            parser.state.borrow().invalid_control_diagnostics.emitted <= INVALID_CONTROL_LOG_BURST
+        );
     }
 
     #[test]
