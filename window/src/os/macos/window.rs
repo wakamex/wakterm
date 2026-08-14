@@ -15,11 +15,12 @@ use crate::{
 };
 use anyhow::{anyhow, bail, ensure};
 use async_trait::async_trait;
+use cocoa::appkit::NSRequestUserAttentionType::NSInformationalRequest;
 use cocoa::appkit::{
-    self, CGFloat, NSApp, NSApplication, NSApplicationPresentationOptions,
-    NSBackingStoreBuffered, NSEvent, NSEventModifierFlags, NSOpenGLContext, NSOpenGLPixelFormat,
-    NSPasteboard, NSRequestUserAttentionType::NSInformationalRequest, NSRunningApplication, NSScreen,
-    NSView, NSViewHeightSizable, NSViewWidthSizable, NSWindow, NSWindowStyleMask,
+    self, CGFloat, NSApp, NSApplication, NSApplicationPresentationOptions, NSBackingStoreBuffered,
+    NSEvent, NSEventModifierFlags, NSOpenGLContext, NSOpenGLPixelFormat, NSPasteboard,
+    NSRunningApplication, NSScreen, NSView, NSViewHeightSizable, NSViewWidthSizable, NSWindow,
+    NSWindowStyleMask,
 };
 use cocoa::base::*;
 use cocoa::foundation::{
@@ -1296,10 +1297,7 @@ impl WindowInner {
                 NSWindow::makeMainWindow(window);
                 NSWindow::makeKeyWindow(window);
                 NSWindow::makeKeyAndOrderFront_(window, nil);
-                WindowInner::log_show_state_for(
-                    window,
-                    "WindowInner::show delayed state",
-                );
+                WindowInner::log_show_state_for(window, "WindowInner::show delayed state");
             }
         }
         unsafe {

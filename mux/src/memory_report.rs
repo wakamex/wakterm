@@ -98,7 +98,9 @@ pub fn log_memory_report() {
             }
             pane_details.push_str(&format!(
                 "pane {}: {} scrollback, {} buffered",
-                id, info.scrollback_rows, format_bytes(info.action_buf_bytes)
+                id,
+                info.scrollback_rows,
+                format_bytes(info.action_buf_bytes)
             ));
         }
     }

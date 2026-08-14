@@ -697,8 +697,7 @@ impl super::TermWindow {
         // On Release over a non-active pane (e.g. drag crossed pane boundary),
         // we need to adjust coordinates to the active pane, not the hovered one.
         // Treat it like a captured event so the active pane gets correct coords.
-        let treat_as_captured = is_already_captured
-            || matches!(&event.kind, WMEK::Release(_));
+        let treat_as_captured = is_already_captured || matches!(&event.kind, WMEK::Release(_));
 
         for pos in self.get_panes_to_render() {
             if !treat_as_captured
@@ -1128,8 +1127,7 @@ pub(crate) fn resolve_mouse_pane(
     // active pane, not the hovered pane. This prevents the cross-pane
     // drag copy bug where left-pane-local coords were paired with
     // the right pane.
-    let treat_as_captured = is_captured
-        || matches!(event_kind, WMEK::Release(_));
+    let treat_as_captured = is_captured || matches!(event_kind, WMEK::Release(_));
 
     for pos in panes {
         if !treat_as_captured
@@ -1204,9 +1202,10 @@ mod test {
     fn press_in_right_pane_switches_active_pane() {
         let panes = two_pane_layout();
         let result = resolve_mouse_pane(
-            50, 5,                           // window col 50, row 5 (in right pane)
-            1,                               // active pane is left (1)
-            false,                           // not captured
+            50,
+            5,     // window col 50, row 5 (in right pane)
+            1,     // active pane is left (1)
+            false, // not captured
             &WMEK::Press(MousePress::Left),
             &panes,
         );
@@ -1220,9 +1219,10 @@ mod test {
         let panes = two_pane_layout();
         // Mouse has moved to window col 20 (over left pane) during a captured drag
         let result = resolve_mouse_pane(
-            20, 5,                           // window col 20 (over left pane)
-            2,                               // active pane is right (2)
-            true,                            // captured
+            20,
+            5,    // window col 20 (over left pane)
+            2,    // active pane is right (2)
+            true, // captured
             &WMEK::Move,
             &panes,
         );
@@ -1241,9 +1241,10 @@ mod test {
         // Result: right pane gets left-pane-local coordinates.
         let panes = two_pane_layout();
         let result = resolve_mouse_pane(
-            20, 5,                           // window col 20, row 5 (left pane)
-            2,                               // active pane is right (2)
-            false,                           // NOT captured (cleared on Release)
+            20,
+            5,     // window col 20, row 5 (left pane)
+            2,     // active pane is right (2)
+            false, // NOT captured (cleared on Release)
             &WMEK::Release(MousePress::Left),
             &panes,
         );

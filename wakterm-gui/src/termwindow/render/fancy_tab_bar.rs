@@ -209,13 +209,18 @@ impl crate::TermWindow {
                     let resolved_text = explicit_fg_color
                         .unwrap_or_else(|| active_tab.fg_color.into())
                         .to_linear();
-                    let title = make_title(if item.icons.is_empty() { None } else { Some(resolved_text) });
+                    let title = make_title(if item.icons.is_empty() {
+                        None
+                    } else {
+                        Some(resolved_text)
+                    });
                     let element = if !item.icons.is_empty() {
                         wrap_icon_title(title, item.icons.len())
                     } else {
                         title
                     };
-                    if !item.icons.is_empty() && std::env::var_os("WAKTERM_TRACE_TAB_COLORS").is_some()
+                    if !item.icons.is_empty()
+                        && std::env::var_os("WAKTERM_TRACE_TAB_COLORS").is_some()
                     {
                         log::error!(
                             "fancy_tab_color_trace state=active explicit_fg={:?} wrapper_text={} wrapper_bg={}",
@@ -281,13 +286,18 @@ impl crate::TermWindow {
                     let text = explicit_fg_color
                         .unwrap_or_else(|| inactive_tab.fg_color.into())
                         .to_linear();
-                    let title = make_title(if item.icons.is_empty() { None } else { Some(text) });
+                    let title = make_title(if item.icons.is_empty() {
+                        None
+                    } else {
+                        Some(text)
+                    });
                     let element = if !item.icons.is_empty() {
                         wrap_icon_title(title, item.icons.len())
                     } else {
                         title
                     };
-                    if !item.icons.is_empty() && std::env::var_os("WAKTERM_TRACE_TAB_COLORS").is_some()
+                    if !item.icons.is_empty()
+                        && std::env::var_os("WAKTERM_TRACE_TAB_COLORS").is_some()
                     {
                         log::error!(
                             "fancy_tab_color_trace state={} explicit_fg={:?} wrapper_text={} wrapper_bg={}",

@@ -380,7 +380,12 @@ mod test {
     }
 
     /// Helper: simulate extend_selection_at_mouse_cursor logic for Cell mode
-    fn simulate_extend(selection: &mut Selection, origin: SelectionCoordinate, x: usize, y: StableRowIndex) {
+    fn simulate_extend(
+        selection: &mut Selection,
+        origin: SelectionCoordinate,
+        x: usize,
+        y: StableRowIndex,
+    ) {
         let origin_x_usize = match origin.x {
             SelectionX::Cell(v) => v,
             SelectionX::BeforeZero => 0,
@@ -422,10 +427,11 @@ mod test {
         );
 
         let range = selection.range.unwrap().normalize();
-        let cols = range.cols_for_row( 5, false);
+        let cols = range.cols_for_row(5, false);
         assert!(
             !cols.is_empty(),
-            "selection should cover columns on the dragged row, got {:?}", cols
+            "selection should cover columns on the dragged row, got {:?}",
+            cols
         );
 
         // Dragging backwards from col 30 to col 0:
@@ -449,14 +455,13 @@ mod test {
         // Should span rows 3..6 (3, 4, 5)
         assert_eq!(range.rows(), 3..6);
 
-        let cols_3 = range.cols_for_row( 3, false);
+        let cols_3 = range.cols_for_row(3, false);
         assert!(!cols_3.is_empty(), "row 3 should have selected columns");
 
-        let cols_5 = range.cols_for_row( 5, false);
+        let cols_5 = range.cols_for_row(5, false);
         assert!(!cols_5.is_empty(), "row 5 should have selected columns");
     }
 
     // The coordinate mismatch bug on Release is tested directly in
     // termwindow::mouseevent::test::release_over_left_pane_after_right_pane_drag_has_wrong_coords
 }
-

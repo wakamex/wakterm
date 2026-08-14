@@ -250,7 +250,9 @@ fn parse_buffered_data(pane: Weak<dyn Pane>, dead: &Arc<AtomicBool>, mut rx: Fil
     let pane_id = pane.upgrade().map(|p| p.pane_id());
     let action_buf_gauge = Arc::new(AtomicUsize::new(0));
     if let Some(id) = pane_id {
-        ACTION_BUFFER_SIZES.write().insert(id, Arc::clone(&action_buf_gauge));
+        ACTION_BUFFER_SIZES
+            .write()
+            .insert(id, Arc::clone(&action_buf_gauge));
     }
 
     loop {
@@ -1445,7 +1447,11 @@ impl Mux {
 
     pub fn record_agent_output(&self, pane_id: PaneId) {
         if self.get_agent_metadata_for_pane(pane_id).is_none() {
-            if self.mirrored_agent_harness_by_pane.read().contains_key(&pane_id) {
+            if self
+                .mirrored_agent_harness_by_pane
+                .read()
+                .contains_key(&pane_id)
+            {
                 return;
             }
             let before_detected = self.detected_agent_panes.read().contains(&pane_id);
@@ -6670,7 +6676,11 @@ mod test {
 
         // Verify the parser thread registered
         let registered = ACTION_BUFFER_SIZES.read().contains_key(&pane_id);
-        assert!(registered, "parser thread did not register pane {} in ACTION_BUFFER_SIZES", pane_id);
+        assert!(
+            registered,
+            "parser thread did not register pane {} in ACTION_BUFFER_SIZES",
+            pane_id
+        );
 
         // Stream output while in synchronized mode — 100 rounds of 10KB each
         for _ in 0..100 {
@@ -6691,7 +6701,8 @@ mod test {
         // so it should reflect most of the 1MB.
         assert!(
             buf_bytes > 500_000,
-            "expected >500KB buffered during SynchronizedOutput hold, got {} bytes", buf_bytes
+            "expected >500KB buffered during SynchronizedOutput hold, got {} bytes",
+            buf_bytes
         );
 
         // Now disable synchronized output and let it flush
@@ -6706,7 +6717,8 @@ mod test {
 
         assert!(
             buf_bytes_after < 1_000,
-            "expected buffer flushed after SynchronizedOutput reset, got {} bytes", buf_bytes_after
+            "expected buffer flushed after SynchronizedOutput reset, got {} bytes",
+            buf_bytes_after
         );
 
         // Clean up
@@ -6747,7 +6759,8 @@ mod test {
         // It could be up to 4MB + one read chunk, but not the full 8MB.
         assert!(
             buf_bytes < 5 * 1024 * 1024,
-            "expected buffer capped under 5MB, got {} bytes", buf_bytes
+            "expected buffer capped under 5MB, got {} bytes",
+            buf_bytes
         );
 
         drop(tx);
@@ -6785,7 +6798,8 @@ mod test {
         // so the buffer should be small (whatever's in-flight from the last read)
         assert!(
             buf_bytes < 100_000,
-            "expected small action buffer in normal mode, got {} bytes", buf_bytes
+            "expected small action buffer in normal mode, got {} bytes",
+            buf_bytes
         );
 
         drop(tx);
