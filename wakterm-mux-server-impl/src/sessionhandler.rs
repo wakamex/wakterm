@@ -9,7 +9,7 @@ use mux::renderable::{RenderableDimensions, StableCursorPosition};
 use mux::tab::{NotifyMux, TabId};
 use mux::{Mux, MuxNotification};
 use promise::spawn::spawn_into_main_thread;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use termwiz::surface::SequenceNo;
@@ -17,22 +17,192 @@ use url::Url;
 use wakterm_term::terminal::Alert;
 use wakterm_term::StableRowIndex;
 
+const MAX_PENDING_PANE_ALERTS: usize = 256;
+
 #[derive(Clone)]
 pub struct PduSender {
-    func: Arc<dyn Fn(DecodedPdu) -> anyhow::Result<()> + Send + Sync>,
+    func: Arc<dyn Fn(QueuedPdu) -> anyhow::Result<()> + Send + Sync>,
 }
 
 impl PduSender {
     pub fn send(&self, pdu: DecodedPdu) -> anyhow::Result<()> {
-        (self.func)(pdu)
+        (self.func)(QueuedPdu {
+            decoded: pdu,
+            queued_at: Instant::now(),
+        })
     }
 
     pub fn new<T>(f: T) -> Self
     where
-        T: Fn(DecodedPdu) -> anyhow::Result<()> + Send + Sync + 'static,
+        T: Fn(QueuedPdu) -> anyhow::Result<()> + Send + Sync + 'static,
     {
         Self { func: Arc::new(f) }
     }
+}
+
+pub struct QueuedPdu {
+    pub decoded: DecodedPdu,
+    pub queued_at: Instant,
+}
+
+pub struct RenderBatch {
+    pub pdus: Vec<DecodedPdu>,
+    pub queued_at: Instant,
+    scheduler: RenderScheduler,
+}
+
+impl RenderBatch {
+    pub fn complete(&self) {
+        self.scheduler.complete_one();
+    }
+}
+
+#[derive(Clone)]
+pub struct RenderBatchSender {
+    func: Arc<dyn Fn(RenderBatch) -> anyhow::Result<()> + Send + Sync>,
+}
+
+impl RenderBatchSender {
+    pub fn new<T>(f: T) -> Self
+    where
+        T: Fn(RenderBatch) -> anyhow::Result<()> + Send + Sync + 'static,
+    {
+        Self { func: Arc::new(f) }
+    }
+
+    fn send(&self, batch: RenderBatch) -> anyhow::Result<()> {
+        (self.func)(batch)
+    }
+}
+
+struct PendingPaneRefresh {
+    pane_id: PaneId,
+    per_pane: Arc<Mutex<PerPane>>,
+}
+
+#[derive(Default)]
+struct RenderSchedulerState {
+    active: bool,
+    dirty: VecDeque<PendingPaneRefresh>,
+    dirty_ids: HashSet<PaneId>,
+}
+
+#[derive(Clone)]
+pub struct RenderScheduler {
+    state: Arc<Mutex<RenderSchedulerState>>,
+    sender: RenderBatchSender,
+}
+
+impl RenderScheduler {
+    pub fn new(sender: RenderBatchSender) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(RenderSchedulerState::default())),
+            sender,
+        }
+    }
+
+    fn schedule(
+        &self,
+        pane_id: PaneId,
+        per_pane: Arc<Mutex<PerPane>>,
+        input_serial: Option<InputSerial>,
+    ) {
+        if let Some(input_serial) = input_serial {
+            let mut pane_state = per_pane.lock().unwrap();
+            pane_state.pending_input_serial = Some(
+                pane_state
+                    .pending_input_serial
+                    .map_or(input_serial, |prior| prior.max(input_serial)),
+            );
+        }
+
+        let next = {
+            let mut state = self.state.lock().unwrap();
+            if state.dirty_ids.insert(pane_id) {
+                state
+                    .dirty
+                    .push_back(PendingPaneRefresh { pane_id, per_pane });
+                metrics::counter!("mux_server.render_refresh.queued").increment(1);
+            } else {
+                metrics::counter!("mux_server.render_refresh.coalesced").increment(1);
+            }
+            metrics::gauge!("mux_server.render_refresh.dirty_panes").set(state.dirty.len() as f64);
+
+            if state.active {
+                None
+            } else {
+                state.active = true;
+                pop_next_refresh(&mut state)
+            }
+        };
+
+        if let Some(next) = next {
+            self.spawn_compute(next);
+        }
+    }
+
+    fn spawn_compute(&self, refresh: PendingPaneRefresh) {
+        let scheduler = self.clone();
+        let sender = self.sender.clone();
+        let pane_id = refresh.pane_id;
+        let per_pane = refresh.per_pane;
+        spawn_into_main_thread(async move {
+            let start = Instant::now();
+            let result = (|| {
+                let mux = Mux::get();
+                let pane = mux
+                    .get_pane(pane_id)
+                    .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
+                collect_pane_changes(&pane, per_pane)
+            })();
+            metrics::histogram!("mux_server.render_refresh.compute_latency")
+                .record(start.elapsed());
+
+            match result {
+                Ok(pdus) if pdus.is_empty() => scheduler.complete_one(),
+                Ok(pdus) => {
+                    let batch = RenderBatch {
+                        pdus,
+                        queued_at: Instant::now(),
+                        scheduler: scheduler.clone(),
+                    };
+                    if let Err(err) = sender.send(batch) {
+                        log::debug!("render connection closed while queueing refresh: {err:#}");
+                        scheduler.complete_one();
+                    }
+                }
+                Err(err) => {
+                    log::debug!("unable to compute pane {pane_id} refresh: {err:#}");
+                    scheduler.complete_one();
+                }
+            }
+
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
+    }
+
+    fn complete_one(&self) {
+        let next = {
+            let mut state = self.state.lock().unwrap();
+            let next = pop_next_refresh(&mut state);
+            if next.is_none() {
+                state.active = false;
+            }
+            metrics::gauge!("mux_server.render_refresh.dirty_panes").set(state.dirty.len() as f64);
+            next
+        };
+
+        if let Some(next) = next {
+            self.spawn_compute(next);
+        }
+    }
+}
+
+fn pop_next_refresh(state: &mut RenderSchedulerState) -> Option<PendingPaneRefresh> {
+    let next = state.dirty.pop_front()?;
+    state.dirty_ids.remove(&next.pane_id);
+    Some(next)
 }
 
 #[derive(Default, Debug)]
@@ -44,11 +214,58 @@ pub(crate) struct PerPane {
     mouse_grabbed: bool,
     sent_initial_palette: bool,
     seqno: SequenceNo,
+    pending_input_serial: Option<InputSerial>,
     config_generation: usize,
     pub(crate) notifications: Vec<Alert>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AlertStateKey<'a> {
+    CurrentWorkingDirectory,
+    IconTitle,
+    WindowTitle,
+    TabTitle,
+    Palette,
+    UserVar(&'a str),
+    OutputSinceFocusLost,
+    Progress,
+}
+
+fn alert_state_key(alert: &Alert) -> Option<AlertStateKey<'_>> {
+    match alert {
+        Alert::Bell | Alert::ToastNotification { .. } => None,
+        Alert::CurrentWorkingDirectoryChanged => Some(AlertStateKey::CurrentWorkingDirectory),
+        Alert::IconTitleChanged(_) => Some(AlertStateKey::IconTitle),
+        Alert::WindowTitleChanged(_) => Some(AlertStateKey::WindowTitle),
+        Alert::TabTitleChanged(_) => Some(AlertStateKey::TabTitle),
+        Alert::PaletteChanged => Some(AlertStateKey::Palette),
+        Alert::SetUserVar { name, .. } => Some(AlertStateKey::UserVar(name)),
+        Alert::OutputSinceFocusLost => Some(AlertStateKey::OutputSinceFocusLost),
+        Alert::Progress(_) => Some(AlertStateKey::Progress),
+    }
+}
+
 impl PerPane {
+    pub(crate) fn push_notification(&mut self, alert: Alert) {
+        if let Some(key) = alert_state_key(&alert) {
+            if let Some(existing) = self
+                .notifications
+                .iter_mut()
+                .find(|existing| alert_state_key(existing) == Some(key))
+            {
+                *existing = alert;
+                metrics::counter!("mux_server.render_alert.coalesced").increment(1);
+                return;
+            }
+        }
+
+        if self.notifications.len() >= MAX_PENDING_PANE_ALERTS {
+            metrics::counter!("mux_server.render_alert.dropped_at_limit").increment(1);
+            return;
+        }
+        self.notifications.push(alert);
+    }
+
     fn compute_changes(
         &mut self,
         pane: &Arc<dyn Pane>,
@@ -143,17 +360,18 @@ impl PerPane {
     }
 }
 
-fn maybe_push_pane_changes(
+fn collect_pane_changes(
     pane: &Arc<dyn Pane>,
-    sender: PduSender,
     per_pane: Arc<Mutex<PerPane>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<DecodedPdu>> {
     let mut per_pane = per_pane.lock().unwrap();
-    if let Some(resp) = per_pane.compute_changes(pane, None) {
-        sender.send(DecodedPdu {
+    let mut pdus = vec![];
+    let input_serial = per_pane.pending_input_serial.take();
+    if let Some(resp) = per_pane.compute_changes(pane, input_serial) {
+        pdus.push(DecodedPdu {
             pdu: Pdu::GetPaneRenderChangesResponse(resp),
             serial: 0,
-        })?;
+        });
     }
 
     let config = config::configuration();
@@ -163,41 +381,42 @@ fn maybe_push_pane_changes(
         // in the palette that we need to push down, so we
         // synthesize a palette change notification to let
         // the client know
-        per_pane.notifications.push(Alert::PaletteChanged);
+        per_pane.push_notification(Alert::PaletteChanged);
         per_pane.sent_initial_palette = true;
     }
 
     if !per_pane.sent_initial_palette {
-        per_pane.notifications.push(Alert::PaletteChanged);
+        per_pane.push_notification(Alert::PaletteChanged);
         per_pane.sent_initial_palette = true;
     }
     for alert in per_pane.notifications.drain(..) {
         match alert {
             Alert::PaletteChanged => {
-                sender.send(DecodedPdu {
+                pdus.push(DecodedPdu {
                     pdu: Pdu::SetPalette(SetPalette {
                         pane_id: pane.pane_id(),
                         palette: pane.palette(),
                     }),
                     serial: 0,
-                })?;
+                });
             }
             alert => {
-                sender.send(DecodedPdu {
+                pdus.push(DecodedPdu {
                     pdu: Pdu::NotifyAlert(NotifyAlert {
                         pane_id: pane.pane_id(),
                         alert,
                     }),
                     serial: 0,
-                })?;
+                });
             }
         }
     }
-    Ok(())
+    Ok(pdus)
 }
 
 pub struct SessionHandler {
     to_write_tx: PduSender,
+    render_scheduler: RenderScheduler,
     per_pane: HashMap<TabId, Arc<Mutex<PerPane>>>,
     client_id: Option<Arc<ClientId>>,
     proxy_client_id: Option<ClientId>,
@@ -217,9 +436,10 @@ impl Drop for SessionHandler {
 }
 
 impl SessionHandler {
-    pub fn new(to_write_tx: PduSender) -> Self {
+    pub fn new(to_write_tx: PduSender, render_tx: RenderBatchSender) -> Self {
         Self {
             to_write_tx,
+            render_scheduler: RenderScheduler::new(render_tx),
             per_pane: HashMap::new(),
             client_id: None,
             proxy_client_id: None,
@@ -264,17 +484,8 @@ impl SessionHandler {
     }
 
     pub fn schedule_pane_push(&mut self, pane_id: PaneId) {
-        let sender = self.to_write_tx.clone();
         let per_pane = self.per_pane(pane_id);
-        spawn_into_main_thread(async move {
-            let mux = Mux::get();
-            let pane = mux
-                .get_pane(pane_id)
-                .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
-            maybe_push_pane_changes(&pane, sender, per_pane)?;
-            Ok::<(), anyhow::Error>(())
-        })
-        .detach();
+        self.render_scheduler.schedule(pane_id, per_pane, None);
     }
 
     pub fn process_one(&mut self, decoded: DecodedPdu) {
@@ -296,7 +507,9 @@ impl SessionHandler {
                 }),
             };
             log::trace!("{} processing time {:?}", serial, start.elapsed());
-            sender.send(DecodedPdu { pdu, serial }).ok();
+            if let Err(err) = sender.send(DecodedPdu { pdu, serial }) {
+                log::debug!("connection closed before response {serial} could be queued: {err:#}");
+            }
         };
 
         fn catch<F, SND>(f: F, send_response: SND)
@@ -585,7 +798,7 @@ impl SessionHandler {
             }
 
             Pdu::WriteToPane(WriteToPane { pane_id, data }) => {
-                let sender = self.to_write_tx.clone();
+                let render_scheduler = self.render_scheduler.clone();
                 let per_pane = self.per_pane(pane_id);
                 spawn_into_main_thread(async move {
                     catch(
@@ -596,7 +809,7 @@ impl SessionHandler {
                                 .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
                             pane.writer().write_all(&data)?;
                             mux.record_agent_input(pane_id);
-                            maybe_push_pane_changes(&pane, sender, per_pane)?;
+                            render_scheduler.schedule(pane_id, per_pane, None);
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
@@ -624,7 +837,7 @@ impl SessionHandler {
                 .detach();
             }
             Pdu::KillPane(KillPane { pane_id }) => {
-                let sender = self.to_write_tx.clone();
+                let render_scheduler = self.render_scheduler.clone();
                 let per_pane = self.per_pane(pane_id);
                 spawn_into_main_thread(async move {
                     catch(
@@ -635,7 +848,7 @@ impl SessionHandler {
                                 .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
                             pane.kill();
                             mux.remove_pane(pane_id);
-                            maybe_push_pane_changes(&pane, sender, per_pane)?;
+                            render_scheduler.schedule(pane_id, per_pane, None);
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
@@ -644,7 +857,7 @@ impl SessionHandler {
                 .detach();
             }
             Pdu::SendPaste(SendPaste { pane_id, data }) => {
-                let sender = self.to_write_tx.clone();
+                let render_scheduler = self.render_scheduler.clone();
                 let per_pane = self.per_pane(pane_id);
                 spawn_into_main_thread(async move {
                     catch(
@@ -655,7 +868,7 @@ impl SessionHandler {
                                 .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
                             pane.send_paste(&data)?;
                             mux.record_agent_input(pane_id);
-                            maybe_push_pane_changes(&pane, sender, per_pane)?;
+                            render_scheduler.schedule(pane_id, per_pane, None);
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
@@ -870,8 +1083,9 @@ impl SessionHandler {
                 event,
                 input_serial,
             }) => {
-                let sender = self.to_write_tx.clone();
+                let render_scheduler = self.render_scheduler.clone();
                 let per_pane = self.per_pane(pane_id);
+                let input_received_at = start;
                 spawn_into_main_thread(async move {
                     catch(
                         move || {
@@ -881,18 +1095,13 @@ impl SessionHandler {
                                 .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
                             pane.key_down(event.key, event.modifiers)?;
                             mux.record_agent_input(pane_id);
+                            metrics::histogram!("mux_server.input.dispatch_to_pty_latency")
+                                .record(input_received_at.elapsed());
 
-                            // For a key press, we want to always send back the
-                            // cursor position so that the predictive echo doesn't
-                            // leave the cursor in the wrong place
-                            let mut per_pane = per_pane.lock().unwrap();
-                            if let Some(resp) = per_pane.compute_changes(&pane, Some(input_serial))
-                            {
-                                sender.send(DecodedPdu {
-                                    pdu: Pdu::GetPaneRenderChangesResponse(resp),
-                                    serial: 0,
-                                })?;
-                            }
+                            // Preserve only the newest prediction serial while a
+                            // prior render batch is still being written. The next
+                            // coalesced delta will include the current cursor.
+                            render_scheduler.schedule(pane_id, per_pane, Some(input_serial));
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
@@ -901,7 +1110,7 @@ impl SessionHandler {
                 .detach();
             }
             Pdu::SendMouseEvent(SendMouseEvent { pane_id, event }) => {
-                let sender = self.to_write_tx.clone();
+                let render_scheduler = self.render_scheduler.clone();
                 let per_pane = self.per_pane(pane_id);
                 spawn_into_main_thread(async move {
                     catch(
@@ -911,7 +1120,7 @@ impl SessionHandler {
                                 .get_pane(pane_id)
                                 .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
                             pane.mouse_event(event)?;
-                            maybe_push_pane_changes(&pane, sender, per_pane)?;
+                            render_scheduler.schedule(pane_id, per_pane, None);
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
@@ -969,15 +1178,15 @@ impl SessionHandler {
             }
 
             Pdu::GetPaneRenderChanges(GetPaneRenderChanges { pane_id, .. }) => {
-                let sender = self.to_write_tx.clone();
+                let render_scheduler = self.render_scheduler.clone();
                 let per_pane = self.per_pane(pane_id);
                 spawn_into_main_thread(async move {
                     catch(
                         move || {
                             let mux = Mux::get();
                             let is_alive = match mux.get_pane(pane_id) {
-                                Some(pane) => {
-                                    maybe_push_pane_changes(&pane, sender, per_pane)?;
+                                Some(_) => {
+                                    render_scheduler.schedule(pane_id, per_pane, None);
                                     true
                                 }
                                 None => false,
@@ -1393,6 +1602,7 @@ mod test {
     use rangeset::RangeSet;
     use std::io::Write;
     use std::ops::Range;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use termwiz::surface::{CursorShape, CursorVisibility, Line, SequenceNo};
     use url::Url;
     use wakterm_term::color::ColorPalette;
@@ -1404,9 +1614,9 @@ mod test {
         title: String,
         foreground_process_name: Option<String>,
         panic_on_process_name: bool,
-        panic_on_title: bool,
         panic_on_working_dir: bool,
         panic_on_focus_changed: bool,
+        key_down_count: Option<Arc<AtomicUsize>>,
     }
 
     impl TestPane {
@@ -1417,9 +1627,9 @@ mod test {
                 title: title.to_string(),
                 foreground_process_name: None,
                 panic_on_process_name: false,
-                panic_on_title: false,
                 panic_on_working_dir: false,
                 panic_on_focus_changed: false,
+                key_down_count: None,
             })
         }
 
@@ -1435,9 +1645,9 @@ mod test {
                 title: title.to_string(),
                 foreground_process_name: Some(foreground_process_name.to_string()),
                 panic_on_process_name: false,
-                panic_on_title: false,
                 panic_on_working_dir: false,
                 panic_on_focus_changed: false,
+                key_down_count: None,
             })
         }
 
@@ -1453,9 +1663,9 @@ mod test {
                 title: title.to_string(),
                 foreground_process_name: Some(foreground_process_name.to_string()),
                 panic_on_process_name: true,
-                panic_on_title: true,
                 panic_on_working_dir: true,
                 panic_on_focus_changed: false,
+                key_down_count: None,
             })
         }
 
@@ -1466,10 +1676,31 @@ mod test {
                 title: title.to_string(),
                 foreground_process_name: None,
                 panic_on_process_name: false,
-                panic_on_title: false,
                 panic_on_working_dir: false,
                 panic_on_focus_changed: true,
+                key_down_count: None,
             })
+        }
+
+        fn new_for_input_latency(
+            id: PaneId,
+            size: TerminalSize,
+            title: &str,
+        ) -> (Arc<dyn Pane>, Arc<AtomicUsize>) {
+            let key_down_count = Arc::new(AtomicUsize::new(0));
+            (
+                Arc::new(Self {
+                    id,
+                    size: Mutex::new(size),
+                    title: title.to_string(),
+                    foreground_process_name: None,
+                    panic_on_process_name: false,
+                    panic_on_working_dir: false,
+                    panic_on_focus_changed: false,
+                    key_down_count: Some(Arc::clone(&key_down_count)),
+                }),
+                key_down_count,
+            )
         }
     }
 
@@ -1515,8 +1746,14 @@ mod test {
             unimplemented!()
         }
 
-        fn get_lines(&self, _lines: Range<StableRowIndex>) -> (StableRowIndex, Vec<Line>) {
-            (0, vec![])
+        fn get_lines(&self, lines: Range<StableRowIndex>) -> (StableRowIndex, Vec<Line>) {
+            let width = self.size.lock().unwrap().cols;
+            let first = lines.start;
+            let count = lines.end.saturating_sub(lines.start) as usize;
+            (
+                first,
+                (0..count).map(|_| Line::with_width(width, 0)).collect(),
+            )
         }
 
         fn get_logical_lines(&self, _lines: Range<StableRowIndex>) -> Vec<LogicalLine> {
@@ -1539,14 +1776,6 @@ mod test {
         }
 
         fn get_title(&self) -> String {
-            assert!(
-                !self.panic_on_title,
-                "ListPanes should not synchronously inspect pane title"
-            );
-            self.title.clone()
-        }
-
-        fn get_title_for_listing(&self) -> String {
             self.title.clone()
         }
 
@@ -1568,6 +1797,9 @@ mod test {
         }
 
         fn key_down(&self, _key: KeyCode, _mods: KeyModifiers) -> anyhow::Result<()> {
+            if let Some(count) = &self.key_down_count {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
             Ok(())
         }
 
@@ -1642,32 +1874,45 @@ mod test {
     struct HandlerHarness {
         handler: SessionHandler,
         responses: smol::channel::Receiver<DecodedPdu>,
+        render_batches: smol::channel::Receiver<RenderBatch>,
     }
 
     impl HandlerHarness {
         fn new(client_id: Arc<ClientId>) -> Self {
             let (tx, rx) = smol::channel::unbounded();
-            let sender = PduSender::new(move |decoded| {
-                tx.try_send(decoded).unwrap();
+            let sender = PduSender::new(move |queued| {
+                tx.try_send(queued.decoded).unwrap();
                 Ok(())
             });
-            let mut handler = SessionHandler::new(sender);
+            let (render_tx, render_rx) = smol::channel::bounded(1);
+            let render_sender = RenderBatchSender::new(move |batch| {
+                render_tx.try_send(batch).unwrap();
+                Ok(())
+            });
+            let mut handler = SessionHandler::new(sender, render_sender);
             handler.client_id = Some(client_id);
             Self {
                 handler,
                 responses: rx,
+                render_batches: render_rx,
             }
         }
 
         fn new_unregistered() -> Self {
             let (tx, rx) = smol::channel::unbounded();
-            let sender = PduSender::new(move |decoded| {
-                tx.try_send(decoded).unwrap();
+            let sender = PduSender::new(move |queued| {
+                tx.try_send(queued.decoded).unwrap();
+                Ok(())
+            });
+            let (render_tx, render_rx) = smol::channel::bounded(1);
+            let render_sender = RenderBatchSender::new(move |batch| {
+                render_tx.try_send(batch).unwrap();
                 Ok(())
             });
             Self {
-                handler: SessionHandler::new(sender),
+                handler: SessionHandler::new(sender, render_sender),
                 responses: rx,
+                render_batches: render_rx,
             }
         }
 
@@ -1870,7 +2115,145 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            adopted_pid: None,
+            adopted_start_time: None,
         }
+    }
+
+    #[test]
+    fn render_scheduler_coalesces_until_prior_batch_is_written() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let layout = build_test_layout(&mux);
+        let mut harness = HandlerHarness::new_unregistered();
+        harness.handler.schedule_pane_push(layout.left_pane_id);
+        while harness.render_batches.is_empty() {
+            executor.tick().unwrap();
+        }
+        assert_eq!(harness.render_batches.len(), 1);
+
+        let per_pane = harness.handler.per_pane(layout.left_pane_id);
+        for _ in 0..10_000 {
+            harness.handler.render_scheduler.schedule(
+                layout.left_pane_id,
+                Arc::clone(&per_pane),
+                Some(InputSerial::now()),
+            );
+        }
+        {
+            let state = harness.handler.render_scheduler.state.lock().unwrap();
+            assert!(state.active);
+            assert_eq!(state.dirty.len(), 1);
+            assert_eq!(state.dirty_ids.len(), 1);
+        }
+        assert_eq!(harness.render_batches.len(), 1);
+
+        let first = harness.render_batches.try_recv().unwrap();
+        first.complete();
+        while harness.render_batches.is_empty() {
+            executor.tick().unwrap();
+        }
+        assert_eq!(harness.render_batches.len(), 1);
+
+        let second = harness.render_batches.try_recv().unwrap();
+        assert!(second.pdus.iter().any(|decoded| matches!(
+            &decoded.pdu,
+            Pdu::GetPaneRenderChangesResponse(response) if response.input_serial.is_some()
+        )));
+        second.complete();
+        let state = harness.handler.render_scheduler.state.lock().unwrap();
+        assert!(!state.active);
+        assert!(state.dirty.is_empty());
+    }
+
+    #[test]
+    fn pane_alert_backlog_keeps_latest_state_and_caps_events() {
+        let mut pane = PerPane::default();
+        for percent in 0..100 {
+            pane.push_notification(Alert::Progress(
+                wakterm_term::terminal::Progress::Percentage(percent),
+            ));
+        }
+        assert_eq!(
+            pane.notifications,
+            vec![Alert::Progress(
+                wakterm_term::terminal::Progress::Percentage(99)
+            )]
+        );
+
+        for _ in 0..(MAX_PENDING_PANE_ALERTS * 2) {
+            pane.push_notification(Alert::Bell);
+        }
+        assert_eq!(pane.notifications.len(), MAX_PENDING_PANE_ALERTS);
+    }
+
+    #[test]
+    fn ctrl_c_reaches_the_pty_while_render_output_is_stalled() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let window_id = *mux.new_empty_window(Some("default".to_string()), None);
+        let tab_size = size(120, 40);
+        let tab = Arc::new(Tab::new(&tab_size));
+        let (pane, key_down_count) =
+            TestPane::new_for_input_latency(alloc_pane_id(), tab_size, "input-latency");
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let mut harness = HandlerHarness::new_unregistered();
+        harness.handler.schedule_pane_push(pane_id);
+        while harness.render_batches.is_empty() {
+            executor.tick().unwrap();
+        }
+
+        // Keep the first render batch unacknowledged, as if the client socket
+        // were stalled, and saturate the pane with redundant output notices.
+        let per_pane = harness.handler.per_pane(pane_id);
+        for _ in 0..100_000 {
+            harness
+                .handler
+                .render_scheduler
+                .schedule(pane_id, Arc::clone(&per_pane), None);
+        }
+
+        let started = Instant::now();
+        harness.handler.process_one(DecodedPdu {
+            pdu: Pdu::SendKeyDown(SendKeyDown {
+                pane_id,
+                event: termwiz::input::KeyEvent {
+                    key: KeyCode::Char('c'),
+                    modifiers: KeyModifiers::CTRL,
+                },
+                input_serial: InputSerial::now(),
+            }),
+            serial: 77,
+        });
+        while key_down_count.load(Ordering::SeqCst) == 0 {
+            executor.tick().unwrap();
+        }
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "Ctrl+C took {:?} to reach the pane",
+            started.elapsed()
+        );
+        let response = harness.responses.try_recv().unwrap();
+        assert_eq!(response.serial, 77);
+        assert!(matches!(response.pdu, Pdu::UnitResponse(_)));
+
+        let state = harness.handler.render_scheduler.state.lock().unwrap();
+        assert!(state.active);
+        assert_eq!(state.dirty.len(), 1);
+        assert_eq!(harness.render_batches.len(), 1);
     }
 
     #[test]

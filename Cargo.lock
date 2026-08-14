@@ -6796,6 +6796,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "log",
+ "metrics",
  "mux",
  "parking_lot",
  "portable-pty",
