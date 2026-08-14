@@ -2139,10 +2139,11 @@ impl TermWindow {
 
     fn update_title_impl(&mut self) {
         let mux = Mux::get();
-        let window = match mux.get_window(self.mux_window_id) {
-            Some(window) => window,
-            _ => return,
-        };
+        // Do not retain this read guard while gathering tab and pane information;
+        // those helpers may acquire the window lock again.
+        if mux.get_window(self.mux_window_id).is_none() {
+            return;
+        }
         let tabs = self.get_tab_information();
         let panes = self.get_pane_information();
         let active_tab = tabs.iter().find(|t| t.is_active).cloned();
@@ -2190,11 +2191,10 @@ impl TermWindow {
             }
         }
 
-        let num_tabs = window.len();
+        let num_tabs = tabs.len();
         if num_tabs == 0 {
             return;
         }
-        drop(window);
 
         let title = match config::run_immediate_with_lua_config(|lua| {
             if let Some(lua) = lua {
