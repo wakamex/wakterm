@@ -558,7 +558,7 @@ mod tests {
     };
     use crate::termwindow::{PaneInformation, TabInformation};
     use config::{ConfigHandle, RgbaColor, TabBarColorIntensity, TabBarColorPalette};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use tempfile::tempdir;
     use wakterm_term::Progress;
 
@@ -584,7 +584,7 @@ mod tests {
                 user_vars: Default::default(),
                 progress: Progress::None,
             }),
-            harness_icon: None,
+            harness_icons: vec![],
             assigned_color: None,
             window_id: 0,
             tab_title: title.to_string(),
@@ -636,6 +636,38 @@ mod tests {
                 .map(|(key, color)| (key, String::from(color)))
                 .collect::<BTreeMap<_, _>>()
         );
+    }
+
+    #[test]
+    fn assign_tab_colors_reuses_persisted_title_mapping_after_reload() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("tab-colors.json");
+        let background = tab_bar_background(&ConfigHandle::default_config());
+        let palette = candidate_palette(TabBarColorPalette::Mixed, background);
+        let key = stable_tab_key(&tab(1, "wakterm"));
+        let mut store = AssignmentStore {
+            loaded: true,
+            assignments: BTreeMap::new(),
+        };
+        let first_color = assign_colors_for_keys(
+            &mut store.assignments,
+            BTreeSet::from([key.clone()]),
+            &palette,
+            background,
+        )[&key];
+
+        store.save_to(&path).unwrap();
+        let mut loaded = AssignmentStore::load_from(&path);
+
+        let reloaded_key = stable_tab_key(&tab(2, "wakterm"));
+        let second_color = assign_colors_for_keys(
+            &mut loaded.assignments,
+            BTreeSet::from([reloaded_key.clone()]),
+            &palette,
+            background,
+        )[&reloaded_key];
+
+        assert_eq!(String::from(second_color), String::from(first_color));
     }
 
     #[test]
