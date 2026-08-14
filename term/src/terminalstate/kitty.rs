@@ -17,9 +17,12 @@ use wakterm_escape_parser::apc::{
 };
 use wakterm_surface::change::ImageData;
 
+const MAX_KITTY_ACCUMULATED_ENCODED_BYTES: usize = 16 * 1024 * 1024;
+
 #[derive(Debug, Default)]
 pub struct KittyImageState {
     accumulator: Vec<KittyImage>,
+    accumulator_bytes: usize,
     max_image_id: u32,
     number_to_id: HashMap<u32, u32>,
     id_to_data: HashMap<u32, Arc<ImageData>>,
@@ -28,6 +31,28 @@ pub struct KittyImageState {
 }
 
 impl KittyImageState {
+    fn accumulate_chunk(&mut self, img: KittyImage) -> anyhow::Result<()> {
+        let chunk_len = match &img {
+            KittyImage::TransmitData { transmit, .. }
+            | KittyImage::TransmitDataAndDisplay { transmit, .. }
+            | KittyImage::TransmitFrame { transmit, .. }
+            | KittyImage::Query { transmit } => transmit.data.encoded_len().unwrap_or(0),
+            _ => 0,
+        };
+        let next_len = self.accumulator_bytes.saturating_add(chunk_len);
+        if next_len > MAX_KITTY_ACCUMULATED_ENCODED_BYTES {
+            self.accumulator.clear();
+            self.accumulator_bytes = 0;
+            anyhow::bail!(
+                "kitty image accumulation exceeded {} encoded bytes",
+                MAX_KITTY_ACCUMULATED_ENCODED_BYTES
+            );
+        }
+        self.accumulator_bytes = next_len;
+        self.accumulator.push(img);
+        Ok(())
+    }
+
     fn remove_data_for_id(&mut self, image_id: u32) {
         if let Some(data) = self.id_to_data.remove(&image_id) {
             self.used_memory = self.used_memory.saturating_sub(data.len());
@@ -69,6 +94,10 @@ impl KittyImageState {
 }
 
 impl TerminalState {
+    fn accumulate_kitty_chunk(&mut self, img: KittyImage) -> anyhow::Result<()> {
+        self.kitty_img.accumulate_chunk(img)
+    }
+
     fn kitty_img_place(
         &mut self,
         image_id: Option<u32>,
@@ -178,26 +207,28 @@ impl TerminalState {
         }
         let verbosity = img.verbosity();
         match img {
-            KittyImage::Query { transmit } => match transmit.data.load_data() {
-                Ok(_) => {
-                    self.kitty_send_response(
-                        verbosity,
-                        true,
-                        transmit.image_id,
-                        transmit.image_number,
-                        "OK".to_string(),
-                    );
+            KittyImage::Query { transmit } => {
+                match transmit.data.load_data_with_limit(MAX_IMAGE_BYTES) {
+                    Ok(_) => {
+                        self.kitty_send_response(
+                            verbosity,
+                            true,
+                            transmit.image_id,
+                            transmit.image_number,
+                            "OK".to_string(),
+                        );
+                    }
+                    Err(err) => {
+                        self.kitty_send_response(
+                            verbosity,
+                            false,
+                            transmit.image_id,
+                            transmit.image_number,
+                            format!("ERROR:{:#}", err),
+                        );
+                    }
                 }
-                Err(err) => {
-                    self.kitty_send_response(
-                        verbosity,
-                        false,
-                        transmit.image_id,
-                        transmit.image_number,
-                        format!("ERROR:{:#}", err),
-                    );
-                }
-            },
+            }
             KittyImage::TransmitData {
                 transmit,
                 verbosity,
@@ -208,7 +239,7 @@ impl TerminalState {
                     verbosity,
                 };
                 if more_data_follows {
-                    self.kitty_img.accumulator.push(img);
+                    self.accumulate_kitty_chunk(img)?;
                 } else {
                     self.kitty_img_inner(img)?;
                 }
@@ -225,7 +256,7 @@ impl TerminalState {
                     verbosity,
                 };
                 if more_data_follows {
-                    self.kitty_img.accumulator.push(img);
+                    self.accumulate_kitty_chunk(img)?;
                 } else {
                     self.kitty_img_inner(img)?;
                 }
@@ -764,13 +795,13 @@ impl TerminalState {
 
         let data = transmit
             .data
-            .load_data()
+            .load_data_with_limit(MAX_IMAGE_BYTES)
             .context("data should have been materialized in coalesce_kitty_accumulation")?;
 
         let data = match transmit.compression {
             KittyImageCompression::None => data,
             KittyImageCompression::Deflate => {
-                miniz_oxide::inflate::decompress_to_vec_zlib(&data)
+                miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&data, MAX_IMAGE_BYTES)
                     .map_err(|e| anyhow::anyhow!("decompressing data: {:?}", e))?
             }
         };
@@ -857,7 +888,8 @@ impl TerminalState {
             let place;
             let final_verbosity = img.verbosity();
 
-            self.kitty_img.accumulator.push(img);
+            self.accumulate_kitty_chunk(img)?;
+            self.kitty_img.accumulator_bytes = 0;
 
             let mut empty_data = KittyImageData::Direct(String::new());
             match self.kitty_img.accumulator.remove(0) {
@@ -897,7 +929,7 @@ impl TerminalState {
                     }
                     KittyImageData::Direct(b) => {
                         if !b.is_empty() {
-                            b64_decoded.append(&mut data.load_data()?);
+                            b64_decoded.append(&mut data.load_data_with_limit(MAX_IMAGE_BYTES)?);
                         }
                     }
                     data => {
@@ -976,4 +1008,26 @@ where
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn multi_chunk_accumulation_is_bounded_and_cleared_on_overflow() {
+        let payload = "A".repeat(1024 * 1024);
+        let command = format!("Gm=1;{payload}");
+        let chunk = KittyImage::parse_apc(command.as_bytes()).unwrap();
+        let mut state = KittyImageState::default();
+
+        for _ in 0..(MAX_KITTY_ACCUMULATED_ENCODED_BYTES / payload.len()) {
+            state.accumulate_chunk(chunk.clone()).unwrap();
+        }
+        assert_eq!(state.accumulator_bytes, MAX_KITTY_ACCUMULATED_ENCODED_BYTES);
+
+        assert!(state.accumulate_chunk(chunk).is_err());
+        assert_eq!(state.accumulator_bytes, 0);
+        assert!(state.accumulator.is_empty());
+    }
 }

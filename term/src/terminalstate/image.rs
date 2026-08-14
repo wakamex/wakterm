@@ -270,17 +270,21 @@ impl TerminalState {
     }
 }
 
+pub(crate) const MAX_IMAGE_BYTES: usize = 100_000_000;
+
 pub(crate) fn check_image_dimensions(width: u32, height: u32) -> anyhow::Result<()> {
-    const MAX_IMAGE_SIZE: u32 = 100_000_000;
-    let size = width.saturating_mul(height).saturating_mul(4);
-    if size > MAX_IMAGE_SIZE {
+    let size = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .unwrap_or(usize::MAX);
+    if size > MAX_IMAGE_BYTES {
         anyhow::bail!(
             "Ignoring image data for image with dimensions {}x{} \
              because required RAM {} > max allowed {}",
             width,
             height,
             SizeFormatter::new(size, DECIMAL),
-            SizeFormatter::new(MAX_IMAGE_SIZE, DECIMAL),
+            SizeFormatter::new(MAX_IMAGE_BYTES, DECIMAL),
         );
     }
     if size == 0 {
