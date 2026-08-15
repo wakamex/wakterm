@@ -1860,7 +1860,6 @@ impl Mux {
         };
 
         let runtime_by_pane = self.agent_runtime_by_pane.read();
-        let detected_agent_panes = self.detected_agent_panes.read();
         let mut seen = std::collections::HashSet::new();
         let mut icons = Vec::new();
 

@@ -1093,6 +1093,7 @@ fn mouse_press_to_tmb(press: &MousePress) -> TMB {
 }
 
 /// Result of resolving which pane a mouse event targets.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedMouseTarget {
     /// The pane that should handle this event.
@@ -1111,6 +1112,7 @@ pub(crate) struct ResolvedMouseTarget {
 ///
 /// This exists so we can unit-test the coordinate logic that goes wrong on
 /// cross-pane drag release.
+#[cfg(test)]
 pub(crate) fn resolve_mouse_pane(
     column: usize,
     row: i64,
@@ -1166,6 +1168,7 @@ pub(crate) fn resolve_mouse_pane(
 }
 
 /// Simplified pane position for testing (avoids needing Arc<dyn Pane>).
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) struct PanePosition {
     pub pane_id: mux::pane::PaneId,

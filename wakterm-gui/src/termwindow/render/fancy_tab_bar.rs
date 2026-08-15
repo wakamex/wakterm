@@ -511,7 +511,6 @@ impl crate::TermWindow {
         let gl_state = self.render_state.as_ref().unwrap();
         let font = self.fonts.title_font()?;
         let metrics = RenderMetrics::with_font_metrics(&font.metrics());
-        let tab_bar_height = self.tab_bar_pixel_height()?;
         let items = self.tab_bar.items();
         let colors = self
             .config
