@@ -240,10 +240,65 @@ impl WindowEventSender {
     }
 
     pub fn dispatch(&mut self, event: WindowEvent) {
+        self.try_dispatch(event);
+    }
+
+    pub(crate) fn try_dispatch(&mut self, event: WindowEvent) -> bool {
         if let Some(window) = self.window.as_ref() {
             log::trace!("{:?}", event);
             (self.handler)(event, window);
+            true
+        } else {
+            false
         }
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Default)]
+pub(crate) struct FocusEventState {
+    last_dispatched: Option<bool>,
+}
+
+#[cfg(any(target_os = "windows", test))]
+impl FocusEventState {
+    pub(crate) fn dispatch_if_changed<F>(&mut self, focused: bool, dispatch: F)
+    where
+        F: FnOnce(bool) -> bool,
+    {
+        if self.last_dispatched == Some(focused) {
+            return;
+        }
+
+        if dispatch(focused) {
+            self.last_dispatched = Some(focused);
+        }
+    }
+}
+
+#[cfg(test)]
+mod focus_event_tests {
+    use super::FocusEventState;
+
+    #[test]
+    fn retries_undelivered_focus_and_deduplicates_success() {
+        let mut state = FocusEventState::default();
+        let mut attempts = 0;
+
+        state.dispatch_if_changed(true, |_| {
+            attempts += 1;
+            false
+        });
+        state.dispatch_if_changed(true, |_| {
+            attempts += 1;
+            true
+        });
+        state.dispatch_if_changed(true, |_| {
+            attempts += 1;
+            true
+        });
+
+        assert_eq!(attempts, 2);
     }
 }
 

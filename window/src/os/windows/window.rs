@@ -2,10 +2,10 @@ use super::*;
 use crate::connection::ConnectionOps;
 use crate::parameters::{self, Parameters};
 use crate::{
-    Appearance, Clipboard, DeadKeyStatus, Dimensions, Handled, KeyCode, KeyEvent, Modifiers,
-    MouseButtons, MouseCursor, MouseEvent, MouseEventKind, MousePress, Point, RawKeyEvent, Rect,
-    RequestedWindowGeometry, ResolvedGeometry, ScreenPoint, ScreenRect, ULength, WindowDecorations,
-    WindowEvent, WindowEventSender, WindowOps, WindowState,
+    Appearance, Clipboard, DeadKeyStatus, Dimensions, FocusEventState, Handled, KeyCode, KeyEvent,
+    Modifiers, MouseButtons, MouseCursor, MouseEvent, MouseEventKind, MousePress, Point,
+    RawKeyEvent, Rect, RequestedWindowGeometry, ResolvedGeometry, ScreenPoint, ScreenRect, ULength,
+    WindowDecorations, WindowEvent, WindowEventSender, WindowOps, WindowState,
 };
 use anyhow::{bail, Context};
 use async_trait::async_trait;
@@ -109,6 +109,7 @@ pub(crate) struct WindowInner {
     hwnd: HWindow,
     placement_registry_name: String,
     events: WindowEventSender,
+    focus_events: FocusEventState,
     gl_state: Option<Rc<glium::backend::Context>>,
     /// Fraction of mouse scroll
     hscroll_remainder: i16,
@@ -696,6 +697,7 @@ impl Window {
             placement_registry_name: window_placement_registry_name(class_name),
             appearance,
             events,
+            focus_events: FocusEventState::default(),
             gl_state: None,
             vscroll_remainder: 0,
             hscroll_remainder: 0,
@@ -771,12 +773,28 @@ fn schedule_show_window(hwnd: HWindow, show: ShowWindowCommand) {
                     ShowWindowCommand::Maximize => SW_MAXIMIZE,
                 },
             );
+
+            // Showing a window can leave it with keyboard focus without a
+            // corresponding WM_SETFOCUS reaching the event handler. Reconcile
+            // against the native state so mouse input and cursor rendering do
+            // not remain stuck in their unfocused state.
+            let focused = GetFocus() == hwnd.0;
+            if let Some(inner) = rc_from_hwnd(hwnd.0) {
+                inner.borrow_mut().dispatch_focus_changed(focused);
+            }
         }
     })
     .detach();
 }
 
 impl WindowInner {
+    fn dispatch_focus_changed(&mut self, focused: bool) {
+        let events = &mut self.events;
+        self.focus_events.dispatch_if_changed(focused, |focused| {
+            events.try_dispatch(WindowEvent::FocusChanged(focused))
+        });
+    }
+
     fn close(&mut self) {
         self.persist_window_placement();
         let hwnd = self.hwnd;
@@ -1763,8 +1781,7 @@ unsafe fn wm_set_focus(
 ) -> Option<LRESULT> {
     rc_from_hwnd(hwnd)?
         .borrow_mut()
-        .events
-        .dispatch(WindowEvent::FocusChanged(true));
+        .dispatch_focus_changed(true);
     None
 }
 
@@ -1776,8 +1793,7 @@ unsafe fn wm_kill_focus(
 ) -> Option<LRESULT> {
     rc_from_hwnd(hwnd)?
         .borrow_mut()
-        .events
-        .dispatch(WindowEvent::FocusChanged(false));
+        .dispatch_focus_changed(false);
     None
 }
 
