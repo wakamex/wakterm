@@ -3863,6 +3863,8 @@ mod test {
                     cwd: PathBuf::from(cwd),
                     status: LocalProcessStatus::Run,
                     start_time: 1,
+                    #[cfg(windows)]
+                    console: 0,
                     children: HashMap::new(),
                 }),
             })
@@ -3901,6 +3903,8 @@ mod test {
                     cwd: PathBuf::from(cwd_path),
                     status: LocalProcessStatus::Run,
                     start_time: 1,
+                    #[cfg(windows)]
+                    console: 0,
                     children: HashMap::new(),
                 }),
             })
@@ -4438,6 +4442,8 @@ mod test {
                 cwd: PathBuf::from("/tmp/claude-exit"),
                 status: LocalProcessStatus::Run,
                 start_time: 1,
+                #[cfg(windows)]
+                console: 0,
                 children: HashMap::new(),
             }),
         });

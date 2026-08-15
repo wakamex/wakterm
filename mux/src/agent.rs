@@ -1905,6 +1905,8 @@ mod test {
             cwd: PathBuf::from("/tmp"),
             status: procinfo::LocalProcessStatus::Run,
             start_time,
+            #[cfg(windows)]
+            console: 0,
             children: children
                 .into_iter()
                 .map(|child| (child.pid, child))
