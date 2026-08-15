@@ -4148,7 +4148,11 @@ mod test {
         let paste_calls = paste_calls.borrow();
         assert_eq!(paste_calls.len(), 1);
         assert_eq!(paste_calls[0].pane_id, 30);
-        assert_eq!(paste_calls[0].data, format!("cd {start_cwd} && codex"));
+        let quoted_start_cwd = shlex::try_quote(&start_cwd).unwrap();
+        assert_eq!(
+            paste_calls[0].data,
+            format!("cd {quoted_start_cwd} && codex")
+        );
 
         let key_calls = key_calls.borrow();
         assert_eq!(key_calls.len(), 1);
@@ -4308,6 +4312,10 @@ mod test {
         let paste_calls = paste_calls.borrow();
         assert_eq!(paste_calls.len(), 1);
         let start_cwd = test_path_string("agent-start");
-        assert_eq!(paste_calls[0].data, format!("cd {start_cwd} && exec codex"));
+        let quoted_start_cwd = shlex::try_quote(&start_cwd).unwrap();
+        assert_eq!(
+            paste_calls[0].data,
+            format!("cd {quoted_start_cwd} && exec codex")
+        );
     }
 }
