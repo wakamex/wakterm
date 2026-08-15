@@ -94,7 +94,10 @@ pub enum MuxNotification {
         window_id: WindowId,
     },
     PaneFocused(PaneId),
-    TabResized(TabId),
+    TabResized {
+        tab_id: TabId,
+        origin: Option<Arc<ClientId>>,
+    },
     TabTitleChanged {
         tab_id: TabId,
         title: String,
@@ -2862,6 +2865,13 @@ impl Mux {
         }
         let mut subscribers = self.subscribers.write();
         subscribers.retain(|_, notify| notify(notification.clone()));
+    }
+
+    pub fn notify_tab_resized(&self, tab_id: TabId) {
+        self.notify(MuxNotification::TabResized {
+            tab_id,
+            origin: self.active_identity(),
+        });
     }
 
     pub fn notify_from_any_thread(notification: MuxNotification) {

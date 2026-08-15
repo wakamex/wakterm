@@ -1474,7 +1474,7 @@ impl TermWindow {
                     // Also handled by clientpane
                     self.update_title_post_status();
                 }
-                MuxNotification::TabResized(tab_id) => {
+                MuxNotification::TabResized { tab_id, .. } => {
                     log::debug!("termwindow handling TabResized tab_id={tab_id}");
                     // Resize/topology changes need a full repaint so that
                     // pane backgrounds and glyphs don't linger in regions
@@ -1685,7 +1685,7 @@ impl TermWindow {
                 dead.store(true, Ordering::Relaxed);
                 return false;
             }
-            MuxNotification::TabResized(tab_id)
+            MuxNotification::TabResized { tab_id, .. }
             | MuxNotification::TabTitleChanged { tab_id, .. } => {
                 let mux = Mux::get();
                 if mux.window_containing_tab(tab_id) == Some(mux_window_id) {

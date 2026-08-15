@@ -58,7 +58,7 @@ fn notification_key(notification: &MuxNotification) -> Option<NotificationKey> {
             Some(NotificationKey::WindowWorkspace(*window_id))
         }
         MuxNotification::PaneFocused(_) => Some(NotificationKey::PaneFocus),
-        MuxNotification::TabResized(tab_id) => Some(NotificationKey::TabResized(*tab_id)),
+        MuxNotification::TabResized { tab_id, .. } => Some(NotificationKey::TabResized(*tab_id)),
         MuxNotification::TabTitleChanged { tab_id, .. } => Some(NotificationKey::TabTitle(*tab_id)),
         MuxNotification::WindowTitleChanged { window_id, .. } => {
             Some(NotificationKey::WindowTitle(*window_id))
@@ -306,9 +306,8 @@ where
                 .await?;
             stream.flush().await.context("flushing PDU to client")?;
         }
-        MuxNotification::TabResized(tab_id) => {
-            let dominated_by_self = handler.recent_resize_tab(tab_id);
-            if !dominated_by_self {
+        MuxNotification::TabResized { tab_id, origin } => {
+            if !handler.notification_originates_here(origin.as_ref()) {
                 Pdu::TabResized(codec::TabResized { tab_id })
                     .encode_async(stream, 0)
                     .await?;

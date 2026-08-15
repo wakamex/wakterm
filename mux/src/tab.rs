@@ -1253,7 +1253,7 @@ impl TabInner {
                 self.zoomed.replace(pane);
             }
         }
-        Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
+        Mux::try_get().map(|mux| mux.notify_tab_resized(self.id));
     }
 
     fn contains_pane(&self, pane: PaneId) -> bool {
@@ -1346,7 +1346,7 @@ impl TabInner {
         if let Some(pane) = self.get_active_pane() {
             pane.send_rotate_panes(self.id, true);
         }
-        Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
+        Mux::try_get().map(|mux| mux.notify_tab_resized(self.id));
     }
 
     fn iter_panes_impl(&mut self, respect_zoom_state: bool) -> Vec<PositionedPane> {
@@ -1542,7 +1542,7 @@ impl TabInner {
             debug_assert_tree_invariants(self.pane.as_ref().unwrap(), &self.size);
         }
 
-        Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
+        Mux::try_get().map(|mux| mux.notify_tab_resized(self.id));
     }
 
     fn apply_pane_size(&mut self, pane_size: TerminalSize, cursor: &mut Cursor) {
@@ -1622,7 +1622,7 @@ impl TabInner {
                 debug_assert_tree_invariants(root, &self.size);
             }
         }
-        Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
+        Mux::try_get().map(|mux| mux.notify_tab_resized(self.id));
     }
 
     fn resize_split_by(&mut self, split_index: usize, delta: isize) {
@@ -1655,7 +1655,7 @@ impl TabInner {
         // Now cursor is looking at the split
         self.adjust_node_at_cursor(&mut cursor, delta);
         self.cascade_size_from_cursor(cursor);
-        Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
+        Mux::try_get().map(|mux| mux.notify_tab_resized(self.id));
     }
 
     fn adjust_node_at_cursor(&mut self, cursor: &mut Cursor, delta: isize) {
@@ -1743,7 +1743,7 @@ impl TabInner {
         if let Some(active_pane) = self.get_active_pane() {
             active_pane.send_resize_batch(self.id, pane_sizes);
         }
-        Mux::try_get().map(|mux| mux.notify(MuxNotification::TabResized(self.id)));
+        Mux::try_get().map(|mux| mux.notify_tab_resized(self.id));
     }
 
     fn adjust_pane_size(&mut self, direction: PaneDirection, amount: usize) {

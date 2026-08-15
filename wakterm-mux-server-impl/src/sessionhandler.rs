@@ -420,10 +420,6 @@ pub struct SessionHandler {
     per_pane: HashMap<TabId, Arc<Mutex<PerPane>>>,
     client_id: Option<Arc<ClientId>>,
     proxy_client_id: Option<ClientId>,
-    /// Tracks which tabs this session recently resized, to suppress
-    /// self-echo TabResized notifications while forwarding those
-    /// from other sessions (multi-client support).
-    recent_resizes: HashMap<TabId, std::time::Instant>,
 }
 
 impl Drop for SessionHandler {
@@ -443,26 +439,13 @@ impl SessionHandler {
             per_pane: HashMap::new(),
             client_id: None,
             proxy_client_id: None,
-            recent_resizes: HashMap::new(),
         }
     }
 
-    /// Record that this session just processed a resize for a tab.
-    pub fn note_resize_tab(&mut self, tab_id: TabId) {
-        self.recent_resizes
-            .insert(tab_id, std::time::Instant::now());
-    }
-
-    /// Check if this session recently resized the given tab (within 2 seconds).
-    /// Used to suppress self-echo TabResized notifications.
-    pub fn recent_resize_tab(&mut self, tab_id: TabId) -> bool {
-        if let Some(when) = self.recent_resizes.get(&tab_id) {
-            if when.elapsed() < std::time::Duration::from_secs(2) {
-                return true;
-            }
-            self.recent_resizes.remove(&tab_id);
-        }
-        false
+    pub fn notification_originates_here(&self, origin: Option<&Arc<ClientId>>) -> bool {
+        origin
+            .zip(self.client_id.as_ref())
+            .is_some_and(|(origin, client_id)| origin == client_id)
     }
 
     pub fn tab_title_for_client(&self, tab_id: TabId) -> codec::TabTitleChanged {
@@ -1003,11 +986,12 @@ impl SessionHandler {
                 pane_id,
                 size,
             }) => {
-                self.note_resize_tab(containing_tab_id);
+                let client_id = self.client_id.clone();
                 spawn_into_main_thread(async move {
                     catch(
                         move || {
                             let mux = Mux::get();
+                            let _identity = mux.with_identity(client_id);
                             let pane = mux
                                 .get_pane(pane_id)
                                 .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
@@ -1016,6 +1000,7 @@ impl SessionHandler {
                                 .get_tab(containing_tab_id)
                                 .ok_or_else(|| anyhow!("no such tab {}", containing_tab_id))?;
                             tab.rebuild_splits_sizes_from_contained_panes();
+                            mux.notify_tab_resized(containing_tab_id);
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
@@ -1025,11 +1010,12 @@ impl SessionHandler {
             }
 
             Pdu::ResizeTab(ResizeTab { tab_id, pane_sizes }) => {
-                self.note_resize_tab(tab_id);
+                let client_id = self.client_id.clone();
                 spawn_into_main_thread(async move {
                     catch(
                         move || {
                             let mux = Mux::get();
+                            let _identity = mux.with_identity(client_id);
                             // Apply all pane sizes atomically, then rebuild once
                             let tab = mux
                                 .get_tab(tab_id)
@@ -1070,6 +1056,7 @@ impl SessionHandler {
                             }
                             tab.rebuild_splits_sizes_from_contained_panes();
                             tab.log_runtime_invariant_errors("server.resize_tab");
+                            mux.notify_tab_resized(tab_id);
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
                         send_response,
@@ -1925,6 +1912,29 @@ mod test {
                 executor.tick().unwrap();
             }
         }
+    }
+
+    #[test]
+    fn resize_notifications_are_suppressed_only_for_the_originating_client() {
+        let client_a = Arc::new(ClientId::new());
+        let client_b = Arc::new(ClientId::new());
+        let mut handler_a = HandlerHarness::new(client_a.clone());
+        let mut handler_b = HandlerHarness::new(client_b.clone());
+        let unregistered = HandlerHarness::new_unregistered();
+
+        assert!(handler_a
+            .handler
+            .notification_originates_here(Some(&client_a)));
+        assert!(!handler_b
+            .handler
+            .notification_originates_here(Some(&client_a)));
+        assert!(!unregistered
+            .handler
+            .notification_originates_here(Some(&client_a)));
+        assert!(!handler_a.handler.notification_originates_here(None));
+
+        handler_a.handler.client_id.take();
+        handler_b.handler.client_id.take();
     }
 
     struct TestLayout {
