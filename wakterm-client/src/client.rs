@@ -496,6 +496,34 @@ fn process_unilateral(
 
             return Ok(());
         }
+        Pdu::TabOrderChanged(TabOrderChanged { window_id, tab_ids }) => {
+            let window_id = *window_id;
+            let tab_ids = tab_ids.clone();
+            promise::spawn::spawn_into_main_thread(async move {
+                let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
+                let client_domain = mux
+                    .get_domain(local_domain_id)
+                    .ok_or_else(|| anyhow!("no such domain {}", local_domain_id))?;
+                let client_domain =
+                    client_domain
+                        .downcast_ref::<ClientDomain>()
+                        .ok_or_else(|| {
+                            anyhow!("domain {} is not a ClientDomain instance", local_domain_id)
+                        })?;
+
+                if let Err(err) = client_domain.process_remote_tab_order(window_id, &tab_ids) {
+                    log::warn!(
+                        "cannot apply remote tab order for window {}: {:#}; resyncing",
+                        window_id,
+                        err
+                    );
+                    client_domain.resync_coalesced().await?;
+                }
+                anyhow::Result::<()>::Ok(())
+            })
+            .detach();
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -1703,6 +1731,7 @@ impl Client {
     rpc!(mouse_event, SendMouseEvent, UnitResponse);
     rpc!(resize, Resize, UnitResponse);
     rpc!(resize_tab, ResizeTab, UnitResponse);
+    rpc!(set_tab_order, SetTabOrder, UnitResponse);
     rpc!(rotate_panes, RotatePanes, UnitResponse);
     rpc!(set_zoomed, SetPaneZoomed, UnitResponse);
     rpc!(activate_pane_direction, ActivatePaneDirection, UnitResponse);

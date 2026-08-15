@@ -98,6 +98,11 @@ pub enum MuxNotification {
         tab_id: TabId,
         origin: Option<Arc<ClientId>>,
     },
+    TabOrderChanged {
+        window_id: WindowId,
+        tab_ids: Vec<TabId>,
+        origin: Option<Arc<ClientId>>,
+    },
     TabTitleChanged {
         tab_id: TabId,
         title: String,
@@ -2870,6 +2875,14 @@ impl Mux {
     pub fn notify_tab_resized(&self, tab_id: TabId) {
         self.notify(MuxNotification::TabResized {
             tab_id,
+            origin: self.active_identity(),
+        });
+    }
+
+    pub fn notify_tab_order_changed(&self, window_id: WindowId, tab_ids: Vec<TabId>) {
+        self.notify(MuxNotification::TabOrderChanged {
+            window_id,
+            tab_ids,
             origin: self.active_identity(),
         });
     }

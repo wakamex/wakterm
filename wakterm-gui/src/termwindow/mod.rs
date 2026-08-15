@@ -1460,6 +1460,7 @@ impl TermWindow {
                     window.invalidate();
                     self.update_title_post_status();
                 }
+                MuxNotification::TabOrderChanged { .. } => {}
                 MuxNotification::WindowRemoved(_window_id) => {
                     // Handled by frontend
                 }
@@ -1671,6 +1672,7 @@ impl TermWindow {
                 return mux.get_window(mux_window_id).is_some();
             }
             MuxNotification::TabAddedToWindow { window_id, .. }
+            | MuxNotification::TabOrderChanged { window_id, .. }
             | MuxNotification::WindowTitleChanged { window_id, .. }
             | MuxNotification::WindowInvalidated(window_id) => {
                 if window_id != mux_window_id {
@@ -2440,10 +2442,11 @@ impl TermWindow {
         ensure!(tab_idx < max, "cannot move a tab out of range");
 
         let moved_tab_id = window.move_by_idx(active, tab_idx).tab_id();
+        let tab_ids = window.iter().map(|tab| tab.tab_id()).collect();
 
         drop(window);
         mux.set_active_tab_for_current_identity(self.mux_window_id, moved_tab_id)?;
-        mux.notify(MuxNotification::WindowInvalidated(self.mux_window_id));
+        mux.notify_tab_order_changed(self.mux_window_id, tab_ids);
         self.update_title();
         self.update_scrollbar();
 

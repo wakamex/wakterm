@@ -1,6 +1,8 @@
 use crate::pane::CloseReason;
 use crate::{Mux, MuxNotification, Tab, TabId};
+use anyhow::{bail, ensure};
 use config::GuiPosition;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 static WIN_ID: ::std::sync::atomic::AtomicUsize = ::std::sync::atomic::AtomicUsize::new(0);
@@ -94,6 +96,94 @@ impl Window {
         self.tabs.insert(to, Arc::clone(&tab));
         self.invalidate();
         tab
+    }
+
+    /// Apply a complete tab order without emitting a notification.
+    /// The caller is responsible for notifying after releasing the window lock.
+    pub fn apply_tab_order(&mut self, tab_ids: &[TabId]) -> anyhow::Result<bool> {
+        ensure!(
+            tab_ids.len() == self.tabs.len(),
+            "tab order for window {} has {} tabs, expected {}",
+            self.id,
+            tab_ids.len(),
+            self.tabs.len()
+        );
+        let desired = tab_ids.iter().copied().collect::<HashSet<_>>();
+        ensure!(
+            desired.len() == tab_ids.len(),
+            "tab order for window {} contains duplicate tab ids",
+            self.id
+        );
+        let current = self
+            .tabs
+            .iter()
+            .map(|tab| tab.tab_id())
+            .collect::<HashSet<_>>();
+        ensure!(
+            desired == current,
+            "tab order for window {} does not match its current tabs",
+            self.id
+        );
+        if self
+            .tabs
+            .iter()
+            .map(|tab| tab.tab_id())
+            .eq(tab_ids.iter().copied())
+        {
+            return Ok(false);
+        }
+
+        let by_id = self
+            .tabs
+            .drain(..)
+            .map(|tab| (tab.tab_id(), tab))
+            .collect::<HashMap<_, _>>();
+        self.tabs = tab_ids
+            .iter()
+            .map(|tab_id| Arc::clone(by_id.get(tab_id).expect("validated tab id")))
+            .collect();
+        Ok(true)
+    }
+
+    /// Reorder only the listed tabs while preserving the positions of tabs
+    /// belonging to other domains. Does not emit a notification.
+    pub fn apply_tab_order_subset(&mut self, tab_ids: &[TabId]) -> anyhow::Result<bool> {
+        let desired = tab_ids.iter().copied().collect::<HashSet<_>>();
+        ensure!(
+            desired.len() == tab_ids.len(),
+            "tab order subset for window {} contains duplicate tab ids",
+            self.id
+        );
+
+        let current_subset = self
+            .tabs
+            .iter()
+            .filter_map(|tab| desired.contains(&tab.tab_id()).then_some(tab.tab_id()))
+            .collect::<Vec<_>>();
+        if current_subset.len() != tab_ids.len() {
+            bail!(
+                "tab order subset for window {} contains an unknown tab id",
+                self.id
+            );
+        }
+        if current_subset == tab_ids {
+            return Ok(false);
+        }
+
+        let by_id = self
+            .tabs
+            .iter()
+            .filter(|tab| desired.contains(&tab.tab_id()))
+            .map(|tab| (tab.tab_id(), Arc::clone(tab)))
+            .collect::<HashMap<_, _>>();
+        let mut ordered = tab_ids.iter();
+        for tab in &mut self.tabs {
+            if desired.contains(&tab.tab_id()) {
+                let tab_id = ordered.next().expect("validated subset length");
+                *tab = Arc::clone(by_id.get(tab_id).expect("validated tab id"));
+            }
+        }
+        Ok(true)
     }
 
     pub fn push(&mut self, tab: &Arc<Tab>) {
@@ -206,8 +296,10 @@ mod test {
 
     #[test]
     fn move_by_idx_reorders_tabs_without_duplication() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
         let mux = Arc::new(Mux::new(None));
         Mux::set_mux(&mux);
+        let _guard = crate::TestMuxGuard;
 
         let size = TerminalSize {
             rows: 24,
@@ -232,6 +324,50 @@ mod test {
         assert_eq!(
             window.iter().map(|tab| tab.tab_id()).collect::<Vec<_>>(),
             vec![tab_c.tab_id(), tab_a.tab_id(), tab_b.tab_id()]
+        );
+    }
+
+    #[test]
+    fn aggregate_tab_order_is_strict_and_subset_order_preserves_other_tabs() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = crate::TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let tab_a = Arc::new(Tab::new(&size));
+        let tab_x = Arc::new(Tab::new(&size));
+        let tab_b = Arc::new(Tab::new(&size));
+        let mut window = Window::new(None, None);
+        window.push(&tab_a);
+        window.push(&tab_x);
+        window.push(&tab_b);
+
+        assert!(window
+            .apply_tab_order_subset(&[tab_b.tab_id(), tab_a.tab_id()])
+            .unwrap());
+        assert_eq!(
+            window.iter().map(|tab| tab.tab_id()).collect::<Vec<_>>(),
+            vec![tab_b.tab_id(), tab_x.tab_id(), tab_a.tab_id()]
+        );
+        assert!(window
+            .apply_tab_order(&[tab_a.tab_id(), tab_x.tab_id(), tab_b.tab_id()])
+            .unwrap());
+        assert!(window
+            .apply_tab_order(&[tab_a.tab_id(), tab_a.tab_id(), tab_b.tab_id()])
+            .is_err());
+        assert!(window
+            .apply_tab_order(&[tab_a.tab_id(), tab_b.tab_id()])
+            .is_err());
+        assert_eq!(
+            window.iter().map(|tab| tab.tab_id()).collect::<Vec<_>>(),
+            vec![tab_a.tab_id(), tab_x.tab_id(), tab_b.tab_id()]
         );
     }
 }

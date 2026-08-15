@@ -463,7 +463,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 59;
+pub const CODEC_VERSION: usize = 60;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -538,6 +538,8 @@ pdu! {
     ClearAgentMetadata: 69,
     ListAgentsCached: 70,
     ListAgentsCachedResponse: 71,
+    SetTabOrder: 72,
+    TabOrderChanged: 73,
 }
 
 impl Pdu {
@@ -553,6 +555,7 @@ impl Pdu {
             | Self::Resize(_)
             | Self::SetClipboard(_)
             | Self::SetPaneZoomed(_)
+            | Self::SetTabOrder(_)
             | Self::SpawnV2(_)
             | Self::SetAgentMetadata(_)
             | Self::ClearAgentMetadata(_) => true,
@@ -679,6 +682,18 @@ pub struct GetTlsCredsResponse {
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct ListPanes {}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug, Clone)]
+pub struct SetTabOrder {
+    pub window_id: WindowId,
+    pub tab_ids: Vec<TabId>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug, Clone)]
+pub struct TabOrderChanged {
+    pub window_id: WindowId,
+    pub tab_ids: Vec<TabId>,
+}
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct ListAgents {}
@@ -1569,6 +1584,27 @@ mod test {
             },
             Pdu::decode(encoded.as_slice()).unwrap()
         );
+    }
+
+    #[test]
+    fn tab_order_pdus_round_trip() {
+        for pdu in [
+            Pdu::SetTabOrder(SetTabOrder {
+                window_id: 7,
+                tab_ids: vec![3, 2, 1],
+            }),
+            Pdu::TabOrderChanged(TabOrderChanged {
+                window_id: 7,
+                tab_ids: vec![3, 2, 1],
+            }),
+        ] {
+            let mut encoded = Vec::new();
+            pdu.encode(&mut encoded, 42).unwrap();
+            assert_eq!(
+                Pdu::decode(encoded.as_slice()).unwrap(),
+                DecodedPdu { serial: 42, pdu }
+            );
+        }
     }
 
     #[test]

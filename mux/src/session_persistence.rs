@@ -811,7 +811,10 @@ mod test {
         mux.add_tab_and_active_pane(&second).unwrap();
         mux.add_tab_to_window(&second, window_a).unwrap();
 
-        mux.get_window_mut(window_a).unwrap().move_by_idx(1, 0);
+        mux.get_window_mut(window_a)
+            .unwrap()
+            .apply_tab_order(&[second.tab_id(), first.tab_id()])
+            .unwrap();
 
         let window_b = *mux.new_empty_window(Some("default".to_string()), None);
         let third = Arc::new(Tab::new(&tab_size));

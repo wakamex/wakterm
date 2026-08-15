@@ -1420,6 +1420,29 @@ impl SessionHandler {
                 .detach();
             }
 
+            Pdu::SetTabOrder(SetTabOrder { window_id, tab_ids }) => {
+                let client_id = self.client_id.clone();
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let mux = Mux::get();
+                            let _identity = mux.with_identity(client_id);
+                            let changed = mux
+                                .get_window_mut(window_id)
+                                .ok_or_else(|| anyhow!("no such window {}", window_id))?
+                                .apply_tab_order(&tab_ids)?;
+                            if changed {
+                                mux.notify(MuxNotification::WindowInvalidated(window_id));
+                                mux.notify_tab_order_changed(window_id, tab_ids);
+                            }
+                            Ok(Pdu::UnitResponse(UnitResponse {}))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
+
             Pdu::Invalid { .. } => send_response(Err(anyhow!("invalid PDU {:?}", decoded.pdu))),
             Pdu::Pong { .. }
             | Pdu::ListPanesResponse { .. }
@@ -1441,6 +1464,7 @@ impl SessionHandler {
             | Pdu::PaneRemoved { .. }
             | Pdu::PaneFocused { .. }
             | Pdu::TabResized { .. }
+            | Pdu::TabOrderChanged { .. }
             | Pdu::GetImageCellResponse { .. }
             | Pdu::MovePaneToNewTabResponse { .. }
             | Pdu::TabAddedToWindow { .. }
@@ -1935,6 +1959,127 @@ mod test {
 
         handler_a.handler.client_id.take();
         handler_b.handler.client_id.take();
+    }
+
+    #[test]
+    fn tab_order_requests_are_atomic_strict_and_last_accepted_wins() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+        let layout = build_test_layout(&mux);
+        let (client_a, view_a, mut handler_a) = register_test_client(&mux, "tab-order-a");
+        let (client_b, _view_b, mut handler_b) = register_test_client(&mux, "tab-order-b");
+        mux.set_active_tab_for_client_view(view_a.as_ref(), layout.window_id, layout.right_tab_id)
+            .unwrap();
+
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_subscription = observed.clone();
+        mux.subscribe(move |notification| {
+            if let MuxNotification::TabOrderChanged {
+                window_id,
+                tab_ids,
+                origin,
+            } = notification
+            {
+                observed_for_subscription
+                    .lock()
+                    .unwrap()
+                    .push((window_id, tab_ids, origin));
+            }
+            true
+        });
+
+        let cba = vec![layout.split_tab_id, layout.right_tab_id, layout.left_tab_id];
+        assert!(matches!(
+            handler_a.request(
+                &executor,
+                Pdu::SetTabOrder(SetTabOrder {
+                    window_id: layout.window_id,
+                    tab_ids: cba.clone(),
+                })
+            ),
+            Pdu::UnitResponse(_)
+        ));
+        assert_eq!(
+            mux.get_window(layout.window_id)
+                .unwrap()
+                .iter()
+                .map(|tab| tab.tab_id())
+                .collect::<Vec<_>>(),
+            cba
+        );
+        assert_eq!(
+            mux.get_active_tab_for_window_for_client(view_a.as_ref(), layout.window_id)
+                .map(|tab| tab.tab_id()),
+            Some(layout.right_tab_id)
+        );
+
+        let listed = match handler_b.request(&executor, Pdu::ListPanes(ListPanes {})) {
+            Pdu::ListPanesResponse(response) => response,
+            other => panic!("expected ListPanesResponse, got {:?}", other),
+        };
+        assert_eq!(
+            listed
+                .tabs
+                .iter()
+                .filter_map(|tab| tab.window_and_tab_ids().map(|(_, tab_id)| tab_id))
+                .collect::<Vec<_>>(),
+            cba
+        );
+
+        for invalid in [
+            vec![layout.left_tab_id, layout.left_tab_id, layout.split_tab_id],
+            vec![layout.left_tab_id, layout.right_tab_id],
+        ] {
+            assert!(matches!(
+                handler_a.request(
+                    &executor,
+                    Pdu::SetTabOrder(SetTabOrder {
+                        window_id: layout.window_id,
+                        tab_ids: invalid,
+                    })
+                ),
+                Pdu::ErrorResponse(_)
+            ));
+            assert_eq!(
+                mux.get_window(layout.window_id)
+                    .unwrap()
+                    .iter()
+                    .map(|tab| tab.tab_id())
+                    .collect::<Vec<_>>(),
+                cba
+            );
+        }
+
+        let abc = vec![layout.left_tab_id, layout.right_tab_id, layout.split_tab_id];
+        assert!(matches!(
+            handler_b.request(
+                &executor,
+                Pdu::SetTabOrder(SetTabOrder {
+                    window_id: layout.window_id,
+                    tab_ids: abc.clone(),
+                })
+            ),
+            Pdu::UnitResponse(_)
+        ));
+        assert_eq!(
+            mux.get_window(layout.window_id)
+                .unwrap()
+                .iter()
+                .map(|tab| tab.tab_id())
+                .collect::<Vec<_>>(),
+            abc
+        );
+
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[0].0, layout.window_id);
+        assert_eq!(observed[0].1, cba);
+        assert_eq!(observed[0].2.as_ref(), Some(&client_a));
+        assert_eq!(observed[1].1, abc);
+        assert_eq!(observed[1].2.as_ref(), Some(&client_b));
     }
 
     struct TestLayout {

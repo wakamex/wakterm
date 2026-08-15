@@ -47,6 +47,7 @@ enum NotificationKey {
     WindowWorkspace(mux::window::WindowId),
     PaneFocus,
     TabResized(mux::tab::TabId),
+    TabOrder(mux::window::WindowId),
     TabTitle(mux::tab::TabId),
     WindowTitle(mux::window::WindowId),
 }
@@ -59,6 +60,9 @@ fn notification_key(notification: &MuxNotification) -> Option<NotificationKey> {
         }
         MuxNotification::PaneFocused(_) => Some(NotificationKey::PaneFocus),
         MuxNotification::TabResized { tab_id, .. } => Some(NotificationKey::TabResized(*tab_id)),
+        MuxNotification::TabOrderChanged { window_id, .. } => {
+            Some(NotificationKey::TabOrder(*window_id))
+        }
         MuxNotification::TabTitleChanged { tab_id, .. } => Some(NotificationKey::TabTitle(*tab_id)),
         MuxNotification::WindowTitleChanged { window_id, .. } => {
             Some(NotificationKey::WindowTitle(*window_id))
@@ -309,6 +313,18 @@ where
         MuxNotification::TabResized { tab_id, origin } => {
             if !handler.notification_originates_here(origin.as_ref()) {
                 Pdu::TabResized(codec::TabResized { tab_id })
+                    .encode_async(stream, 0)
+                    .await?;
+                stream.flush().await.context("flushing PDU to client")?;
+            }
+        }
+        MuxNotification::TabOrderChanged {
+            window_id,
+            tab_ids,
+            origin,
+        } => {
+            if !handler.notification_originates_here(origin.as_ref()) {
+                Pdu::TabOrderChanged(codec::TabOrderChanged { window_id, tab_ids })
                     .encode_async(stream, 0)
                     .await?;
                 stream.flush().await.context("flushing PDU to client")?;
@@ -567,6 +583,23 @@ mod tests {
         assert!(matches!(
             queue.try_pop(),
             Some(MuxNotification::WindowTitleChanged { title, .. }) if title == "latest"
+        ));
+
+        assert!(queue.push(MuxNotification::TabOrderChanged {
+            window_id: 7,
+            tab_ids: vec![1, 2, 3],
+            origin: None,
+        }));
+        assert!(queue.push(MuxNotification::TabOrderChanged {
+            window_id: 7,
+            tab_ids: vec![3, 2, 1],
+            origin: None,
+        }));
+        assert_eq!(queue.len(), 1);
+        assert!(matches!(
+            queue.try_pop(),
+            Some(MuxNotification::TabOrderChanged { tab_ids, .. })
+                if tab_ids == vec![3, 2, 1]
         ));
 
         for _ in 0..NOTIFICATION_QUEUE_CAPACITY {

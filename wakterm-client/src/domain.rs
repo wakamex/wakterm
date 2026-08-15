@@ -1,8 +1,8 @@
 use crate::client::Client;
 use crate::pane::ClientPane;
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow, bail, ensure};
 use async_trait::async_trait;
-use codec::{ListPanesResponse, SpawnV2, SplitPane};
+use codec::{ListPanesResponse, SetTabOrder, SpawnV2, SplitPane};
 use config::keyassignment::SpawnTabDomain;
 use config::{configuration, SshDomain, TlsDomainClient, UnixDomain};
 use mux::agent::AgentTabBadgeState;
@@ -27,8 +27,47 @@ pub struct ClientInner {
     pub overlay_lag_indicator: bool,
     remote_to_local_window: Mutex<HashMap<WindowId, WindowId>>,
     remote_to_local_tab: Mutex<HashMap<TabId, TabId>>,
+    remote_tab_to_window: Mutex<HashMap<TabId, WindowId>>,
     remote_to_local_pane: Mutex<HashMap<PaneId, PaneId>>,
+    tab_order_outbox: Mutex<TabOrderOutbox>,
     pub focused_remote_pane_id: Mutex<Option<PaneId>>,
+}
+
+#[derive(Default)]
+struct TabOrderSendState {
+    in_flight: bool,
+    pending: Option<Vec<TabId>>,
+}
+
+#[derive(Default)]
+struct TabOrderOutbox {
+    windows: HashMap<WindowId, TabOrderSendState>,
+}
+
+impl TabOrderOutbox {
+    fn queue(&mut self, window_id: WindowId, tab_ids: Vec<TabId>) -> bool {
+        let state = self.windows.entry(window_id).or_default();
+        state.pending = Some(tab_ids);
+        if state.in_flight {
+            false
+        } else {
+            state.in_flight = true;
+            true
+        }
+    }
+
+    fn take_next_or_finish(&mut self, window_id: WindowId) -> Option<Vec<TabId>> {
+        let state = self.windows.get_mut(&window_id)?;
+        if let Some(tab_ids) = state.pending.take() {
+            return Some(tab_ids);
+        }
+        self.windows.remove(&window_id);
+        None
+    }
+
+    fn abort(&mut self, window_id: WindowId) {
+        self.windows.remove(&window_id);
+    }
 }
 
 impl ClientInner {
@@ -67,6 +106,18 @@ impl ClientInner {
                     None => false,
                 },
             );
+
+        let known_remote_tabs = self
+            .remote_to_local_tab
+            .lock()
+            .unwrap()
+            .keys()
+            .copied()
+            .collect::<HashSet<_>>();
+        self.remote_tab_to_window
+            .lock()
+            .unwrap()
+            .retain(|remote_tab_id, _| known_remote_tabs.contains(remote_tab_id));
 
         self.remote_to_local_window
             .lock()
@@ -153,6 +204,10 @@ impl ClientInner {
     pub fn remove_old_tab_mapping(&self, remote_tab_id: TabId) {
         let mut tab_map = self.remote_to_local_tab.lock().unwrap();
         let old = tab_map.remove(&remote_tab_id);
+        self.remote_tab_to_window
+            .lock()
+            .unwrap()
+            .remove(&remote_tab_id);
         log::trace!("remove_old_tab_mapping: {remote_tab_id} -> {old:?}");
     }
 
@@ -168,9 +223,129 @@ impl ClientInner {
         );
     }
 
+    fn record_remote_tab_window(&self, remote_tab_id: TabId, remote_window_id: WindowId) {
+        self.remote_tab_to_window
+            .lock()
+            .unwrap()
+            .insert(remote_tab_id, remote_window_id);
+    }
+
     pub fn remote_to_local_tab_id(&self, remote_tab_id: TabId) -> Option<TabId> {
         let map = self.remote_to_local_tab.lock().unwrap();
         map.get(&remote_tab_id).copied()
+    }
+
+    fn translate_local_tab_order(
+        &self,
+        local_window_id: WindowId,
+        local_tab_ids: &[TabId],
+    ) -> anyhow::Result<Option<SetTabOrder>> {
+        let Some(remote_window_id) = self.local_to_remote_window(local_window_id) else {
+            return Ok(None);
+        };
+        let tab_map = self.remote_to_local_tab.lock().unwrap();
+        let tab_windows = self.remote_tab_to_window.lock().unwrap();
+        let local_to_remote = tab_map
+            .iter()
+            .map(|(remote, local)| (*local, *remote))
+            .collect::<HashMap<_, _>>();
+        let expected = tab_windows
+            .iter()
+            .filter_map(|(tab_id, window_id)| (*window_id == remote_window_id).then_some(*tab_id))
+            .collect::<HashSet<_>>();
+        if expected.is_empty() {
+            bail!(
+                "remote window {} has no known tabs while translating local window {}",
+                remote_window_id,
+                local_window_id
+            );
+        }
+
+        let mut tab_ids = Vec::with_capacity(expected.len());
+        for local_tab_id in local_tab_ids {
+            let Some(remote_tab_id) = local_to_remote.get(local_tab_id).copied() else {
+                continue;
+            };
+            match tab_windows.get(&remote_tab_id) {
+                Some(window_id) if *window_id == remote_window_id => tab_ids.push(remote_tab_id),
+                Some(_) => {}
+                None => bail!(
+                    "remote tab {} has no known window while translating local window {}",
+                    remote_tab_id,
+                    local_window_id
+                ),
+            }
+        }
+        let actual = tab_ids.iter().copied().collect::<HashSet<_>>();
+        ensure!(
+            tab_ids.len() == expected.len() && actual == expected,
+            "translated order for remote window {} does not contain its exact tab set",
+            remote_window_id
+        );
+
+        Ok(Some(SetTabOrder {
+            window_id: remote_window_id,
+            tab_ids,
+        }))
+    }
+
+    fn queue_tab_order(self: &Arc<Self>, request: SetTabOrder) {
+        let remote_window_id = request.window_id;
+        let should_start = self
+            .tab_order_outbox
+            .lock()
+            .unwrap()
+            .queue(remote_window_id, request.tab_ids);
+        if !should_start {
+            return;
+        }
+
+        let inner = Arc::clone(self);
+        promise::spawn::spawn(async move {
+            inner.flush_tab_order(remote_window_id).await;
+        })
+        .detach();
+    }
+
+    async fn flush_tab_order(self: &Arc<Self>, remote_window_id: WindowId) {
+        loop {
+            let Some(tab_ids) = self
+                .tab_order_outbox
+                .lock()
+                .unwrap()
+                .take_next_or_finish(remote_window_id)
+            else {
+                return;
+            };
+            let request = SetTabOrder {
+                window_id: remote_window_id,
+                tab_ids,
+            };
+            if let Err(err) = self.client.set_tab_order(request).await {
+                log::error!(
+                    "failed to update tab order for remote window {}: {:#}",
+                    remote_window_id,
+                    err
+                );
+                self.tab_order_outbox
+                    .lock()
+                    .unwrap()
+                    .abort(remote_window_id);
+                let local_domain_id = self.local_domain_id;
+                promise::spawn::spawn_into_main_thread(async move {
+                    let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
+                    let domain = mux
+                        .get_domain(local_domain_id)
+                        .ok_or_else(|| anyhow!("no such domain {}", local_domain_id))?;
+                    let domain = domain.downcast_ref::<ClientDomain>().ok_or_else(|| {
+                        anyhow!("domain {} is not a ClientDomain", local_domain_id)
+                    })?;
+                    domain.resync_coalesced().await
+                })
+                .detach();
+                return;
+            }
+        }
     }
 
     pub fn is_local(&self) -> bool {
@@ -276,7 +451,9 @@ impl ClientInner {
             overlay_lag_indicator,
             remote_to_local_window: Mutex::new(HashMap::new()),
             remote_to_local_tab: Mutex::new(HashMap::new()),
+            remote_tab_to_window: Mutex::new(HashMap::new()),
             remote_to_local_pane: Mutex::new(HashMap::new()),
+            tab_order_outbox: Mutex::new(TabOrderOutbox::default()),
             focused_remote_pane_id: Mutex::new(None),
         }
     }
@@ -386,6 +563,35 @@ fn mux_notify_client_domain(local_domain_id: DomainId, notif: MuxNotification) -
                             .await
                     })
                     .detach();
+                }
+            }
+        }
+        MuxNotification::TabOrderChanged {
+            window_id, tab_ids, ..
+        } => {
+            if let Some(inner) = client_domain.inner() {
+                match inner.translate_local_tab_order(window_id, &tab_ids) {
+                    Ok(Some(request)) => inner.queue_tab_order(request),
+                    Ok(None) => {}
+                    Err(err) => {
+                        log::warn!(
+                            "cannot translate tab order for local window {}: {:#}; resyncing",
+                            window_id,
+                            err
+                        );
+                        promise::spawn::spawn_into_main_thread(async move {
+                            let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
+                            let domain = mux
+                                .get_domain(local_domain_id)
+                                .ok_or_else(|| anyhow!("no such domain {}", local_domain_id))?;
+                            let domain =
+                                domain.downcast_ref::<ClientDomain>().ok_or_else(|| {
+                                    anyhow!("domain {} is not a ClientDomain", local_domain_id)
+                                })?;
+                            domain.resync_coalesced().await
+                        })
+                        .detach();
+                    }
                 }
             }
         }
@@ -594,6 +800,59 @@ impl ClientDomain {
         }
     }
 
+    pub fn process_remote_tab_order(
+        &self,
+        remote_window_id: WindowId,
+        remote_tab_ids: &[TabId],
+    ) -> anyhow::Result<bool> {
+        let inner = self
+            .inner()
+            .ok_or_else(|| anyhow!("domain is not attached"))?;
+        let local_window_id = inner
+            .remote_to_local_window(remote_window_id)
+            .ok_or_else(|| anyhow!("remote window {} is not mapped", remote_window_id))?;
+        let expected_remote_tab_ids = inner
+            .remote_tab_to_window
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(tab_id, window_id)| (*window_id == remote_window_id).then_some(*tab_id))
+            .collect::<HashSet<_>>();
+        let actual_remote_tab_ids = remote_tab_ids.iter().copied().collect::<HashSet<_>>();
+        ensure!(
+            remote_tab_ids.len() == expected_remote_tab_ids.len()
+                && actual_remote_tab_ids == expected_remote_tab_ids,
+            "remote tab order for window {} does not contain its exact known tab set",
+            remote_window_id
+        );
+        let local_tab_ids = remote_tab_ids
+            .iter()
+            .map(|remote_tab_id| {
+                inner.remote_to_local_tab_id(*remote_tab_id).ok_or_else(|| {
+                    anyhow!(
+                        "remote tab {} in window {} is not mapped",
+                        remote_tab_id,
+                        remote_window_id
+                    )
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        ensure!(
+            local_tab_ids.len() == remote_tab_ids.len(),
+            "remote tab order contains unmapped tabs"
+        );
+
+        let mux = Mux::get();
+        let changed = mux
+            .get_window_mut(local_window_id)
+            .ok_or_else(|| anyhow!("local window {} is not present", local_window_id))?
+            .apply_tab_order_subset(&local_tab_ids)?;
+        if changed {
+            mux.notify(MuxNotification::WindowInvalidated(local_window_id));
+        }
+        Ok(changed)
+    }
+
     fn reconcile_client_identity(
         mux: &Arc<Mux>,
         desired_view_id: &mux::client::ClientViewId,
@@ -752,6 +1011,7 @@ impl ClientDomain {
                     mux.add_tab_no_panes(&tab);
                     inner.record_remote_to_local_tab_mapping(remote_tab_id, tab.tab_id());
                 }
+                inner.record_remote_tab_window(remote_tab_id, remote_window_id);
 
                 inner.apply_remote_tab_title(remote_tab_id, tab_title, tab_badge);
 
@@ -1030,8 +1290,10 @@ impl ClientDomain {
         }
         if !remote_tabs_to_forget.is_empty() {
             let mut tabs = inner.remote_to_local_tab.lock().unwrap();
+            let mut tab_windows = inner.remote_tab_to_window.lock().unwrap();
             for t in remote_tabs_to_forget {
                 tabs.remove(&t);
+                tab_windows.remove(&t);
             }
         }
         if !remote_panes_to_forget.is_empty() {
@@ -1065,42 +1327,23 @@ impl ClientDomain {
                 continue;
             }
 
-            let Some(mut window) = mux.get_window_mut(local_window_id) else {
-                continue;
-            };
-            Self::reorder_window_subset(&mut window, &desired_local_tab_ids);
-        }
-    }
-
-    fn reorder_window_subset(window: &mut mux::window::Window, desired_tab_ids: &[TabId]) {
-        let desired_tab_id_set = desired_tab_ids.iter().copied().collect::<HashSet<_>>();
-        let current_order = window
-            .iter()
-            .filter_map(|tab| {
-                let tab_id = tab.tab_id();
-                desired_tab_id_set.contains(&tab_id).then_some(tab_id)
-            })
-            .collect::<Vec<_>>();
-        if current_order == desired_tab_ids {
-            return;
-        }
-
-        let mut desired = desired_tab_ids.iter().copied();
-        for idx in 0..window.len() {
-            let Some(current_tab_id) = window.get_by_idx(idx).map(|tab| tab.tab_id()) else {
-                break;
-            };
-            if !desired_tab_id_set.contains(&current_tab_id) {
-                continue;
-            }
-            let Some(desired_tab_id) = desired.next() else {
-                break;
-            };
-            if current_tab_id == desired_tab_id {
-                continue;
-            }
-            if let Some(from) = window.idx_by_id(desired_tab_id) {
-                window.move_by_idx(from, idx);
+            let changed = mux
+                .get_window_mut(local_window_id)
+                .and_then(|mut window| {
+                    window
+                        .apply_tab_order_subset(&desired_local_tab_ids)
+                        .map_err(|err| {
+                            log::warn!(
+                                "cannot reconcile tab order for local window {}: {:#}",
+                                local_window_id,
+                                err
+                            );
+                        })
+                        .ok()
+                })
+                .unwrap_or(false);
+            if changed {
+                mux.notify(MuxNotification::WindowInvalidated(local_window_id));
             }
         }
     }
@@ -1270,6 +1513,7 @@ impl Domain for ClientDomain {
         tab.assign_pane(&pane);
         inner.remove_old_tab_mapping(result.tab_id);
         inner.record_remote_to_local_tab_mapping(result.tab_id, tab.tab_id());
+        inner.record_remote_tab_window(result.tab_id, result.window_id);
 
         let mux = Mux::get();
         mux.add_tab_and_active_pane(&tab)?;
@@ -1501,6 +1745,7 @@ mod test {
     use mux::window::WindowId;
     use mux::Mux;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Once};
     use termwiz::surface::{CursorShape, CursorVisibility};
     use wakterm_term::TerminalSize;
@@ -2036,6 +2281,83 @@ mod test {
                 .collect::<Vec<_>>(),
             vec![local_tab_c, local_tab_a, local_tab_b]
         );
+    }
+
+    #[test]
+    fn tab_order_translation_filters_other_tabs_and_remote_apply_does_not_echo() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        ensure_test_executor();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let (domain, inner, client_id, _view_id) =
+            install_client_domain(&mux, "tab-order-translation");
+        let tab_a = leaf(1, 101, 1001, size(120, 40), false);
+        let tab_b = leaf(1, 102, 1002, size(120, 40), false);
+        apply_panes(
+            &mux,
+            inner.clone(),
+            client_id,
+            panes_response_without_view_state(vec![tab_a, tab_b]),
+        );
+
+        let local_window_id = inner.remote_to_local_window(1).unwrap();
+        let local_tab_a = inner.remote_to_local_tab_id(101).unwrap();
+        let local_tab_b = inner.remote_to_local_tab_id(102).unwrap();
+        let unrelated = Arc::new(Tab::new(&size(120, 40)));
+        mux.add_tab_no_panes(&unrelated);
+        mux.get_window_mut(local_window_id)
+            .unwrap()
+            .insert(1, &unrelated);
+
+        let translated = inner
+            .translate_local_tab_order(
+                local_window_id,
+                &[unrelated.tab_id(), local_tab_b, local_tab_a],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(translated.window_id, 1);
+        assert_eq!(translated.tab_ids, vec![102, 101]);
+        assert!(inner
+            .translate_local_tab_order(local_window_id, &[unrelated.tab_id(), local_tab_a])
+            .is_err());
+
+        let echoes = Arc::new(AtomicUsize::new(0));
+        let echoes_for_subscription = echoes.clone();
+        mux.subscribe(move |notification| {
+            if matches!(notification, MuxNotification::TabOrderChanged { .. }) {
+                echoes_for_subscription.fetch_add(1, Ordering::Relaxed);
+            }
+            true
+        });
+
+        assert!(domain.process_remote_tab_order(1, &[102, 101]).unwrap());
+        assert_eq!(
+            mux.get_window(local_window_id)
+                .unwrap()
+                .iter()
+                .map(|tab| tab.tab_id())
+                .collect::<Vec<_>>(),
+            vec![local_tab_b, unrelated.tab_id(), local_tab_a]
+        );
+        assert_eq!(echoes.load(Ordering::Relaxed), 0);
+        assert!(domain.process_remote_tab_order(1, &[101]).is_err());
+    }
+
+    #[test]
+    fn tab_order_outbox_keeps_latest_state_while_a_request_is_in_flight() {
+        let mut outbox = TabOrderOutbox::default();
+        assert!(outbox.queue(7, vec![1, 2, 3]));
+        assert_eq!(outbox.take_next_or_finish(7), Some(vec![1, 2, 3]));
+
+        assert!(!outbox.queue(7, vec![3, 2, 1]));
+        assert!(!outbox.queue(7, vec![2, 3, 1]));
+        assert_eq!(outbox.take_next_or_finish(7), Some(vec![2, 3, 1]));
+        assert_eq!(outbox.take_next_or_finish(7), None);
+
+        assert!(outbox.queue(7, vec![3, 1, 2]));
     }
 
     #[test]
