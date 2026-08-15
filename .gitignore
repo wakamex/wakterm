@@ -69,3 +69,4 @@ __pycache__/
 responses/
 .upstream-show-keys-cache.txt
 /.claude/
+.codex
