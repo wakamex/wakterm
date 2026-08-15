@@ -1001,6 +1001,9 @@ impl Mux {
     ) -> Option<String> {
         if let Some(url) = pane.get_current_working_dir(CachePolicy::AllowStale) {
             if url.scheme() == "file" {
+                if url.host_str().is_some() {
+                    return Some(url.path().to_string());
+                }
                 return url
                     .to_file_path()
                     .ok()
@@ -3822,6 +3825,10 @@ mod test {
     }
 
     impl FakePane {
+        fn test_file_url(path: &str) -> Url {
+            Url::parse(&format!("file://test-host{path}")).unwrap()
+        }
+
         fn new(id: PaneId, size: TerminalSize, domain_id: DomainId) -> Arc<dyn Pane> {
             Arc::new(Self {
                 id,
@@ -3848,7 +3855,7 @@ mod test {
                 size: Mutex::new(size),
                 domain_id,
                 title: title.to_string(),
-                cwd: Some(Url::from_file_path(cwd).unwrap()),
+                cwd: Some(Self::test_file_url(cwd)),
                 foreground_process_name: Some(foreground_process_name.to_string()),
                 foreground_process_info: Some(LocalProcessInfo {
                     pid: 1,
@@ -4431,7 +4438,7 @@ mod test {
             size: Mutex::new(size),
             domain_id: domain.id,
             title: "zsh".to_string(),
-            cwd: Some(Url::from_file_path("/tmp/claude-exit").unwrap()),
+            cwd: Some(FakePane::test_file_url("/tmp/claude-exit")),
             foreground_process_name: Some("/usr/bin/zsh".to_string()),
             foreground_process_info: Some(LocalProcessInfo {
                 pid: 2,
