@@ -69,6 +69,12 @@ enum AgentSubCommand {
     #[command(name = "send", about = "send a message to an agent pane")]
     Send(SendAgentCommand),
 
+    #[command(
+        name = "request",
+        about = "inspect and stream durable agent return requests"
+    )]
+    Request(AgentRequestCommand),
+
     #[command(name = "interrupt", about = "interrupt a native harness turn")]
     Interrupt(InterruptAgentCommand),
 
@@ -89,6 +95,7 @@ impl AgentCommand {
             AgentSubCommand::Watch(cmd) => cmd.run(client).await,
             AgentSubCommand::Inspect(cmd) => cmd.run(client).await,
             AgentSubCommand::Send(cmd) => cmd.run(client).await,
+            AgentSubCommand::Request(cmd) => cmd.run(client).await,
             AgentSubCommand::Interrupt(cmd) => cmd.run(client).await,
             AgentSubCommand::Set(cmd) => cmd.run(client).await,
             AgentSubCommand::Clear(cmd) => cmd.run(client).await,
@@ -1241,6 +1248,14 @@ pub struct SendAgentCommand {
     #[arg(long)]
     no_submit: bool,
 
+    /// Durably return this prompt's final response through the request event stream.
+    #[arg(long, conflicts_with = "no_submit")]
+    return_final: bool,
+
+    /// Stable idempotency and correlation id. Generated when omitted.
+    #[arg(long, requires = "return_final")]
+    request_id: Option<String>,
+
     /// Maximum time to wait for observer-backed acknowledgement
     #[arg(long, default_value_t = 2000)]
     ack_timeout_ms: u64,
@@ -1249,12 +1264,39 @@ pub struct SendAgentCommand {
     #[arg(long, default_value_t = 50)]
     ack_poll_ms: u64,
 
+    /// Asynchronous final-response deadline. Zero disables the deadline.
+    #[arg(long, default_value_t = 0, requires = "return_final")]
+    final_timeout_ms: u64,
+
     /// The text to send. If omitted, reads from stdin
     text: Option<String>,
 }
 
 impl SendAgentCommand {
     async fn run(&self, client: Client) -> anyhow::Result<()> {
+        if self.return_final {
+            let agents = client.list_agents().await?.agents;
+            let agent = find_agent(&agents, &self.target)
+                .with_context(|| format!("no agent named or identified by {}", self.target))?;
+            let prompt = self.read_text()?;
+            let response = client
+                .submit_agent_request(codec::SubmitAgentRequest {
+                    pane_id: agent.pane_id,
+                    request_id: self
+                        .request_id
+                        .clone()
+                        .unwrap_or_else(|| Uuid::new_v4().to_string()),
+                    prompt,
+                    paste: !self.no_paste && !prefers_raw_input(&agent.runtime.harness),
+                    timeout_ms: self.final_timeout_ms,
+                })
+                .await?;
+            return write_json(&AgentReturnRegistration {
+                request_id: response.request.request_id.clone(),
+                reply_pending: !response.request.state.is_terminal(),
+                request: response.request,
+            });
+        }
         let result = self
             .run_with(
                 || client.list_agents(),
@@ -1386,6 +1428,110 @@ impl SendAgentCommand {
             self.ack_poll_ms,
         )
         .await
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
+pub struct AgentRequestCommand {
+    #[command(subcommand)]
+    sub: AgentRequestSubCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+enum AgentRequestSubCommand {
+    #[command(name = "get", about = "get one durable return request")]
+    Get(GetAgentRequestCommand),
+    #[command(name = "watch", about = "stream terminal return-request events")]
+    Watch(WatchAgentRequestsCommand),
+    #[command(name = "cancel", about = "cancel a pending return request")]
+    Cancel(CancelAgentRequestCommand),
+}
+
+impl AgentRequestCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        match &self.sub {
+            AgentRequestSubCommand::Get(command) => command.run(client).await,
+            AgentRequestSubCommand::Watch(command) => command.run(client).await,
+            AgentRequestSubCommand::Cancel(command) => command.run(client).await,
+        }
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
+struct GetAgentRequestCommand {
+    request_id: String,
+}
+
+impl GetAgentRequestCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        let response = client
+            .get_agent_request(codec::GetAgentRequest {
+                request_id: self.request_id.clone(),
+            })
+            .await?;
+        let request = response
+            .request
+            .with_context(|| format!("no agent request with id {}", self.request_id))?;
+        write_json(&request)
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
+struct CancelAgentRequestCommand {
+    request_id: String,
+}
+
+impl CancelAgentRequestCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        let response = client
+            .cancel_agent_request(codec::CancelAgentRequest {
+                request_id: self.request_id.clone(),
+            })
+            .await?;
+        write_json(&response.request)
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
+struct WatchAgentRequestsCommand {
+    /// Resume after this durable terminal event sequence.
+    #[arg(long, default_value_t = 0)]
+    after: u64,
+
+    /// Return after draining currently available events.
+    #[arg(long)]
+    once: bool,
+
+    /// Internal observer poll interval for the persistent stream.
+    #[arg(long, default_value_t = 250)]
+    poll_ms: u64,
+}
+
+impl WatchAgentRequestsCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        let mut after = self.after;
+        let stdout = std::io::stdout();
+        let mut out = stdout.lock();
+        loop {
+            let response = client
+                .list_agent_request_events(codec::ListAgentRequestEvents {
+                    after_sequence: after,
+                    limit: 100,
+                })
+                .await?;
+            for request in response.requests {
+                if let Some(sequence) = request.terminal_event_sequence {
+                    after = after.max(sequence);
+                }
+                serde_json::to_writer(&mut out, &request)?;
+                writeln!(out)?;
+            }
+            out.flush()?;
+            if self.once {
+                return Ok(());
+            }
+            smol::Timer::after(Duration::from_millis(self.poll_ms)).await;
+        }
     }
 }
 
@@ -1886,6 +2032,13 @@ struct AgentSendResult {
     transport: AgentTransport,
     submitted: bool,
     acknowledgement: AgentSendAcknowledgement,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentReturnRegistration {
+    request_id: String,
+    reply_pending: bool,
+    request: mux::agent_request::AgentRequest,
 }
 
 #[derive(Debug, Serialize)]
@@ -2510,6 +2663,7 @@ mod test {
                 last_output_at: None,
                 last_progress_at: None,
                 last_turn_completed_at: None,
+                observed_turn: None,
                 observed_at: Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap(),
                 session_path: None,
                 progress_summary: None,
@@ -2597,8 +2751,11 @@ mod test {
             target: "reviewer".to_string(),
             no_paste: false,
             no_submit: false,
+            return_final: false,
+            request_id: None,
             ack_timeout_ms: 0,
             ack_poll_ms: 0,
+            final_timeout_ms: 0,
             text: Some("fix this".to_string()),
         };
 
@@ -2673,8 +2830,11 @@ mod test {
             target: "reviewer".to_string(),
             no_paste: false,
             no_submit: true,
+            return_final: false,
+            request_id: None,
             ack_timeout_ms: 0,
             ack_poll_ms: 0,
+            final_timeout_ms: 0,
             text: Some("fix this".to_string()),
         };
 
@@ -3137,8 +3297,11 @@ mod test {
             target: "reviewer".to_string(),
             no_paste: true,
             no_submit: false,
+            return_final: false,
+            request_id: None,
             ack_timeout_ms: 0,
             ack_poll_ms: 0,
+            final_timeout_ms: 0,
             text: Some("raw".to_string()),
         };
 
@@ -3203,8 +3366,11 @@ mod test {
             target: "reviewer".to_string(),
             no_paste: true,
             no_submit: false,
+            return_final: false,
+            request_id: None,
             ack_timeout_ms: 0,
             ack_poll_ms: 0,
+            final_timeout_ms: 0,
             text: Some("raw".to_string()),
         };
 
@@ -3250,8 +3416,11 @@ mod test {
             target: "reviewer".to_string(),
             no_paste: false,
             no_submit: true,
+            return_final: false,
+            request_id: None,
             ack_timeout_ms: 1000,
             ack_poll_ms: 0,
+            final_timeout_ms: 0,
             text: Some("draft".to_string()),
         };
 

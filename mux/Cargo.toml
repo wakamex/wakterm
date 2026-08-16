@@ -38,6 +38,7 @@ rangeset.workspace = true
 rusqlite = { workspace = true, features = ["bundled"] }
 serde = {workspace=true, features = ["rc", "derive"]}
 serde_json.workspace = true
+sha2.workspace = true
 serial2.workspace = true
 shell-words.workspace = true
 smol.workspace = true

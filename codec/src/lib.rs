@@ -14,6 +14,7 @@
 use anyhow::{bail, Context as _, Error};
 use config::keyassignment::{PaneDirection, ScrollbackEraseMode};
 use mux::agent::{AgentMetadata, AgentSnapshot, AgentTabBadgeState};
+use mux::agent_request::AgentRequest;
 use mux::client::{ClientId, ClientInfo, ClientViewId, ClientWindowViewState};
 use mux::pane::PaneId;
 use mux::renderable::{RenderableDimensions, StableCursorPosition};
@@ -463,7 +464,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 60;
+pub const CODEC_VERSION: usize = 61;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -540,6 +541,14 @@ pdu! {
     ListAgentsCachedResponse: 71,
     SetTabOrder: 72,
     TabOrderChanged: 73,
+    SubmitAgentRequest: 74,
+    SubmitAgentRequestResponse: 75,
+    GetAgentRequest: 76,
+    GetAgentRequestResponse: 77,
+    ListAgentRequestEvents: 78,
+    ListAgentRequestEventsResponse: 79,
+    CancelAgentRequest: 80,
+    CancelAgentRequestResponse: 81,
 }
 
 impl Pdu {
@@ -558,7 +567,9 @@ impl Pdu {
             | Self::SetTabOrder(_)
             | Self::SpawnV2(_)
             | Self::SetAgentMetadata(_)
-            | Self::ClearAgentMetadata(_) => true,
+            | Self::ClearAgentMetadata(_)
+            | Self::SubmitAgentRequest(_)
+            | Self::CancelAgentRequest(_) => true,
             _ => false,
         }
     }
@@ -709,6 +720,51 @@ pub struct ListAgentsCached {}
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct ListAgentsCachedResponse {
     pub agents: Vec<AgentSnapshot>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct SubmitAgentRequest {
+    pub pane_id: PaneId,
+    pub request_id: String,
+    pub prompt: String,
+    pub paste: bool,
+    pub timeout_ms: u64,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct SubmitAgentRequestResponse {
+    pub request: AgentRequest,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct GetAgentRequest {
+    pub request_id: String,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct GetAgentRequestResponse {
+    pub request: Option<AgentRequest>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ListAgentRequestEvents {
+    pub after_sequence: u64,
+    pub limit: usize,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ListAgentRequestEventsResponse {
+    pub requests: Vec<AgentRequest>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct CancelAgentRequest {
+    pub request_id: String,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct CancelAgentRequestResponse {
+    pub request: AgentRequest,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]

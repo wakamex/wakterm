@@ -4,6 +4,7 @@ use crate::agent::{
     refresh_runtime_from_harness, AgentMetadata, AgentOrigin, AgentRuntimeSnapshot, AgentSnapshot,
     AgentTabBadgeState,
 };
+use crate::agent_request::{prompt_sha256, AgentRequest, AgentRequestState, AgentRequestStore};
 use crate::client::{ClientId, ClientInfo, ClientViewId, ClientViewState, ClientWindowViewState};
 use crate::pane::{CachePolicy, Pane, PaneId};
 use crate::ssh_agent::AgentProxy;
@@ -44,6 +45,7 @@ use winapi::um::winsock2::{SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
 
 pub mod activity;
 pub mod agent;
+pub mod agent_request;
 pub mod client;
 pub mod connui;
 pub mod domain;
@@ -136,6 +138,7 @@ pub struct Mux {
     last_detected_agent_full_scan: Mutex<Option<Instant>>,
     agent_runtime_by_pane: RwLock<HashMap<PaneId, AgentRuntimeSnapshot>>,
     agent_observer_state_by_pane: RwLock<HashMap<PaneId, AgentObserverState>>,
+    agent_request_store: AgentRequestStore,
     agent_attention_seen_by_view: RwLock<HashMap<ClientViewId, HashMap<PaneId, DateTime<Utc>>>>,
     windows: RwLock<HashMap<WindowId, Window>>,
     default_domain: RwLock<Option<Arc<dyn Domain>>>,
@@ -647,6 +650,9 @@ impl Mux {
             last_detected_agent_full_scan: Mutex::new(None),
             agent_runtime_by_pane: RwLock::new(HashMap::new()),
             agent_observer_state_by_pane: RwLock::new(HashMap::new()),
+            agent_request_store: AgentRequestStore::new(
+                config::DATA_DIR.join("agent-requests.sqlite3"),
+            ),
             agent_attention_seen_by_view: RwLock::new(HashMap::new()),
             windows: RwLock::new(HashMap::new()),
             default_domain: RwLock::new(default_domain),
@@ -1402,6 +1408,7 @@ impl Mux {
             runtime.turn_phase = update.runtime.turn_phase;
             runtime.turn_state = update.runtime.turn_state;
             runtime.last_turn_completed_at = update.runtime.last_turn_completed_at;
+            runtime.observed_turn = update.runtime.observed_turn;
             runtime.observer_error = update.runtime.observer_error;
             runtime.observer_started_at = update.runtime.observer_started_at;
             runtime.last_harness_refresh_at = update.runtime.last_harness_refresh_at;
@@ -1454,6 +1461,133 @@ impl Mux {
                 runtime.observed_at = now;
             },
         );
+    }
+
+    pub fn submit_agent_request(
+        &self,
+        pane_id: PaneId,
+        request_id: String,
+        prompt: String,
+        paste: bool,
+        timeout_ms: u64,
+    ) -> anyhow::Result<AgentRequest> {
+        anyhow::ensure!(
+            !prompt.trim().is_empty(),
+            "--return-final requires a non-empty prompt"
+        );
+        if let Some(existing) = self.agent_request_store.get(&request_id)? {
+            anyhow::ensure!(
+                existing.target_pane_id == pane_id
+                    && existing.prompt_sha256 == prompt_sha256(&prompt)
+                    && existing.submission_paste == paste
+                    && existing.timeout_ms == timeout_ms,
+                "request id {request_id} was already used for different input"
+            );
+            return Ok(existing);
+        }
+        self.refresh_agent_runtime_for_pane_sync_with_update(pane_id, false, |_| {});
+        let metadata = self
+            .get_agent_metadata_for_pane(pane_id)
+            .ok_or_else(|| anyhow!("pane {pane_id} is not an adopted agent"))?;
+        let runtime = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("agent runtime for pane {pane_id} is unavailable"))?;
+        let deadline_at = (timeout_ms != 0)
+            .then(|| Utc::now() + chrono::Duration::milliseconds(timeout_ms as i64));
+        let proposed = AgentRequest::new(
+            request_id,
+            metadata.as_ref(),
+            pane_id,
+            &runtime,
+            &prompt,
+            paste,
+            timeout_ms,
+            deadline_at,
+        )?;
+        let (mut request, created) = self.agent_request_store.create(&proposed)?;
+        if !created {
+            return Ok(request);
+        }
+
+        let pane = self
+            .get_pane(pane_id)
+            .ok_or_else(|| anyhow!("no such pane {pane_id}"))?;
+        let delivery = (|| -> anyhow::Result<()> {
+            if paste {
+                pane.send_paste(&prompt)?;
+            } else {
+                pane.writer().write_all(prompt.as_bytes())?;
+            }
+            // Native harnesses need a raw carriage return. Keeping the delay
+            // inside the atomic server operation prevents another client from
+            // interleaving input between the prompt and its submit action.
+            std::thread::sleep(Duration::from_millis(200));
+            pane.writer().write_all(b"\r")?;
+            Ok(())
+        })();
+        match delivery {
+            Ok(()) => request.mark_submitted(),
+            Err(err) => request.finish(
+                AgentRequestState::DeliveryFailed,
+                Utc::now(),
+                &format!("prompt delivery failed: {err:#}"),
+            ),
+        }
+        self.agent_request_store.save(&mut request)?;
+        self.record_agent_input(pane_id);
+        Ok(request)
+    }
+
+    fn reconcile_agent_requests(&self) -> anyhow::Result<()> {
+        let now = Utc::now();
+        for mut request in self.agent_request_store.active()? {
+            let before = request.clone();
+            let metadata = self.get_agent_metadata_for_pane(request.target_pane_id);
+            let runtime = self
+                .agent_runtime_by_pane
+                .read()
+                .get(&request.target_pane_id)
+                .cloned();
+            request.reconcile(metadata.as_deref(), runtime.as_ref(), now);
+            if request != before {
+                self.agent_request_store.save(&mut request)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn list_agent_request_events(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<AgentRequest>> {
+        self.reconcile_agent_requests()?;
+        self.agent_request_store.events_after(after_sequence, limit)
+    }
+
+    pub fn get_agent_request(&self, request_id: &str) -> anyhow::Result<Option<AgentRequest>> {
+        self.reconcile_agent_requests()?;
+        self.agent_request_store.get(request_id)
+    }
+
+    pub fn cancel_agent_request(&self, request_id: &str) -> anyhow::Result<AgentRequest> {
+        self.reconcile_agent_requests()?;
+        let mut request = self
+            .agent_request_store
+            .get(request_id)?
+            .ok_or_else(|| anyhow!("no agent request with id {request_id}"))?;
+        if !request.state.is_terminal() {
+            request.finish(
+                AgentRequestState::Cancelled,
+                Utc::now(),
+                "request was cancelled",
+            );
+            self.agent_request_store.save(&mut request)?;
+        }
+        Ok(request)
     }
 
     pub fn record_agent_output(&self, pane_id: PaneId) {
@@ -4653,6 +4787,7 @@ mod test {
                 last_output_at: None,
                 last_progress_at: None,
                 last_turn_completed_at: Some(Utc.with_ymd_and_hms(2026, 3, 29, 18, 39, 0).unwrap()),
+                observed_turn: None,
                 observed_at: Utc.with_ymd_and_hms(2026, 3, 29, 18, 39, 8).unwrap(),
                 session_path: Some("/tmp/codex-session.jsonl".to_string()),
                 progress_summary: Some("done".to_string()),
@@ -4872,6 +5007,7 @@ mod test {
                 last_output_at: None,
                 last_progress_at: None,
                 last_turn_completed_at: None,
+                observed_turn: None,
                 observed_at: Utc.with_ymd_and_hms(2026, 3, 29, 15, 24, 39).unwrap(),
                 session_path: Some("/tmp/codex-session.jsonl".to_string()),
                 progress_summary: Some("done".to_string()),
@@ -5776,6 +5912,7 @@ mod test {
                 last_output_at: None,
                 last_progress_at: None,
                 last_turn_completed_at: Some(Utc.with_ymd_and_hms(2026, 3, 29, 18, 39, 0).unwrap()),
+                observed_turn: None,
                 observed_at: Utc.with_ymd_and_hms(2026, 3, 29, 18, 39, 8).unwrap(),
                 session_path: Some("/tmp/codex-session.jsonl".to_string()),
                 progress_summary: Some("done".to_string()),
@@ -5864,6 +6001,7 @@ mod test {
                 last_output_at: None,
                 last_progress_at: None,
                 last_turn_completed_at: Some(Utc.with_ymd_and_hms(2026, 3, 29, 18, 39, 0).unwrap()),
+                observed_turn: None,
                 observed_at: Utc.with_ymd_and_hms(2026, 3, 29, 18, 39, 8).unwrap(),
                 session_path: Some("/tmp/codex-session.jsonl".to_string()),
                 progress_summary: Some("done".to_string()),

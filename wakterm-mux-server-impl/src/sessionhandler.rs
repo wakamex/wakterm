@@ -676,6 +676,77 @@ impl SessionHandler {
                 })
                 .detach();
             }
+            Pdu::SubmitAgentRequest(SubmitAgentRequest {
+                pane_id,
+                request_id,
+                prompt,
+                paste,
+                timeout_ms,
+            }) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let request = Mux::get().submit_agent_request(
+                                pane_id, request_id, prompt, paste, timeout_ms,
+                            )?;
+                            Ok(Pdu::SubmitAgentRequestResponse(
+                                SubmitAgentRequestResponse { request },
+                            ))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
+            Pdu::GetAgentRequest(GetAgentRequest { request_id }) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            Ok(Pdu::GetAgentRequestResponse(GetAgentRequestResponse {
+                                request: Mux::get().get_agent_request(&request_id)?,
+                            }))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
+            Pdu::ListAgentRequestEvents(ListAgentRequestEvents {
+                after_sequence,
+                limit,
+            }) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            Ok(Pdu::ListAgentRequestEventsResponse(
+                                ListAgentRequestEventsResponse {
+                                    requests: Mux::get().list_agent_request_events(
+                                        after_sequence,
+                                        limit.min(1000),
+                                    )?,
+                                },
+                            ))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
+            Pdu::CancelAgentRequest(CancelAgentRequest { request_id }) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            Ok(Pdu::CancelAgentRequestResponse(
+                                CancelAgentRequestResponse {
+                                    request: Mux::get().cancel_agent_request(&request_id)?,
+                                },
+                            ))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
             Pdu::ListPanes(ListPanes {}) => {
                 let client_id = self.client_id.clone();
                 spawn_into_main_thread(async move {
@@ -1448,6 +1519,10 @@ impl SessionHandler {
             | Pdu::ListPanesResponse { .. }
             | Pdu::ListAgentsResponse { .. }
             | Pdu::ListAgentsCachedResponse { .. }
+            | Pdu::SubmitAgentRequestResponse { .. }
+            | Pdu::GetAgentRequestResponse { .. }
+            | Pdu::ListAgentRequestEventsResponse { .. }
+            | Pdu::CancelAgentRequestResponse { .. }
             | Pdu::SetClipboard { .. }
             | Pdu::NotifyAlert { .. }
             | Pdu::SpawnResponse { .. }

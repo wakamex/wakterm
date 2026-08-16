@@ -3490,6 +3490,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial2",
+ "sha2",
  "shell-words",
  "smol",
  "tempfile",

@@ -1718,6 +1718,22 @@ impl Client {
         ListAgentsCached = (),
         ListAgentsCachedResponse
     );
+    rpc!(
+        submit_agent_request,
+        SubmitAgentRequest,
+        SubmitAgentRequestResponse
+    );
+    rpc!(get_agent_request, GetAgentRequest, GetAgentRequestResponse);
+    rpc!(
+        list_agent_request_events,
+        ListAgentRequestEvents,
+        ListAgentRequestEventsResponse
+    );
+    rpc!(
+        cancel_agent_request,
+        CancelAgentRequest,
+        CancelAgentRequestResponse
+    );
     rpc!(spawn_v2, SpawnV2, SpawnResponse);
     rpc!(split_pane, SplitPane, SpawnResponse);
     rpc!(

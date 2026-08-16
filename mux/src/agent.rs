@@ -7,6 +7,7 @@ use procinfo::LocalProcessInfo;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -61,6 +62,27 @@ pub enum AgentTurnState {
     WaitingOnUser,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentObservedTurnOutcome {
+    Running,
+    Completed,
+    Aborted,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentObservedTurn {
+    pub provider_turn_id: String,
+    pub outcome: AgentObservedTurnOutcome,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub started_cursor: Option<u64>,
+    pub latest_cursor: Option<u64>,
+    pub primary_user_message_sha256: Option<String>,
+    pub user_message_count: u32,
+    pub final_message: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentOrigin {
@@ -88,6 +110,8 @@ pub struct AgentRuntimeSnapshot {
     pub last_output_at: Option<DateTime<Utc>>,
     pub last_progress_at: Option<DateTime<Utc>>,
     pub last_turn_completed_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub observed_turn: Option<AgentObservedTurn>,
     pub observed_at: DateTime<Utc>,
     pub session_path: Option<String>,
     pub progress_summary: Option<String>,
@@ -121,6 +145,7 @@ impl AgentRuntimeSnapshot {
             last_output_at: None,
             last_progress_at: None,
             last_turn_completed_at: None,
+            observed_turn: None,
             observed_at: now,
             session_path: None,
             progress_summary: None,
@@ -188,6 +213,7 @@ pub fn prime_runtime_for_new_agent(
     runtime.attention_reason = None;
     runtime.turn_state = AgentTurnState::Unknown;
     runtime.last_turn_completed_at = None;
+    runtime.observed_turn = None;
     runtime.transport = AgentTransport::PlainPty;
 }
 
@@ -431,6 +457,7 @@ pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata
         runtime.observed_at = now;
         runtime.turn_state = AgentTurnState::Unknown;
         runtime.last_turn_completed_at = None;
+        runtime.observed_turn = None;
         finalize_runtime_snapshot(runtime);
         return;
     }
@@ -461,6 +488,7 @@ pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata
         runtime.attention_reason = None;
         runtime.turn_state = AgentTurnState::Unknown;
         runtime.last_turn_completed_at = None;
+        runtime.observed_turn = None;
         runtime.transport = AgentTransport::PlainPty;
         finalize_runtime_snapshot(runtime);
         return;
@@ -476,6 +504,8 @@ pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata
             cwd,
             runtime.session_path.as_deref(),
             runtime.observer_started_at,
+            metadata.adopted_pid,
+            metadata.adopted_start_time,
         ),
         AgentHarness::Gemini => observe_gemini(
             cwd,
@@ -498,6 +528,7 @@ pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata
             runtime.turn_phase = snapshot.turn_phase;
             runtime.turn_state = snapshot.turn_state;
             runtime.last_turn_completed_at = snapshot.last_turn_completed_at;
+            runtime.observed_turn = snapshot.observed_turn;
             runtime.observer_started_at = None;
             if let Some(ts) = snapshot.updated_at {
                 runtime.last_progress_at = Some(
@@ -517,6 +548,7 @@ pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata
                 runtime.attention_reason = None;
                 runtime.turn_state = AgentTurnState::Unknown;
                 runtime.last_turn_completed_at = None;
+                runtime.observed_turn = None;
             }
         }
         Err(err) => {
@@ -533,6 +565,7 @@ pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata
         runtime.attention_reason = None;
         runtime.turn_state = AgentTurnState::Unknown;
         runtime.last_turn_completed_at = None;
+        runtime.observed_turn = None;
     }
 
     runtime.transport = if runtime.session_path.is_some() {
@@ -602,6 +635,7 @@ struct HarnessObservation {
     updated_at: Option<DateTime<Utc>>,
     turn_state: AgentTurnState,
     last_turn_completed_at: Option<DateTime<Utc>>,
+    observed_turn: Option<AgentObservedTurn>,
 }
 
 #[derive(Debug)]
@@ -612,6 +646,7 @@ struct HarnessObservationDetails {
     updated_at: Option<DateTime<Utc>>,
     turn_state: AgentTurnState,
     last_turn_completed_at: Option<DateTime<Utc>>,
+    observed_turn: Option<AgentObservedTurn>,
 }
 
 fn observe_claude(
@@ -644,6 +679,7 @@ fn observe_claude(
                     updated_at: details.updated_at.or(Some(modified_at)),
                     turn_state: details.turn_state,
                     last_turn_completed_at: details.last_turn_completed_at,
+                    observed_turn: details.observed_turn,
                 }));
             }
         }
@@ -687,6 +723,7 @@ fn observe_claude(
         updated_at: details.updated_at.or(Some(modified_at)),
         turn_state: details.turn_state,
         last_turn_completed_at: details.last_turn_completed_at,
+        observed_turn: details.observed_turn,
     }))
 }
 
@@ -694,10 +731,39 @@ fn observe_codex(
     cwd: &str,
     preferred_session: Option<&str>,
     updated_after: Option<DateTime<Utc>>,
+    process_id: Option<u32>,
+    process_start_time: Option<u64>,
 ) -> anyhow::Result<Option<HarnessObservation>> {
     let Some(root) = codex_sessions_root() else {
         return Ok(None);
     };
+
+    if let Some(process_session) =
+        codex_session_owned_by_process(&root, cwd, process_id, process_start_time)?
+    {
+        let modified_at = DateTime::<Utc>::from(fs::metadata(&process_session)?.modified()?);
+        let details = read_last_codex_observation(&process_session)?;
+        return Ok(Some(HarnessObservation {
+            session_path: Some(process_session.to_string_lossy().to_string()),
+            progress_summary: details.progress_summary,
+            harness_mode: details.harness_mode,
+            turn_phase: details.turn_phase,
+            updated_at: details.updated_at.or(Some(modified_at)),
+            turn_state: details.turn_state,
+            last_turn_completed_at: details.last_turn_completed_at,
+            observed_turn: details.observed_turn,
+        }));
+    }
+
+    #[cfg(target_os = "linux")]
+    if (process_id.is_some() || process_start_time.is_some())
+        && (preferred_session.is_some() || updated_after.is_some())
+    {
+        // Confirmed process identity is authoritative. Falling back to a
+        // preferred or cwd-matching rollout here can reattach a reused pane to
+        // an old session and make unrelated output look correlated.
+        return Ok(None);
+    }
 
     if let Some(preferred_session) = preferred_session {
         let preferred_path = Path::new(preferred_session);
@@ -716,6 +782,7 @@ fn observe_codex(
                     updated_at: details.updated_at.or(Some(modified_at)),
                     turn_state: details.turn_state,
                     last_turn_completed_at: details.last_turn_completed_at,
+                    observed_turn: details.observed_turn,
                 }));
             }
         }
@@ -756,6 +823,7 @@ fn observe_codex(
         updated_at: details.updated_at.or(Some(modified_at)),
         turn_state: details.turn_state,
         last_turn_completed_at: details.last_turn_completed_at,
+        observed_turn: details.observed_turn,
     }))
 }
 
@@ -789,6 +857,7 @@ fn observe_gemini(
                     updated_at: details.updated_at.or(Some(modified_at)),
                     turn_state: details.turn_state,
                     last_turn_completed_at: details.last_turn_completed_at,
+                    observed_turn: details.observed_turn,
                 }));
             }
         }
@@ -841,6 +910,7 @@ fn observe_gemini(
         updated_at: details.updated_at.or(Some(modified_at)),
         turn_state: details.turn_state,
         last_turn_completed_at: details.last_turn_completed_at,
+        observed_turn: details.observed_turn,
     }))
 }
 
@@ -1122,6 +1192,89 @@ fn codex_session_matches_cwd(path: &Path, cwd: &str) -> anyhow::Result<bool> {
         == Some(cwd))
 }
 
+#[cfg(target_os = "linux")]
+fn codex_session_owned_by_process(
+    root: &Path,
+    cwd: &str,
+    process_id: Option<u32>,
+    process_start_time: Option<u64>,
+) -> anyhow::Result<Option<PathBuf>> {
+    let (Some(process_id), Some(process_start_time)) = (process_id, process_start_time) else {
+        return Ok(None);
+    };
+    fn read_process_start_time(pid: u32) -> Option<u64> {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, fields) = stat.rsplit_once(')')?;
+        fields.split_whitespace().nth(19)?.parse().ok()
+    }
+
+    if read_process_start_time(process_id) != Some(process_start_time) {
+        return Ok(None);
+    }
+
+    fn collect_pids(pid: u32, pids: &mut Vec<u32>) {
+        pids.push(pid);
+        let children_path = format!("/proc/{pid}/task/{pid}/children");
+        let Ok(children) = fs::read_to_string(children_path) else {
+            return;
+        };
+        for child in children
+            .split_whitespace()
+            .filter_map(|child| child.parse().ok())
+        {
+            collect_pids(child, pids);
+        }
+    }
+
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut pids = Vec::new();
+    collect_pids(process_id, &mut pids);
+    let mut selected: Option<(PathBuf, std::time::SystemTime)> = None;
+
+    for pid in pids {
+        let Ok(entries) = fs::read_dir(format!("/proc/{pid}/fd")) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(path) = fs::read_link(entry.path()) else {
+                continue;
+            };
+            let canonical_path = path.canonicalize().unwrap_or(path);
+            if !canonical_path.starts_with(&canonical_root)
+                || !canonical_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+                    .unwrap_or(false)
+                || !codex_session_matches_cwd(&canonical_path, cwd)?
+            {
+                continue;
+            }
+            let modified = fs::metadata(&canonical_path)?.modified()?;
+            if selected
+                .as_ref()
+                .map(|(_, current)| *current >= modified)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            selected = Some((canonical_path, modified));
+        }
+    }
+
+    Ok(selected.map(|(path, _)| path))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn codex_session_owned_by_process(
+    _root: &Path,
+    _cwd: &str,
+    _process_id: Option<u32>,
+    _process_start_time: Option<u64>,
+) -> anyhow::Result<Option<PathBuf>> {
+    Ok(None)
+}
+
 fn collect_codex_rollout_sessions(root: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
     if !root.is_dir() {
         return Ok(());
@@ -1331,6 +1484,7 @@ fn read_last_gemini_observation(path: &Path) -> anyhow::Result<HarnessObservatio
         updated_at: updated_at.or(last_assistant_at).or(last_user_at),
         turn_state,
         last_turn_completed_at,
+        observed_turn: None,
     })
 }
 
@@ -1509,6 +1663,7 @@ fn read_last_opencode_observation(
         updated_at: parse_unix_millis(updated_millis),
         turn_state,
         last_turn_completed_at,
+        observed_turn: None,
     }))
 }
 
@@ -1583,6 +1738,7 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
         updated_at: None,
         turn_state,
         last_turn_completed_at,
+        observed_turn: None,
     })
 }
 
@@ -1637,6 +1793,36 @@ fn visit_lines_reverse(
     Ok(())
 }
 
+fn codex_record_turn_id(record: &Value) -> Option<&str> {
+    let payload = record.get("payload")?;
+    payload.get("turn_id").and_then(Value::as_str).or_else(|| {
+        payload
+            .get("internal_chat_message_metadata_passthrough")
+            .and_then(|metadata| metadata.get("turn_id"))
+            .and_then(Value::as_str)
+    })
+}
+
+fn codex_record_cursor(record: &Value) -> Option<u64> {
+    record.get("ordinal").and_then(Value::as_u64)
+}
+
+fn codex_response_message_text(payload: &Value) -> Option<String> {
+    let content = payload.get("content")?.as_array()?;
+    let parts = content
+        .iter()
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+fn message_sha256(message: &str) -> String {
+    format!("{:x}", Sha256::digest(message.trim().as_bytes()))
+}
+
 fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservationDetails> {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum CodexTaskLifecycle {
@@ -1655,9 +1841,28 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
     let mut last_assistant_at = None;
     let mut last_lifecycle = None;
     let mut last_lifecycle_at = None;
+    let mut current_turn_id = None;
+    let mut current_turn_latest_cursor = None;
+    let mut current_turn_started_cursor = None;
+    let mut current_turn_started_at = None;
+    let mut current_turn_completed_at = None;
+    let mut current_turn_primary_user_sha256 = None;
+    let mut current_turn_user_message_count = 0_u32;
+    let mut current_turn_last_assistant_message = None;
+    let mut saw_current_turn_start = false;
     visit_lines_reverse(path, |line| {
         let Ok(record) = serde_json::from_str::<Value>(&line) else {
             return Ok(false);
+        };
+        let record_turn_id = codex_record_turn_id(&record);
+        if current_turn_id.is_none() {
+            current_turn_id = record_turn_id.map(str::to_string);
+            current_turn_latest_cursor = codex_record_cursor(&record);
+        }
+        let belongs_to_current_turn = match (current_turn_id.as_deref(), record_turn_id) {
+            (Some(current), Some(record)) => current == record,
+            (None, _) => true,
+            _ => false,
         };
         match record.get("type").and_then(Value::as_str) {
             Some("turn_context") => {
@@ -1687,6 +1892,11 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
                         if last_assistant_at.is_none() {
                             last_assistant_at = parse_record_timestamp(&record);
                         }
+                        if belongs_to_current_turn && current_turn_last_assistant_message.is_none()
+                        {
+                            current_turn_last_assistant_message =
+                                codex_response_message_text(payload);
+                        }
                         if summary.is_none() {
                             let Some(content) = payload.get("content").and_then(Value::as_array)
                             else {
@@ -1713,6 +1923,12 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
                         if last_user_at.is_none() {
                             last_user_at = parse_record_timestamp(&record);
                         }
+                        if belongs_to_current_turn {
+                            if let Some(message) = codex_response_message_text(payload) {
+                                current_turn_primary_user_sha256 = Some(message_sha256(&message));
+                                current_turn_user_message_count += 1;
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -1728,7 +1944,13 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
                         }
                     }
                     Some("task_started") => {
+                        if !belongs_to_current_turn {
+                            return Ok(false);
+                        }
                         saw_task_started = true;
+                        saw_current_turn_start = current_turn_id.is_some();
+                        current_turn_started_cursor = codex_record_cursor(&record);
+                        current_turn_started_at = parse_record_timestamp(&record);
                         if last_lifecycle.is_none() {
                             last_lifecycle = Some(CodexTaskLifecycle::Running);
                         }
@@ -1761,7 +1983,11 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
                         }
                     }
                     Some("task_complete") => {
+                        if !belongs_to_current_turn {
+                            return Ok(false);
+                        }
                         saw_task_complete = true;
+                        current_turn_completed_at = parse_record_timestamp(&record);
                         if last_lifecycle.is_none() {
                             last_lifecycle = Some(CodexTaskLifecycle::Completed);
                         }
@@ -1783,6 +2009,10 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
                         }
                     }
                     Some("turn_aborted") => {
+                        if !belongs_to_current_turn {
+                            return Ok(false);
+                        }
+                        current_turn_completed_at = parse_record_timestamp(&record);
                         if last_lifecycle.is_none() {
                             last_lifecycle = Some(CodexTaskLifecycle::Aborted);
                         }
@@ -1809,7 +2039,11 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
             }
             None => false,
         };
-        Ok(summary_settled && harness_mode_settled && phase_settled && turn_settled)
+        Ok(if current_turn_id.is_some() {
+            saw_current_turn_start
+        } else {
+            summary_settled && harness_mode_settled && phase_settled && turn_settled
+        })
     })?;
 
     if summary.is_none() {
@@ -1836,6 +2070,23 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
         }
         None => {}
     }
+    let observed_turn = current_turn_id.map(|provider_turn_id| AgentObservedTurn {
+        provider_turn_id,
+        outcome: match last_lifecycle {
+            Some(CodexTaskLifecycle::Completed) => AgentObservedTurnOutcome::Completed,
+            Some(CodexTaskLifecycle::Aborted) => AgentObservedTurnOutcome::Aborted,
+            Some(CodexTaskLifecycle::Running) | None => AgentObservedTurnOutcome::Running,
+        },
+        started_at: current_turn_started_at,
+        completed_at: current_turn_completed_at,
+        started_cursor: current_turn_started_cursor,
+        latest_cursor: current_turn_latest_cursor,
+        primary_user_message_sha256: current_turn_primary_user_sha256,
+        user_message_count: current_turn_user_message_count,
+        final_message: matches!(last_lifecycle, Some(CodexTaskLifecycle::Completed))
+            .then_some(current_turn_last_assistant_message)
+            .flatten(),
+    });
     Ok(HarnessObservationDetails {
         progress_summary: summary,
         harness_mode,
@@ -1843,6 +2094,7 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
         updated_at: None,
         turn_state,
         last_turn_completed_at,
+        observed_turn,
     })
 }
 
@@ -2205,7 +2457,7 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
-        let observed = observe_codex("/tmp/project-b", None, None)
+        let observed = observe_codex("/tmp/project-b", None, None, None, None)
             .unwrap()
             .unwrap();
         remove_env_var("WAKTERM_AGENT_CODEX_DIR");
@@ -2222,6 +2474,96 @@ mod test {
             observed.last_turn_completed_at,
             Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 4).unwrap())
         );
+    }
+
+    #[test]
+    fn observes_stable_codex_turn_identity_and_full_final_message() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout-turn.jsonl");
+        fs::write(
+            &session,
+            concat!(
+                "{\"ordinal\":10,\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-2\"}}\n",
+                "{\"ordinal\":11,\"type\":\"turn_context\",\"payload\":{\"turn_id\":\"turn-2\",\"collaboration_mode\":{\"mode\":\"default\"}}}\n",
+                "{\"ordinal\":12,\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:00:01Z\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"do the work\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-2\"}}}\n",
+                "{\"ordinal\":13,\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:00:02Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"working\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-2\"}}}\n",
+                "{\"ordinal\":14,\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:00:03Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"complete final response\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-2\"}}}\n",
+                "{\"ordinal\":15,\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:04Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-2\",\"last_agent_message\":\"complete final response\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        let details = read_last_codex_observation(&session).unwrap();
+        let turn = details.observed_turn.unwrap();
+
+        assert_eq!(turn.provider_turn_id, "turn-2");
+        assert_eq!(turn.outcome, AgentObservedTurnOutcome::Completed);
+        assert_eq!(turn.started_cursor, Some(10));
+        assert_eq!(turn.latest_cursor, Some(15));
+        assert_eq!(
+            turn.primary_user_message_sha256.as_deref(),
+            Some(message_sha256("do the work").as_str())
+        );
+        assert_eq!(turn.user_message_count, 1);
+        assert_eq!(
+            turn.final_message.as_deref(),
+            Some("complete final response")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn observe_codex_prefers_session_open_by_matching_process() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let old = temp.path().join("rollout-old.jsonl");
+        let live = temp.path().join("rollout-live.jsonl");
+        fs::write(
+            &old,
+            concat!(
+                "{\"payload\":{\"cwd\":\"/tmp/process-owned\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"stale\"}]}}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &live,
+            concat!(
+                "{\"payload\":{\"cwd\":\"/tmp/process-owned\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"live\"}]}}\n"
+            ),
+        )
+        .unwrap();
+        let _open_live_session = fs::File::open(&live).unwrap();
+        let process_id = std::process::id();
+        let process = LocalProcessInfo::with_root_pid(process_id).unwrap();
+
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        let observed = observe_codex(
+            "/tmp/process-owned",
+            Some(old.to_string_lossy().as_ref()),
+            None,
+            Some(process_id),
+            Some(process.start_time),
+        )
+        .unwrap()
+        .unwrap();
+        let mismatched_incarnation = observe_codex(
+            "/tmp/process-owned",
+            Some(old.to_string_lossy().as_ref()),
+            None,
+            Some(process_id),
+            Some(process.start_time + 1),
+        )
+        .unwrap();
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
+
+        assert_eq!(
+            observed.session_path.as_deref(),
+            Some(live.to_string_lossy().as_ref())
+        );
+        assert_eq!(observed.progress_summary.as_deref(), Some("live"));
+        assert!(mismatched_incarnation.is_none());
     }
 
     #[test]
@@ -2246,7 +2588,7 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
-        let observed = observe_codex("/tmp/project-live", None, None)
+        let observed = observe_codex("/tmp/project-live", None, None, None, None)
             .unwrap()
             .unwrap();
         remove_env_var("WAKTERM_AGENT_CODEX_DIR");
@@ -2314,7 +2656,7 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
-        let observed = observe_codex("/tmp/project-f", None, None)
+        let observed = observe_codex("/tmp/project-f", None, None, None, None)
             .unwrap()
             .unwrap();
         remove_env_var("WAKTERM_AGENT_CODEX_DIR");
@@ -2350,7 +2692,7 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
-        let observed = observe_codex("/tmp/project-g", None, None)
+        let observed = observe_codex("/tmp/project-g", None, None, None, None)
             .unwrap()
             .unwrap();
         remove_env_var("WAKTERM_AGENT_CODEX_DIR");
@@ -2903,6 +3245,8 @@ mod test {
         let observed = observe_codex(
             "/tmp/project-e",
             Some(older.to_string_lossy().as_ref()),
+            None,
+            None,
             None,
         )
         .unwrap()
