@@ -230,6 +230,7 @@ TOC = [
         "index.md",
         children=[
             Page("Features", "features.md"),
+            Page("Agent Harness Lifecycle", "agent-lifecycle.md"),
             Page("Scrollback", "scrollback.md"),
             Page("Quick Select Mode", "quickselect.md"),
             Page("Copy Mode", "copymode.md"),

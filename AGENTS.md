@@ -21,3 +21,11 @@ For concurrent edits, prefer deterministic last-accepted-request-wins behavior u
 Test synchronization with at least two clients and the server view. Cover the originating client, a second connected client, disconnect and reconnect, rapid repeated edits, edits from both clients close together, missing or stale mappings, and persistence across server restart where applicable. Verify both the visible result and the authoritative server order or layout. A single-client test cannot establish that echo suppression and cross-client convergence both work.
 
 When diagnosing flicker or stale state, identify the mutation, ID-translation, notification, dispatch, and reconciliation layers separately. Change one causal layer at a time. First test the cheapest counterfactual that could disprove the proposed cause, and do not turn a timing workaround into a protocol contract.
+
+## Agent lifecycle and recovery
+
+Follow the lifecycle and protocol boundaries in [docs/agent-lifecycle.md](docs/agent-lifecycle.md). Detection, confirmed adoption, restorability, and managed mode are distinct guarantees. Do not persist weak process or title detection as session identity, and do not treat a PID as a recovery handle.
+
+When restoring an expected harness, resume the exact confirmed provider session or surface a visible failure. Never silently substitute a fresh shell or a new provider session. Keep PTY restoration separate from future managed backends, and do not automatically promote a live PTY into managed mode.
+
+For future managed backends, use ACP as the default integration boundary when its implementation passes the required lifecycle tests. Keep native provider protocols available behind the same internal interface when a concrete capability, reliability, recovery, or diagnostic gap justifies them.
