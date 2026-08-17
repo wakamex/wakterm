@@ -1794,7 +1794,7 @@ async fn admit_agent_prompt(
 
     let mut return_request = match candidate.proposed_return_request() {
         Ok(request) => request,
-        Err(err) => {
+        Err(receipt) => {
             if let Err(cleanup_err) =
                 release_unwritten_claim(&request, request_store.clone(), admission_store.clone())
                     .await
@@ -1805,11 +1805,7 @@ async fn admit_agent_prompt(
                     format!("prompt was not written, but its admission claim could not be released after observer failure: {cleanup_err:#}"),
                 ));
             }
-            return Ok(AgentAdmissionReceipt::rejected(
-                &request,
-                AgentAdmissionStatus::ObserverFailure,
-                format!("observer could not prepare return-final admission: {err:#}"),
-            ));
+            return Ok(receipt);
         }
     };
     if let Some(proposed) = return_request.as_ref() {

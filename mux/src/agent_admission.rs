@@ -180,7 +180,7 @@ impl AgentAdmissionCandidate {
         self
     }
 
-    pub fn proposed_return_request(&self) -> anyhow::Result<Option<AgentRequest>> {
+    pub fn proposed_return_request(&self) -> Result<Option<AgentRequest>, AgentAdmissionReceipt> {
         if !self.request.return_final {
             return Ok(None);
         }
@@ -197,6 +197,13 @@ impl AgentAdmissionCandidate {
             deadline_at,
         )
         .map(Some)
+        .map_err(|err| {
+            AgentAdmissionReceipt::rejected(
+                &self.request,
+                AgentAdmissionStatus::ObserverFailure,
+                format!("observer could not prepare return-final admission: {err:#}"),
+            )
+        })
     }
 }
 
@@ -652,8 +659,8 @@ mod tests {
         }
     }
 
-    fn runtime() -> AgentRuntimeSnapshot {
-        let metadata = AgentMetadata {
+    fn metadata() -> AgentMetadata {
+        AgentMetadata {
             agent_id: "agent-1".to_string(),
             name: "target".to_string(),
             launch_cmd: "codex".to_string(),
@@ -665,7 +672,11 @@ mod tests {
             worktree: None,
             branch: None,
             managed_checkout: false,
-        };
+        }
+    }
+
+    fn runtime() -> AgentRuntimeSnapshot {
+        let metadata = metadata();
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         runtime.harness = AgentHarness::Codex;
         runtime.alive = true;
@@ -696,6 +707,44 @@ mod tests {
         assert_eq!(receipt.status, AgentAdmissionStatus::Unavailable);
         assert!(receipt.definitive);
         assert_eq!(receipt.prompt_written, Some(false));
+    }
+
+    #[test]
+    fn missing_baseline_cursor_is_definitive_observer_failure_without_prompt_write() {
+        let mut request = request("request-no-cursor", "work");
+        request.return_final = true;
+        let mut runtime = runtime();
+        runtime.transport = crate::agent::AgentTransport::ObservedPty;
+        runtime.session_path = Some("/tmp/codex-session.jsonl".to_string());
+        runtime.observed_turn = Some(crate::agent::AgentObservedTurn {
+            provider_turn_id: "turn-1".to_string(),
+            outcome: crate::agent::AgentObservedTurnOutcome::Completed,
+            started_at: None,
+            completed_at: Some(Utc::now()),
+            started_cursor: Some(1),
+            latest_cursor: None,
+            primary_user_message_sha256: None,
+            user_message_count: 1,
+            final_message: Some("done".to_string()),
+        });
+        let candidate = AgentAdmissionCandidate {
+            request,
+            pane_id: 7,
+            metadata: metadata(),
+            runtime,
+            input_generation: 0,
+        };
+
+        let Err(receipt) = candidate.proposed_return_request() else {
+            panic!("expected observer failure receipt");
+        };
+        assert_eq!(receipt.status, AgentAdmissionStatus::ObserverFailure);
+        assert!(receipt.definitive);
+        assert_eq!(receipt.prompt_written, Some(false));
+        assert!(receipt
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("observer cursor for the baseline turn")));
     }
 
     #[test]
@@ -800,6 +849,11 @@ mod tests {
                 }
                 "unavailable" => {
                     assert_eq!(receipt.status, AgentAdmissionStatus::Unavailable);
+                    assert!(receipt.definitive);
+                    assert_eq!(receipt.prompt_written, Some(false));
+                }
+                "observer_failure" => {
+                    assert_eq!(receipt.status, AgentAdmissionStatus::ObserverFailure);
                     assert!(receipt.definitive);
                     assert_eq!(receipt.prompt_written, Some(false));
                 }

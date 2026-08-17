@@ -88,6 +88,18 @@
       "request": null,
       "detail": "the target agent is not available"
     },
+    "observer_failure": {
+      "schema": "wakterm.agent-api.v1",
+      "request_id": "request-observer-not-ready",
+      "status": "observer_failure",
+      "definitive": true,
+      "prompt_written": false,
+      "agent_id": "agent-zola",
+      "incarnation_id": "incarnation-zola-7",
+      "return_final": true,
+      "request": null,
+      "detail": "observer could not prepare return-final admission: --return-final requires an observer cursor for the baseline turn"
+    },
     "indeterminate": {
       "schema": "wakterm.agent-api.v1",
       "request_id": "request-indeterminate",

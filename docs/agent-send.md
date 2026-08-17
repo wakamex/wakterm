@@ -75,6 +75,13 @@ The structured receipt classifies `accepted`, `busy`, `unsupported`,
 may have been partial. Callers must not retry an indeterminate request under a
 new ID.
 
+An idle target whose observer has not produced a cursor for its completed
+baseline turn is a definitive `observer_failure` with
+`prompt_written: false`. It is not `busy`, because no active target turn was
+observed, and it is not a delivery failure, because Wakterm did not attempt the
+pane write. A caller may choose an explicit one-way admission while
+return-final correlation is unavailable.
+
 The caller owns the request ID. Repeating the same ID, process incarnation,
 prompt bytes, paste mode, return mode, and timeout cannot write the prompt a
 second time. Reusing an ID with different input is rejected. One-way
