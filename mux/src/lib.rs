@@ -1457,11 +1457,7 @@ impl Mux {
     }
 
     pub fn record_agent_input(&self, pane_id: PaneId) {
-        *self
-            .agent_input_generation_by_pane
-            .write()
-            .entry(pane_id)
-            .or_default() += 1;
+        self.record_agent_input_generation(pane_id);
         self.refresh_agent_runtime_for_pane_with_update(
             pane_id,
             true,
@@ -1472,6 +1468,17 @@ impl Mux {
                 runtime.observed_at = now;
             },
         );
+    }
+
+    pub(crate) fn record_agent_input_generation(&self, pane_id: PaneId) {
+        if self.get_agent_metadata_for_pane(pane_id).is_none() {
+            return;
+        }
+        *self
+            .agent_input_generation_by_pane
+            .write()
+            .entry(pane_id)
+            .or_default() += 1;
     }
 
     pub(crate) fn agent_input_generation(&self, pane_id: PaneId) -> u64 {
@@ -4791,7 +4798,9 @@ mod test {
         mux.set_agent_metadata(pane_id, sample_agent_metadata("tracker"))
             .unwrap();
 
+        assert_eq!(mux.agent_input_generation(pane_id), 0);
         mux.record_agent_input(pane_id);
+        assert_eq!(mux.agent_input_generation(pane_id), 1);
         mux.notify(MuxNotification::PaneOutput(pane_id));
 
         let agents = mux.list_agents();
