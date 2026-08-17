@@ -1148,6 +1148,38 @@ fn opencode_db_path() -> Option<PathBuf> {
         })
 }
 
+pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> Vec<PathBuf> {
+    let paths = match harness {
+        AgentHarness::Claude => claude_sessions_root().map(|root| {
+            let project = root.join(cwd.replace('/', "-"));
+            if project.is_dir() {
+                vec![project]
+            } else {
+                vec![root]
+            }
+        }),
+        AgentHarness::Codex => codex_sessions_root().map(|root| vec![root]),
+        AgentHarness::Gemini => gemini_root().map(|root| {
+            let project_dirs = gemini_project_dirs(&root, cwd).unwrap_or_default();
+            if project_dirs.is_empty() {
+                vec![root]
+            } else {
+                project_dirs
+            }
+        }),
+        AgentHarness::Opencode => {
+            opencode_db_path().and_then(|path| path.parent().map(|path| vec![path.to_path_buf()]))
+        }
+        AgentHarness::Unknown => None,
+    };
+
+    paths
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|home| !home.is_empty())

@@ -14,6 +14,7 @@ use promise::spawn::SimpleExecutor;
 use rangeset::RangeSet;
 use std::io::Write;
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -313,6 +314,8 @@ struct DetectedAdoptionBench {
     _guard: BenchMuxGuard,
     mux: Arc<Mux>,
     pane_id: PaneId,
+    session_path: PathBuf,
+    session_payload: &'static str,
 }
 
 fn terminal_size() -> TerminalSize {
@@ -486,7 +489,7 @@ fn setup_codex_refresh_bench() -> CodexRefreshBench {
     }
 }
 
-fn setup_detected_adoption_bench() -> DetectedAdoptionBench {
+fn setup_detected_adoption_bench(create_session: bool) -> DetectedAdoptionBench {
     let temp = TempDir::new().unwrap();
     let day = chrono::Utc::now();
     let session_dir = temp
@@ -495,15 +498,15 @@ fn setup_detected_adoption_bench() -> DetectedAdoptionBench {
         .join(format!("{:02}", day.month()))
         .join(format!("{:02}", day.day()));
     std::fs::create_dir_all(&session_dir).unwrap();
-    std::fs::write(
-        session_dir.join("rollout-bench-auto-adopt.jsonl"),
-        concat!(
-            "{\"payload\":{\"cwd\":\"/tmp/bench-auto-adopt\"}}\n",
-            "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"collaboration_mode_kind\":\"default\"}}\n",
-            "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:01Z\",\"payload\":{\"type\":\"agent_message\",\"phase\":\"commentary\"}}\n"
-        ),
-    )
-    .unwrap();
+    let session_path = session_dir.join("rollout-bench-auto-adopt.jsonl");
+    let session_payload = concat!(
+        "{\"payload\":{\"cwd\":\"/tmp/bench-auto-adopt\"}}\n",
+        "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"collaboration_mode_kind\":\"default\"}}\n",
+        "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:01Z\",\"payload\":{\"type\":\"agent_message\",\"phase\":\"commentary\"}}\n"
+    );
+    if create_session {
+        std::fs::write(&session_path, session_payload).unwrap();
+    }
     unsafe {
         std::env::set_var("WAKTERM_AGENT_CODEX_DIR", temp.path());
     }
@@ -531,6 +534,8 @@ fn setup_detected_adoption_bench() -> DetectedAdoptionBench {
         _guard: BenchMuxGuard,
         mux,
         pane_id,
+        session_path,
+        session_payload,
     }
 }
 
@@ -591,7 +596,7 @@ fn bench_agent_refresh(c: &mut Criterion) {
 }
 
 fn bench_detected_to_adopted(c: &mut Criterion) {
-    let fixture = setup_detected_adoption_bench();
+    let fixture = setup_detected_adoption_bench(true);
     let mut group = c.benchmark_group("agent_adoption");
     group.throughput(Throughput::Elements(1));
     group.bench_function("detected_to_adopted", |b| {
@@ -614,6 +619,55 @@ fn bench_detected_to_adopted(c: &mut Criterion) {
                 fixture.executor.tick().unwrap();
             }
             black_box(fixture.mux.list_agents_cached());
+        });
+    });
+    group.bench_function("filesystem_event_to_adopted", |b| {
+        b.iter_custom(|iterations| {
+            let mut elapsed = std::time::Duration::ZERO;
+            for _ in 0..iterations {
+                let fixture = setup_detected_adoption_bench(false);
+                fixture.mux.record_agent_output(black_box(fixture.pane_id));
+                let setup_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                loop {
+                    let initial_refresh_finished = fixture
+                        .mux
+                        .list_agents_cached()
+                        .into_iter()
+                        .find(|agent| agent.pane_id == fixture.pane_id)
+                        .and_then(|agent| agent.runtime.last_harness_refresh_at)
+                        .is_some();
+                    if initial_refresh_finished {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < setup_deadline,
+                        "timed out waiting for initial observer refresh"
+                    );
+                    fixture.executor.tick().unwrap();
+                }
+
+                let started = std::time::Instant::now();
+                std::fs::write(&fixture.session_path, fixture.session_payload).unwrap();
+                let adoption_deadline =
+                    std::time::Instant::now() + std::time::Duration::from_secs(2);
+                loop {
+                    if fixture
+                        .mux
+                        .get_agent_metadata_for_pane(fixture.pane_id)
+                        .is_some()
+                    {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < adoption_deadline,
+                        "timed out waiting for filesystem event adoption"
+                    );
+                    fixture.executor.tick().unwrap();
+                }
+                elapsed += started.elapsed();
+                black_box(fixture.mux.list_agents_cached());
+            }
+            elapsed
         });
     });
     group.finish();

@@ -1,8 +1,8 @@
 use crate::agent::{
-    adopted_agent_matches_process_info, default_launch_cmd_for_harness, derive_runtime_status,
-    detect_harness_process, finalize_runtime_snapshot, infer_harness, prime_runtime_for_new_agent,
-    refresh_runtime_from_harness, AgentMetadata, AgentOrigin, AgentRuntimeSnapshot, AgentSnapshot,
-    AgentTabBadgeState,
+    adopted_agent_matches_process_info, agent_observer_watch_roots, default_launch_cmd_for_harness,
+    derive_runtime_status, detect_harness_process, finalize_runtime_snapshot, infer_harness,
+    prime_runtime_for_new_agent, refresh_runtime_from_harness, AgentHarness, AgentMetadata,
+    AgentOrigin, AgentRuntimeSnapshot, AgentSnapshot, AgentTabBadgeState,
 };
 use crate::agent_event::AgentEventStore;
 use crate::agent_request::{AgentRequest, AgentRequestState, AgentRequestStore};
@@ -21,6 +21,7 @@ use filedescriptor::{poll, pollfd, socketpair, AsRawSocketDescriptor, FileDescri
 use libc::{c_int, SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
 use log::error;
 use metrics::{counter, histogram};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
@@ -31,6 +32,7 @@ use std::convert::TryInto;
 use std::io::{Read, Write};
 #[cfg(windows)]
 use std::os::raw::c_int;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Weak};
@@ -142,9 +144,11 @@ pub struct Mux {
     agent_metadata_by_pane: RwLock<HashMap<PaneId, Arc<AgentMetadata>>>,
     detected_agent_panes: RwLock<HashSet<PaneId>>,
     agent_adoption_candidates: RwLock<HashMap<PaneId, AgentAdoptionCandidate>>,
+    agent_artifact_watcher: Mutex<AgentArtifactWatcherState>,
     last_detected_agent_full_scan: Mutex<Option<Instant>>,
     agent_runtime_by_pane: RwLock<HashMap<PaneId, AgentRuntimeSnapshot>>,
     agent_observer_state_by_pane: RwLock<HashMap<PaneId, AgentObserverState>>,
+    agent_observer_generation_by_pane: RwLock<HashMap<PaneId, u64>>,
     agent_request_store: AgentRequestStore,
     agent_admission_store: agent_admission::AgentAdmissionStore,
     agent_event_store: AgentEventStore,
@@ -168,6 +172,7 @@ pub struct Mux {
 
 const BUFSIZE: usize = 1024 * 1024;
 const AGENT_HARNESS_REFRESH_THROTTLE: Duration = Duration::from_millis(250);
+const AGENT_ARTIFACT_HINT_DEBOUNCE: Duration = Duration::from_millis(25);
 const AGENT_DETECTED_FULL_SCAN_THROTTLE: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -181,6 +186,7 @@ enum AgentTabBadgeMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AgentRefreshPolicy {
     Throttled,
+    Immediate,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -221,6 +227,146 @@ struct AgentAdoptionCandidate {
     workspace: String,
     domain_id: DomainId,
     detection_source: String,
+}
+
+struct AgentArtifactWatcherState {
+    watcher: Option<RecommendedWatcher>,
+    roots_by_pane: HashMap<PaneId, Vec<PathBuf>>,
+    panes_by_root: HashMap<PathBuf, HashSet<PaneId>>,
+    last_hint_at_by_pane: HashMap<PaneId, Instant>,
+}
+
+impl AgentArtifactWatcherState {
+    fn new() -> Self {
+        let (event_tx, event_rx) = mpsc::channel::<Vec<PathBuf>>();
+        thread::spawn(move || {
+            while let Ok(mut paths) = event_rx.recv() {
+                thread::sleep(AGENT_ARTIFACT_HINT_DEBOUNCE);
+                while let Ok(mut more_paths) = event_rx.try_recv() {
+                    paths.append(&mut more_paths);
+                }
+                paths.sort();
+                paths.dedup();
+                promise::spawn::spawn_into_main_thread(async move {
+                    if let Some(mux) = Mux::try_get() {
+                        mux.handle_agent_artifact_event(paths);
+                    }
+                })
+                .detach();
+            }
+        });
+
+        let watcher =
+            notify::recommended_watcher(
+                move |result: notify::Result<notify::Event>| match result {
+                    Ok(event) => match event.kind {
+                        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
+                            if !event.paths.is_empty() {
+                                let _ = event_tx.send(event.paths);
+                            }
+                        }
+                        _ => {}
+                    },
+                    Err(err) => {
+                        log::warn!("agent artifact watcher error: {err}");
+                    }
+                },
+            );
+
+        let watcher = match watcher {
+            Ok(watcher) => Some(watcher),
+            Err(err) => {
+                log::warn!("unable to start agent artifact watcher: {err}");
+                None
+            }
+        };
+
+        Self {
+            watcher,
+            roots_by_pane: HashMap::new(),
+            panes_by_root: HashMap::new(),
+            last_hint_at_by_pane: HashMap::new(),
+        }
+    }
+
+    fn watch_candidate(&mut self, pane_id: PaneId, harness: &AgentHarness, cwd: &str) {
+        let roots = agent_observer_watch_roots(harness, cwd)
+            .into_iter()
+            .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+            .collect::<Vec<_>>();
+
+        self.unwatch_candidate(pane_id);
+        if roots.is_empty() || self.watcher.is_none() {
+            return;
+        }
+
+        let mut watched_roots = vec![];
+        for root in roots {
+            let first_watcher_for_root = !self.panes_by_root.contains_key(&root);
+            if first_watcher_for_root {
+                let Some(watcher) = self.watcher.as_mut() else {
+                    return;
+                };
+                if let Err(err) = watcher.watch(&root, RecursiveMode::Recursive) {
+                    log::debug!("unable to watch agent artifact root {:?}: {err}", root);
+                    continue;
+                }
+            }
+
+            self.panes_by_root
+                .entry(root.clone())
+                .or_default()
+                .insert(pane_id);
+            watched_roots.push(root);
+        }
+
+        if !watched_roots.is_empty() {
+            self.roots_by_pane.insert(pane_id, watched_roots);
+        }
+    }
+
+    fn unwatch_candidate(&mut self, pane_id: PaneId) {
+        let Some(roots) = self.roots_by_pane.remove(&pane_id) else {
+            self.last_hint_at_by_pane.remove(&pane_id);
+            return;
+        };
+
+        for root in roots {
+            if let Some(panes) = self.panes_by_root.get_mut(&root) {
+                panes.remove(&pane_id);
+            }
+        }
+        self.last_hint_at_by_pane.remove(&pane_id);
+    }
+
+    fn matching_panes(&mut self, event_paths: &[PathBuf]) -> Vec<PaneId> {
+        let now = Instant::now();
+        let mut matched = HashSet::new();
+        for event_path in event_paths {
+            for (root, panes) in &self.panes_by_root {
+                if event_path.starts_with(root) || root.starts_with(event_path) {
+                    matched.extend(panes.iter().copied());
+                }
+            }
+        }
+
+        let mut panes = matched
+            .into_iter()
+            .filter(|pane_id| {
+                let should_hint = self
+                    .last_hint_at_by_pane
+                    .get(pane_id)
+                    .map(|last| now.duration_since(*last) >= AGENT_ARTIFACT_HINT_DEBOUNCE)
+                    .unwrap_or(true);
+                if should_hint {
+                    self.last_hint_at_by_pane.insert(*pane_id, now);
+                }
+                should_hint
+            })
+            .collect::<Vec<_>>();
+        panes.sort_unstable();
+        panes
+    }
 }
 
 #[derive(Clone)]
@@ -703,9 +849,11 @@ impl Mux {
             agent_metadata_by_pane: RwLock::new(HashMap::new()),
             detected_agent_panes: RwLock::new(HashSet::new()),
             agent_adoption_candidates: RwLock::new(HashMap::new()),
+            agent_artifact_watcher: Mutex::new(AgentArtifactWatcherState::new()),
             last_detected_agent_full_scan: Mutex::new(None),
             agent_runtime_by_pane: RwLock::new(HashMap::new()),
             agent_observer_state_by_pane: RwLock::new(HashMap::new()),
+            agent_observer_generation_by_pane: RwLock::new(HashMap::new()),
             agent_request_store: AgentRequestStore::new(agent_state_path.clone()),
             agent_admission_store: agent_admission::AgentAdmissionStore::new(agent_state_path),
             agent_event_store,
@@ -887,6 +1035,9 @@ impl Mux {
     ) -> anyhow::Result<()> {
         self.detected_agent_panes.write().remove(&pane_id);
         self.agent_adoption_candidates.write().remove(&pane_id);
+        self.agent_artifact_watcher
+            .lock()
+            .unwatch_candidate(pane_id);
         let pane = self
             .get_pane(pane_id)
             .ok_or_else(|| anyhow!("pane {} is invalid", pane_id))?;
@@ -977,6 +1128,9 @@ impl Mux {
         self.agent_panes_by_name.write().remove(&metadata.name);
         self.agent_runtime_by_pane.write().remove(&pane_id);
         self.agent_adoption_candidates.write().remove(&pane_id);
+        self.agent_artifact_watcher
+            .lock()
+            .unwatch_candidate(pane_id);
         self.agent_observer_state_by_pane.write().remove(&pane_id);
         self.agent_input_generation_by_pane.write().remove(&pane_id);
         for seen in self.agent_attention_seen_by_view.write().values_mut() {
@@ -1130,6 +1284,9 @@ impl Mux {
         self.mirrored_agent_harness_by_pane.write().remove(&pane_id);
         self.detected_agent_panes.write().remove(&pane_id);
         self.agent_adoption_candidates.write().remove(&pane_id);
+        self.agent_artifact_watcher
+            .lock()
+            .unwatch_candidate(pane_id);
         if self.get_agent_metadata_for_pane(pane_id).is_none() {
             self.agent_runtime_by_pane.write().remove(&pane_id);
             self.agent_observer_state_by_pane.write().remove(&pane_id);
@@ -1299,7 +1456,12 @@ impl Mux {
         };
         self.agent_adoption_candidates
             .write()
-            .insert(pane_id, candidate);
+            .insert(pane_id, candidate.clone());
+        self.agent_artifact_watcher.lock().watch_candidate(
+            pane_id,
+            &candidate.harness,
+            &candidate.declared_cwd,
+        );
         self.schedule_agent_observer_refresh(
             pane_id,
             &metadata,
@@ -1347,6 +1509,46 @@ impl Mux {
         })
     }
 
+    fn metadata_from_adoption_candidate(candidate: &AgentAdoptionCandidate) -> AgentMetadata {
+        AgentMetadata {
+            agent_id: format!("detected-pane-{}", candidate.pane_id),
+            name: format!("detected-{}", candidate.pane_id),
+            launch_cmd: candidate.launch_cmd.clone(),
+            declared_cwd: candidate.declared_cwd.clone(),
+            adopted_pid: candidate.foreground_pid,
+            adopted_start_time: candidate.process_start_time,
+            created_at: candidate.created_at,
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+        }
+    }
+
+    fn refresh_detected_agent_runtime_for_pane(&self, pane_id: PaneId) {
+        let Some(candidate) = self.agent_adoption_candidates.read().get(&pane_id).cloned() else {
+            return;
+        };
+        let Some(runtime) = self.agent_runtime_by_pane.read().get(&pane_id).cloned() else {
+            return;
+        };
+        let metadata = Self::metadata_from_adoption_candidate(&candidate);
+        self.schedule_agent_observer_refresh(
+            pane_id,
+            &metadata,
+            &runtime,
+            AgentRefreshPolicy::Immediate,
+            false,
+        );
+    }
+
+    fn handle_agent_artifact_event(&self, paths: Vec<PathBuf>) {
+        let pane_ids = self.agent_artifact_watcher.lock().matching_panes(&paths);
+        for pane_id in pane_ids {
+            self.refresh_detected_agent_runtime_for_pane(pane_id);
+        }
+    }
+
     fn record_detected_agent_output(&self, pane_id: PaneId) {
         let Some(candidate) = self.agent_adoption_candidates.read().get(&pane_id).cloned() else {
             return;
@@ -1363,19 +1565,7 @@ impl Mux {
             .write()
             .insert(pane_id, runtime.clone());
 
-        let metadata = AgentMetadata {
-            agent_id: format!("detected-pane-{pane_id}"),
-            name: format!("detected-{pane_id}"),
-            launch_cmd: candidate.launch_cmd,
-            declared_cwd: candidate.declared_cwd,
-            adopted_pid: candidate.foreground_pid,
-            adopted_start_time: candidate.process_start_time,
-            created_at: candidate.created_at,
-            repo_root: None,
-            worktree: None,
-            branch: None,
-            managed_checkout: false,
-        };
+        let metadata = Self::metadata_from_adoption_candidate(&candidate);
         self.schedule_agent_observer_refresh(
             pane_id,
             &metadata,
@@ -1540,6 +1730,7 @@ impl Mux {
         now: DateTime<Utc>,
     ) -> bool {
         match policy {
+            AgentRefreshPolicy::Immediate => true,
             AgentRefreshPolicy::Throttled => observer_state
                 .last_requested_at
                 .map(|last| {
@@ -1576,9 +1767,17 @@ impl Mux {
             && metadata.adopted_pid.is_some()
             && metadata.adopted_start_time.is_some()
             && runtime.session_path.is_some();
+        let prior_generation = self
+            .agent_observer_generation_by_pane
+            .read()
+            .get(&pane_id)
+            .copied()
+            .unwrap_or_default();
         let request = {
             let mut observer_state_by_pane = self.agent_observer_state_by_pane.write();
             let observer_state = observer_state_by_pane.entry(pane_id).or_default();
+            observer_state.latest_generation =
+                observer_state.latest_generation.max(prior_generation);
             if !requires_lossless_observation
                 && !Self::should_refresh_harness_runtime(observer_state, refresh_policy, now)
             {
@@ -1587,6 +1786,9 @@ impl Mux {
             }
 
             observer_state.latest_generation += 1;
+            self.agent_observer_generation_by_pane
+                .write()
+                .insert(pane_id, observer_state.latest_generation);
             observer_state.last_requested_at = Some(now);
             let request = AgentObserverRequest {
                 pane_id,
@@ -3413,6 +3615,9 @@ impl Mux {
         let mut changed = false;
         let pane_location = self.resolve_pane_id(pane_id);
         self.clear_agent_metadata(pane_id);
+        self.agent_artifact_watcher
+            .lock()
+            .unwatch_candidate(pane_id);
         self.agent_observer_state_by_pane.write().remove(&pane_id);
         if let Some(pane) = self.panes.write().remove(&pane_id).clone() {
             log::debug!("killing pane {}", pane_id);
@@ -6454,6 +6659,88 @@ mod test {
             assert_eq!(infer_harness(&metadata.launch_cmd, None), harness);
             assert_eq!(metadata.adopted_pid, Some(1));
             assert_eq!(metadata.adopted_start_time, Some(1));
+        }
+    }
+
+    #[test]
+    fn filesystem_artifact_event_triggers_detected_agent_adoption() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        }
+        let _config = TestConfigGuard::new_with_auto_adopt("attention", "🤖 ", true);
+
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new_detected(
+            157,
+            size,
+            domain.id,
+            "codex",
+            "/tmp/filesystem-watcher-project",
+            "/usr/bin/codex",
+            &["codex"],
+        );
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let session_dir = temp.path().join("2026").join("03").join("21");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let session = session_dir.join("rollout-filesystem-watcher.jsonl");
+        mux.record_agent_output(pane_id);
+        assert!(mux.agent_adoption_candidates.read().contains_key(&pane_id));
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_runtime_by_pane
+                    .read()
+                    .get(&pane_id)
+                    .and_then(|runtime| runtime.last_harness_refresh_at)
+                    .is_some()
+            },
+            "initial observer refresh before filesystem event",
+        );
+
+        std::fs::write(
+            &session,
+            concat!(
+                "{\"payload\":{\"cwd\":\"/tmp/filesystem-watcher-project\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"collaboration_mode_kind\":\"default\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:01Z\",\"payload\":{\"type\":\"agent_message\",\"phase\":\"commentary\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        wait_for_main_thread_work(
+            &executor,
+            || mux.get_agent_metadata_for_pane(pane_id).is_some(),
+            "filesystem watcher detected agent adoption",
+        );
+
+        assert_eq!(
+            mux.get_agent_metadata_for_pane(pane_id)
+                .and_then(|metadata| metadata.adopted_pid),
+            Some(1)
+        );
+        unsafe {
+            std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");
         }
     }
 

@@ -29,6 +29,7 @@ metrics.workspace = true
 mlua.workspace = true
 names.workspace = true
 nix = {workspace=true, features=["term"]}
+notify.workspace = true
 parking_lot.workspace = true
 percent-encoding.workspace = true
 portable-pty = { workspace=true, features = ["serde_support"]}
