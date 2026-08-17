@@ -15,10 +15,11 @@ unless a discovered consumer cannot be reconfigured.
 1. Record the exact candidate commit, release versions, binary hashes, active
    unit, mux PID, socket inode, Agent API catalog, event head, and effective
    configuration.
-2. Record a tested exact provider-session resume command and working directory
-   for every required agent. A route without that recovery evidence blocks the
-   maintenance.
-3. Bring agents to observed idle boundaries and save the Wakterm layout.
+2. Finish or abandon any agent turn whose in-flight work matters. Wakterm does
+   not currently restore provider processes or provider sessions. The operator
+   restarts any desired agent harnesses after the mux migration.
+3. Save the Wakterm layout and record the names and working directories of any
+   agent harnesses that should be recreated.
 4. Stop Panetone. Confirm that it has no active worker or pending control
    request.
 5. Stop the user Wakterm service once. Confirm that no mux process remains.
@@ -54,14 +55,46 @@ at the controlled start boundary.
 
 Start the system unit once. Verify exactly one mux process, one socket inode at
 `/run/wakterm/sock`, restrictive ownership and permissions, the expected wire
-codec, and the complete Agent API capability set. Restore the terminal layout,
-then run each previously tested exact provider-session resume command in its
-recorded pane and working directory. Verify the provider session identity, not
-only the pane title or process name.
+codec, and the complete Agent API capability set. Point stopped Python
+Panetone at `/run/wakterm/sock` and start it. Reconnect Wakterm and manually
+restart only the agent harnesses that are still wanted. The Rust Panetone
+cutover remains a separate maintenance operation.
 
-Only after every required agent is restored should stopped Python Panetone be
-pointed at `/run/wakterm/sock` and started. The Rust Panetone cutover remains a
-separate maintenance operation.
+## Production helper
+
+The reviewed helper builds the exact pinned candidate, takes the maintenance
+backup, performs the service and socket transition, verifies the Agent API,
+and restarts Panetone. It does not attempt to restore agent processes or
+provider sessions.
+
+Run it from an independent SSH or console shell, never from a Wakterm pane:
+
+```sh
+cd /code/wakterm
+./promote-system-service.sh --check
+./promote-system-service.sh --apply
+```
+
+The apply command prints the persistent backup directory. Keep it for the
+rollback command:
+
+```sh
+./promote-system-service.sh --rollback /var/tmp/wakterm-system-backup-TIMESTAMP
+```
+
+If verification stops the migration after the system service was installed,
+fix the reported condition and continue without reinstalling or rolling back:
+
+```sh
+./promote-system-service.sh --resume /var/tmp/wakterm-system-backup-TIMESTAMP
+```
+
+The helper also installs a condition on the disabled user mux service so a
+remaining user-unit dependency cannot start a second mux. Rollback restores
+the previous condition state.
+
+Do not use `deploy.sh --restart` for this migration. It targets the existing
+development deployment path rather than the reviewed system-service boundary.
 
 ## Rollback
 
@@ -75,10 +108,10 @@ sudo /bin/bash ./install-system-service.sh \
   --rollback
 ```
 
-The rollback command does not start either service. Re-enable and start the
-previous user service, verify its old socket and codec, restore the layout, and
-manually resume every exact provider session again. Rollback is not complete
-until every required session identity and Panetone route is directly verified.
+The installer rollback command itself does not start either service. The
+production helper restores and starts the previous user mux and Panetone after
+verifying the old socket. Reconnect Wakterm and manually restart any desired
+agent harnesses.
 
 ## Isolated rehearsal
 
