@@ -1,0 +1,24 @@
+[Unit]
+Description=Wakterm mux server
+Requires=user-runtime-dir@__USER_ID__.service
+After=user-runtime-dir@__USER_ID__.service network.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__HOME__
+Environment=HOME=__HOME__
+Environment=XDG_RUNTIME_DIR=/run/user/__USER_ID__
+UMask=0077
+RuntimeDirectory=wakterm
+RuntimeDirectoryMode=0700
+ExecStart=/usr/local/bin/wakterm-mux-server --config-file /etc/wakterm/mux-server.lua
+KillMode=control-group
+OOMPolicy=continue
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
