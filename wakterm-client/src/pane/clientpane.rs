@@ -651,17 +651,9 @@ impl Pane for ClientPane {
         let mut focused_pane = self.client.focused_remote_pane_id.lock().unwrap();
         if *focused_pane != Some(self.remote_pane_id) {
             focused_pane.replace(self.remote_pane_id);
-            let client = Arc::clone(&self.client);
-            let remote_pane_id = self.remote_pane_id;
-            promise::spawn::spawn(async move {
-                client
-                    .client
-                    .set_focused_pane_id(SetFocusedPane {
-                        pane_id: remote_pane_id,
-                    })
-                    .await
-            })
-            .detach();
+            drop(focused_pane);
+            self.client
+                .queue_active_tab(self.remote_tab_id, self.remote_pane_id);
         }
     }
 

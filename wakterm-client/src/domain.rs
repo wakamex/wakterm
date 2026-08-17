@@ -30,7 +30,113 @@ pub struct ClientInner {
     remote_tab_to_window: Mutex<HashMap<TabId, WindowId>>,
     remote_to_local_pane: Mutex<HashMap<PaneId, PaneId>>,
     tab_order_outbox: Mutex<TabOrderOutbox>,
+    active_tab_outbox: Mutex<ActiveTabOutbox>,
     pub focused_remote_pane_id: Mutex<Option<PaneId>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ActiveTabIntent {
+    generation: u64,
+    tab_id: TabId,
+    pane_id: PaneId,
+    acknowledged: bool,
+}
+
+#[derive(Default)]
+struct ActiveTabSendState {
+    in_flight: bool,
+    pending: Option<ActiveTabIntent>,
+    desired: Option<ActiveTabIntent>,
+}
+
+#[derive(Default)]
+struct ActiveTabOutbox {
+    generation: u64,
+    windows: HashMap<WindowId, ActiveTabSendState>,
+}
+
+impl ActiveTabOutbox {
+    // ListPanes snapshots can race with active-tab RPCs. Keep the newest local
+    // intent until the server acknowledges it and a later snapshot confirms
+    // the same tab and pane.
+    fn queue(&mut self, window_id: WindowId, tab_id: TabId, pane_id: PaneId) -> bool {
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        let state = self.windows.entry(window_id).or_default();
+        let intent = ActiveTabIntent {
+            generation,
+            tab_id,
+            pane_id,
+            acknowledged: false,
+        };
+        state.pending = Some(intent);
+        state.desired = Some(intent);
+        if state.in_flight {
+            false
+        } else {
+            state.in_flight = true;
+            true
+        }
+    }
+
+    fn take_next_or_finish(&mut self, window_id: WindowId) -> Option<ActiveTabIntent> {
+        let state = self.windows.get_mut(&window_id)?;
+        if let Some(intent) = state.pending.take() {
+            return Some(intent);
+        }
+        state.in_flight = false;
+        if state.desired.is_none() {
+            self.windows.remove(&window_id);
+        }
+        None
+    }
+
+    fn acknowledge(&mut self, window_id: WindowId, generation: u64) -> bool {
+        let Some(state) = self.windows.get_mut(&window_id) else {
+            return false;
+        };
+        let Some(desired) = state.desired.as_mut() else {
+            return false;
+        };
+        if desired.generation != generation {
+            return false;
+        }
+        desired.acknowledged = true;
+        true
+    }
+
+    fn reconcile(
+        &mut self,
+        window_id: WindowId,
+        observed_tab_id: TabId,
+        observed_pane_id: Option<PaneId>,
+    ) -> (TabId, Option<PaneId>) {
+        let Some(state) = self.windows.get_mut(&window_id) else {
+            return (observed_tab_id, observed_pane_id);
+        };
+        let Some(desired) = state.desired else {
+            return (observed_tab_id, observed_pane_id);
+        };
+
+        if desired.acknowledged
+            && desired.tab_id == observed_tab_id
+            && observed_pane_id == Some(desired.pane_id)
+        {
+            state.desired = None;
+            if !state.in_flight && state.pending.is_none() {
+                self.windows.remove(&window_id);
+            }
+            (observed_tab_id, observed_pane_id)
+        } else {
+            (desired.tab_id, Some(desired.pane_id))
+        }
+    }
+
+    fn abort(&mut self, window_id: WindowId) -> Option<ActiveTabIntent> {
+        self.windows
+            .remove(&window_id)
+            .and_then(|state| state.desired)
+    }
 }
 
 #[derive(Default)]
@@ -348,6 +454,112 @@ impl ClientInner {
         }
     }
 
+    pub(crate) fn queue_active_tab(self: &Arc<Self>, remote_tab_id: TabId, remote_pane_id: PaneId) {
+        let remote_window_id = {
+            let tab_windows = self.remote_tab_to_window.lock().unwrap();
+            tab_windows.get(&remote_tab_id).copied()
+        };
+        let Some(remote_window_id) = remote_window_id else {
+            log::warn!(
+                "cannot advise active tab {} because its window is unknown",
+                remote_tab_id
+            );
+            return;
+        };
+
+        let should_start = self.active_tab_outbox.lock().unwrap().queue(
+            remote_window_id,
+            remote_tab_id,
+            remote_pane_id,
+        );
+        if !should_start {
+            return;
+        }
+
+        let inner = Arc::clone(self);
+        promise::spawn::spawn(async move {
+            inner.flush_active_tab(remote_window_id).await;
+        })
+        .detach();
+    }
+
+    async fn flush_active_tab(self: &Arc<Self>, remote_window_id: WindowId) {
+        loop {
+            let Some(intent) = self
+                .active_tab_outbox
+                .lock()
+                .unwrap()
+                .take_next_or_finish(remote_window_id)
+            else {
+                return;
+            };
+
+            let update = async {
+                self.client
+                    .set_client_active_tab(codec::SetClientActiveTab {
+                        window_id: remote_window_id,
+                        tab_id: intent.tab_id,
+                    })
+                    .await?;
+                self.client
+                    .set_focused_pane_id(codec::SetFocusedPane {
+                        pane_id: intent.pane_id,
+                    })
+                    .await?;
+                anyhow::Result::<()>::Ok(())
+            }
+            .await;
+            if let Err(err) = update {
+                log::error!(
+                    "failed to update active tab and pane for remote window {} tab {} pane {}: {:#}",
+                    remote_window_id,
+                    intent.tab_id,
+                    intent.pane_id,
+                    err
+                );
+                self.abort_active_tab_intent(remote_window_id);
+                self.schedule_resync();
+                return;
+            }
+
+            if self
+                .active_tab_outbox
+                .lock()
+                .unwrap()
+                .acknowledge(remote_window_id, intent.generation)
+            {
+                self.schedule_resync();
+            }
+        }
+    }
+
+    fn abort_active_tab_intent(&self, remote_window_id: WindowId) {
+        let aborted = self
+            .active_tab_outbox
+            .lock()
+            .unwrap()
+            .abort(remote_window_id);
+        let mut focused_pane = self.focused_remote_pane_id.lock().unwrap();
+        if aborted.is_some_and(|desired| *focused_pane == Some(desired.pane_id)) {
+            *focused_pane = None;
+        }
+    }
+
+    fn schedule_resync(&self) {
+        let local_domain_id = self.local_domain_id;
+        promise::spawn::spawn_into_main_thread(async move {
+            let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
+            let domain = mux
+                .get_domain(local_domain_id)
+                .ok_or_else(|| anyhow!("no such domain {}", local_domain_id))?;
+            let domain = domain
+                .downcast_ref::<ClientDomain>()
+                .ok_or_else(|| anyhow!("domain {} is not a ClientDomain", local_domain_id))?;
+            domain.resync_coalesced().await
+        })
+        .detach();
+    }
+
     pub fn is_local(&self) -> bool {
         self.client.is_local
     }
@@ -454,6 +666,7 @@ impl ClientInner {
             remote_tab_to_window: Mutex::new(HashMap::new()),
             remote_to_local_pane: Mutex::new(HashMap::new()),
             tab_order_outbox: Mutex::new(TabOrderOutbox::default()),
+            active_tab_outbox: Mutex::new(ActiveTabOutbox::default()),
             focused_remote_pane_id: Mutex::new(None),
         }
     }
@@ -1185,9 +1398,30 @@ impl ClientDomain {
                 "process_pane_list applying view state for remote window {}",
                 remote_window_id
             );
-            let Some(remote_tab_id) = window_view_state.active_tab_id else {
+            let Some(observed_tab_id) = window_view_state.active_tab_id else {
                 continue;
             };
+            let observed_pane_id = window_view_state
+                .tabs
+                .get(&observed_tab_id)
+                .and_then(|tab_state| tab_state.active_pane_id);
+            let (mut remote_tab_id, mut remote_active_pane_id) = inner
+                .active_tab_outbox
+                .lock()
+                .unwrap()
+                .reconcile(remote_window_id, observed_tab_id, observed_pane_id);
+            if remote_tabs_to_forget.contains(&remote_tab_id)
+                || remote_active_pane_id
+                    .is_some_and(|pane_id| remote_panes_to_forget.contains(&pane_id))
+            {
+                log::debug!(
+                    "discarding active tab intent for removed remote tab/pane in window {}",
+                    remote_window_id
+                );
+                inner.abort_active_tab_intent(remote_window_id);
+                remote_tab_id = observed_tab_id;
+                remote_active_pane_id = observed_pane_id;
+            }
             let Some(local_window_id) = inner.remote_to_local_window(remote_window_id) else {
                 continue;
             };
@@ -1211,11 +1445,7 @@ impl ClientDomain {
                 local_tab_id
             );
 
-            if let Some(remote_active_pane_id) = window_view_state
-                .tabs
-                .get(&remote_tab_id)
-                .and_then(|tab_state| tab_state.active_pane_id)
-            {
+            if let Some(remote_active_pane_id) = remote_active_pane_id {
                 if let Some(local_active_pane_id) =
                     inner.remote_to_local_pane_id(remote_active_pane_id)
                 {
@@ -2077,6 +2307,95 @@ mod test {
     }
 
     #[test]
+    fn stale_reconcile_does_not_revert_new_local_tab_intent() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        ensure_test_executor();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let (_domain, inner, client_id, view_id) = install_client_domain(&mux, "stale-tab-intent");
+        let tab_a = leaf(1, 101, 1001, size(120, 40), true);
+        let tab_b = leaf(1, 102, 1002, size(120, 40), true);
+        apply_panes(
+            &mux,
+            inner.clone(),
+            client_id.clone(),
+            panes_response(vec![tab_a.clone(), tab_b.clone()], 101, 1001),
+        );
+
+        let local_window_id = inner.remote_to_local_window(1).unwrap();
+        let local_tab_b = inner.remote_to_local_tab_id(102).unwrap();
+        {
+            let _identity = mux.with_identity(Some(client_id.clone()));
+            mux.set_active_tab_for_current_identity(local_window_id, local_tab_b)
+                .unwrap();
+        }
+        assert!(inner.active_tab_outbox.lock().unwrap().queue(1, 102, 1002));
+
+        apply_panes(
+            &mux,
+            inner,
+            client_id,
+            panes_response(vec![tab_a, tab_b], 101, 1001),
+        );
+
+        assert_eq!(
+            mux.get_active_tab_for_window_for_client(view_id.as_ref(), local_window_id)
+                .map(|tab| tab.tab_id()),
+            Some(local_tab_b)
+        );
+    }
+
+    #[test]
+    fn reconcile_discards_intent_for_a_removed_remote_tab() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        ensure_test_executor();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let (_domain, inner, client_id, view_id) =
+            install_client_domain(&mux, "removed-tab-intent");
+        let tab_a = leaf(1, 101, 1001, size(120, 40), true);
+        let tab_b = leaf(1, 102, 1002, size(120, 40), true);
+        apply_panes(
+            &mux,
+            inner.clone(),
+            client_id.clone(),
+            panes_response(vec![tab_a.clone(), tab_b], 101, 1001),
+        );
+
+        let local_window_id = inner.remote_to_local_window(1).unwrap();
+        let local_tab_b = inner.remote_to_local_tab_id(102).unwrap();
+        {
+            let _identity = mux.with_identity(Some(client_id.clone()));
+            mux.set_active_tab_for_current_identity(local_window_id, local_tab_b)
+                .unwrap();
+        }
+        assert!(inner.active_tab_outbox.lock().unwrap().queue(1, 102, 1002));
+
+        apply_panes(
+            &mux,
+            inner.clone(),
+            client_id,
+            panes_response(vec![tab_a], 101, 1001),
+        );
+
+        assert_eq!(
+            mux.get_active_tab_for_window_for_client(view_id.as_ref(), local_window_id)
+                .and_then(|tab| inner.local_to_remote_tab(tab.tab_id())),
+            Some(101)
+        );
+        assert!(!inner
+            .active_tab_outbox
+            .lock()
+            .unwrap()
+            .windows
+            .contains_key(&1));
+    }
+
+    #[test]
     fn first_reconcile_seeds_usable_active_pane_for_current_identity() {
         let _test_lock = TEST_MUX_LOCK.lock();
         ensure_test_executor();
@@ -2358,6 +2677,28 @@ mod test {
         assert_eq!(outbox.take_next_or_finish(7), None);
 
         assert!(outbox.queue(7, vec![3, 1, 2]));
+    }
+
+    #[test]
+    fn active_tab_outbox_keeps_latest_intent_until_fresh_snapshot_confirms_it() {
+        let mut outbox = ActiveTabOutbox::default();
+        assert!(outbox.queue(7, 101, 1001));
+        let first = outbox.take_next_or_finish(7).unwrap();
+
+        assert!(!outbox.queue(7, 102, 1002));
+        assert!(!outbox.acknowledge(7, first.generation));
+        let latest = outbox.take_next_or_finish(7).unwrap();
+        assert_eq!((latest.tab_id, latest.pane_id), (102, 1002));
+        assert!(outbox.acknowledge(7, latest.generation));
+        assert_eq!(outbox.take_next_or_finish(7), None);
+
+        assert_eq!(outbox.reconcile(7, 101, Some(1001)), (102, Some(1002)));
+        assert_eq!(outbox.reconcile(7, 102, Some(1002)), (102, Some(1002)));
+        assert!(outbox.queue(7, 103, 1003));
+        let aborted = outbox.abort(7).unwrap();
+        assert_eq!((aborted.tab_id, aborted.pane_id), (103, 1003));
+        assert!(outbox.queue(7, 104, 1004));
+        assert!(!outbox.acknowledge(7, aborted.generation));
     }
 
     #[test]
