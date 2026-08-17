@@ -1,4 +1,4 @@
-use crate::agent::{AgentHarness, AgentMetadata, AgentRuntimeSnapshot};
+use crate::agent::{read_gemini_conversation, AgentHarness, AgentMetadata, AgentRuntimeSnapshot};
 use crate::agent_admission::incarnation_id;
 use anyhow::{bail, Context};
 use chrono::{DateTime, Utc};
@@ -107,6 +107,8 @@ struct GeminiCursor {
     index: usize,
     last_id: Option<String>,
     current_turn_id: Option<String>,
+    #[serde(default)]
+    checkpoint_sha256: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -768,13 +770,16 @@ fn read_new_jsonl(
             .by_ref()
             .take(MAX_PROVIDER_RECORD_BYTES + 1)
             .read_until(b'\n', &mut line)?;
-        if read == 0 || !line.ends_with(b"\n") {
+        if read == 0 {
             break;
         }
         anyhow::ensure!(
             read as u64 <= MAX_PROVIDER_RECORD_BYTES,
             "provider record exceeds the {MAX_PROVIDER_RECORD_BYTES}-byte bound"
         );
+        if !line.ends_with(b"\n") {
+            break;
+        }
         cursor.offset += read as u64;
         let record: Value = serde_json::from_slice(&line)
             .with_context(|| format!("parsing provider record at byte {start}"))?;
@@ -864,6 +869,7 @@ fn project_codex(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<
                                 "Codex task_started lacks an exact provider turn id",
                             )]);
                         };
+                        cursor.last_assistant_text = None;
                         let mut started = PendingEvent::new(
                             format!("{record_key}:started"),
                             AgentEventKind::TurnStarted,
@@ -1018,6 +1024,7 @@ fn project_claude(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result
                 )]);
             };
             cursor.current_turn_id = Some(turn_id.clone());
+            cursor.last_assistant_text = None;
             let mut started = PendingEvent::new(
                 format!("{record_key}:started"),
                 AgentEventKind::TurnStarted,
@@ -1033,6 +1040,26 @@ fn project_claude(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result
             state.turn_state = Some("waiting_on_agent".to_string());
             return Ok(vec![started, state]);
         }
+        if record.get("type").and_then(Value::as_str) == Some("system")
+            && record.get("subtype").and_then(Value::as_str) == Some("api_error")
+        {
+            let detail = record
+                .pointer("/error/error/error/message")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    record
+                        .pointer("/error/error/message")
+                        .and_then(Value::as_str)
+                })
+                .or_else(|| record.get("error").and_then(Value::as_str))
+                .unwrap_or("Claude provider API error");
+            return Ok(vec![observer_failure(
+                format!("{record_key}:api-error"),
+                timestamp,
+                cursor.current_turn_id.clone(),
+                detail,
+            )]);
+        }
         if record.get("type").and_then(Value::as_str) != Some("assistant") {
             return Ok(Vec::new());
         }
@@ -1042,7 +1069,22 @@ fn project_claude(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result
             .and_then(Value::as_str)
             == Some("<synthetic>")
         {
-            return Ok(Vec::new());
+            let detail = record
+                .get("message")
+                .and_then(|message| extract_text(message.get("content")))
+                .or_else(|| {
+                    record
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "Claude emitted a synthetic provider failure".to_string());
+            return Ok(vec![observer_failure(
+                format!("{record_key}:synthetic-failure"),
+                timestamp,
+                cursor.current_turn_id.clone(),
+                &detail,
+            )]);
         }
         let Some(turn_id) = cursor.current_turn_id.clone() else {
             return Ok(vec![observer_failure(
@@ -1110,11 +1152,12 @@ fn project_claude(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result
             events.push(message);
             Some(text)
         };
-        if record
-            .get("message")
-            .and_then(|message| message.get("stop_reason"))
-            .and_then(Value::as_str)
-            == Some("end_turn")
+        if text.is_some()
+            && record
+                .get("message")
+                .and_then(|message| message.get("stop_reason"))
+                .and_then(Value::as_str)
+                == Some("end_turn")
         {
             let mut final_event = PendingEvent::new(
                 format!("{record_key}:final"),
@@ -1149,21 +1192,16 @@ fn project_claude(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result
 }
 
 fn project_gemini(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<ProjectedEvents> {
-    let root: Value = serde_json::from_reader(fs::File::open(path)?)?;
-    let source_id = root
-        .get("sessionId")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
+    let conversation = read_gemini_conversation(path)?;
+    let source_id = conversation
+        .session_id
         .context("Gemini session lacks an exact provider session id")?
         .to_string();
-    let messages = root
-        .get("messages")
-        .and_then(Value::as_array)
-        .context("Gemini session lacks a messages array")?;
+    let messages = &conversation.messages;
     let mut cursor = match cursor {
         Some(ProviderCursor::Gemini(cursor)) if cursor.source_id == source_id => cursor,
         Some(_) => {
-            return Ok(reset_gemini_projection(&source_id, messages, true));
+            return reset_gemini_projection(&source_id, messages, true);
         }
         None => {
             return Ok(ProjectedEvents {
@@ -1176,17 +1214,22 @@ fn project_gemini(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result
                         .and_then(Value::as_str)
                         .map(str::to_string),
                     current_turn_id: latest_gemini_turn(messages),
+                    checkpoint_sha256: gemini_checkpoint_sha256(messages, messages.len())?,
                 }),
                 events: Vec::new(),
             })
         }
     };
+    let checkpoint_matches = cursor.checkpoint_sha256.is_empty()
+        || gemini_checkpoint_sha256(messages, cursor.index)
+            .is_ok_and(|checkpoint| checkpoint == cursor.checkpoint_sha256);
     if cursor.index > messages.len()
         || (cursor.index > 0
             && messages[cursor.index - 1].get("id").and_then(Value::as_str)
                 != cursor.last_id.as_deref())
+        || !checkpoint_matches
     {
-        return Ok(reset_gemini_projection(&source_id, messages, false));
+        return reset_gemini_projection(&source_id, messages, false);
     }
     let mut events = Vec::new();
     for message in &messages[cursor.index..] {
@@ -1238,6 +1281,10 @@ fn project_gemini(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result
                     continue;
                 };
                 let text = extract_text(message.get("content"));
+                let has_tool_calls = message
+                    .get("toolCalls")
+                    .and_then(Value::as_array)
+                    .is_some_and(|calls| !calls.is_empty());
                 if let Some(text) = text.as_ref() {
                     let mut output = PendingEvent::new(
                         format!("{record_key}:message"),
@@ -1247,6 +1294,11 @@ fn project_gemini(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result
                     output.turn_id = Some(turn_id.clone());
                     output.text = Some(text.clone());
                     events.push(output);
+                }
+                if has_tool_calls {
+                    cursor.index += 1;
+                    cursor.last_id = Some(message_id.to_string());
+                    continue;
                 }
                 let mut final_event = PendingEvent::new(
                     format!("{record_key}:final"),
@@ -1266,11 +1318,22 @@ fn project_gemini(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result
                 state.turn_state = Some("waiting_on_user".to_string());
                 events.push(state);
             }
+            Some("error") => {
+                let detail = extract_text(message.get("content"))
+                    .unwrap_or_else(|| "Gemini emitted a provider error".to_string());
+                events.push(observer_failure(
+                    format!("{record_key}:provider-error"),
+                    timestamp,
+                    cursor.current_turn_id.clone(),
+                    &detail,
+                ));
+            }
             _ => {}
         }
         cursor.index += 1;
         cursor.last_id = Some(message_id.to_string());
     }
+    cursor.checkpoint_sha256 = gemini_checkpoint_sha256(messages, cursor.index)?;
     Ok(ProjectedEvents {
         cursor: ProviderCursor::Gemini(cursor),
         events,
@@ -1287,6 +1350,26 @@ fn latest_gemini_turn(messages: &[Value]) -> Option<String> {
         .map(str::to_string)
 }
 
+fn gemini_checkpoint_sha256(messages: &[Value], index: usize) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        index <= messages.len(),
+        "Gemini cursor exceeds message history"
+    );
+    let relevant = messages[..index]
+        .iter()
+        .map(|message| {
+            serde_json::json!({
+                "id": message.get("id"),
+                "type": message.get("type"),
+                "timestamp": message.get("timestamp"),
+                "content": message.get("content"),
+                "toolCalls": message.get("toolCalls"),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(digest(&serde_json::to_vec(&relevant)?))
+}
+
 fn reset_jsonl_projection(
     path: &Path,
     provider: &str,
@@ -1298,16 +1381,16 @@ fn reset_jsonl_projection(
     } else {
         format!("{provider} provider session was rewritten; a new tail baseline was armed")
     };
+    let cursor = initial_jsonl_cursor(path, provider, source_id)?;
     let event = observer_failure(
         format!(
-            "{provider}:{source_id}:baseline-reset:{}",
-            digest(detail.as_bytes())
+            "{provider}:{}:baseline-reset:{}:{}",
+            cursor.source_id, cursor.offset, cursor.checkpoint_sha256
         ),
         Utc::now(),
         None,
         &detail,
     );
-    let cursor = initial_jsonl_cursor(path, provider, source_id)?;
     Ok(ProjectedEvents {
         cursor: match provider {
             "codex" => ProviderCursor::Codex(cursor),
@@ -1322,13 +1405,14 @@ fn reset_gemini_projection(
     source_id: &str,
     messages: &[Value],
     session_changed: bool,
-) -> ProjectedEvents {
+) -> anyhow::Result<ProjectedEvents> {
     let detail = if session_changed {
         "confirmed Gemini provider session changed; a new tail baseline was armed"
     } else {
         "Gemini provider session was rewritten; a new tail baseline was armed"
     };
-    ProjectedEvents {
+    let checkpoint_sha256 = gemini_checkpoint_sha256(messages, messages.len())?;
+    Ok(ProjectedEvents {
         cursor: ProviderCursor::Gemini(GeminiCursor {
             source_id: source_id.to_string(),
             index: messages.len(),
@@ -1338,17 +1422,15 @@ fn reset_gemini_projection(
                 .and_then(Value::as_str)
                 .map(str::to_string),
             current_turn_id: latest_gemini_turn(messages),
+            checkpoint_sha256: checkpoint_sha256.clone(),
         }),
         events: vec![observer_failure(
-            format!(
-                "gemini:{source_id}:baseline-reset:{}",
-                digest(detail.as_bytes())
-            ),
+            format!("gemini:{source_id}:baseline-reset:{checkpoint_sha256}"),
             Utc::now(),
             None,
             detail,
         )],
-    }
+    })
 }
 
 fn extract_text(content: Option<&Value>) -> Option<String> {
@@ -1393,6 +1475,17 @@ fn project_opencode(
     conn.busy_timeout(std::time::Duration::from_secs(2))?;
     let maxima = opencode_maxima(&conn, &source_id)?;
     let (message_max, part_max, final_message_max) = &maxima;
+    let baseline_identity = digest(
+        format!(
+            "{}\0{}\0{}\0{}\0{}",
+            message_max.0,
+            message_max.1.as_deref().unwrap_or(""),
+            part_max.0,
+            part_max.1.as_deref().unwrap_or(""),
+            final_message_max
+        )
+        .as_bytes(),
+    );
     let mut cursor = match cursor {
         Some(ProviderCursor::Opencode(cursor)) if cursor.source_id == source_id => cursor,
         Some(_) => {
@@ -1408,10 +1501,7 @@ fn project_opencode(
                     last_final_message_rowid: *final_message_max,
                 }),
                 events: vec![observer_failure(
-                    format!(
-                        "opencode:{source_id}:baseline-reset:{}",
-                        digest(detail.as_bytes())
-                    ),
+                    format!("opencode:{source_id}:baseline-reset:{baseline_identity}"),
                     Utc::now(),
                     None,
                     detail,
@@ -1444,10 +1534,7 @@ fn project_opencode(
                 last_final_message_rowid: *final_message_max,
             }),
             events: vec![observer_failure(
-                format!(
-                    "opencode:{source_id}:baseline-reset:{}",
-                    digest(detail.as_bytes())
-                ),
+                format!("opencode:{source_id}:baseline-reset:{baseline_identity}"),
                 Utc::now(),
                 None,
                 detail,
@@ -1584,7 +1671,14 @@ fn project_opencode(
                 cursor.last_final_message_rowid = rowid;
                 continue;
             };
-            let timestamp = DateTime::from_timestamp_millis(time_created).unwrap_or_else(Utc::now);
+            let timestamp = message
+                .get("time")
+                .and_then(|time| time.get("completed"))
+                .and_then(Value::as_i64)
+                .and_then(DateTime::from_timestamp_millis)
+                .unwrap_or_else(|| {
+                    DateTime::from_timestamp_millis(time_created).unwrap_or_else(Utc::now)
+                });
             let mut final_event = PendingEvent::new(
                 format!("opencode:{source_id}:{message_id}:final"),
                 AgentEventKind::TurnFinal,
@@ -1850,6 +1944,38 @@ mod tests {
     }
 
     #[test]
+    fn oversized_provider_record_emits_an_observer_failure_without_advancing() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("codex-oversized.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-oversized\"}}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("codex-oversized");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Codex,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        append(
+            &session,
+            &format!("{{\"padding\":\"{}\"}}\n", "x".repeat(4 * 1024 * 1024)),
+        );
+
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let page = store.read_page(after, 100).unwrap();
+        assert_eq!(event_kinds(&page), vec![AgentEventKind::ObserverFailure]);
+        assert!(page.events[0]
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("exceeds the 4194304-byte bound")));
+    }
+
+    #[test]
     fn claude_projects_plans_messages_and_finals() {
         let temp = TempDir::new().unwrap();
         let session = temp.path().join("claude.jsonl");
@@ -1872,7 +1998,9 @@ mod tests {
             concat!(
                 "{\"type\":\"user\",\"uuid\":\"claude-turn-1\",\"sessionId\":\"session-claude\",\"timestamp\":\"2026-08-17T12:00:00Z\",\"message\":{\"content\":\"work\"}}\n",
                 "{\"type\":\"assistant\",\"uuid\":\"claude-plan\",\"sessionId\":\"session-claude\",\"timestamp\":\"2026-08-17T12:00:01Z\",\"message\":{\"id\":\"msg-plan\",\"model\":\"claude\",\"stop_reason\":\"tool_use\",\"content\":[{\"type\":\"tool_use\",\"name\":\"ExitPlanMode\",\"input\":{\"plan\":\"Inspect then test.\"}}]}}\n",
-                "{\"type\":\"assistant\",\"uuid\":\"claude-final\",\"sessionId\":\"session-claude\",\"timestamp\":\"2026-08-17T12:00:02Z\",\"message\":{\"id\":\"msg-final\",\"model\":\"claude\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"done ✓\"}]}}\n"
+                "{\"type\":\"user\",\"uuid\":\"claude-tool-result\",\"sessionId\":\"session-claude\",\"timestamp\":\"2026-08-17T12:00:01Z\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tool-1\",\"content\":\"done\"}]}}\n",
+                "{\"type\":\"assistant\",\"uuid\":\"claude-final-thinking\",\"sessionId\":\"session-claude\",\"timestamp\":\"2026-08-17T12:00:02Z\",\"message\":{\"id\":\"msg-final\",\"model\":\"claude-haiku-4-5\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"\"}]}}\n",
+                "{\"type\":\"assistant\",\"uuid\":\"claude-final-text\",\"parentUuid\":\"claude-final-thinking\",\"sessionId\":\"session-claude\",\"timestamp\":\"2026-08-17T12:00:02Z\",\"message\":{\"id\":\"msg-final\",\"model\":\"claude-haiku-4-5\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"done ✓\"}]}}\n"
             ),
         );
         store.observe_agent(&metadata, &runtime).unwrap();
@@ -1880,10 +2008,105 @@ mod tests {
         assert!(event_kinds(&page).contains(&AgentEventKind::Plan));
         assert!(event_kinds(&page).contains(&AgentEventKind::AssistantMessage));
         assert!(event_kinds(&page).contains(&AgentEventKind::TurnFinal));
+        assert_eq!(
+            page.events
+                .iter()
+                .filter(|event| event.kind == AgentEventKind::TurnStarted)
+                .count(),
+            1
+        );
+        assert_eq!(
+            page.events
+                .iter()
+                .filter(|event| event.kind == AgentEventKind::TurnFinal)
+                .count(),
+            1
+        );
+        assert_eq!(
+            page.events
+                .iter()
+                .find(|event| event.kind == AgentEventKind::TurnFinal)
+                .and_then(|event| event.text.as_deref()),
+            Some("done ✓")
+        );
         assert!(page
             .events
             .iter()
             .all(|event| event.turn_id.as_deref() == Some("claude-turn-1")));
+    }
+
+    #[test]
+    fn claude_synthetic_provider_error_is_an_observer_failure_not_a_final() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude-error.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"queue-operation\",\"sessionId\":\"session-claude-error\"}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("claude-error");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        append(
+            &session,
+            concat!(
+                "{\"type\":\"user\",\"uuid\":\"claude-error-turn\",\"sessionId\":\"session-claude-error\",\"message\":{\"content\":\"work\"}}\n",
+                "{\"type\":\"assistant\",\"uuid\":\"claude-synthetic-error\",\"sessionId\":\"session-claude-error\",\"error\":\"authentication_failed\",\"message\":{\"model\":\"<synthetic>\",\"stop_reason\":\"stop_sequence\",\"content\":[{\"type\":\"text\",\"text\":\"Failed to authenticate\"}]}}\n"
+            ),
+        );
+
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let page = store.read_page(after, 100).unwrap();
+        assert!(event_kinds(&page).contains(&AgentEventKind::ObserverFailure));
+        assert!(!event_kinds(&page).contains(&AgentEventKind::TurnFinal));
+        assert!(page
+            .events
+            .iter()
+            .all(|event| { event.turn_id.as_deref() == Some("claude-error-turn") }));
+    }
+
+    #[test]
+    fn claude_retryable_api_error_is_an_observer_failure_not_a_final() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude-api-error.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"queue-operation\",\"sessionId\":\"session-claude-api-error\"}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("claude-api-error");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        append(
+            &session,
+            concat!(
+                "{\"type\":\"user\",\"uuid\":\"claude-api-error-turn\",\"sessionId\":\"session-claude-api-error\",\"message\":{\"content\":\"work\"}}\n",
+                "{\"type\":\"system\",\"subtype\":\"api_error\",\"uuid\":\"claude-api-error\",\"sessionId\":\"session-claude-api-error\",\"error\":{\"status\":529,\"error\":{\"error\":{\"message\":\"Overloaded\"}}},\"retryAttempt\":1,\"maxRetries\":10}\n"
+            ),
+        );
+
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let page = store.read_page(after, 100).unwrap();
+        let failure = page
+            .events
+            .iter()
+            .find(|event| event.kind == AgentEventKind::ObserverFailure)
+            .unwrap();
+        assert_eq!(failure.turn_id.as_deref(), Some("claude-api-error-turn"));
+        assert_eq!(failure.detail.as_deref(), Some("Overloaded"));
+        assert!(!event_kinds(&page).contains(&AgentEventKind::TurnFinal));
     }
 
     #[test]
@@ -1912,6 +2135,116 @@ mod tests {
             .events
             .iter()
             .all(|event| event.turn_id.as_deref() == Some("gemini-turn-1")));
+    }
+
+    #[test]
+    fn gemini_provider_error_is_observed_without_guessing_a_final() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("gemini-error.json");
+        fs::write(
+            &session,
+            r#"{"sessionId":"session-gemini-error","messages":[]}"#,
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("gemini-error");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Gemini,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        fs::write(
+            &session,
+            r#"{"sessionId":"session-gemini-error","messages":[{"id":"gemini-error-turn","type":"user","content":"work"},{"id":"gemini-error-record","type":"error","content":"provider unavailable"}]}"#,
+        )
+        .unwrap();
+
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let page = store.read_page(after, 100).unwrap();
+        assert!(event_kinds(&page).contains(&AgentEventKind::ObserverFailure));
+        assert!(!event_kinds(&page).contains(&AgentEventKind::TurnFinal));
+        assert!(page
+            .events
+            .iter()
+            .all(|event| { event.turn_id.as_deref() == Some("gemini-error-turn") }));
+    }
+
+    #[test]
+    fn gemini_jsonl_projects_current_append_only_session_format() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("session-2026-08-17-current.jsonl");
+        fs::write(
+            &session,
+            "{\"sessionId\":\"session-gemini-jsonl\",\"projectHash\":\"hash\",\"startTime\":\"2026-08-17T12:00:00Z\",\"lastUpdated\":\"2026-08-17T12:00:00Z\"}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("gemini-jsonl");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Gemini,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        append(
+            &session,
+            concat!(
+                "{\"id\":\"gemini-jsonl-turn\",\"timestamp\":\"2026-08-17T12:00:01Z\",\"type\":\"user\",\"content\":[{\"text\":\"work\"}]}\n",
+                "{\"$set\":{\"lastUpdated\":\"2026-08-17T12:00:01Z\"}}\n",
+                "{\"id\":\"gemini-jsonl-tool\",\"timestamp\":\"2026-08-17T12:00:02Z\",\"type\":\"gemini\",\"content\":\"I will inspect first.\",\"toolCalls\":[{\"id\":\"call-1\",\"name\":\"read_file\"}]}\n",
+                "{\"id\":\"gemini-jsonl-response\",\"timestamp\":\"2026-08-17T12:00:02Z\",\"type\":\"gemini\",\"content\":\"current café ✓\",\"model\":\"gemini-3-flash\"}\n",
+                "{\"id\":\"gemini-jsonl-response\",\"timestamp\":\"2026-08-17T12:00:02Z\",\"type\":\"gemini\",\"content\":\"current café ✓\",\"model\":\"gemini-3-flash\",\"tokens\":{\"total\":10}}\n",
+                "{\"$set\":{\"lastUpdated\":\"2026-08-17T12:00:02Z\"}}\n"
+            ),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let page = store.read_page(after, 100).unwrap();
+        assert_eq!(
+            page.events
+                .iter()
+                .filter(|event| event.kind == AgentEventKind::AssistantMessage)
+                .count(),
+            2
+        );
+        assert_eq!(
+            page.events
+                .iter()
+                .filter(|event| event.kind == AgentEventKind::TurnFinal)
+                .count(),
+            1
+        );
+        assert!(page
+            .events
+            .iter()
+            .all(|event| event.turn_id.as_deref() == Some("gemini-jsonl-turn")));
+
+        let after_first_gap = store.latest_sequence();
+        append(
+            &session,
+            "{\"id\":\"gemini-jsonl-response\",\"timestamp\":\"2026-08-17T12:00:02Z\",\"type\":\"gemini\",\"content\":\"rewritten once\"}\n",
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let first_gap = store.read_page(after_first_gap, 100).unwrap();
+        assert_eq!(
+            event_kinds(&first_gap),
+            vec![AgentEventKind::ObserverFailure]
+        );
+
+        let after_second_gap = store.latest_sequence();
+        append(
+            &session,
+            "{\"id\":\"gemini-jsonl-response\",\"timestamp\":\"2026-08-17T12:00:02Z\",\"type\":\"gemini\",\"content\":\"rewritten twice\"}\n",
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let second_gap = store.read_page(after_second_gap, 100).unwrap();
+        assert_eq!(
+            event_kinds(&second_gap),
+            vec![AgentEventKind::ObserverFailure]
+        );
+        assert_ne!(first_gap.events[0].event_id, second_gap.events[0].event_id);
     }
 
     fn create_opencode_db(path: &Path) -> Connection {
@@ -1983,7 +2316,7 @@ mod tests {
                 "open-answer-1",
                 "session-open",
                 1_776_600_001_000_i64,
-                r#"{"role":"assistant","parentID":"open-turn-1","finish":"stop"}"#
+                r#"{"role":"assistant","parentID":"open-turn-1","finish":"stop","time":{"created":1776600001000,"completed":1776600002000}}"#
             ],
         )
         .unwrap();
@@ -2012,6 +2345,13 @@ mod tests {
             .events
             .iter()
             .all(|event| event.turn_id.as_deref() == Some("open-turn-1")));
+        assert_eq!(
+            page.events
+                .iter()
+                .find(|event| event.kind == AgentEventKind::TurnFinal)
+                .map(|event| event.observed_at),
+            DateTime::from_timestamp_millis(1_776_600_002_000_i64)
+        );
     }
 
     #[test]

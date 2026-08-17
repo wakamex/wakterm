@@ -58,6 +58,17 @@ Gemini response message, or OpenCode `finish: stop`. OpenCode `tool-calls` is
 intermediate and never a final. Plans are emitted separately when the provider
 records an explicit plan artifact, currently Claude `ExitPlanMode`.
 
+Gemini observation accepts both legacy JSON conversation snapshots and the
+current append-only JSONL format. Duplicate JSONL records update the same
+durable provider message, incomplete trailing records wait for the next
+refresh, and a legacy session that migrates to its `.jsonl` sibling keeps the
+same provider session and cursor. Claude can persist separate thinking and text
+records with `end_turn` on both; only the user-visible text record produces the
+turn final. Gemini messages with `toolCalls` are intermediate assistant output,
+not finals. OpenCode finals use the provider completion timestamp and never the
+earlier assistant-message creation time. Explicit Claude and Gemini provider
+errors emit `observer_failure`; they do not synthesize a terminal outcome.
+
 The default retention bound is 100,000 events. A reader whose sequence precedes
 retained history receives `cursor_too_old` and must take a fresh catalog
 snapshot. Wakterm records previously available incarnations as unavailable

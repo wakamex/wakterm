@@ -841,14 +841,14 @@ fn observe_gemini(
     }
 
     if let Some(preferred_session) = preferred_session {
-        let preferred_path = Path::new(preferred_session);
+        let preferred_path = preferred_gemini_session_path(Path::new(preferred_session));
         if preferred_path.is_file() {
-            let modified_at = DateTime::<Utc>::from(fs::metadata(preferred_path)?.modified()?);
+            let modified_at = DateTime::<Utc>::from(fs::metadata(&preferred_path)?.modified()?);
             if updated_after
                 .map(|cutoff| modified_at >= cutoff)
                 .unwrap_or(true)
             {
-                let details = read_last_gemini_observation(preferred_path)?;
+                let details = read_last_gemini_observation(&preferred_path)?;
                 return Ok(Some(HarnessObservation {
                     session_path: Some(preferred_path.to_string_lossy().to_string()),
                     progress_summary: details.progress_summary,
@@ -874,12 +874,7 @@ fn observe_gemini(
         for entry in fs::read_dir(&chats_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if !path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("session-") && name.ends_with(".json"))
-                .unwrap_or(false)
-            {
+            if !is_gemini_session_file(&path) {
                 continue;
             }
             let modified_at = DateTime::<Utc>::from(entry.metadata()?.modified()?);
@@ -1065,12 +1060,7 @@ fn describe_pending_gemini_observer(
         for entry in fs::read_dir(&chats_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if !path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("session-") && name.ends_with(".json"))
-                .unwrap_or(false)
-            {
+            if !is_gemini_session_file(&path) {
                 continue;
             }
             has_session = true;
@@ -1417,6 +1407,118 @@ fn gemini_project_root(project_dir: &Path) -> anyhow::Result<Option<String>> {
     }
 }
 
+fn is_gemini_session_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            name.starts_with("session-") && (name.ends_with(".json") || name.ends_with(".jsonl"))
+        })
+        .unwrap_or(false)
+}
+
+fn preferred_gemini_session_path(path: &Path) -> PathBuf {
+    if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+        let migrated = PathBuf::from(format!("{}l", path.to_string_lossy()));
+        if migrated.is_file() {
+            return migrated;
+        }
+    }
+    path.to_path_buf()
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct GeminiConversation {
+    pub session_id: Option<String>,
+    pub last_updated: Option<DateTime<Utc>>,
+    pub messages: Vec<Value>,
+}
+
+pub(crate) fn read_gemini_conversation(path: &Path) -> anyhow::Result<GeminiConversation> {
+    if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
+        let record: Value = serde_json::from_reader(fs::File::open(path)?)?;
+        return Ok(GeminiConversation {
+            session_id: record
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            last_updated: record
+                .get("lastUpdated")
+                .and_then(Value::as_str)
+                .and_then(parse_rfc3339_timestamp),
+            messages: record
+                .get("messages")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        });
+    }
+
+    const MAX_GEMINI_RECORD_BYTES: u64 = 4 * 1024 * 1024;
+    let mut reader = BufReader::new(fs::File::open(path)?);
+    let mut line = Vec::new();
+    let mut session_id = None;
+    let mut last_updated = None;
+    let mut messages = Vec::<Value>::new();
+    let mut message_index = std::collections::HashMap::<String, usize>::new();
+
+    loop {
+        line.clear();
+        let read = reader
+            .by_ref()
+            .take(MAX_GEMINI_RECORD_BYTES + 1)
+            .read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        anyhow::ensure!(
+            read as u64 <= MAX_GEMINI_RECORD_BYTES,
+            "Gemini session record exceeds the {MAX_GEMINI_RECORD_BYTES}-byte bound"
+        );
+        if !line.ends_with(b"\n") {
+            break;
+        }
+        let record: Value = serde_json::from_slice(&line)?;
+        let metadata = record.get("$set").unwrap_or(&record);
+        if let Some(value) = metadata
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            session_id = Some(value.to_string());
+        }
+        if let Some(value) = metadata
+            .get("lastUpdated")
+            .and_then(Value::as_str)
+            .and_then(parse_rfc3339_timestamp)
+        {
+            last_updated = Some(value);
+        }
+
+        let Some(id) = record
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        if record.get("type").and_then(Value::as_str).is_none() {
+            continue;
+        }
+        if let Some(index) = message_index.get(id).copied() {
+            messages[index] = record;
+        } else {
+            message_index.insert(id.to_string(), messages.len());
+            messages.push(record);
+        }
+    }
+
+    Ok(GeminiConversation {
+        session_id,
+        last_updated,
+        messages,
+    })
+}
+
 fn extract_message_text(content: &Value) -> Option<String> {
     if let Some(text) = content.as_str() {
         let text = text.trim();
@@ -1446,33 +1548,26 @@ fn extract_message_text(content: &Value) -> Option<String> {
 }
 
 fn read_last_gemini_observation(path: &Path) -> anyhow::Result<HarnessObservationDetails> {
-    let record: Value = serde_json::from_reader(fs::File::open(path)?)?;
+    let conversation = read_gemini_conversation(path)?;
     let mut summary = None;
     let mut last_user_at = None;
     let mut last_assistant_at = None;
-    let updated_at = record
-        .get("lastUpdated")
-        .and_then(Value::as_str)
-        .and_then(parse_rfc3339_timestamp);
-
-    if let Some(messages) = record.get("messages").and_then(Value::as_array) {
-        for message in messages {
-            let timestamp = message
-                .get("timestamp")
-                .and_then(Value::as_str)
-                .and_then(parse_rfc3339_timestamp);
-            match message.get("type").and_then(Value::as_str) {
-                Some("user") => {
-                    last_user_at = timestamp.or(last_user_at);
-                }
-                Some("gemini") => {
-                    last_assistant_at = timestamp.or(last_assistant_at);
-                    if let Some(content) = message.get("content").and_then(extract_message_text) {
-                        summary = Some(truncate_summary(&content));
-                    }
-                }
-                _ => {}
+    for message in &conversation.messages {
+        let timestamp = message
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(parse_rfc3339_timestamp);
+        match message.get("type").and_then(Value::as_str) {
+            Some("user") => {
+                last_user_at = timestamp.or(last_user_at);
             }
+            Some("gemini") => {
+                last_assistant_at = timestamp.or(last_assistant_at);
+                if let Some(content) = message.get("content").and_then(extract_message_text) {
+                    summary = Some(truncate_summary(&content));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1481,7 +1576,10 @@ fn read_last_gemini_observation(path: &Path) -> anyhow::Result<HarnessObservatio
         progress_summary: summary,
         harness_mode: None,
         turn_phase: None,
-        updated_at: updated_at.or(last_assistant_at).or(last_user_at),
+        updated_at: conversation
+            .last_updated
+            .or(last_assistant_at)
+            .or(last_user_at),
         turn_state,
         last_turn_completed_at,
         observed_turn: None,
@@ -3010,6 +3108,86 @@ mod test {
             observed.updated_at,
             Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 3).unwrap())
         );
+    }
+
+    #[test]
+    fn observes_current_gemini_jsonl_session_and_ignores_incomplete_tail() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let cwd = "/tmp/project-jsonl";
+        let chats_dir = temp.path().join("tmp").join("project-jsonl").join("chats");
+        fs::create_dir_all(&chats_dir).unwrap();
+        fs::write(
+            temp.path().join("projects.json"),
+            r#"{"projects":{"/tmp/project-jsonl":"project-jsonl"}}"#,
+        )
+        .unwrap();
+        let session = chats_dir.join("session-2026-08-17-current.jsonl");
+        fs::write(
+            &session,
+            concat!(
+                "{\"sessionId\":\"current-session\",\"projectHash\":\"hash\",\"startTime\":\"2026-08-17T12:00:00Z\",\"lastUpdated\":\"2026-08-17T12:00:00Z\"}\n",
+                "{\"id\":\"turn-1\",\"timestamp\":\"2026-08-17T12:00:01Z\",\"type\":\"user\",\"content\":[{\"text\":\"hello\"}]}\n",
+                "{\"id\":\"response-1\",\"timestamp\":\"2026-08-17T12:00:02Z\",\"type\":\"gemini\",\"content\":\"first value\"}\n",
+                "{\"id\":\"response-1\",\"timestamp\":\"2026-08-17T12:00:02Z\",\"type\":\"gemini\",\"content\":\"current value ✓\",\"tokens\":{\"total\":10}}\n",
+                "{\"$set\":{\"lastUpdated\":\"2026-08-17T12:00:03Z\"}}\n",
+                "{\"id\":\"partial"
+            ),
+        )
+        .unwrap();
+
+        set_env_path("WAKTERM_AGENT_GEMINI_DIR", temp.path());
+        let observed = observe_gemini(cwd, None, None).unwrap().unwrap();
+        remove_env_var("WAKTERM_AGENT_GEMINI_DIR");
+
+        assert_eq!(
+            observed.progress_summary.as_deref(),
+            Some("current value ✓")
+        );
+        assert_eq!(
+            observed.session_path.as_deref(),
+            Some(session.to_string_lossy().as_ref())
+        );
+        assert_eq!(observed.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(
+            observed.updated_at,
+            Some(Utc.with_ymd_and_hms(2026, 8, 17, 12, 0, 3).unwrap())
+        );
+    }
+
+    #[test]
+    fn preferred_legacy_gemini_session_follows_jsonl_migration() {
+        let temp = TempDir::new().unwrap();
+        let legacy = temp.path().join("session-migrated.json");
+        let migrated = temp.path().join("session-migrated.jsonl");
+        fs::write(&legacy, r#"{"sessionId":"migrated","messages":[]}"#).unwrap();
+        fs::write(
+            &migrated,
+            concat!(
+                "{\"sessionId\":\"migrated\",\"lastUpdated\":\"2026-08-17T12:00:00Z\"}\n",
+                "{\"id\":\"turn\",\"timestamp\":\"2026-08-17T12:00:01Z\",\"type\":\"user\",\"content\":\"hello\"}\n"
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(preferred_gemini_session_path(&legacy), migrated);
+    }
+
+    #[test]
+    fn current_gemini_jsonl_rejects_an_oversized_complete_record() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("session-oversized.jsonl");
+        fs::write(
+            &session,
+            format!(
+                "{{\"sessionId\":\"oversized\",\"padding\":\"{}\"}}\n",
+                "x".repeat(4 * 1024 * 1024)
+            ),
+        )
+        .unwrap();
+
+        let error = read_gemini_conversation(&session).unwrap_err();
+        assert!(error.to_string().contains("exceeds the 4194304-byte bound"));
     }
 
     #[test]
