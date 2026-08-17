@@ -66,6 +66,12 @@ enum AgentSubCommand {
     )]
     Inspect(InspectAgentCommand),
 
+    #[command(
+        name = "output",
+        about = "read experimental normalized agent output for shadow comparison"
+    )]
+    Output(OutputAgentCommand),
+
     #[command(name = "send", about = "send a message to an agent pane")]
     Send(SendAgentCommand),
 
@@ -94,6 +100,7 @@ impl AgentCommand {
             AgentSubCommand::List(cmd) => cmd.run(client).await,
             AgentSubCommand::Watch(cmd) => cmd.run(client).await,
             AgentSubCommand::Inspect(cmd) => cmd.run(client).await,
+            AgentSubCommand::Output(cmd) => cmd.run(client).await,
             AgentSubCommand::Send(cmd) => cmd.run(client).await,
             AgentSubCommand::Request(cmd) => cmd.run(client).await,
             AgentSubCommand::Interrupt(cmd) => cmd.run(client).await,
@@ -1232,6 +1239,36 @@ impl InspectAgentCommand {
             .cloned()
             .with_context(|| format!("no agent named or identified by {}", self.target))?;
         write_json(&agent)
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
+pub struct OutputAgentCommand {
+    /// Agent name, stable id, or pane id
+    target: String,
+
+    /// Opaque cursor returned by the preceding output read
+    #[arg(long = "after")]
+    cursor: Option<String>,
+
+    /// Maximum normalized messages to return
+    #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=1000))]
+    limit: u32,
+}
+
+impl OutputAgentCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        let agents = client.list_agents().await?.agents;
+        let agent = find_agent(&agents, &self.target)
+            .with_context(|| format!("no agent named or identified by {}", self.target))?;
+        let response = client
+            .read_agent_output(codec::ReadAgentOutput {
+                agent_id: agent.metadata.agent_id.clone(),
+                cursor: self.cursor.clone(),
+                limit: self.limit,
+            })
+            .await?;
+        write_json(&response.page)
     }
 }
 
@@ -4108,6 +4145,26 @@ mod test {
         };
         assert_eq!(command.harness, Some(AgentStartHarness::Codex));
         assert_eq!(command.cmd.as_deref(), Some("codex --profile fast"));
+    }
+
+    #[test]
+    fn output_parser_accepts_an_opaque_cursor_and_bounded_limit() {
+        let parsed = AgentCommand::try_parse_from([
+            "agent",
+            "output",
+            "zola",
+            "--after",
+            "opaque-cursor",
+            "--limit",
+            "25",
+        ])
+        .unwrap();
+        let AgentSubCommand::Output(command) = parsed.sub else {
+            panic!("expected output command");
+        };
+        assert_eq!(command.target, "zola");
+        assert_eq!(command.cursor.as_deref(), Some("opaque-cursor"));
+        assert_eq!(command.limit, 25);
     }
 
     #[test]

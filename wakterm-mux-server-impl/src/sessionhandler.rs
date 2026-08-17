@@ -654,7 +654,7 @@ impl SessionHandler {
                         move || {
                             let mux = Mux::get();
                             Ok(Pdu::ListAgentsResponse(ListAgentsResponse {
-                                agents: mux.list_agents(),
+                                agents: mux.agent_service().list_agents(),
                             }))
                         },
                         send_response,
@@ -668,7 +668,7 @@ impl SessionHandler {
                         move || {
                             let mux = Mux::get();
                             Ok(Pdu::ListAgentsCachedResponse(ListAgentsCachedResponse {
-                                agents: mux.list_agents_cached(),
+                                agents: mux.agent_service().list_agents_cached(),
                             }))
                         },
                         send_response,
@@ -686,9 +686,10 @@ impl SessionHandler {
                 spawn_into_main_thread(async move {
                     catch(
                         move || {
-                            let request = Mux::get().submit_agent_request(
-                                pane_id, request_id, prompt, paste, timeout_ms,
-                            )?;
+                            let mux = Mux::get();
+                            let request = mux
+                                .agent_service()
+                                .submit_request(pane_id, request_id, prompt, paste, timeout_ms)?;
                             Ok(Pdu::SubmitAgentRequestResponse(
                                 SubmitAgentRequestResponse { request },
                             ))
@@ -702,8 +703,9 @@ impl SessionHandler {
                 spawn_into_main_thread(async move {
                     catch(
                         move || {
+                            let mux = Mux::get();
                             Ok(Pdu::GetAgentRequestResponse(GetAgentRequestResponse {
-                                request: Mux::get().get_agent_request(&request_id)?,
+                                request: mux.agent_service().get_request(&request_id)?,
                             }))
                         },
                         send_response,
@@ -718,12 +720,12 @@ impl SessionHandler {
                 spawn_into_main_thread(async move {
                     catch(
                         move || {
+                            let mux = Mux::get();
                             Ok(Pdu::ListAgentRequestEventsResponse(
                                 ListAgentRequestEventsResponse {
-                                    requests: Mux::get().list_agent_request_events(
-                                        after_sequence,
-                                        limit.min(1000),
-                                    )?,
+                                    requests: mux
+                                        .agent_service()
+                                        .list_request_events(after_sequence, limit.min(1000))?,
                                 },
                             ))
                         },
@@ -736,14 +738,46 @@ impl SessionHandler {
                 spawn_into_main_thread(async move {
                     catch(
                         move || {
+                            let mux = Mux::get();
                             Ok(Pdu::CancelAgentRequestResponse(
                                 CancelAgentRequestResponse {
-                                    request: Mux::get().cancel_agent_request(&request_id)?,
+                                    request: mux.agent_service().cancel_request(&request_id)?,
                                 },
                             ))
                         },
                         send_response,
                     )
+                })
+                .detach();
+            }
+            Pdu::ReadAgentOutput(ReadAgentOutput {
+                agent_id,
+                cursor,
+                limit,
+            }) => {
+                spawn_into_main_thread(async move {
+                    let prepared = (|| {
+                        let mux = Mux::get();
+                        mux.agent_service().prepare_output(&agent_id)
+                    })();
+                    let result = match prepared {
+                        Ok(mux::agent_service::PreparedAgentOutput::Immediate(page)) => {
+                            Ok(Pdu::ReadAgentOutputResponse(ReadAgentOutputResponse {
+                                page,
+                            }))
+                        }
+                        Ok(mux::agent_service::PreparedAgentOutput::Codex(source)) => {
+                            promise::spawn::spawn_into_new_thread(move || {
+                                source.read_page(cursor.as_deref(), limit as usize)
+                            })
+                            .await
+                            .map(|page| {
+                                Pdu::ReadAgentOutputResponse(ReadAgentOutputResponse { page })
+                            })
+                        }
+                        Err(err) => Err(err),
+                    };
+                    send_response(result);
                 })
                 .detach();
             }
@@ -1523,6 +1557,7 @@ impl SessionHandler {
             | Pdu::GetAgentRequestResponse { .. }
             | Pdu::ListAgentRequestEventsResponse { .. }
             | Pdu::CancelAgentRequestResponse { .. }
+            | Pdu::ReadAgentOutputResponse { .. }
             | Pdu::SetClipboard { .. }
             | Pdu::NotifyAlert { .. }
             | Pdu::SpawnResponse { .. }
@@ -2912,6 +2947,23 @@ mod test {
         assert_eq!(listed.agents[0].pane_id, layout.left_pane_id);
         assert_eq!(listed.agents[0].tab_id, layout.left_tab_id);
         assert_eq!(listed.agents[0].window_id, layout.window_id);
+
+        let output = match handler.request(
+            &executor,
+            Pdu::ReadAgentOutput(ReadAgentOutput {
+                agent_id: "agent-alpha".to_string(),
+                cursor: None,
+                limit: 100,
+            }),
+        ) {
+            Pdu::ReadAgentOutputResponse(response) => response.page,
+            other => panic!("expected ReadAgentOutputResponse, got {:?}", other),
+        };
+        assert_eq!(
+            output.status,
+            mux::agent_service::AgentOutputStatus::ObserverUnavailable
+        );
+        assert_eq!(output.agent_id, "agent-alpha");
 
         let panes = match handler.request(&executor, Pdu::ListPanes(ListPanes {})) {
             Pdu::ListPanesResponse(response) => response,

@@ -1819,6 +1819,130 @@ fn codex_response_message_text(payload: &Value) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CodexOutputMessage {
+    pub start_offset: u64,
+    pub end_offset: u64,
+    pub record_sha256: String,
+    pub turn_id: Option<String>,
+    pub timestamp: Option<DateTime<Utc>>,
+    pub text: String,
+}
+
+const MAX_CODEX_OUTPUT_RECORDS_PER_READ: usize = 1024;
+const MAX_CODEX_OUTPUT_BYTES_PER_READ: u64 = 1024 * 1024;
+
+fn codex_assistant_output_text(record: &Value) -> Option<String> {
+    if record.get("type").and_then(Value::as_str) != Some("response_item") {
+        return None;
+    }
+    let payload = record.get("payload")?;
+    if payload.get("type").and_then(Value::as_str) != Some("message")
+        || payload.get("role").and_then(Value::as_str) != Some("assistant")
+    {
+        return None;
+    }
+    let parts = payload
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("output_text"))
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+pub(crate) fn codex_complete_tail_offset(path: &Path) -> anyhow::Result<u64> {
+    const CHUNK_SIZE: usize = 64 * 1024;
+
+    let mut file = fs::File::open(path)?;
+    let len = file.seek(SeekFrom::End(0))?;
+    if len == 0 {
+        return Ok(0);
+    }
+
+    let mut pos = len;
+    while pos > 0 {
+        let read_len = CHUNK_SIZE.min(pos as usize);
+        pos -= read_len as u64;
+        file.seek(SeekFrom::Start(pos))?;
+        let mut chunk = vec![0; read_len];
+        file.read_exact(&mut chunk)?;
+        if let Some(index) = chunk.iter().rposition(|byte| *byte == b'\n') {
+            return Ok(pos + index as u64 + 1);
+        }
+    }
+    Ok(0)
+}
+
+pub(crate) fn read_codex_output_messages(
+    path: &Path,
+    offset: u64,
+    limit: usize,
+) -> anyhow::Result<(Vec<CodexOutputMessage>, u64, bool)> {
+    let complete_tail = codex_complete_tail_offset(path)?;
+    anyhow::ensure!(
+        offset <= complete_tail,
+        "cursor offset {offset} is past the complete Codex session tail {complete_tail}"
+    );
+
+    let mut file = fs::File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut reader = BufReader::new(file.take(complete_tail - offset));
+    let mut messages = Vec::new();
+    let mut next_offset = offset;
+    let limit = limit.max(1);
+    let mut records_read = 0;
+
+    loop {
+        if records_read >= MAX_CODEX_OUTPUT_RECORDS_PER_READ
+            || (records_read > 0
+                && next_offset.saturating_sub(offset) >= MAX_CODEX_OUTPUT_BYTES_PER_READ)
+        {
+            break;
+        }
+        let start_offset = next_offset;
+        let mut line = Vec::new();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        records_read += 1;
+        next_offset += read as u64;
+        while matches!(line.last(), Some(b'\n' | b'\r')) {
+            line.pop();
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let Ok(record) = serde_json::from_slice::<Value>(&line) else {
+            // Match Panetone's existing behavior for a malformed complete
+            // record: skip it and advance. Incomplete records are excluded by
+            // complete_tail and are retried on the next read.
+            continue;
+        };
+        let Some(text) = codex_assistant_output_text(&record) else {
+            continue;
+        };
+        messages.push(CodexOutputMessage {
+            start_offset,
+            end_offset: next_offset,
+            record_sha256: format!("{:x}", Sha256::digest(&line)),
+            turn_id: codex_record_turn_id(&record).map(str::to_string),
+            timestamp: parse_record_timestamp(&record),
+            text,
+        });
+        if messages.len() >= limit {
+            break;
+        }
+    }
+
+    Ok((messages, next_offset, next_offset < complete_tail))
+}
+
 fn message_sha256(message: &str) -> String {
     format!("{:x}", Sha256::digest(message.trim().as_bytes()))
 }
@@ -2509,6 +2633,83 @@ mod test {
             turn.final_message.as_deref(),
             Some("complete final response")
         );
+    }
+
+    #[test]
+    fn reads_codex_output_from_an_opaque_position_without_partial_records() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout-output.jsonl");
+        let baseline = "{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/tmp/output\"}}\n";
+        let first = "{\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:00:02Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\" first \"},{\"type\":\"output_text\",\"text\":\"line two\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-1\"}}}\n";
+        let partial = "{\"type\":\"response_item\",\"payload\":{";
+        fs::write(&session, format!("{baseline}{first}{partial}")).unwrap();
+
+        let baseline_offset = baseline.len() as u64;
+        let (messages, next_offset, has_more) =
+            read_codex_output_messages(&session, baseline_offset, 100).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text, "first\nline two");
+        assert_eq!(messages[0].turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(messages[0].start_offset, baseline_offset);
+        assert_eq!(messages[0].end_offset, next_offset);
+        assert_eq!(next_offset, (baseline.len() + first.len()) as u64);
+        assert!(!has_more);
+        assert_eq!(codex_complete_tail_offset(&session).unwrap(), next_offset);
+    }
+
+    #[test]
+    fn limits_codex_output_without_changing_event_positions() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout-output-limit.jsonl");
+        let message = |text: &str| {
+            format!(
+                "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"{text}\"}}]}}}}\n"
+            )
+        };
+        let first = message("one");
+        let second = message("two");
+        fs::write(&session, format!("{first}{second}")).unwrap();
+
+        let (first_page, cursor, has_more) = read_codex_output_messages(&session, 0, 1).unwrap();
+        let (second_page, final_cursor, final_has_more) =
+            read_codex_output_messages(&session, cursor, 1).unwrap();
+
+        assert_eq!(first_page[0].text, "one");
+        assert_eq!(second_page[0].text, "two");
+        assert_eq!(first_page[0].start_offset, 0);
+        assert_eq!(second_page[0].start_offset, cursor);
+        assert!(has_more);
+        assert!(!final_has_more);
+        assert_eq!(final_cursor, (first.len() + second.len()) as u64);
+    }
+
+    #[test]
+    fn bounds_tool_only_codex_output_scans_before_the_next_assistant_message() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout-output-tool-gap.jsonl");
+        let tool = "{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\"}}\n";
+        let assistant = "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}}\n";
+        fs::write(
+            &session,
+            format!(
+                "{}{}",
+                tool.repeat(MAX_CODEX_OUTPUT_RECORDS_PER_READ + 1),
+                assistant
+            ),
+        )
+        .unwrap();
+
+        let (first_page, cursor, has_more) = read_codex_output_messages(&session, 0, 1).unwrap();
+        let (second_page, _, _) = read_codex_output_messages(&session, cursor, 1).unwrap();
+
+        assert!(first_page.is_empty());
+        assert!(has_more);
+        assert_eq!(
+            cursor,
+            (tool.len() * MAX_CODEX_OUTPUT_RECORDS_PER_READ) as u64
+        );
+        assert_eq!(second_page[0].text, "done");
     }
 
     #[cfg(target_os = "linux")]

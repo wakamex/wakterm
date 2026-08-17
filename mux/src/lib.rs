@@ -46,6 +46,7 @@ use winapi::um::winsock2::{SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
 pub mod activity;
 pub mod agent;
 pub mod agent_request;
+pub mod agent_service;
 pub mod client;
 pub mod connui;
 pub mod domain;
@@ -3080,6 +3081,10 @@ impl Mux {
 
     pub fn get() -> Arc<Mux> {
         Self::try_get().unwrap()
+    }
+
+    pub fn agent_service(&self) -> agent_service::AgentService<'_> {
+        agent_service::AgentService::new(self)
     }
 
     pub fn try_get() -> Option<Arc<Mux>> {

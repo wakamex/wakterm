@@ -1734,6 +1734,7 @@ impl Client {
         CancelAgentRequest,
         CancelAgentRequestResponse
     );
+    rpc!(read_agent_output, ReadAgentOutput, ReadAgentOutputResponse);
     rpc!(spawn_v2, SpawnV2, SpawnResponse);
     rpc!(split_pane, SplitPane, SpawnResponse);
     rpc!(

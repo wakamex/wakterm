@@ -15,6 +15,7 @@ use anyhow::{bail, Context as _, Error};
 use config::keyassignment::{PaneDirection, ScrollbackEraseMode};
 use mux::agent::{AgentMetadata, AgentSnapshot, AgentTabBadgeState};
 use mux::agent_request::AgentRequest;
+use mux::agent_service::AgentOutputPage;
 use mux::client::{ClientId, ClientInfo, ClientViewId, ClientWindowViewState};
 use mux::pane::PaneId;
 use mux::renderable::{RenderableDimensions, StableCursorPosition};
@@ -549,6 +550,8 @@ pdu! {
     ListAgentRequestEventsResponse: 79,
     CancelAgentRequest: 80,
     CancelAgentRequestResponse: 81,
+    ReadAgentOutput: 82,
+    ReadAgentOutputResponse: 83,
 }
 
 impl Pdu {
@@ -765,6 +768,18 @@ pub struct CancelAgentRequest {
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct CancelAgentRequestResponse {
     pub request: AgentRequest,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ReadAgentOutput {
+    pub agent_id: String,
+    pub cursor: Option<String>,
+    pub limit: u32,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ReadAgentOutputResponse {
+    pub page: AgentOutputPage,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
@@ -1652,6 +1667,43 @@ mod test {
             Pdu::TabOrderChanged(TabOrderChanged {
                 window_id: 7,
                 tab_ids: vec![3, 2, 1],
+            }),
+        ] {
+            let mut encoded = Vec::new();
+            pdu.encode(&mut encoded, 42).unwrap();
+            assert_eq!(
+                Pdu::decode(encoded.as_slice()).unwrap(),
+                DecodedPdu { serial: 42, pdu }
+            );
+        }
+    }
+
+    #[test]
+    fn agent_output_pdus_round_trip() {
+        for pdu in [
+            Pdu::ReadAgentOutput(ReadAgentOutput {
+                agent_id: "agent-1".to_string(),
+                cursor: Some("opaque-cursor".to_string()),
+                limit: 25,
+            }),
+            Pdu::ReadAgentOutputResponse(ReadAgentOutputResponse {
+                page: AgentOutputPage {
+                    schema: mux::agent_service::AGENT_OUTPUT_SCHEMA.to_string(),
+                    status: mux::agent_service::AgentOutputStatus::Ok,
+                    agent_id: "agent-1".to_string(),
+                    session_id: Some("opaque-session".to_string()),
+                    baseline: false,
+                    events: vec![mux::agent_service::AgentOutputEvent {
+                        event_id: "event-1".to_string(),
+                        kind: mux::agent_service::AgentOutputEventKind::AssistantMessage,
+                        turn_id: Some("turn-1".to_string()),
+                        timestamp: None,
+                        text: "done".to_string(),
+                    }],
+                    next_cursor: Some("next-cursor".to_string()),
+                    has_more: false,
+                    detail: None,
+                },
             }),
         ] {
             let mut encoded = Vec::new();
