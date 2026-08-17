@@ -4,6 +4,8 @@ use mux::activity::Activity;
 use mux::domain::{Domain, LocalDomain};
 use mux::Mux;
 use portable_pty::cmdbuilder::CommandBuilder;
+#[cfg(unix)]
+use signal_hook::iterator::Signals;
 use std::ffi::OsString;
 use std::process::Command;
 use std::rc::Rc;
@@ -246,10 +248,14 @@ fn run() -> anyhow::Result<()> {
     // Set up signal handler to save session before exit
     #[cfg(unix)]
     {
-        let _ =
-            signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&SHUTDOWN_FLAG));
-        let _ =
-            signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&SHUTDOWN_FLAG));
+        let mut signals =
+            Signals::new([signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT])?;
+        thread::spawn(move || {
+            if signals.forever().next().is_some() {
+                SHUTDOWN_FLAG.store(true, std::sync::atomic::Ordering::Relaxed);
+                promise::spawn::spawn_into_main_thread(async {}).detach();
+            }
+        });
     }
 
     // Periodic session auto-save (every 60 seconds)
