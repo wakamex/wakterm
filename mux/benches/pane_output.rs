@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use chrono::{TimeZone, Utc};
+use chrono::{Datelike, TimeZone, Utc};
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use mux::agent::{refresh_runtime_from_harness, AgentMetadata, AgentRuntimeSnapshot};
 use mux::client::{ClientId, ClientViewId};
@@ -34,6 +34,7 @@ struct BenchPane {
     title: String,
     cwd: Option<Url>,
     foreground_process_name: Option<String>,
+    foreground_process_info: Option<procinfo::LocalProcessInfo>,
 }
 
 impl BenchPane {
@@ -46,6 +47,37 @@ impl BenchPane {
             title: String::new(),
             cwd: None,
             foreground_process_name: None,
+            foreground_process_info: None,
+        })
+    }
+
+    fn new_detected(
+        id: PaneId,
+        size: TerminalSize,
+        domain_id: DomainId,
+        cwd: &str,
+    ) -> Arc<dyn Pane> {
+        Arc::new(Self {
+            id,
+            size: Mutex::new(size),
+            writer: Mutex::new(Vec::new()),
+            domain_id,
+            title: "codex".to_string(),
+            cwd: Some(Url::parse(&format!("file://{cwd}")).unwrap()),
+            foreground_process_name: Some("/usr/bin/codex".to_string()),
+            foreground_process_info: Some(procinfo::LocalProcessInfo {
+                pid: 1,
+                ppid: 0,
+                name: "codex".to_string(),
+                executable: std::path::PathBuf::from("/usr/bin/codex"),
+                argv: vec!["codex".to_string()],
+                cwd: std::path::PathBuf::from(cwd),
+                status: procinfo::LocalProcessStatus::Run,
+                start_time: 1,
+                #[cfg(windows)]
+                console: 0,
+                children: std::collections::HashMap::new(),
+            }),
         })
     }
 }
@@ -173,7 +205,7 @@ impl Pane for BenchPane {
         &self,
         _policy: CachePolicy,
     ) -> Option<procinfo::LocalProcessInfo> {
-        None
+        self.foreground_process_info.clone()
     }
 
     fn can_close_without_prompting(&self, _reason: mux::pane::CloseReason) -> bool {
@@ -275,6 +307,14 @@ struct CodexRefreshBench {
     session_len: u64,
 }
 
+struct DetectedAdoptionBench {
+    _temp: TempDir,
+    executor: SimpleExecutor,
+    _guard: BenchMuxGuard,
+    mux: Arc<Mux>,
+    pane_id: PaneId,
+}
+
 fn terminal_size() -> TerminalSize {
     TerminalSize {
         rows: 24,
@@ -291,6 +331,8 @@ fn sample_agent_metadata(name: &str) -> AgentMetadata {
         name: name.to_string(),
         launch_cmd: "codex".to_string(),
         declared_cwd: format!("/tmp/{name}"),
+        adopted_pid: None,
+        adopted_start_time: None,
         created_at: Utc.with_ymd_and_hms(2026, 3, 21, 12, 0, 0).unwrap(),
         repo_root: None,
         worktree: None,
@@ -424,6 +466,8 @@ fn setup_codex_refresh_bench() -> CodexRefreshBench {
         name: "bench_codex".to_string(),
         launch_cmd: "codex".to_string(),
         declared_cwd: "/tmp/codex-bench".to_string(),
+        adopted_pid: None,
+        adopted_start_time: None,
         created_at: Utc.with_ymd_and_hms(2026, 3, 21, 12, 0, 0).unwrap(),
         repo_root: None,
         worktree: None,
@@ -439,6 +483,54 @@ fn setup_codex_refresh_bench() -> CodexRefreshBench {
         metadata,
         runtime,
         session_len: payload.len() as u64,
+    }
+}
+
+fn setup_detected_adoption_bench() -> DetectedAdoptionBench {
+    let temp = TempDir::new().unwrap();
+    let day = chrono::Utc::now();
+    let session_dir = temp
+        .path()
+        .join(format!("{:04}", day.year_ce().1))
+        .join(format!("{:02}", day.month()))
+        .join(format!("{:02}", day.day()));
+    std::fs::create_dir_all(&session_dir).unwrap();
+    std::fs::write(
+        session_dir.join("rollout-bench-auto-adopt.jsonl"),
+        concat!(
+            "{\"payload\":{\"cwd\":\"/tmp/bench-auto-adopt\"}}\n",
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"collaboration_mode_kind\":\"default\"}}\n",
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:01Z\",\"payload\":{\"type\":\"agent_message\",\"phase\":\"commentary\"}}\n"
+        ),
+    )
+    .unwrap();
+    unsafe {
+        std::env::set_var("WAKTERM_AGENT_CODEX_DIR", temp.path());
+    }
+
+    let mut config = config::Config::default();
+    config.agent_auto_adopt_on_confirmed_session_match = true;
+    config::use_this_configuration(config);
+    let executor = SimpleExecutor::new();
+    let domain = Arc::new(BenchDomain::new());
+    let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+    Mux::set_mux(&mux);
+
+    let size = terminal_size();
+    let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+    let tab = Arc::new(Tab::new(&size));
+    let pane = BenchPane::new_detected(30, size, domain.id, "/tmp/bench-auto-adopt");
+    let pane_id = pane.pane_id();
+    tab.assign_pane(&pane);
+    mux.add_tab_and_active_pane(&tab).unwrap();
+    mux.add_tab_to_window(&tab, window_id).unwrap();
+
+    DetectedAdoptionBench {
+        _temp: temp,
+        executor,
+        _guard: BenchMuxGuard,
+        mux,
+        pane_id,
     }
 }
 
@@ -498,5 +590,39 @@ fn bench_agent_refresh(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_pane_output, bench_agent_refresh);
+fn bench_detected_to_adopted(c: &mut Criterion) {
+    let fixture = setup_detected_adoption_bench();
+    let mut group = c.benchmark_group("agent_adoption");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("detected_to_adopted", |b| {
+        b.iter(|| {
+            fixture.mux.clear_agent_metadata(fixture.pane_id);
+            fixture.mux.record_agent_output(black_box(fixture.pane_id));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                if fixture
+                    .mux
+                    .get_agent_metadata_for_pane(fixture.pane_id)
+                    .is_some()
+                {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for detected agent adoption"
+                );
+                fixture.executor.tick().unwrap();
+            }
+            black_box(fixture.mux.list_agents_cached());
+        });
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_pane_output,
+    bench_agent_refresh,
+    bench_detected_to_adopted
+);
 criterion_main!(benches);

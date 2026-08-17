@@ -141,6 +141,7 @@ pub struct Mux {
     agent_panes_by_name: RwLock<HashMap<String, PaneId>>,
     agent_metadata_by_pane: RwLock<HashMap<PaneId, Arc<AgentMetadata>>>,
     detected_agent_panes: RwLock<HashSet<PaneId>>,
+    agent_adoption_candidates: RwLock<HashMap<PaneId, AgentAdoptionCandidate>>,
     last_detected_agent_full_scan: Mutex<Option<Instant>>,
     agent_runtime_by_pane: RwLock<HashMap<PaneId, AgentRuntimeSnapshot>>,
     agent_observer_state_by_pane: RwLock<HashMap<PaneId, AgentObserverState>>,
@@ -182,12 +183,6 @@ enum AgentRefreshPolicy {
     Throttled,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum InitialAgentRefresh {
-    Sync,
-    Async,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AgentTitleFingerprint {
     harness: crate::agent::AgentHarness,
@@ -213,6 +208,22 @@ struct DetectedAgentState {
 }
 
 #[derive(Clone)]
+struct AgentAdoptionCandidate {
+    pane_id: PaneId,
+    harness: crate::agent::AgentHarness,
+    declared_cwd: String,
+    launch_cmd: String,
+    foreground_pid: Option<u32>,
+    process_start_time: Option<u64>,
+    created_at: DateTime<Utc>,
+    tab_id: TabId,
+    window_id: WindowId,
+    workspace: String,
+    domain_id: DomainId,
+    detection_source: String,
+}
+
+#[derive(Clone)]
 struct AgentObserverRequest {
     pane_id: PaneId,
     generation: u64,
@@ -225,10 +236,6 @@ struct AgentObserverRequest {
 
 enum AgentObserverCommand {
     Refresh(AgentObserverRequest),
-    Project {
-        metadata: AgentMetadata,
-        runtime: AgentRuntimeSnapshot,
-    },
     Unavailable {
         metadata: AgentMetadata,
         observed_at: DateTime<Utc>,
@@ -571,11 +578,6 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                 })
                 .detach();
             }
-            AgentObserverCommand::Project { metadata, runtime } => {
-                if let Err(err) = event_store.observe_agent(&metadata, &runtime) {
-                    log::error!("failed to persist agent observation events: {err:#}");
-                }
-            }
             AgentObserverCommand::Unavailable {
                 metadata,
                 observed_at,
@@ -700,6 +702,7 @@ impl Mux {
             agent_panes_by_name: RwLock::new(HashMap::new()),
             agent_metadata_by_pane: RwLock::new(HashMap::new()),
             detected_agent_panes: RwLock::new(HashSet::new()),
+            agent_adoption_candidates: RwLock::new(HashMap::new()),
             last_detected_agent_full_scan: Mutex::new(None),
             agent_runtime_by_pane: RwLock::new(HashMap::new()),
             agent_observer_state_by_pane: RwLock::new(HashMap::new()),
@@ -813,7 +816,7 @@ impl Mux {
         pane_id: PaneId,
         metadata: AgentMetadata,
     ) -> anyhow::Result<()> {
-        self.set_agent_metadata_with_initial_refresh(pane_id, metadata, InitialAgentRefresh::Sync)
+        self.set_agent_metadata_with_initial_refresh(pane_id, metadata)
     }
 
     pub fn restore_agent_metadata(
@@ -821,7 +824,7 @@ impl Mux {
         pane_id: PaneId,
         metadata: AgentMetadata,
     ) -> anyhow::Result<()> {
-        self.set_agent_metadata_with_initial_refresh(pane_id, metadata, InitialAgentRefresh::Async)
+        self.set_agent_metadata_with_initial_refresh(pane_id, metadata)
     }
 
     pub fn set_mirrored_agent_harness(&self, pane_id: PaneId, metadata: Option<&AgentMetadata>) {
@@ -852,19 +855,48 @@ impl Mux {
     fn install_agent_metadata_runtime(
         &self,
         pane_id: PaneId,
-        mut metadata: AgentMetadata,
+        metadata: AgentMetadata,
         runtime: AgentRuntimeSnapshot,
     ) -> anyhow::Result<()> {
+        let foreground_process_info = self
+            .get_pane(pane_id)
+            .and_then(|pane| pane.get_foreground_process_info(CachePolicy::AllowStale));
+        self.install_agent_metadata_runtime_with_process_info(
+            pane_id,
+            metadata,
+            runtime,
+            foreground_process_info.as_ref(),
+        )
+    }
+
+    fn install_agent_metadata_runtime_without_process_identity(
+        &self,
+        pane_id: PaneId,
+        metadata: AgentMetadata,
+        runtime: AgentRuntimeSnapshot,
+    ) -> anyhow::Result<()> {
+        self.install_agent_metadata_runtime_with_process_info(pane_id, metadata, runtime, None)
+    }
+
+    fn install_agent_metadata_runtime_with_process_info(
+        &self,
+        pane_id: PaneId,
+        mut metadata: AgentMetadata,
+        runtime: AgentRuntimeSnapshot,
+        foreground_process_info: Option<&procinfo::LocalProcessInfo>,
+    ) -> anyhow::Result<()> {
         self.detected_agent_panes.write().remove(&pane_id);
+        self.agent_adoption_candidates.write().remove(&pane_id);
         let pane = self
             .get_pane(pane_id)
             .ok_or_else(|| anyhow!("pane {} is invalid", pane_id))?;
         let foreground_process_name = pane.get_foreground_process_name(CachePolicy::AllowStale);
-        let foreground_process_info = pane.get_foreground_process_info(CachePolicy::AllowStale);
         let tty_name = pane.tty_name();
         let terminal_progress = pane.get_progress();
         let alive = !pane.is_dead();
-        Self::stamp_adopted_process_identity(&mut metadata, foreground_process_info.as_ref());
+        if foreground_process_info.is_some() {
+            Self::stamp_adopted_process_identity(&mut metadata, foreground_process_info);
+        }
 
         let mut names = self.agent_panes_by_name.write();
         let mut metadata_by_pane = self.agent_metadata_by_pane.write();
@@ -903,7 +935,6 @@ impl Mux {
         &self,
         pane_id: PaneId,
         metadata: AgentMetadata,
-        initial_refresh: InitialAgentRefresh,
     ) -> anyhow::Result<()> {
         let tab_id = self.resolve_pane_id(pane_id).map(|(_, _, tab_id)| tab_id);
         let foreground_process_name = self
@@ -917,26 +948,12 @@ impl Mux {
         prime_runtime_for_new_agent(&mut runtime, &metadata, foreground_process_name.as_deref());
         self.install_agent_metadata_runtime(pane_id, metadata, runtime)?;
 
-        match initial_refresh {
-            InitialAgentRefresh::Sync => self.refresh_agent_runtime_for_pane(pane_id, true),
-            InitialAgentRefresh::Async => self.refresh_agent_runtime_for_pane_with_update(
-                pane_id,
-                false,
-                AgentRefreshPolicy::Throttled,
-                |_| {},
-            ),
-        }
-        if matches!(initial_refresh, InitialAgentRefresh::Sync) {
-            if let (Some(metadata), Some(runtime)) = (
-                self.get_agent_metadata_for_pane(pane_id),
-                self.agent_runtime_by_pane.read().get(&pane_id).cloned(),
-            ) {
-                let _ = self.agent_observer_tx.send(AgentObserverCommand::Project {
-                    metadata: (*metadata).clone(),
-                    runtime,
-                });
-            }
-        }
+        self.refresh_agent_runtime_for_pane_with_update(
+            pane_id,
+            false,
+            AgentRefreshPolicy::Throttled,
+            |_| {},
+        );
         if let Some(tab_id) = tab_id {
             self.notify_tab_title_changed(tab_id);
         }
@@ -959,6 +976,7 @@ impl Mux {
             });
         self.agent_panes_by_name.write().remove(&metadata.name);
         self.agent_runtime_by_pane.write().remove(&pane_id);
+        self.agent_adoption_candidates.write().remove(&pane_id);
         self.agent_observer_state_by_pane.write().remove(&pane_id);
         self.agent_input_generation_by_pane.write().remove(&pane_id);
         for seen in self.agent_attention_seen_by_view.write().values_mut() {
@@ -1111,6 +1129,7 @@ impl Mux {
     fn clear_detected_agent_info(&self, pane_id: PaneId) {
         self.mirrored_agent_harness_by_pane.write().remove(&pane_id);
         self.detected_agent_panes.write().remove(&pane_id);
+        self.agent_adoption_candidates.write().remove(&pane_id);
         if self.get_agent_metadata_for_pane(pane_id).is_none() {
             self.agent_runtime_by_pane.write().remove(&pane_id);
             self.agent_observer_state_by_pane.write().remove(&pane_id);
@@ -1128,7 +1147,20 @@ impl Mux {
     fn detect_agent_state_for_pane(&self, pane_id: PaneId) -> Option<DetectedAgentState> {
         if self.get_agent_metadata_for_pane(pane_id).is_some() {
             self.detected_agent_panes.write().remove(&pane_id);
+            self.agent_adoption_candidates.write().remove(&pane_id);
             return None;
+        }
+
+        if let Some(candidate) = self.agent_adoption_candidates.read().get(&pane_id).cloned() {
+            let observer_pending = self
+                .agent_observer_state_by_pane
+                .read()
+                .get(&pane_id)
+                .map(|state| state.inflight_generation.is_some() || state.pending_request.is_some())
+                .unwrap_or(false);
+            if observer_pending {
+                return self.detected_agent_state_from_candidate(candidate);
+            }
         }
 
         let Some(pane) = self.get_pane(pane_id) else {
@@ -1202,12 +1234,23 @@ impl Mux {
             branch: None,
             managed_checkout: false,
         };
-        let mut runtime = self
-            .agent_runtime_by_pane
-            .read()
-            .get(&pane_id)
-            .cloned()
-            .unwrap_or_else(|| AgentRuntimeSnapshot::new(&metadata));
+        let existing_candidate = self.agent_adoption_candidates.read().get(&pane_id).cloned();
+        let same_process_incarnation = existing_candidate
+            .as_ref()
+            .map(|candidate| {
+                candidate.foreground_pid == metadata.adopted_pid
+                    && candidate.process_start_time == metadata.adopted_start_time
+            })
+            .unwrap_or(true);
+        let mut runtime = if same_process_incarnation {
+            self.agent_runtime_by_pane
+                .read()
+                .get(&pane_id)
+                .cloned()
+                .unwrap_or_else(|| AgentRuntimeSnapshot::new(&metadata))
+        } else {
+            AgentRuntimeSnapshot::new(&metadata)
+        };
         runtime.alive = !pane.is_dead();
         runtime.foreground_process_name = foreground_process_name;
         runtime.tty_name = pane.tty_name();
@@ -1233,6 +1276,30 @@ impl Mux {
         }
 
         let detection_source = source.join("+");
+        finalize_runtime_snapshot(&mut runtime);
+        runtime.status = derive_runtime_status(&runtime);
+        self.agent_runtime_by_pane
+            .write()
+            .insert(pane_id, runtime.clone());
+        self.detected_agent_panes.write().insert(pane_id);
+
+        let candidate = AgentAdoptionCandidate {
+            pane_id,
+            harness,
+            declared_cwd: metadata.declared_cwd.clone(),
+            launch_cmd: metadata.launch_cmd.clone(),
+            foreground_pid: metadata.adopted_pid,
+            process_start_time: metadata.adopted_start_time,
+            created_at: metadata.created_at,
+            tab_id,
+            window_id,
+            workspace: window.get_workspace().to_string(),
+            domain_id: pane.domain_id(),
+            detection_source: detection_source.clone(),
+        };
+        self.agent_adoption_candidates
+            .write()
+            .insert(pane_id, candidate);
         self.schedule_agent_observer_refresh(
             pane_id,
             &metadata,
@@ -1240,12 +1307,6 @@ impl Mux {
             AgentRefreshPolicy::Throttled,
             false,
         );
-        finalize_runtime_snapshot(&mut runtime);
-        runtime.status = derive_runtime_status(&runtime);
-        self.agent_runtime_by_pane
-            .write()
-            .insert(pane_id, runtime.clone());
-        self.detected_agent_panes.write().insert(pane_id);
 
         Some(DetectedAgentState {
             pane_id,
@@ -1260,6 +1321,68 @@ impl Mux {
             runtime,
             detection_source,
         })
+    }
+
+    fn detected_agent_state_from_candidate(
+        &self,
+        candidate: AgentAdoptionCandidate,
+    ) -> Option<DetectedAgentState> {
+        let runtime = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&candidate.pane_id)
+            .cloned()?;
+        Some(DetectedAgentState {
+            pane_id: candidate.pane_id,
+            tab_id: candidate.tab_id,
+            window_id: candidate.window_id,
+            workspace: candidate.workspace,
+            domain_id: candidate.domain_id,
+            launch_cmd: candidate.launch_cmd,
+            declared_cwd: candidate.declared_cwd,
+            adopted_pid: candidate.foreground_pid,
+            adopted_start_time: candidate.process_start_time,
+            runtime,
+            detection_source: candidate.detection_source,
+        })
+    }
+
+    fn record_detected_agent_output(&self, pane_id: PaneId) {
+        let Some(candidate) = self.agent_adoption_candidates.read().get(&pane_id).cloned() else {
+            return;
+        };
+        let Some(mut runtime) = self.agent_runtime_by_pane.read().get(&pane_id).cloned() else {
+            return;
+        };
+        let now = Utc::now();
+        runtime.last_output_at = Some(now);
+        runtime.observed_at = now;
+        finalize_runtime_snapshot(&mut runtime);
+        runtime.status = derive_runtime_status(&runtime);
+        self.agent_runtime_by_pane
+            .write()
+            .insert(pane_id, runtime.clone());
+
+        let metadata = AgentMetadata {
+            agent_id: format!("detected-pane-{pane_id}"),
+            name: format!("detected-{pane_id}"),
+            launch_cmd: candidate.launch_cmd,
+            declared_cwd: candidate.declared_cwd,
+            adopted_pid: candidate.foreground_pid,
+            adopted_start_time: candidate.process_start_time,
+            created_at: candidate.created_at,
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+        };
+        self.schedule_agent_observer_refresh(
+            pane_id,
+            &metadata,
+            &runtime,
+            AgentRefreshPolicy::Throttled,
+            false,
+        );
     }
 
     fn detected_agent_snapshot_from_state(
@@ -1299,19 +1422,59 @@ impl Mux {
             return;
         }
 
-        let Some(state) = self.detect_agent_state_for_pane(pane_id) else {
+        let Some(candidate) = self.agent_adoption_candidates.read().get(&pane_id).cloned() else {
             return;
         };
-        let _ = self.auto_adopt_state(state);
+        if self
+            .agent_observer_state_by_pane
+            .read()
+            .get(&pane_id)
+            .is_some_and(|state| {
+                state.inflight_generation.is_some() || state.pending_request.is_some()
+            })
+        {
+            return;
+        }
+        let Some(runtime) = self.agent_runtime_by_pane.read().get(&pane_id).cloned() else {
+            return;
+        };
+        if !self.candidate_matches_current_process(&candidate) {
+            self.clear_detected_agent_info(pane_id);
+            return;
+        }
+        let _ = self.auto_adopt_candidate(candidate, runtime);
     }
 
-    fn auto_adopt_state(&self, state: DetectedAgentState) -> Option<Arc<AgentMetadata>> {
-        if state.runtime.session_path.is_none() {
+    fn auto_adopt_state(&self, state: &DetectedAgentState) -> Option<Arc<AgentMetadata>> {
+        let candidate = self
+            .agent_adoption_candidates
+            .read()
+            .get(&state.pane_id)
+            .cloned()?;
+        if candidate.foreground_pid != state.adopted_pid
+            || candidate.process_start_time != state.adopted_start_time
+        {
+            return None;
+        }
+
+        self.auto_adopt_candidate(candidate, state.runtime.clone())
+    }
+
+    fn auto_adopt_candidate(
+        &self,
+        candidate: AgentAdoptionCandidate,
+        runtime: AgentRuntimeSnapshot,
+    ) -> Option<Arc<AgentMetadata>> {
+        if runtime.harness != candidate.harness
+            || runtime.session_path.is_none()
+            || candidate.foreground_pid.is_none()
+            || candidate.process_start_time.is_none()
+        {
             return None;
         }
 
         let tab_id = self
-            .resolve_pane_id(state.pane_id)
+            .resolve_pane_id(candidate.pane_id)
             .map(|(_, _, tab_id)| tab_id);
         let taken_names = self
             .agent_panes_by_name
@@ -1319,16 +1482,17 @@ impl Mux {
             .keys()
             .cloned()
             .collect::<HashSet<_>>();
-        let base_name = Self::detected_agent_name_base(&state.runtime.harness, &state.declared_cwd);
+        let base_name = Self::detected_agent_name_base(&candidate.harness, &candidate.declared_cwd);
         let name = Self::next_available_agent_name(&taken_names, &base_name);
-        let created_at = Self::detected_agent_created_at(&state.runtime);
+        let created_at = candidate.created_at;
+        let pane_id = candidate.pane_id;
         let metadata = AgentMetadata {
-            agent_id: format!("detected-pane-{}", state.pane_id),
+            agent_id: format!("detected-pane-{pane_id}"),
             name,
-            launch_cmd: state.launch_cmd,
-            declared_cwd: state.declared_cwd,
-            adopted_pid: state.adopted_pid,
-            adopted_start_time: state.adopted_start_time,
+            launch_cmd: candidate.launch_cmd,
+            declared_cwd: candidate.declared_cwd,
+            adopted_pid: candidate.foreground_pid,
+            adopted_start_time: candidate.process_start_time,
             created_at,
             repo_root: None,
             worktree: None,
@@ -1336,11 +1500,11 @@ impl Mux {
             managed_checkout: false,
         };
         if self
-            .install_agent_metadata_runtime(state.pane_id, metadata, state.runtime)
+            .install_agent_metadata_runtime_without_process_identity(pane_id, metadata, runtime)
             .is_ok()
         {
             self.refresh_agent_runtime_for_pane_with_update(
-                state.pane_id,
+                pane_id,
                 false,
                 AgentRefreshPolicy::Throttled,
                 |_| {},
@@ -1348,9 +1512,26 @@ impl Mux {
             if let Some(tab_id) = tab_id {
                 self.notify_tab_title_changed(tab_id);
             }
-            return self.get_agent_metadata_for_pane(state.pane_id);
+            return self.get_agent_metadata_for_pane(pane_id);
         }
         None
+    }
+
+    fn candidate_matches_current_process(&self, candidate: &AgentAdoptionCandidate) -> bool {
+        if candidate.foreground_pid.is_none() || candidate.process_start_time.is_none() {
+            return false;
+        }
+        let Some(pane) = self.get_pane(candidate.pane_id) else {
+            return false;
+        };
+        if pane.is_dead() {
+            return false;
+        }
+        let Some(process) = pane.get_foreground_process_info(CachePolicy::AllowStale) else {
+            return false;
+        };
+        candidate.foreground_pid == Some(process.pid)
+            && candidate.process_start_time == Some(process.start_time)
     }
 
     fn should_refresh_harness_runtime(
@@ -1379,14 +1560,6 @@ impl Mux {
         {
             log::error!("agent observer worker is no longer available");
         }
-    }
-
-    fn note_sync_agent_observer_refresh(&self, pane_id: PaneId, refreshed_at: DateTime<Utc>) {
-        let mut observer_state_by_pane = self.agent_observer_state_by_pane.write();
-        let observer_state = observer_state_by_pane.entry(pane_id).or_default();
-        observer_state.last_requested_at = Some(refreshed_at);
-        observer_state.pending_request = None;
-        observer_state.inflight_generation = None;
     }
 
     fn schedule_agent_observer_refresh(
@@ -1522,20 +1695,36 @@ impl Mux {
             self.schedule_trailing_agent_observer_refresh(update.pane_id);
         }
 
-        if Self::agent_auto_adopt_on_confirmed_session_match()
-            && self.get_agent_metadata_for_pane(update.pane_id).is_none()
+        let mut adopted = false;
+        if self.get_agent_metadata_for_pane(update.pane_id).is_none()
             && self.detected_agent_panes.read().contains(&update.pane_id)
-            && self
+        {
+            let candidate = self
+                .agent_adoption_candidates
+                .read()
+                .get(&update.pane_id)
+                .cloned();
+            let runtime = self
                 .agent_runtime_by_pane
                 .read()
                 .get(&update.pane_id)
-                .and_then(|runtime| runtime.session_path.as_deref())
-                .is_some()
-        {
-            self.maybe_auto_adopt_detected_agent(update.pane_id);
+                .cloned();
+            match (candidate, runtime) {
+                (Some(candidate), Some(runtime)) => {
+                    if !self.candidate_matches_current_process(&candidate) {
+                        self.clear_detected_agent_info(update.pane_id);
+                    } else if Self::agent_auto_adopt_on_confirmed_session_match()
+                        && runtime.harness == candidate.harness
+                        && runtime.session_path.is_some()
+                    {
+                        adopted = self.auto_adopt_candidate(candidate, runtime).is_some();
+                    }
+                }
+                _ => {}
+            }
         }
 
-        if before_title != after_title {
+        if !adopted && before_title != after_title {
             self.notify_tab_title_changed(tab_id);
         }
     }
@@ -1690,12 +1879,11 @@ impl Mux {
             }
             let before_detected = self.detected_agent_panes.read().contains(&pane_id);
             let detected = self.detect_agent_state_for_pane(pane_id);
-            if Self::agent_auto_adopt_on_confirmed_session_match() {
-                self.maybe_auto_adopt_detected_agent(pane_id);
-            }
             if let Some(state) = detected {
                 if !before_detected {
                     self.notify_tab_title_changed(state.tab_id);
+                } else {
+                    self.record_detected_agent_output(pane_id);
                 }
             }
             return;
@@ -1728,57 +1916,6 @@ impl Mux {
                 runtime.observed_at = now;
             },
         );
-    }
-
-    fn refresh_agent_runtime_for_pane(&self, pane_id: PaneId, notify_title: bool) {
-        self.refresh_agent_runtime_for_pane_sync_with_update(pane_id, notify_title, |_| {});
-    }
-
-    fn refresh_agent_runtime_for_pane_sync_with_update<F>(
-        &self,
-        pane_id: PaneId,
-        notify_title: bool,
-        update: F,
-    ) where
-        F: FnOnce(&mut AgentRuntimeSnapshot),
-    {
-        let Some(metadata) = self.get_agent_metadata_for_pane(pane_id) else {
-            return;
-        };
-        let Some(pane) = self.get_pane(pane_id) else {
-            return;
-        };
-        let Some((_, _, tab_id)) = self.resolve_pane_id(pane_id) else {
-            return;
-        };
-        let mut runtime = self
-            .agent_runtime_by_pane
-            .read()
-            .get(&pane_id)
-            .cloned()
-            .unwrap_or_else(|| AgentRuntimeSnapshot::new(metadata.as_ref()));
-        let before_title = notify_title.then(|| Self::title_fingerprint(&runtime));
-        update(&mut runtime);
-        runtime.alive = !pane.is_dead();
-        runtime.foreground_process_name = pane.get_foreground_process_name(CachePolicy::AllowStale);
-        runtime.tty_name = pane.tty_name();
-        runtime.terminal_progress = pane.get_progress();
-        runtime.harness = infer_harness(
-            &metadata.launch_cmd,
-            runtime.foreground_process_name.as_deref(),
-        );
-        refresh_runtime_from_harness(&mut runtime, metadata.as_ref());
-        runtime.status = derive_runtime_status(&runtime);
-        let refreshed_at = runtime.last_harness_refresh_at;
-        let after_title = notify_title.then(|| Self::title_fingerprint(&runtime));
-        self.agent_runtime_by_pane.write().insert(pane_id, runtime);
-        if let Some(refreshed_at) = refreshed_at {
-            self.note_sync_agent_observer_refresh(pane_id, refreshed_at);
-        }
-
-        if notify_title && before_title != after_title {
-            self.notify_tab_title_changed(tab_id);
-        }
     }
 
     fn refresh_agent_runtime_for_pane_with_update<F>(
@@ -1869,6 +2006,7 @@ impl Mux {
                     |_| {},
                 );
             } else {
+                let _ = self.detect_agent_state_for_pane(pane_id);
                 self.maybe_auto_adopt_detected_agent(pane_id);
             }
         }
@@ -1900,11 +2038,11 @@ impl Mux {
             .agent_runtime_by_pane
             .read()
             .get(&pane_id)
-            .and_then(|runtime| runtime.last_turn_completed_at)
-            .or_else(|| {
-                self.detect_agent_state_for_pane(pane_id)
-                    .and_then(|state| state.runtime.last_turn_completed_at)
-            });
+            .and_then(|runtime| runtime.last_turn_completed_at);
+        let completed_at = completed_at.or_else(|| {
+            self.detect_agent_state_for_pane(pane_id)
+                .and_then(|state| state.runtime.last_turn_completed_at)
+        });
         let Some(completed_at) = completed_at else {
             return;
         };
@@ -2324,11 +2462,38 @@ impl Mux {
             return None;
         }
 
-        let pane = self.get_pane(pane_id)?;
         let runtime = self.agent_runtime_by_pane.read().get(&pane_id).cloned()?;
         if matches!(runtime.harness, crate::agent::AgentHarness::Unknown) {
             return None;
         }
+
+        if let Some(candidate) = self.agent_adoption_candidates.read().get(&pane_id).cloned() {
+            let base_name =
+                Self::detected_agent_name_base(&candidate.harness, &candidate.declared_cwd);
+            let name = Self::next_available_agent_name(taken_names, &base_name);
+            taken_names.insert(name.clone());
+            return self.snapshot_with_runtime(
+                pane_id,
+                AgentMetadata {
+                    agent_id: format!("detected-pane-{pane_id}"),
+                    name,
+                    launch_cmd: candidate.launch_cmd,
+                    declared_cwd: candidate.declared_cwd,
+                    adopted_pid: candidate.foreground_pid,
+                    adopted_start_time: candidate.process_start_time,
+                    created_at: candidate.created_at,
+                    repo_root: None,
+                    worktree: None,
+                    branch: None,
+                    managed_checkout: false,
+                },
+                runtime,
+                AgentOrigin::Detected,
+                Some("cached".to_string()),
+            );
+        }
+
+        let pane = self.get_pane(pane_id)?;
 
         let declared_cwd = Self::pane_declared_cwd(&pane, None).unwrap_or_default();
         let base_name = Self::detected_agent_name_base(&runtime.harness, &declared_cwd);
@@ -2359,13 +2524,6 @@ impl Mux {
     }
 
     pub fn list_agents(&self) -> Vec<AgentSnapshot> {
-        if Self::agent_auto_adopt_on_confirmed_session_match() {
-            let pane_ids = self.panes.read().keys().copied().collect::<Vec<_>>();
-            for pane_id in pane_ids {
-                self.maybe_auto_adopt_detected_agent(pane_id);
-            }
-        }
-
         let metadata_by_pane = self.agent_metadata_by_pane.read().clone();
         let mut agents = metadata_by_pane
             .into_iter()
@@ -2406,13 +2564,13 @@ impl Mux {
             if Self::agent_auto_adopt_on_confirmed_session_match()
                 && state.runtime.session_path.is_some()
             {
-                if let Some(metadata) = self.auto_adopt_state(state) {
+                if let Some(metadata) = self.auto_adopt_state(&state) {
                     if let Some(snapshot) = self.build_agent_snapshot(pane_id, metadata) {
                         taken_names.insert(snapshot.metadata.name.clone());
                         agents.push(snapshot);
                     }
+                    continue;
                 }
-                continue;
             }
             let base_name =
                 Self::detected_agent_name_base(&state.runtime.harness, &state.declared_cwd);
@@ -4074,6 +4232,7 @@ mod test {
         cwd: Option<Url>,
         foreground_process_name: Option<String>,
         foreground_process_info: Option<LocalProcessInfo>,
+        foreground_process_info_calls: Option<Arc<AtomicUsize>>,
     }
 
     impl FakePane {
@@ -4090,6 +4249,7 @@ mod test {
                 cwd: None,
                 foreground_process_name: None,
                 foreground_process_info: None,
+                foreground_process_info_calls: None,
             })
         }
 
@@ -4126,6 +4286,65 @@ mod test {
                     console: 0,
                     children: HashMap::new(),
                 }),
+                foreground_process_info_calls: None,
+            })
+        }
+
+        fn new_detected_counted(
+            id: PaneId,
+            size: TerminalSize,
+            domain_id: DomainId,
+            title: &str,
+            cwd: &str,
+            foreground_process_name: &str,
+            argv: &[&str],
+        ) -> (Arc<Self>, Arc<AtomicUsize>) {
+            let foreground_process_info_calls = Arc::new(AtomicUsize::new(0));
+            let pane = Arc::new(Self {
+                id,
+                size: Mutex::new(size),
+                domain_id,
+                title: title.to_string(),
+                cwd: Some(Self::test_file_url(cwd)),
+                foreground_process_name: Some(foreground_process_name.to_string()),
+                foreground_process_info: Some(LocalProcessInfo {
+                    pid: 1,
+                    ppid: 0,
+                    name: PathBuf::from(foreground_process_name)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or(foreground_process_name)
+                        .to_string(),
+                    executable: PathBuf::from(foreground_process_name),
+                    argv: argv.iter().map(|arg| (*arg).to_string()).collect(),
+                    cwd: PathBuf::from(cwd),
+                    status: LocalProcessStatus::Run,
+                    start_time: 1,
+                    #[cfg(windows)]
+                    console: 0,
+                    children: HashMap::new(),
+                }),
+                foreground_process_info_calls: Some(foreground_process_info_calls.clone()),
+            });
+            (pane, foreground_process_info_calls)
+        }
+
+        fn new_title_only(
+            id: PaneId,
+            size: TerminalSize,
+            domain_id: DomainId,
+            title: &str,
+            cwd: &str,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                id,
+                size: Mutex::new(size),
+                domain_id,
+                title: title.to_string(),
+                cwd: Some(Self::test_file_url(cwd)),
+                foreground_process_name: None,
+                foreground_process_info: None,
+                foreground_process_info_calls: None,
             })
         }
 
@@ -4166,6 +4385,7 @@ mod test {
                     console: 0,
                     children: HashMap::new(),
                 }),
+                foreground_process_info_calls: None,
             })
         }
     }
@@ -4295,6 +4515,9 @@ mod test {
         }
 
         fn get_foreground_process_info(&self, _policy: CachePolicy) -> Option<LocalProcessInfo> {
+            if let Some(calls) = &self.foreground_process_info_calls {
+                calls.fetch_add(1, Ordering::SeqCst);
+            }
             self.foreground_process_info.clone()
         }
     }
@@ -4705,6 +4928,7 @@ mod test {
                 console: 0,
                 children: HashMap::new(),
             }),
+            foreground_process_info_calls: None,
         });
         mux.panes.write().insert(pane_id, shell_pane);
 
@@ -5221,6 +5445,18 @@ mod test {
         )
         .unwrap();
 
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_runtime_by_pane
+                    .read()
+                    .get(&pane_id)
+                    .and_then(|runtime| runtime.last_harness_refresh_at)
+                    .is_some()
+            },
+            "initial harness refresh",
+        );
+
         let first_refresh = mux
             .agent_runtime_by_pane
             .read()
@@ -5534,6 +5770,18 @@ mod test {
         )
         .unwrap();
 
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_runtime_by_pane
+                    .read()
+                    .get(&pane_id)
+                    .and_then(|runtime| runtime.last_harness_refresh_at)
+                    .is_some()
+            },
+            "initial list_agents harness refresh",
+        );
+
         let first_refresh = mux
             .agent_runtime_by_pane
             .read()
@@ -5571,7 +5819,7 @@ mod test {
     #[test]
     fn list_agents_cached_does_not_refresh_adopted_observer() {
         let _test_lock = TEST_MUX_LOCK.lock();
-        let _executor = promise::spawn::SimpleExecutor::new();
+        let executor = promise::spawn::SimpleExecutor::new();
         let _env_lock = ENV_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
@@ -5641,6 +5889,18 @@ mod test {
             },
         )
         .unwrap();
+
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_runtime_by_pane
+                    .read()
+                    .get(&pane_id)
+                    .and_then(|runtime| runtime.last_harness_refresh_at)
+                    .is_some()
+            },
+            "initial cached list harness refresh",
+        );
 
         let first_refresh = mux
             .agent_runtime_by_pane
@@ -5744,6 +6004,18 @@ mod test {
         )
         .unwrap();
 
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_runtime_by_pane
+                    .read()
+                    .get(&pane_id)
+                    .and_then(|runtime| runtime.last_harness_refresh_at)
+                    .is_some()
+            },
+            "initial tab harness refresh",
+        );
+
         let first_refresh = mux
             .agent_runtime_by_pane
             .read()
@@ -5825,6 +6097,364 @@ mod test {
         assert_eq!(agent.detection_source.as_deref(), Some("proc+title"));
         assert_eq!(agent.runtime.harness, crate::agent::AgentHarness::Codex);
         assert!(mux.get_agent_metadata_for_pane(pane_id).is_none());
+    }
+
+    #[test]
+    fn pending_auto_adoption_reuses_process_evidence_across_output_and_listing() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let _config = TestConfigGuard::new_with_auto_adopt("attention", "🤖 ", true);
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let (pane, process_info_calls) = FakePane::new_detected_counted(
+            152,
+            size,
+            domain.id,
+            "codex",
+            "/tmp/pending-candidate",
+            "/usr/bin/codex",
+            &["codex"],
+        );
+        let pane_id = pane.pane_id();
+        let pane_for_tab: Arc<dyn Pane> = pane;
+        tab.assign_pane(&pane_for_tab);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        mux.record_agent_output(pane_id);
+        for _ in 0..4 {
+            mux.record_agent_output(pane_id);
+            let _ = mux.list_agents();
+            let _ = mux.list_agents_cached();
+        }
+
+        assert_eq!(process_info_calls.load(Ordering::SeqCst), 1);
+        assert!(mux.agent_adoption_candidates.read().contains_key(&pane_id));
+        assert!(mux
+            .agent_observer_state_by_pane
+            .read()
+            .get(&pane_id)
+            .is_some_and(|state| state.inflight_generation.is_some()));
+    }
+
+    #[test]
+    fn observer_confirmation_adopts_once_from_cached_candidate() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let _config = TestConfigGuard::new_with_auto_adopt("attention", "🤖 ", true);
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let (pane, process_info_calls) = FakePane::new_detected_counted(
+            153,
+            size,
+            domain.id,
+            "codex",
+            "/tmp/confirm-once",
+            "/usr/bin/codex",
+            &["codex"],
+        );
+        let pane_id = pane.pane_id();
+        let pane_for_tab: Arc<dyn Pane> = pane;
+        let tab_id = tab.tab_id();
+        tab.assign_pane(&pane_for_tab);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let title_changes = Arc::new(Mutex::new(0usize));
+        let title_changes_for_sub = Arc::clone(&title_changes);
+        mux.subscribe(move |notification| {
+            if matches!(notification, MuxNotification::TabTitleChanged { tab_id: changed, .. } if changed == tab_id) {
+                *title_changes_for_sub.lock() += 1;
+            }
+            true
+        });
+
+        mux.record_agent_output(pane_id);
+        *title_changes.lock() = 0;
+        let mut runtime = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .expect("cached candidate runtime");
+        runtime.session_path = Some("/tmp/confirmed-session.jsonl".to_string());
+        runtime.transport = crate::agent::AgentTransport::ObservedPty;
+        let update = AgentObserverUpdate {
+            pane_id,
+            generation: 1,
+            runtime,
+            queue_delay: Duration::ZERO,
+            refresh_elapsed: Duration::ZERO,
+            schedule_trailing_refresh: false,
+        };
+
+        mux.apply_agent_observer_update(update);
+        assert!(mux.get_agent_metadata_for_pane(pane_id).is_some());
+        assert_eq!(*title_changes.lock(), 1);
+        let process_calls_after_adoption = process_info_calls.load(Ordering::SeqCst);
+
+        mux.apply_agent_observer_update(AgentObserverUpdate {
+            pane_id,
+            generation: 1,
+            runtime: mux
+                .agent_runtime_by_pane
+                .read()
+                .get(&pane_id)
+                .cloned()
+                .expect("adopted runtime"),
+            queue_delay: Duration::ZERO,
+            refresh_elapsed: Duration::ZERO,
+            schedule_trailing_refresh: false,
+        });
+
+        assert!(mux.get_agent_metadata_for_pane(pane_id).is_some());
+        assert_eq!(*title_changes.lock(), 1);
+        assert_eq!(
+            process_info_calls.load(Ordering::SeqCst),
+            process_calls_after_adoption
+        );
+    }
+
+    #[test]
+    fn observer_confirmation_discards_replaced_process_incarnation() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let _config = TestConfigGuard::new_with_auto_adopt("attention", "🤖 ", true);
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let (pane, _) = FakePane::new_detected_counted(
+            154,
+            size,
+            domain.id,
+            "codex",
+            "/tmp/replaced-incarnation",
+            "/usr/bin/codex",
+            &["codex"],
+        );
+        let pane_id = pane.pane_id();
+        let pane_for_tab: Arc<dyn Pane> = pane;
+        tab.assign_pane(&pane_for_tab);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        mux.record_agent_output(pane_id);
+
+        let (mut replacement, _) = FakePane::new_detected_counted(
+            pane_id,
+            size,
+            domain.id,
+            "codex",
+            "/tmp/replaced-incarnation",
+            "/usr/bin/codex",
+            &["codex"],
+        );
+        Arc::get_mut(&mut replacement)
+            .expect("replacement pane is uniquely owned")
+            .foreground_process_info
+            .as_mut()
+            .expect("replacement process info")
+            .pid = 2;
+        Arc::get_mut(&mut replacement)
+            .expect("replacement pane is uniquely owned")
+            .foreground_process_info
+            .as_mut()
+            .expect("replacement process info")
+            .start_time = 2;
+        mux.panes
+            .write()
+            .insert(pane_id, replacement as Arc<dyn Pane>);
+
+        let mut runtime = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .expect("cached candidate runtime");
+        runtime.session_path = Some("/tmp/stale-session.jsonl".to_string());
+        mux.apply_agent_observer_update(AgentObserverUpdate {
+            pane_id,
+            generation: 1,
+            runtime,
+            queue_delay: Duration::ZERO,
+            refresh_elapsed: Duration::ZERO,
+            schedule_trailing_refresh: false,
+        });
+
+        assert!(mux.get_agent_metadata_for_pane(pane_id).is_none());
+        assert!(!mux.detected_agent_panes.read().contains(&pane_id));
+        assert!(!mux.agent_adoption_candidates.read().contains_key(&pane_id));
+    }
+
+    #[test]
+    fn title_only_evidence_never_adopts_a_session() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let _config = TestConfigGuard::new_with_auto_adopt("attention", "🤖 ", true);
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new_title_only(155, size, domain.id, "codex", "/tmp/title-only");
+        let pane_id = pane.pane_id();
+        let pane_for_tab: Arc<dyn Pane> = pane;
+        tab.assign_pane(&pane_for_tab);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let agents = mux.list_agents();
+        assert_eq!(agents.len(), 1);
+        assert!(matches!(agents[0].origin, AgentOrigin::Detected));
+        let mut runtime = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .expect("title candidate runtime");
+        runtime.session_path = Some("/tmp/title-only-session.jsonl".to_string());
+        mux.apply_agent_observer_update(AgentObserverUpdate {
+            pane_id,
+            generation: 1,
+            runtime,
+            queue_delay: Duration::ZERO,
+            refresh_elapsed: Duration::ZERO,
+            schedule_trailing_refresh: false,
+        });
+
+        assert!(mux.get_agent_metadata_for_pane(pane_id).is_none());
+        assert!(!mux.detected_agent_panes.read().contains(&pane_id));
+    }
+
+    #[test]
+    fn confirmed_harnesses_keep_provider_identity_during_auto_adoption() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let _config = TestConfigGuard::new_with_auto_adopt("attention", "🤖 ", true);
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let cases = [
+            (
+                156,
+                "claude",
+                "/usr/bin/claude",
+                crate::agent::AgentHarness::Claude,
+            ),
+            (
+                157,
+                "codex",
+                "/usr/bin/codex",
+                crate::agent::AgentHarness::Codex,
+            ),
+            (
+                158,
+                "gemini",
+                "/usr/bin/gemini",
+                crate::agent::AgentHarness::Gemini,
+            ),
+            (
+                159,
+                "opencode",
+                "/usr/bin/opencode",
+                crate::agent::AgentHarness::Opencode,
+            ),
+        ];
+
+        for (pane_id, title, process_name, harness) in cases {
+            let tab = Arc::new(Tab::new(&size));
+            let pane = FakePane::new_detected(
+                pane_id,
+                size,
+                domain.id,
+                title,
+                &format!("/tmp/confirmed-{title}"),
+                process_name,
+                &[title],
+            );
+            tab.assign_pane(&pane);
+            mux.add_tab_and_active_pane(&tab).unwrap();
+            mux.add_tab_to_window(&tab, window_id).unwrap();
+            mux.record_agent_output(pane_id);
+
+            let mut runtime = mux
+                .agent_runtime_by_pane
+                .read()
+                .get(&pane_id)
+                .cloned()
+                .expect("provider candidate runtime");
+            runtime.harness = harness.clone();
+            runtime.session_path = Some(format!("/tmp/{title}-session"));
+            runtime.transport = crate::agent::AgentTransport::ObservedPty;
+            mux.apply_agent_observer_update(AgentObserverUpdate {
+                pane_id,
+                generation: 1,
+                runtime,
+                queue_delay: Duration::ZERO,
+                refresh_elapsed: Duration::ZERO,
+                schedule_trailing_refresh: false,
+            });
+
+            let metadata = mux
+                .get_agent_metadata_for_pane(pane_id)
+                .expect("confirmed harness metadata");
+            assert_eq!(infer_harness(&metadata.launch_cmd, None), harness);
+            assert_eq!(metadata.adopted_pid, Some(1));
+            assert_eq!(metadata.adopted_start_time, Some(1));
+        }
     }
 
     #[test]

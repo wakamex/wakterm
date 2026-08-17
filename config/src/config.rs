@@ -200,9 +200,9 @@ pub struct Config {
     pub agent_tab_badge: String,
 
     /// Automatically adopt a detected harness pane once its session observer
-    /// confirms a backing session. This is disabled by default so that weak
-    /// title/process heuristics never persist metadata on their own.
-    #[dynamic(default)]
+    /// confirms a backing session. Confirmation is required before metadata
+    /// is persisted, so weak title/process heuristics never adopt a pane.
+    #[dynamic(default = "default_agent_auto_adopt_on_confirmed_session_match")]
     pub agent_auto_adopt_on_confirmed_session_match: bool,
 
     #[dynamic(default)]
@@ -942,6 +942,10 @@ fn default_ulimit_nofile() -> u64 {
 
 fn default_ulimit_nproc() -> u64 {
     2048
+}
+
+fn default_agent_auto_adopt_on_confirmed_session_match() -> bool {
+    true
 }
 
 impl Default for Config {

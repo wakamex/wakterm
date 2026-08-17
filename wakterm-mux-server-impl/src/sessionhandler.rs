@@ -3156,6 +3156,23 @@ mod test {
         metadata.declared_cwd = cwd.to_string();
         mux.set_agent_metadata(pane_id, metadata).unwrap();
 
+        let refresh_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while mux
+            .agent_service()
+            .list_agents_cached()
+            .into_iter()
+            .find(|agent| agent.pane_id == pane_id)
+            .and_then(|agent| agent.runtime.last_harness_refresh_at)
+            .is_none()
+        {
+            executor.tick().unwrap();
+            assert!(
+                std::time::Instant::now() < refresh_deadline,
+                "timed out waiting for async agent observer refresh"
+            );
+            std::thread::yield_now();
+        }
+
         let (_client, _view, mut handler) = register_test_client(&mux, "view-a");
         let response = match handler.request(&executor, Pdu::ListPanes(ListPanes {})) {
             Pdu::ListPanesResponse(response) => response,
