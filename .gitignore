@@ -24,6 +24,7 @@ dhat-heap.json
 /docs/cli/cli/index.md
 /docs/recipes/index.md
 /docs/colorschemes/**/index.md
+/docs/colorschemes/catalog.json
 /docs/colorschemes/scheme.css
 /docs/colorschemes/scheme.js
 /docs/config/lua/color/index.md
