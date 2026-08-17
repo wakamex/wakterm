@@ -196,6 +196,13 @@ All changes relative to upstream `wakterm/wakterm` main at `05343b387`.
 
 - **Track .git/HEAD and refs/heads for version string freshness** ([dcd417b](https://github.com/wakamex/wakterm/commit/dcd417b0f))
 
+## Security
+
+- Disable DECRQCRA checksum responses by default to prevent terminal screen
+  contents from being queried silently. Set
+  `enable_checksum_rectangular_area = true` only when compatibility requires
+  it.
+
 ## Compatibility
 
 The mux protocol has diverged from upstream. wakterm clients and servers must be the same build; connecting to an upstream wezterm mux server is not supported.

@@ -5,6 +5,7 @@ use super::*;
 mod c0;
 use bitflags::bitflags;
 mod c1;
+mod checksum;
 mod csi;
 mod image;
 // mod selection; FIXME: port to render layer
