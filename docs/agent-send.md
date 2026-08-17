@@ -32,6 +32,43 @@ submitting the prompt again. Reusing the ID with different input is rejected.
 The timeout is an asynchronous request deadline. Zero, the default, disables
 the deadline.
 
+## Authoritative admission for orchestrators
+
+`agent send` remains the convenient interactive command. An orchestrator that
+must not steer an active turn uses the versioned admission API instead:
+
+```sh
+wakterm cli agent capabilities
+wakterm cli agent catalog
+wakterm cli agent admit zola \
+  --incarnation PROCESS_INCARNATION \
+  --request-id REQUEST_ID \
+  --return-final \
+  --final-timeout-ms 3600000 \
+  "Complete phases 2 and 3"
+```
+
+The catalog supplies the stable agent ID and opaque process incarnation. The
+admission call requires both, refreshes the provider observer away from the mux
+reactor, and rechecks the same incarnation and authoritative idle state
+immediately before input. Prompt text and Enter are serialized as one pane
+write. Observer scanning, SQLite work, and the removed 200 ms submission delay
+do not block the mux reactor.
+
+The structured receipt classifies `accepted`, `busy`, `unsupported`,
+`unavailable`, `stale_incarnation`, `invalid`, `observer_failure`,
+`internal_failure`, and `indeterminate`. A definitive rejection always has
+`prompt_written: false`. Any write error is `indeterminate` because a PTY write
+may have been partial. Callers must not retry an indeterminate request under a
+new ID.
+
+The caller owns the request ID. Repeating the same ID, process incarnation,
+prompt bytes, paste mode, return mode, and timeout cannot write the prompt a
+second time. Reusing an ID with different input is rejected. One-way
+admissions and return-final admissions both persist their idempotency state.
+Return-final admissions continue to complete on the existing durable terminal
+request stream described below.
+
 ## Results and subscriptions
 
 Inspect or cancel one request:
@@ -87,4 +124,6 @@ evidence before they can safely support this primitive.
 
 One PTY limitation remains: byte delivery and the durable submitted marker
 cannot be a single transaction. Wakterm resolves a crash in that narrow window
-as indeterminate instead of risking duplicate or unrelated completion.
+as indeterminate instead of risking duplicate or unrelated completion. The
+actual pane write still runs through the existing mux input path, but it is one
+bounded write rather than observer work, database work, or a timed wait.

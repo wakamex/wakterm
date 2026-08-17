@@ -446,6 +446,25 @@ impl Pane for LocalPane {
         }
     }
 
+    fn send_text_and_submit(&self, text: &str, paste: bool) -> Result<(), Error> {
+        Mux::get().record_input_for_current_identity();
+        if self.tmux_domain.lock().is_some() {
+            return Ok(());
+        }
+        if paste {
+            self.terminal.lock().send_paste_and_submit(text)
+        } else {
+            let mut data = text.as_bytes().to_vec();
+            data.push(b'\r');
+            self.writer.lock().write_all(&data)?;
+            Ok(())
+        }
+    }
+
+    fn supports_atomic_prompt_submission(&self) -> bool {
+        self.tmux_domain.lock().is_none()
+    }
+
     fn get_title(&self) -> String {
         let title = self.terminal.lock().get_title().to_string();
         // If the title is the default pane title, then try to spice

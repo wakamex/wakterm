@@ -51,6 +51,10 @@ pub struct AgentRequest {
     pub baseline_provider_turn_id: String,
     pub baseline_cursor: u64,
     pub baseline_user_message_count: u32,
+    /// Exact submitted UTF-8 bytes. Older persisted requests lack this field
+    /// and retain the legacy correlation-hash replay behavior.
+    #[serde(default)]
+    pub submission_sha256: String,
     pub prompt_sha256: String,
     pub submission_paste: bool,
     pub timeout_ms: u64,
@@ -97,6 +101,7 @@ impl AgentRequest {
             baseline_provider_turn_id: turn.provider_turn_id.clone(),
             baseline_cursor: turn.latest_cursor.expect("baseline was validated"),
             baseline_user_message_count: turn.user_message_count,
+            submission_sha256: submission_sha256(prompt),
             prompt_sha256: prompt_sha256(prompt),
             submission_paste,
             timeout_ms,
@@ -115,6 +120,24 @@ impl AgentRequest {
     pub fn mark_submitted(&mut self) {
         self.state = AgentRequestState::Submitted;
         self.updated_at = Utc::now();
+    }
+
+    pub fn matches_submission(
+        &self,
+        target_agent_id: &str,
+        prompt: &str,
+        submission_paste: bool,
+        timeout_ms: u64,
+    ) -> bool {
+        let prompt_matches = if self.submission_sha256.is_empty() {
+            self.prompt_sha256 == prompt_sha256(prompt)
+        } else {
+            self.submission_sha256 == submission_sha256(prompt)
+        };
+        self.target_agent_id == target_agent_id
+            && prompt_matches
+            && self.submission_paste == submission_paste
+            && self.timeout_ms == timeout_ms
     }
 
     pub fn reconcile(
@@ -289,6 +312,10 @@ pub fn prompt_sha256(prompt: &str) -> String {
     format!("{:x}", Sha256::digest(prompt.trim().as_bytes()))
 }
 
+fn submission_sha256(prompt: &str) -> String {
+    format!("{:x}", Sha256::digest(prompt.as_bytes()))
+}
+
 fn validate_baseline(
     metadata: &AgentMetadata,
     runtime: &AgentRuntimeSnapshot,
@@ -321,6 +348,7 @@ fn validate_baseline(
     Ok(())
 }
 
+#[derive(Clone)]
 pub struct AgentRequestStore {
     path: PathBuf,
 }
@@ -356,6 +384,18 @@ impl AgentRequestStore {
     pub fn create(&self, request: &AgentRequest) -> anyhow::Result<(AgentRequest, bool)> {
         let conn = self.connect()?;
         let fingerprint = request_fingerprint(request);
+        let inserted = conn.execute(
+            "INSERT OR IGNORE INTO agent_request(request_id, fingerprint, snapshot_json)
+             VALUES (?1, ?2, ?3)",
+            params![
+                request.request_id,
+                fingerprint,
+                serde_json::to_string(request)?
+            ],
+        )?;
+        if inserted == 1 {
+            return Ok((request.clone(), true));
+        }
         if let Some((existing_fingerprint, snapshot)) = conn
             .query_row(
                 "SELECT fingerprint, snapshot_json FROM agent_request WHERE request_id = ?1",
@@ -375,15 +415,10 @@ impl AgentRequestStore {
                 false,
             ));
         }
-        conn.execute(
-            "INSERT INTO agent_request(request_id, fingerprint, snapshot_json) VALUES (?1, ?2, ?3)",
-            params![
-                request.request_id,
-                fingerprint,
-                serde_json::to_string(request)?
-            ],
-        )?;
-        Ok((request.clone(), true))
+        bail!(
+            "request id {} disappeared during registration",
+            request.request_id
+        )
     }
 
     pub fn save(&self, request: &mut AgentRequest) -> anyhow::Result<()> {
@@ -418,6 +453,29 @@ impl AgentRequestStore {
                 serde_json::from_str(&snapshot).context("decoding stored agent request")
             })
             .transpose()
+    }
+
+    pub fn delete_registered(&self, request_id: &str) -> anyhow::Result<()> {
+        let mut conn = self.connect()?;
+        let tx = conn.transaction()?;
+        let snapshot = tx
+            .query_row(
+                "SELECT snapshot_json FROM agent_request WHERE request_id = ?1",
+                params![request_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if let Some(snapshot) = snapshot {
+            let request: AgentRequest = serde_json::from_str(&snapshot)?;
+            if matches!(request.state, AgentRequestState::Registered) {
+                tx.execute(
+                    "DELETE FROM agent_request WHERE request_id = ?1 AND snapshot_json = ?2",
+                    params![request_id, snapshot],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn active(&self) -> anyhow::Result<Vec<AgentRequest>> {
@@ -471,7 +529,11 @@ fn request_fingerprint(request: &AgentRequest) -> String {
         request.target_agent_id,
         request.target_session_path,
         request.baseline_cursor,
-        request.prompt_sha256,
+        if request.submission_sha256.is_empty() {
+            &request.prompt_sha256
+        } else {
+            &request.submission_sha256
+        },
         request.submission_paste,
         request.timeout_ms
     ))
@@ -730,6 +792,8 @@ mod tests {
             Some(Utc::now() + Duration::minutes(5)),
         )
         .unwrap();
+        assert!(request.matches_submission("agent-1", "do work", true, 300_000));
+        assert!(!request.matches_submission("agent-1", "do work ", true, 300_000));
         assert!(store.create(&request).unwrap().1);
         assert!(!store.create(&request).unwrap().1);
         request.mark_submitted();

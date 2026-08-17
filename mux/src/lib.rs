@@ -4,7 +4,7 @@ use crate::agent::{
     refresh_runtime_from_harness, AgentMetadata, AgentOrigin, AgentRuntimeSnapshot, AgentSnapshot,
     AgentTabBadgeState,
 };
-use crate::agent_request::{prompt_sha256, AgentRequest, AgentRequestState, AgentRequestStore};
+use crate::agent_request::{AgentRequest, AgentRequestState, AgentRequestStore};
 use crate::client::{ClientId, ClientInfo, ClientViewId, ClientViewState, ClientWindowViewState};
 use crate::pane::{CachePolicy, Pane, PaneId};
 use crate::ssh_agent::AgentProxy;
@@ -45,6 +45,7 @@ use winapi::um::winsock2::{SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
 
 pub mod activity;
 pub mod agent;
+pub mod agent_admission;
 pub mod agent_request;
 pub mod agent_service;
 pub mod client;
@@ -140,6 +141,8 @@ pub struct Mux {
     agent_runtime_by_pane: RwLock<HashMap<PaneId, AgentRuntimeSnapshot>>,
     agent_observer_state_by_pane: RwLock<HashMap<PaneId, AgentObserverState>>,
     agent_request_store: AgentRequestStore,
+    agent_admission_store: agent_admission::AgentAdmissionStore,
+    agent_input_generation_by_pane: RwLock<HashMap<PaneId, u64>>,
     agent_attention_seen_by_view: RwLock<HashMap<ClientViewId, HashMap<PaneId, DateTime<Utc>>>>,
     windows: RwLock<HashMap<WindowId, Window>>,
     default_domain: RwLock<Option<Arc<dyn Domain>>>,
@@ -640,6 +643,7 @@ impl Mux {
             None
         };
         let agent_observer_tx = spawn_agent_observer_worker();
+        let agent_state_path = config::DATA_DIR.join("agent-requests.sqlite3");
 
         Self {
             tabs: RwLock::new(HashMap::new()),
@@ -651,9 +655,9 @@ impl Mux {
             last_detected_agent_full_scan: Mutex::new(None),
             agent_runtime_by_pane: RwLock::new(HashMap::new()),
             agent_observer_state_by_pane: RwLock::new(HashMap::new()),
-            agent_request_store: AgentRequestStore::new(
-                config::DATA_DIR.join("agent-requests.sqlite3"),
-            ),
+            agent_request_store: AgentRequestStore::new(agent_state_path.clone()),
+            agent_admission_store: agent_admission::AgentAdmissionStore::new(agent_state_path),
+            agent_input_generation_by_pane: RwLock::new(HashMap::new()),
             agent_attention_seen_by_view: RwLock::new(HashMap::new()),
             windows: RwLock::new(HashMap::new()),
             default_domain: RwLock::new(default_domain),
@@ -882,6 +886,7 @@ impl Mux {
         self.agent_panes_by_name.write().remove(&metadata.name);
         self.agent_runtime_by_pane.write().remove(&pane_id);
         self.agent_observer_state_by_pane.write().remove(&pane_id);
+        self.agent_input_generation_by_pane.write().remove(&pane_id);
         for seen in self.agent_attention_seen_by_view.write().values_mut() {
             seen.remove(&pane_id);
         }
@@ -1452,6 +1457,11 @@ impl Mux {
     }
 
     pub fn record_agent_input(&self, pane_id: PaneId) {
+        *self
+            .agent_input_generation_by_pane
+            .write()
+            .entry(pane_id)
+            .or_default() += 1;
         self.refresh_agent_runtime_for_pane_with_update(
             pane_id,
             true,
@@ -1464,82 +1474,12 @@ impl Mux {
         );
     }
 
-    pub fn submit_agent_request(
-        &self,
-        pane_id: PaneId,
-        request_id: String,
-        prompt: String,
-        paste: bool,
-        timeout_ms: u64,
-    ) -> anyhow::Result<AgentRequest> {
-        anyhow::ensure!(
-            !prompt.trim().is_empty(),
-            "--return-final requires a non-empty prompt"
-        );
-        if let Some(existing) = self.agent_request_store.get(&request_id)? {
-            anyhow::ensure!(
-                existing.target_pane_id == pane_id
-                    && existing.prompt_sha256 == prompt_sha256(&prompt)
-                    && existing.submission_paste == paste
-                    && existing.timeout_ms == timeout_ms,
-                "request id {request_id} was already used for different input"
-            );
-            return Ok(existing);
-        }
-        self.refresh_agent_runtime_for_pane_sync_with_update(pane_id, false, |_| {});
-        let metadata = self
-            .get_agent_metadata_for_pane(pane_id)
-            .ok_or_else(|| anyhow!("pane {pane_id} is not an adopted agent"))?;
-        let runtime = self
-            .agent_runtime_by_pane
+    pub(crate) fn agent_input_generation(&self, pane_id: PaneId) -> u64 {
+        self.agent_input_generation_by_pane
             .read()
             .get(&pane_id)
-            .cloned()
-            .ok_or_else(|| anyhow!("agent runtime for pane {pane_id} is unavailable"))?;
-        let deadline_at = (timeout_ms != 0)
-            .then(|| Utc::now() + chrono::Duration::milliseconds(timeout_ms as i64));
-        let proposed = AgentRequest::new(
-            request_id,
-            metadata.as_ref(),
-            pane_id,
-            &runtime,
-            &prompt,
-            paste,
-            timeout_ms,
-            deadline_at,
-        )?;
-        let (mut request, created) = self.agent_request_store.create(&proposed)?;
-        if !created {
-            return Ok(request);
-        }
-
-        let pane = self
-            .get_pane(pane_id)
-            .ok_or_else(|| anyhow!("no such pane {pane_id}"))?;
-        let delivery = (|| -> anyhow::Result<()> {
-            if paste {
-                pane.send_paste(&prompt)?;
-            } else {
-                pane.writer().write_all(prompt.as_bytes())?;
-            }
-            // Native harnesses need a raw carriage return. Keeping the delay
-            // inside the atomic server operation prevents another client from
-            // interleaving input between the prompt and its submit action.
-            std::thread::sleep(Duration::from_millis(200));
-            pane.writer().write_all(b"\r")?;
-            Ok(())
-        })();
-        match delivery {
-            Ok(()) => request.mark_submitted(),
-            Err(err) => request.finish(
-                AgentRequestState::DeliveryFailed,
-                Utc::now(),
-                &format!("prompt delivery failed: {err:#}"),
-            ),
-        }
-        self.agent_request_store.save(&mut request)?;
-        self.record_agent_input(pane_id);
-        Ok(request)
+            .copied()
+            .unwrap_or(0)
     }
 
     fn reconcile_agent_requests(&self) -> anyhow::Result<()> {

@@ -72,6 +72,18 @@ enum AgentSubCommand {
     )]
     Output(OutputAgentCommand),
 
+    #[command(
+        name = "capabilities",
+        about = "print the versioned Wakterm Agent API capabilities"
+    )]
+    Capabilities(AgentCapabilitiesCommand),
+
+    #[command(name = "catalog", about = "print the narrow Wakterm Agent API catalog")]
+    Catalog(AgentCatalogCommand),
+
+    #[command(name = "admit", about = "atomically admit and submit an agent prompt")]
+    Admit(AdmitAgentCommand),
+
     #[command(name = "send", about = "send a message to an agent pane")]
     Send(SendAgentCommand),
 
@@ -101,6 +113,9 @@ impl AgentCommand {
             AgentSubCommand::Watch(cmd) => cmd.run(client).await,
             AgentSubCommand::Inspect(cmd) => cmd.run(client).await,
             AgentSubCommand::Output(cmd) => cmd.run(client).await,
+            AgentSubCommand::Capabilities(cmd) => cmd.run(client).await,
+            AgentSubCommand::Catalog(cmd) => cmd.run(client).await,
+            AgentSubCommand::Admit(cmd) => cmd.run(client).await,
             AgentSubCommand::Send(cmd) => cmd.run(client).await,
             AgentSubCommand::Request(cmd) => cmd.run(client).await,
             AgentSubCommand::Interrupt(cmd) => cmd.run(client).await,
@@ -1269,6 +1284,103 @@ impl OutputAgentCommand {
             })
             .await?;
         write_json(&response.page)
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
+pub struct AgentCapabilitiesCommand {}
+
+impl AgentCapabilitiesCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        write_json(
+            &client
+                .get_agent_api_capabilities(codec::GetAgentApiCapabilities {})
+                .await?
+                .capabilities,
+        )
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
+pub struct AgentCatalogCommand {}
+
+impl AgentCatalogCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        write_json(
+            &client
+                .list_agent_api_catalog(codec::ListAgentApiCatalog {})
+                .await?
+                .catalog,
+        )
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
+pub struct AdmitAgentCommand {
+    /// Stable agent id or unique display name from `agent catalog`
+    target: String,
+
+    /// Opaque process incarnation from `agent catalog`
+    #[arg(long)]
+    incarnation: String,
+
+    /// Durable idempotency key
+    #[arg(long)]
+    request_id: String,
+
+    /// Send the text directly rather than as a bracketed paste
+    #[arg(long)]
+    no_paste: bool,
+
+    /// Preserve the existing return-final terminal request stream
+    #[arg(long)]
+    return_final: bool,
+
+    /// Asynchronous return-final deadline; zero disables the deadline
+    #[arg(long, default_value_t = 0, requires = "return_final")]
+    final_timeout_ms: u64,
+
+    /// Prompt text; reads stdin when omitted
+    text: Option<String>,
+}
+
+impl AdmitAgentCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        let catalog = client
+            .list_agent_api_catalog(codec::ListAgentApiCatalog {})
+            .await?
+            .catalog;
+        let matches = catalog
+            .agents
+            .iter()
+            .filter(|agent| agent.agent_id == self.target || agent.name == self.target)
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            matches.len() == 1,
+            "target must match exactly one catalog agent"
+        );
+        let target = matches[0];
+        let prompt = match self.text.as_ref() {
+            Some(text) => text.clone(),
+            None => {
+                std::io::read_to_string(std::io::stdin()).context("reading prompt from stdin")?
+            }
+        };
+        let receipt = client
+            .admit_agent_prompt(codec::AdmitAgentPrompt {
+                request: mux::agent_admission::AgentPromptAdmissionRequest {
+                    request_id: self.request_id.clone(),
+                    agent_id: target.agent_id.clone(),
+                    incarnation_id: self.incarnation.clone(),
+                    prompt,
+                    paste: !self.no_paste,
+                    return_final: self.return_final,
+                    timeout_ms: self.final_timeout_ms,
+                },
+            })
+            .await?
+            .receipt;
+        write_json(&receipt)
     }
 }
 
@@ -4165,6 +4277,33 @@ mod test {
         assert_eq!(command.target, "zola");
         assert_eq!(command.cursor.as_deref(), Some("opaque-cursor"));
         assert_eq!(command.limit, 25);
+    }
+
+    #[test]
+    fn admit_parser_requires_explicit_incarnation_and_request_id() {
+        let parsed = AgentCommand::try_parse_from([
+            "agent",
+            "admit",
+            "zola",
+            "--incarnation",
+            "incarnation-1",
+            "--request-id",
+            "request-1",
+            "--return-final",
+            "--final-timeout-ms",
+            "60000",
+            "work",
+        ])
+        .unwrap();
+        let AgentSubCommand::Admit(command) = parsed.sub else {
+            panic!("expected admit command");
+        };
+        assert_eq!(command.target, "zola");
+        assert_eq!(command.incarnation, "incarnation-1");
+        assert_eq!(command.request_id, "request-1");
+        assert!(command.return_final);
+        assert_eq!(command.final_timeout_ms, 60_000);
+        assert_eq!(command.text.as_deref(), Some("work"));
     }
 
     #[test]

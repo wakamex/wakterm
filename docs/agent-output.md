@@ -35,20 +35,21 @@ Expected non-success states are also returned as structured JSON:
 
 The initial implementation supports Codex assistant messages. It uses Wakterm's existing process-confirmed Codex observer and reads the provider's append-only rollout directly, so it does not add another output database or background event service. Provider-file scanning runs outside the mux main thread. Each read is also bounded by internal record and byte budgets. A tool-heavy page can therefore return no assistant events with `has_more: true`, and the consumer should immediately request the next page.
 
-## Deliberate gaps before a durable Agent API
+## Deliberate gaps before a durable event API
 
-This page does not satisfy the durable Panetone consumer gate. The durable contract still needs:
+This page does not satisfy the durable Panetone event-consumer gate. Wakterm
+now exposes versioned capability, catalog, and authoritative prompt-admission
+operations. The durable output contract still needs:
 
-- an explicit public agent and process-incarnation identity on snapshots, receipts, and events
 - catalog and lifecycle ordering relative to the event cursor
-- prompt-admission receipts with separately classified unsupported, unavailable, stale-incarnation, busy, invalid, observer-failure, and indeterminate outcomes
-- definitive `busy` non-acceptance that guarantees no prompt write occurred
 - distinct plan, turn lifecycle, final, observer failure, and agent lifecycle event kinds
 - a strictly increasing durable sequence that survives restart
 - defined retention and an explicit `cursor_too_old` result with recovery metadata
-- capability and schema-version negotiation before consumption
 - Wakterm-owned golden fixtures consumed across repositories
 
-In particular, the current return-request submission rejects a busy target before writing, but that rejection is transported as an error string. Panetone must not queue or retry from that string. Structured busy admission belongs in the future durable submission contract.
+Panetone may use the authoritative admission receipt now. It must continue to
+use this output page only for side-effect-free shadow comparisons until the
+remaining event contract is promoted.
 
-This API does not change `agent send`, `agent watch`, or durable `--return-final` requests.
+This API does not change the experimental status of `agent output` or the
+existing durable return-final terminal stream.

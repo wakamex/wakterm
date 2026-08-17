@@ -676,6 +676,35 @@ impl SessionHandler {
                 })
                 .detach();
             }
+            Pdu::GetAgentApiCapabilities(GetAgentApiCapabilities {}) => {
+                spawn_into_main_thread(async move {
+                    let mux = Mux::get();
+                    send_response(Ok(Pdu::GetAgentApiCapabilitiesResponse(
+                        GetAgentApiCapabilitiesResponse {
+                            capabilities: mux.agent_service().capabilities(),
+                        },
+                    )));
+                })
+                .detach();
+            }
+            Pdu::ListAgentApiCatalog(ListAgentApiCatalog {}) => {
+                spawn_into_main_thread(async move {
+                    let mux = Mux::get();
+                    send_response(Ok(Pdu::ListAgentApiCatalogResponse(
+                        ListAgentApiCatalogResponse {
+                            catalog: mux.agent_service().catalog(),
+                        },
+                    )));
+                })
+                .detach();
+            }
+            Pdu::AdmitAgentPrompt(AdmitAgentPrompt { request }) => {
+                schedule_agent_prompt_admission(request, move |result| {
+                    send_response(result.map(|receipt| {
+                        Pdu::AdmitAgentPromptResponse(AdmitAgentPromptResponse { receipt })
+                    }))
+                });
+            }
             Pdu::SubmitAgentRequest(SubmitAgentRequest {
                 pane_id,
                 request_id,
@@ -684,18 +713,46 @@ impl SessionHandler {
                 timeout_ms,
             }) => {
                 spawn_into_main_thread(async move {
-                    catch(
-                        move || {
-                            let mux = Mux::get();
-                            let request = mux
-                                .agent_service()
-                                .submit_request(pane_id, request_id, prompt, paste, timeout_ms)?;
-                            Ok(Pdu::SubmitAgentRequestResponse(
-                                SubmitAgentRequestResponse { request },
-                            ))
-                        },
-                        send_response,
-                    )
+                    let request = {
+                        let mux = Mux::get();
+                        let target = mux
+                            .list_agents_cached()
+                            .into_iter()
+                            .find(|agent| agent.pane_id == pane_id)
+                            .ok_or_else(|| anyhow!("pane {pane_id} is not an adopted agent"));
+                        target.and_then(|target| {
+                            let incarnation_id =
+                                mux::agent_admission::incarnation_id(&target.metadata).ok_or_else(
+                                    || anyhow!("target process incarnation is not confirmed"),
+                                )?;
+                            Ok(mux::agent_admission::AgentPromptAdmissionRequest {
+                                request_id,
+                                agent_id: target.metadata.agent_id.clone(),
+                                incarnation_id,
+                                prompt,
+                                paste,
+                                return_final: true,
+                                timeout_ms,
+                            })
+                        })
+                    };
+                    match request {
+                        Ok(request) => schedule_agent_prompt_admission(request, move |result| {
+                            let response = result.and_then(|receipt| {
+                                let detail = receipt.detail.clone().unwrap_or_else(|| {
+                                    format!("agent prompt admission was {:?}", receipt.status)
+                                });
+                                match receipt.request {
+                                    Some(request) => Ok(Pdu::SubmitAgentRequestResponse(
+                                        SubmitAgentRequestResponse { request },
+                                    )),
+                                    None => Err(anyhow!("{detail}")),
+                                }
+                            });
+                            send_response(response);
+                        }),
+                        Err(err) => send_response(Err(err)),
+                    }
                 })
                 .detach();
             }
@@ -1558,6 +1615,9 @@ impl SessionHandler {
             | Pdu::ListAgentRequestEventsResponse { .. }
             | Pdu::CancelAgentRequestResponse { .. }
             | Pdu::ReadAgentOutputResponse { .. }
+            | Pdu::GetAgentApiCapabilitiesResponse { .. }
+            | Pdu::ListAgentApiCatalogResponse { .. }
+            | Pdu::AdmitAgentPromptResponse { .. }
             | Pdu::SetClipboard { .. }
             | Pdu::NotifyAlert { .. }
             | Pdu::SpawnResponse { .. }
@@ -1587,6 +1647,293 @@ impl SessionHandler {
 
     pub fn wants_mux_notifications(&self) -> bool {
         self.client_id.is_some()
+    }
+}
+
+fn schedule_agent_prompt_admission<SND>(
+    request: mux::agent_admission::AgentPromptAdmissionRequest,
+    send_response: SND,
+) where
+    SND: FnOnce(anyhow::Result<mux::agent_admission::AgentAdmissionReceipt>) + 'static,
+{
+    promise::spawn::spawn(async move {
+        send_response(admit_agent_prompt(request).await);
+    })
+    .detach();
+}
+
+async fn admit_agent_prompt(
+    request: mux::agent_admission::AgentPromptAdmissionRequest,
+) -> anyhow::Result<mux::agent_admission::AgentAdmissionReceipt> {
+    use mux::agent_admission::{
+        request_matches_admission, AgentAdmissionCapture, AgentAdmissionReceipt,
+        AgentAdmissionStatus, OneWayAdmissionClaim,
+    };
+    use mux::agent_request::AgentRequestState;
+
+    let (request_store, admission_store) = {
+        let mux = Mux::get();
+        let service = mux.agent_service();
+        (service.request_store(), service.admission_store())
+    };
+
+    if request.return_final {
+        let store = request_store.clone();
+        let request_id = request.request_id.clone();
+        let existing =
+            match promise::spawn::spawn_into_new_thread(move || store.get(&request_id)).await {
+                Ok(existing) => existing,
+                Err(err) => {
+                    return Ok(AgentAdmissionReceipt::rejected(
+                        &request,
+                        AgentAdmissionStatus::InternalFailure,
+                        format!("could not read durable admission state: {err:#}"),
+                    ));
+                }
+            };
+        if let Some(existing) = existing {
+            if !request_matches_admission(&existing, &request) {
+                return Ok(AgentAdmissionReceipt::rejected(
+                    &request,
+                    AgentAdmissionStatus::Invalid,
+                    "request_id was already used for different input",
+                ));
+            }
+            return Ok(
+                if matches!(
+                    existing.state,
+                    AgentRequestState::Registered
+                        | AgentRequestState::DeliveryFailed
+                        | AgentRequestState::Indeterminate
+                ) {
+                    AgentAdmissionReceipt::indeterminate(
+                        &request,
+                        Some(existing),
+                        "the prior return-final admission has indeterminate delivery",
+                    )
+                } else {
+                    AgentAdmissionReceipt::accepted(&request, Some(existing))
+                },
+            );
+        }
+    } else {
+        let store = admission_store.clone();
+        let claim_request = request.clone();
+        let claim = match promise::spawn::spawn_into_new_thread(move || store.claim(&claim_request))
+            .await
+        {
+            Ok(claim) => claim,
+            Err(err) => {
+                return Ok(AgentAdmissionReceipt::rejected(
+                    &request,
+                    AgentAdmissionStatus::InternalFailure,
+                    format!("could not durably claim prompt admission: {err:#}"),
+                ));
+            }
+        };
+        match claim {
+            OneWayAdmissionClaim::New => {}
+            OneWayAdmissionClaim::Existing(receipt) => return Ok(receipt),
+            OneWayAdmissionClaim::Conflict => {
+                return Ok(AgentAdmissionReceipt::rejected(
+                    &request,
+                    AgentAdmissionStatus::Invalid,
+                    "request_id was already used for different input",
+                ));
+            }
+        }
+    }
+
+    let candidate = match Mux::get()
+        .agent_service()
+        .capture_admission(request.clone())
+    {
+        AgentAdmissionCapture::Candidate(candidate) => candidate,
+        AgentAdmissionCapture::Rejected(receipt) => {
+            if let Err(err) =
+                release_unwritten_claim(&request, request_store.clone(), admission_store.clone())
+                    .await
+            {
+                return Ok(AgentAdmissionReceipt::rejected(
+                    &request,
+                    AgentAdmissionStatus::InternalFailure,
+                    format!("prompt was not written, but its admission claim could not be released: {err:#}"),
+                ));
+            }
+            return Ok(receipt);
+        }
+    };
+    let candidate = match promise::spawn::spawn_into_new_thread(move || Ok(candidate.refresh()))
+        .await
+    {
+        Ok(candidate) => candidate,
+        Err(err) => {
+            let _ =
+                release_unwritten_claim(&request, request_store.clone(), admission_store.clone())
+                    .await;
+            return Ok(AgentAdmissionReceipt::rejected(
+                &request,
+                AgentAdmissionStatus::InternalFailure,
+                format!("could not refresh target observation: {err:#}"),
+            ));
+        }
+    };
+
+    if let Some(receipt) = Mux::get().agent_service().validate_admission(&candidate) {
+        if let Err(err) =
+            release_unwritten_claim(&request, request_store.clone(), admission_store.clone()).await
+        {
+            return Ok(AgentAdmissionReceipt::rejected(
+                &request,
+                AgentAdmissionStatus::InternalFailure,
+                format!("prompt was not written, but its admission claim could not be released: {err:#}"),
+            ));
+        }
+        return Ok(receipt);
+    }
+
+    let mut return_request = match candidate.proposed_return_request() {
+        Ok(request) => request,
+        Err(err) => {
+            if let Err(cleanup_err) =
+                release_unwritten_claim(&request, request_store.clone(), admission_store.clone())
+                    .await
+            {
+                return Ok(AgentAdmissionReceipt::rejected(
+                    &request,
+                    AgentAdmissionStatus::InternalFailure,
+                    format!("prompt was not written, but its admission claim could not be released after observer failure: {cleanup_err:#}"),
+                ));
+            }
+            return Ok(AgentAdmissionReceipt::rejected(
+                &request,
+                AgentAdmissionStatus::ObserverFailure,
+                format!("observer could not prepare return-final admission: {err:#}"),
+            ));
+        }
+    };
+    if let Some(proposed) = return_request.as_ref() {
+        let store = request_store.clone();
+        let proposed = proposed.clone();
+        let (stored, created) =
+            match promise::spawn::spawn_into_new_thread(move || store.create(&proposed)).await {
+                Ok(result) => result,
+                Err(err) => {
+                    return Ok(AgentAdmissionReceipt::rejected(
+                        &request,
+                        AgentAdmissionStatus::InternalFailure,
+                        format!("could not durably prepare return-final admission: {err:#}"),
+                    ));
+                }
+            };
+        if !created {
+            return Ok(if request_matches_admission(&stored, &request) {
+                AgentAdmissionReceipt::accepted(&request, Some(stored))
+            } else {
+                AgentAdmissionReceipt::rejected(
+                    &request,
+                    AgentAdmissionStatus::Invalid,
+                    "request_id was already used for different input",
+                )
+            });
+        }
+        return_request = Some(stored);
+    }
+
+    if let Some(receipt) = Mux::get().agent_service().validate_admission(&candidate) {
+        if let Err(err) =
+            release_unwritten_claim(&request, request_store.clone(), admission_store.clone()).await
+        {
+            return Ok(AgentAdmissionReceipt::rejected(
+                &request,
+                AgentAdmissionStatus::InternalFailure,
+                format!("prompt was not written, but its admission claim could not be released: {err:#}"),
+            ));
+        }
+        return Ok(receipt);
+    }
+
+    let delivery = Mux::get().agent_service().write_admitted_prompt(&candidate);
+    match delivery {
+        Ok(()) => {
+            if let Some(mut nested) = return_request {
+                nested.mark_submitted();
+                let store = request_store;
+                let save_result = promise::spawn::spawn_into_new_thread(move || {
+                    store.save(&mut nested)?;
+                    Ok(nested)
+                })
+                .await;
+                match save_result {
+                    Ok(saved) => Ok(AgentAdmissionReceipt::accepted(&request, Some(saved))),
+                    Err(err) => Ok(AgentAdmissionReceipt::indeterminate(
+                        &request,
+                        None,
+                        format!(
+                            "prompt was written but its receipt could not be persisted: {err:#}"
+                        ),
+                    )),
+                }
+            } else {
+                let receipt = AgentAdmissionReceipt::accepted(&request, None);
+                let store = admission_store;
+                let stored_receipt = receipt.clone();
+                match promise::spawn::spawn_into_new_thread(move || store.finish(&stored_receipt))
+                    .await
+                {
+                    Ok(()) => Ok(receipt),
+                    Err(err) => Ok(AgentAdmissionReceipt::indeterminate(
+                        &request,
+                        None,
+                        format!(
+                            "prompt was written but its receipt could not be persisted: {err:#}"
+                        ),
+                    )),
+                }
+            }
+        }
+        Err(err) => {
+            let detail = format!("prompt delivery may have been partial: {err:#}");
+            if let Some(nested) = return_request {
+                let mut nested =
+                    mux::agent_admission::reconcile_written_request_after_failure(nested, &detail);
+                let store = request_store;
+                let nested_for_receipt = nested.clone();
+                let _ =
+                    promise::spawn::spawn_into_new_thread(move || store.save(&mut nested)).await;
+                Ok(AgentAdmissionReceipt::indeterminate(
+                    &request,
+                    Some(nested_for_receipt),
+                    detail,
+                ))
+            } else {
+                let receipt = AgentAdmissionReceipt::indeterminate(&request, None, detail);
+                let store = admission_store;
+                let stored_receipt = receipt.clone();
+                let _ =
+                    promise::spawn::spawn_into_new_thread(move || store.finish(&stored_receipt))
+                        .await;
+                Ok(receipt)
+            }
+        }
+    }
+}
+
+async fn release_unwritten_claim(
+    request: &mux::agent_admission::AgentPromptAdmissionRequest,
+    request_store: mux::agent_request::AgentRequestStore,
+    admission_store: mux::agent_admission::AgentAdmissionStore,
+) -> anyhow::Result<()> {
+    if request.return_final {
+        let request_id = request.request_id.clone();
+        promise::spawn::spawn_into_new_thread(move || request_store.delete_registered(&request_id))
+            .await
+    } else {
+        let request_id = request.request_id.clone();
+        promise::spawn::spawn_into_new_thread(move || {
+            admission_store.release_unwritten(&request_id)
+        })
+        .await
     }
 }
 
@@ -2947,6 +3294,28 @@ mod test {
         assert_eq!(listed.agents[0].pane_id, layout.left_pane_id);
         assert_eq!(listed.agents[0].tab_id, layout.left_tab_id);
         assert_eq!(listed.agents[0].window_id, layout.window_id);
+
+        let capabilities = match handler.request(
+            &executor,
+            Pdu::GetAgentApiCapabilities(GetAgentApiCapabilities {}),
+        ) {
+            Pdu::GetAgentApiCapabilitiesResponse(response) => response.capabilities,
+            other => panic!("expected GetAgentApiCapabilitiesResponse, got {:?}", other),
+        };
+        assert_eq!(capabilities.schema, mux::agent_admission::AGENT_API_SCHEMA);
+        assert!(capabilities
+            .capabilities
+            .contains(&"prompt_admission.v1".to_string()));
+
+        let catalog =
+            match handler.request(&executor, Pdu::ListAgentApiCatalog(ListAgentApiCatalog {})) {
+                Pdu::ListAgentApiCatalogResponse(response) => response.catalog,
+                other => panic!("expected ListAgentApiCatalogResponse, got {:?}", other),
+            };
+        assert_eq!(catalog.schema, mux::agent_admission::AGENT_API_SCHEMA);
+        assert_eq!(catalog.agents.len(), 1);
+        assert_eq!(catalog.agents[0].agent_id, "agent-alpha");
+        assert_eq!(catalog.agents[0].incarnation_id, None);
 
         let output = match handler.request(
             &executor,

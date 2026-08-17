@@ -14,6 +14,9 @@
 use anyhow::{bail, Context as _, Error};
 use config::keyassignment::{PaneDirection, ScrollbackEraseMode};
 use mux::agent::{AgentMetadata, AgentSnapshot, AgentTabBadgeState};
+use mux::agent_admission::{
+    AgentAdmissionReceipt, AgentApiCapabilities, AgentCatalog, AgentPromptAdmissionRequest,
+};
 use mux::agent_request::AgentRequest;
 use mux::agent_service::AgentOutputPage;
 use mux::client::{ClientId, ClientInfo, ClientViewId, ClientWindowViewState};
@@ -552,6 +555,12 @@ pdu! {
     CancelAgentRequestResponse: 81,
     ReadAgentOutput: 82,
     ReadAgentOutputResponse: 83,
+    GetAgentApiCapabilities: 84,
+    GetAgentApiCapabilitiesResponse: 85,
+    ListAgentApiCatalog: 86,
+    ListAgentApiCatalogResponse: 87,
+    AdmitAgentPrompt: 88,
+    AdmitAgentPromptResponse: 89,
 }
 
 impl Pdu {
@@ -572,6 +581,7 @@ impl Pdu {
             | Self::SetAgentMetadata(_)
             | Self::ClearAgentMetadata(_)
             | Self::SubmitAgentRequest(_)
+            | Self::AdmitAgentPrompt(_)
             | Self::CancelAgentRequest(_) => true,
             _ => false,
         }
@@ -780,6 +790,32 @@ pub struct ReadAgentOutput {
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct ReadAgentOutputResponse {
     pub page: AgentOutputPage,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct GetAgentApiCapabilities {}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct GetAgentApiCapabilitiesResponse {
+    pub capabilities: AgentApiCapabilities,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ListAgentApiCatalog {}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ListAgentApiCatalogResponse {
+    pub catalog: AgentCatalog,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct AdmitAgentPrompt {
+    pub request: AgentPromptAdmissionRequest,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct AdmitAgentPromptResponse {
+    pub receipt: AgentAdmissionReceipt,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
@@ -1711,6 +1747,43 @@ mod test {
             assert_eq!(
                 Pdu::decode(encoded.as_slice()).unwrap(),
                 DecodedPdu { serial: 42, pdu }
+            );
+        }
+    }
+
+    #[test]
+    fn agent_api_pdus_round_trip() {
+        let request = mux::agent_admission::AgentPromptAdmissionRequest {
+            request_id: "request-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            incarnation_id: "incarnation-1".to_string(),
+            prompt: "work".to_string(),
+            paste: true,
+            return_final: false,
+            timeout_ms: 0,
+        };
+        for pdu in [
+            Pdu::GetAgentApiCapabilities(GetAgentApiCapabilities {}),
+            Pdu::GetAgentApiCapabilitiesResponse(GetAgentApiCapabilitiesResponse {
+                capabilities: mux::agent_admission::AgentApiCapabilities::current(),
+            }),
+            Pdu::ListAgentApiCatalog(ListAgentApiCatalog {}),
+            Pdu::AdmitAgentPrompt(AdmitAgentPrompt {
+                request: request.clone(),
+            }),
+            Pdu::AdmitAgentPromptResponse(AdmitAgentPromptResponse {
+                receipt: mux::agent_admission::AgentAdmissionReceipt::rejected(
+                    &request,
+                    mux::agent_admission::AgentAdmissionStatus::Busy,
+                    "busy",
+                ),
+            }),
+        ] {
+            let mut encoded = Vec::new();
+            pdu.encode(&mut encoded, 43).unwrap();
+            assert_eq!(
+                Pdu::decode(encoded.as_slice()).unwrap(),
+                DecodedPdu { serial: 43, pdu }
             );
         }
     }

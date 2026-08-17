@@ -241,6 +241,12 @@ pub trait Pane: Downcast + Send + Sync {
         self.writer().write_all(text.as_bytes())?;
         Ok(())
     }
+    fn supports_atomic_prompt_submission(&self) -> bool {
+        false
+    }
+    fn send_text_and_submit(&self, _text: &str, _paste: bool) -> anyhow::Result<()> {
+        anyhow::bail!("this pane does not support atomic prompt submission")
+    }
     fn reader(&self) -> anyhow::Result<Option<Box<dyn std::io::Read + Send>>>;
     fn writer(&self) -> MappedMutexGuard<'_, dyn std::io::Write>;
     fn resize(&self, size: TerminalSize) -> anyhow::Result<()>;

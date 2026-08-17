@@ -2,8 +2,11 @@ use crate::agent::{
     codex_complete_tail_offset, read_codex_output_messages, AgentHarness, AgentOrigin,
     AgentSnapshot,
 };
-use crate::agent_request::AgentRequest;
-use crate::pane::PaneId;
+use crate::agent_admission::{
+    AgentAdmissionCandidate, AgentAdmissionCapture, AgentAdmissionReceipt, AgentAdmissionStore,
+    AgentApiCapabilities, AgentCatalog, AgentPromptAdmissionRequest,
+};
+use crate::agent_request::{AgentRequest, AgentRequestStore};
 use crate::Mux;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -125,16 +128,35 @@ impl<'a> AgentService<'a> {
         self.mux.list_agents_cached()
     }
 
-    pub fn submit_request(
+    pub fn capabilities(&self) -> AgentApiCapabilities {
+        self.mux.agent_api_capabilities()
+    }
+
+    pub fn catalog(&self) -> AgentCatalog {
+        self.mux.agent_api_catalog()
+    }
+
+    pub fn capture_admission(&self, request: AgentPromptAdmissionRequest) -> AgentAdmissionCapture {
+        self.mux.capture_agent_admission(request)
+    }
+
+    pub fn validate_admission(
         &self,
-        pane_id: PaneId,
-        request_id: String,
-        prompt: String,
-        paste: bool,
-        timeout_ms: u64,
-    ) -> anyhow::Result<AgentRequest> {
-        self.mux
-            .submit_agent_request(pane_id, request_id, prompt, paste, timeout_ms)
+        candidate: &AgentAdmissionCandidate,
+    ) -> Option<AgentAdmissionReceipt> {
+        self.mux.validate_agent_admission(candidate)
+    }
+
+    pub fn write_admitted_prompt(&self, candidate: &AgentAdmissionCandidate) -> anyhow::Result<()> {
+        self.mux.write_admitted_prompt(candidate)
+    }
+
+    pub fn request_store(&self) -> AgentRequestStore {
+        self.mux.agent_request_store()
+    }
+
+    pub fn admission_store(&self) -> AgentAdmissionStore {
+        self.mux.agent_admission_store()
     }
 
     pub fn get_request(&self, request_id: &str) -> anyhow::Result<Option<AgentRequest>> {

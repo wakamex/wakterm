@@ -821,6 +821,21 @@ impl TerminalState {
     /// De-fang the text by removing any embedded bracketed paste
     /// sequence that may be present.
     pub fn send_paste(&mut self, text: &str) -> Result<(), Error> {
+        let buf = self.paste_bytes(text);
+        self.writer.write_all(buf.as_bytes())?;
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    pub fn send_paste_and_submit(&mut self, text: &str) -> Result<(), Error> {
+        let mut buf = self.paste_bytes(text);
+        buf.push('\r');
+        self.writer.write_all(buf.as_bytes())?;
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    fn paste_bytes(&self, text: &str) -> String {
         let mut buf = String::new();
         if self.bracketed_paste {
             buf.push_str("\x1b[200~");
@@ -839,10 +854,7 @@ impl TerminalState {
         if self.bracketed_paste {
             buf.push_str("\x1b[201~");
         }
-
-        self.writer.write_all(buf.as_bytes())?;
-        self.writer.flush()?;
-        Ok(())
+        buf
     }
 
     /// Informs the terminal that the viewport of the window has resized to the
