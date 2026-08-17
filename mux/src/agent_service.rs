@@ -6,6 +6,7 @@ use crate::agent_admission::{
     AgentAdmissionCandidate, AgentAdmissionCapture, AgentAdmissionReceipt, AgentAdmissionStore,
     AgentApiCapabilities, AgentCatalog, AgentPromptAdmissionRequest,
 };
+use crate::agent_event::AgentEventStore;
 use crate::agent_request::{AgentRequest, AgentRequestStore};
 use crate::Mux;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -157,6 +158,10 @@ impl<'a> AgentService<'a> {
 
     pub fn admission_store(&self) -> AgentAdmissionStore {
         self.mux.agent_admission_store()
+    }
+
+    pub fn event_store(&self) -> AgentEventStore {
+        self.mux.agent_event_store.clone()
     }
 
     pub fn get_request(&self, request_id: &str) -> anyhow::Result<Option<AgentRequest>> {

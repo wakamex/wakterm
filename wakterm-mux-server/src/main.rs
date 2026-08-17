@@ -231,6 +231,9 @@ fn run() -> anyhow::Result<()> {
 
     let domain: Arc<dyn Domain> = Arc::new(LocalDomain::new("local")?);
     let mux = Arc::new(mux::Mux::new(Some(domain.clone())));
+    if let Err(err) = mux.start_agent_event_runtime_epoch() {
+        log::error!("durable Agent API event stream is unavailable: {err:#}");
+    }
     Mux::set_mux(&mux);
 
     let executor = promise::spawn::SimpleExecutor::new();

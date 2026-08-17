@@ -31,9 +31,20 @@ impl AgentApiCapabilities {
                 "catalog.v1".to_string(),
                 "prompt_admission.v1".to_string(),
                 "return_request_terminal_stream.v1".to_string(),
+                "event_stream.v1".to_string(),
                 "codex_output_shadow.experimental.v1".to_string(),
             ],
         }
+    }
+
+    pub fn runtime(event_stream_live: bool) -> Self {
+        let mut capabilities = Self::current();
+        if !event_stream_live {
+            capabilities
+                .capabilities
+                .retain(|capability| capability != "event_stream.v1");
+        }
+        capabilities
     }
 }
 
@@ -55,6 +66,7 @@ pub struct AgentCatalogEntry {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentCatalog {
     pub schema: String,
+    pub as_of_event_sequence: u64,
     pub agents: Vec<AgentCatalogEntry>,
 }
 
@@ -245,10 +257,14 @@ pub fn request_matches_admission(
 
 impl Mux {
     pub(crate) fn agent_api_capabilities(&self) -> AgentApiCapabilities {
-        AgentApiCapabilities::current()
+        AgentApiCapabilities::runtime(self.agent_event_store.is_live())
     }
 
     pub(crate) fn agent_api_catalog(&self) -> AgentCatalog {
+        // This lower-bound cursor is sampled before the live mux snapshot. If
+        // an observation commits concurrently, a consumer may replay an
+        // already reflected lifecycle change, but it cannot miss that change.
+        let as_of_event_sequence = self.agent_event_store.latest_sequence();
         let agents = self
             .list_agents_cached()
             .into_iter()
@@ -257,6 +273,7 @@ impl Mux {
             .collect();
         AgentCatalog {
             schema: AGENT_API_SCHEMA.to_string(),
+            as_of_event_sequence,
             agents,
         }
     }
@@ -748,15 +765,19 @@ mod tests {
     }
 
     #[test]
-    fn capability_probe_does_not_claim_a_durable_general_event_stream() {
+    fn capability_probe_claims_the_implemented_durable_event_stream() {
         let capabilities = AgentApiCapabilities::current();
         assert!(capabilities
             .capabilities
             .contains(&"prompt_admission.v1".to_string()));
-        assert!(!capabilities
+        assert!(capabilities
             .capabilities
             .iter()
-            .any(|capability| capability.starts_with("event_stream.")));
+            .any(|capability| capability == "event_stream.v1"));
+        assert!(!AgentApiCapabilities::runtime(false)
+            .capabilities
+            .iter()
+            .any(|capability| capability == "event_stream.v1"));
     }
 
     #[test]
@@ -810,13 +831,13 @@ mod tests {
         let current: AgentApiCapabilities =
             serde_json::from_value(fixtures["current_capabilities"].clone()).unwrap();
         assert_eq!(current, AgentApiCapabilities::current());
-        assert!(!current
+        assert!(current
             .capabilities
             .iter()
             .any(|capability| capability == "event_stream.v1"));
         assert_eq!(
             fixtures["event_stream_capabilities"]["availability"],
-            "fixture_only"
+            "live"
         );
         assert!(fixtures["event_stream_capabilities"]["capabilities"]
             .as_array()
@@ -825,6 +846,7 @@ mod tests {
             .any(|capability| capability == "event_stream.v1"));
 
         let catalog: AgentCatalog = serde_json::from_value(fixtures["catalog"].clone()).unwrap();
+        assert_eq!(catalog.as_of_event_sequence, 100);
         assert_eq!(catalog.agents.len(), 2);
         assert_eq!(catalog.agents[0].pane_id, 9);
         assert_eq!(catalog.agents[1].pane_id, 12);
@@ -867,7 +889,7 @@ mod tests {
         }
 
         let page = &fixtures["event_page"];
-        assert_eq!(page["availability"], "fixture_only");
+        assert_eq!(page["availability"], "live_example");
         let events = page["events"].as_array().unwrap();
         let sequences = events
             .iter()

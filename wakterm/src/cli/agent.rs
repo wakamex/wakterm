@@ -72,6 +72,9 @@ enum AgentSubCommand {
     )]
     Output(OutputAgentCommand),
 
+    #[command(name = "events", about = "read durable normalized Agent API events")]
+    Events(AgentEventsCommand),
+
     #[command(
         name = "capabilities",
         about = "print the versioned Wakterm Agent API capabilities"
@@ -113,6 +116,7 @@ impl AgentCommand {
             AgentSubCommand::Watch(cmd) => cmd.run(client).await,
             AgentSubCommand::Inspect(cmd) => cmd.run(client).await,
             AgentSubCommand::Output(cmd) => cmd.run(client).await,
+            AgentSubCommand::Events(cmd) => cmd.run(client).await,
             AgentSubCommand::Capabilities(cmd) => cmd.run(client).await,
             AgentSubCommand::Catalog(cmd) => cmd.run(client).await,
             AgentSubCommand::Admit(cmd) => cmd.run(client).await,
@@ -1280,6 +1284,29 @@ impl OutputAgentCommand {
             .read_agent_output(codec::ReadAgentOutput {
                 agent_id: agent.metadata.agent_id.clone(),
                 cursor: self.cursor.clone(),
+                limit: self.limit,
+            })
+            .await?;
+        write_json(&response.page)
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
+pub struct AgentEventsCommand {
+    /// Return events strictly after this durable global sequence
+    #[arg(long = "after", default_value_t = 0)]
+    after_sequence: u64,
+
+    /// Maximum events to return
+    #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=1000))]
+    limit: u32,
+}
+
+impl AgentEventsCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        let response = client
+            .read_agent_events(codec::ReadAgentEvents {
+                after_sequence: self.after_sequence,
                 limit: self.limit,
             })
             .await?;

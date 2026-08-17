@@ -692,7 +692,19 @@ fn setup_mux(
     default_domain_name: Option<&str>,
     default_workspace_name: Option<&str>,
 ) -> anyhow::Result<Arc<Mux>> {
+    #[cfg(test)]
+    let mux = Arc::new(mux::Mux::new_with_agent_state_path(
+        Some(local_domain.clone()),
+        std::env::temp_dir().join(format!(
+            "wakterm-gui-test-agent-state-{}.sqlite3",
+            std::process::id()
+        )),
+    ));
+    #[cfg(not(test))]
     let mux = Arc::new(mux::Mux::new(Some(local_domain.clone())));
+    if let Err(err) = mux.start_agent_event_runtime_epoch() {
+        log::error!("durable Agent API event stream is unavailable: {err:#}");
+    }
     Mux::set_mux(&mux);
     let client_id = Arc::new(mux::client::ClientId::new());
     let view_id = Arc::new(mux::client::ClientViewId::persistent());

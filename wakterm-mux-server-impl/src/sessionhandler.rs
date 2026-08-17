@@ -838,6 +838,21 @@ impl SessionHandler {
                 })
                 .detach();
             }
+            Pdu::ReadAgentEvents(ReadAgentEvents {
+                after_sequence,
+                limit,
+            }) => {
+                spawn_into_main_thread(async move {
+                    let store = Mux::get().agent_service().event_store();
+                    let result = promise::spawn::spawn_into_new_thread(move || {
+                        store.read_page(after_sequence, limit as usize)
+                    })
+                    .await
+                    .map(|page| Pdu::ReadAgentEventsResponse(ReadAgentEventsResponse { page }));
+                    send_response(result);
+                })
+                .detach();
+            }
             Pdu::ListPanes(ListPanes {}) => {
                 let client_id = self.client_id.clone();
                 spawn_into_main_thread(async move {
@@ -1615,6 +1630,7 @@ impl SessionHandler {
             | Pdu::ListAgentRequestEventsResponse { .. }
             | Pdu::CancelAgentRequestResponse { .. }
             | Pdu::ReadAgentOutputResponse { .. }
+            | Pdu::ReadAgentEventsResponse { .. }
             | Pdu::GetAgentApiCapabilitiesResponse { .. }
             | Pdu::ListAgentApiCatalogResponse { .. }
             | Pdu::AdmitAgentPromptResponse { .. }
@@ -2072,6 +2088,19 @@ mod test {
     use wakterm_term::color::ColorPalette;
     use wakterm_term::{KeyCode, KeyModifiers, MouseEvent, StableRowIndex, TerminalSize};
 
+    static TEST_AGENT_DB_ID: AtomicUsize = AtomicUsize::new(0);
+
+    fn test_mux() -> Arc<Mux> {
+        Arc::new(Mux::new_with_agent_state_path(
+            None,
+            std::env::temp_dir().join(format!(
+                "wakterm-sessionhandler-test-{}-{}.sqlite3",
+                std::process::id(),
+                TEST_AGENT_DB_ID.fetch_add(1, Ordering::Relaxed)
+            )),
+        ))
+    }
+
     struct TestPane {
         id: PaneId,
         size: Mutex<TerminalSize>,
@@ -2418,7 +2447,7 @@ mod test {
     fn tab_order_requests_are_atomic_strict_and_last_accepted_wins() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();
-        let mux = Arc::new(Mux::new(None));
+        let mux = test_mux();
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
         let layout = build_test_layout(&mux);
@@ -2649,7 +2678,7 @@ mod test {
     fn set_client_id_waits_for_client_registration_before_replying() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();
-        let mux = Arc::new(Mux::new(None));
+        let mux = test_mux();
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
 
@@ -2732,7 +2761,7 @@ mod test {
     fn render_scheduler_coalesces_until_prior_batch_is_written() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();
-        let mux = Arc::new(Mux::new(None));
+        let mux = test_mux();
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
 
@@ -2803,7 +2832,7 @@ mod test {
     fn ctrl_c_reaches_the_pty_while_render_output_is_stalled() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();
-        let mux = Arc::new(Mux::new(None));
+        let mux = test_mux();
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
 
@@ -2868,7 +2897,7 @@ mod test {
     fn set_client_active_tab_updates_only_requesting_view() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();
-        let mux = Arc::new(Mux::new(None));
+        let mux = test_mux();
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
 
@@ -2908,7 +2937,7 @@ mod test {
     fn set_focused_pane_updates_only_requesting_view() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();
-        let mux = Arc::new(Mux::new(None));
+        let mux = test_mux();
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
 
@@ -2972,7 +3001,7 @@ mod test {
     fn set_focused_pane_does_not_synthesize_server_pane_focus() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();
-        let mux = Arc::new(Mux::new(None));
+        let mux = test_mux();
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
 
@@ -3003,7 +3032,7 @@ mod test {
     fn list_panes_returns_requesting_clients_window_view_state() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();
-        let mux = Arc::new(Mux::new(None));
+        let mux = test_mux();
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
 
@@ -3087,7 +3116,7 @@ mod test {
     fn list_panes_decorates_titles_for_tabs_waiting_on_user() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();
-        let mux = Arc::new(Mux::new(None));
+        let mux = test_mux();
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
 
@@ -3148,7 +3177,7 @@ mod test {
     fn list_panes_does_not_detect_agents_synchronously() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();
-        let mux = Arc::new(Mux::new(None));
+        let mux = test_mux();
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
 
@@ -3189,7 +3218,7 @@ mod test {
     fn set_client_active_tab_rejects_invalid_targets_cleanly() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();
-        let mux = Arc::new(Mux::new(None));
+        let mux = test_mux();
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
 
@@ -3237,7 +3266,7 @@ mod test {
     fn get_client_list_reports_bootstrapped_workspace_and_focus() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();
-        let mux = Arc::new(Mux::new(None));
+        let mux = test_mux();
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
 
@@ -3263,7 +3292,7 @@ mod test {
     fn set_list_and_clear_agent_metadata_round_trip() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();
-        let mux = Arc::new(Mux::new(None));
+        let mux = test_mux();
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
 
@@ -3313,6 +3342,19 @@ mod test {
         assert_eq!(catalog.agents[0].agent_id, "agent-alpha");
         assert_eq!(catalog.agents[0].pane_id, layout.left_pane_id as u64);
         assert_eq!(catalog.agents[0].incarnation_id, None);
+
+        let events = match handler.request(
+            &executor,
+            Pdu::ReadAgentEvents(ReadAgentEvents {
+                after_sequence: catalog.as_of_event_sequence,
+                limit: 100,
+            }),
+        ) {
+            Pdu::ReadAgentEventsResponse(response) => response.page,
+            other => panic!("expected ReadAgentEventsResponse, got {:?}", other),
+        };
+        assert_eq!(events.schema, mux::agent_event::AGENT_EVENT_SCHEMA);
+        assert_eq!(events.status, mux::agent_event::AgentEventStatus::Ok);
 
         let output = match handler.request(
             &executor,
@@ -3377,7 +3419,7 @@ mod test {
     fn set_agent_metadata_rejects_invalid_pane() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();
-        let mux = Arc::new(Mux::new(None));
+        let mux = test_mux();
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
 

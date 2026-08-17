@@ -17,6 +17,7 @@ use mux::agent::{AgentMetadata, AgentSnapshot, AgentTabBadgeState};
 use mux::agent_admission::{
     AgentAdmissionReceipt, AgentApiCapabilities, AgentCatalog, AgentPromptAdmissionRequest,
 };
+use mux::agent_event::AgentEventPage;
 use mux::agent_request::AgentRequest;
 use mux::agent_service::AgentOutputPage;
 use mux::client::{ClientId, ClientInfo, ClientViewId, ClientWindowViewState};
@@ -468,7 +469,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 61;
+pub const CODEC_VERSION: usize = 62;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -561,6 +562,8 @@ pdu! {
     ListAgentApiCatalogResponse: 87,
     AdmitAgentPrompt: 88,
     AdmitAgentPromptResponse: 89,
+    ReadAgentEvents: 90,
+    ReadAgentEventsResponse: 91,
 }
 
 impl Pdu {
@@ -816,6 +819,17 @@ pub struct AdmitAgentPrompt {
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct AdmitAgentPromptResponse {
     pub receipt: AgentAdmissionReceipt,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ReadAgentEvents {
+    pub after_sequence: u64,
+    pub limit: u32,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ReadAgentEventsResponse {
+    pub page: AgentEventPage,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
@@ -1777,6 +1791,22 @@ mod test {
                     mux::agent_admission::AgentAdmissionStatus::Busy,
                     "busy",
                 ),
+            }),
+            Pdu::ReadAgentEvents(ReadAgentEvents {
+                after_sequence: 12,
+                limit: 50,
+            }),
+            Pdu::ReadAgentEventsResponse(ReadAgentEventsResponse {
+                page: mux::agent_event::AgentEventPage {
+                    schema: mux::agent_event::AGENT_EVENT_SCHEMA.to_string(),
+                    status: mux::agent_event::AgentEventStatus::Ok,
+                    requested_after_sequence: 12,
+                    oldest_available_sequence: 1,
+                    latest_sequence: 12,
+                    next_after_sequence: Some(12),
+                    events: vec![],
+                    recovery: None,
+                },
             }),
         ] {
             let mut encoded = Vec::new();

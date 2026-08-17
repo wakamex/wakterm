@@ -8,22 +8,24 @@
       "catalog.v1",
       "prompt_admission.v1",
       "return_request_terminal_stream.v1",
+      "event_stream.v1",
       "codex_output_shadow.experimental.v1"
     ]
   },
   "event_stream_capabilities": {
-    "availability": "fixture_only",
+    "availability": "live",
     "schema": "wakterm.agent-api.v1",
     "api_major": 1,
     "capabilities": [
       "catalog.v1",
       "prompt_admission.v1",
       "return_request_terminal_stream.v1",
-      "event_stream.v1"
+      "event_stream.v1",
+      "codex_output_shadow.experimental.v1"
     ]
   },
   "catalog": {
-    "availability": "fixture_only_until_event_stream_v1",
+    "availability": "live",
     "schema": "wakterm.agent-api.v1",
     "as_of_event_sequence": 100,
     "agents": [
@@ -114,7 +116,7 @@
     }
   },
   "event_page": {
-    "availability": "fixture_only",
+    "availability": "live_example",
     "schema": "wakterm.agent-events.v1",
     "status": "ok",
     "requested_after_sequence": 100,
@@ -195,7 +197,7 @@
     ]
   },
   "lifecycle_page": {
-    "availability": "fixture_only",
+    "availability": "live_example",
     "schema": "wakterm.agent-events.v1",
     "status": "ok",
     "requested_after_sequence": 107,
@@ -216,7 +218,7 @@
     ]
   },
   "cursor_too_old": {
-    "availability": "fixture_only",
+    "availability": "live_example",
     "schema": "wakterm.agent-events.v1",
     "status": "cursor_too_old",
     "requested_after_sequence": 12,
@@ -228,7 +230,7 @@
     }
   },
   "retention": {
-    "availability": "fixture_only",
+    "availability": "live",
     "mode": "bounded",
     "oldest_available_sequence": 90,
     "latest_sequence": 108,

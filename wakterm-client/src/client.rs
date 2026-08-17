@@ -1735,6 +1735,7 @@ impl Client {
         CancelAgentRequestResponse
     );
     rpc!(read_agent_output, ReadAgentOutput, ReadAgentOutputResponse);
+    rpc!(read_agent_events, ReadAgentEvents, ReadAgentEventsResponse);
     rpc!(
         get_agent_api_capabilities,
         GetAgentApiCapabilities,

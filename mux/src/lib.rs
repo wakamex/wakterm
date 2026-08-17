@@ -4,6 +4,7 @@ use crate::agent::{
     refresh_runtime_from_harness, AgentMetadata, AgentOrigin, AgentRuntimeSnapshot, AgentSnapshot,
     AgentTabBadgeState,
 };
+use crate::agent_event::AgentEventStore;
 use crate::agent_request::{AgentRequest, AgentRequestState, AgentRequestStore};
 use crate::client::{ClientId, ClientInfo, ClientViewId, ClientViewState, ClientWindowViewState};
 use crate::pane::{CachePolicy, Pane, PaneId};
@@ -46,6 +47,7 @@ use winapi::um::winsock2::{SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
 pub mod activity;
 pub mod agent;
 pub mod agent_admission;
+pub mod agent_event;
 pub mod agent_request;
 pub mod agent_service;
 pub mod client;
@@ -122,6 +124,7 @@ pub enum MuxNotification {
 }
 
 static SUB_ID: AtomicUsize = AtomicUsize::new(0);
+static MUX_INSTANCE_ID: AtomicUsize = AtomicUsize::new(1);
 
 /// Per-pane action buffer byte sizes, updated by parse_buffered_data reader threads.
 /// Tracks cumulative bytes parsed since last flush — grows unbounded when
@@ -131,6 +134,7 @@ static ACTION_BUFFER_SIZES: std::sync::LazyLock<RwLock<HashMap<PaneId, Arc<Atomi
     std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 
 pub struct Mux {
+    instance_id: usize,
     tabs: RwLock<HashMap<TabId, Arc<Tab>>>,
     panes: RwLock<HashMap<PaneId, Arc<dyn Pane>>>,
     mirrored_agent_harness_by_pane: RwLock<HashMap<PaneId, crate::agent::AgentHarness>>,
@@ -142,6 +146,7 @@ pub struct Mux {
     agent_observer_state_by_pane: RwLock<HashMap<PaneId, AgentObserverState>>,
     agent_request_store: AgentRequestStore,
     agent_admission_store: agent_admission::AgentAdmissionStore,
+    agent_event_store: AgentEventStore,
     agent_input_generation_by_pane: RwLock<HashMap<PaneId, u64>>,
     agent_attention_seen_by_view: RwLock<HashMap<ClientViewId, HashMap<PaneId, DateTime<Utc>>>>,
     windows: RwLock<HashMap<WindowId, Window>>,
@@ -156,7 +161,7 @@ pub struct Mux {
     identity: RwLock<Option<Arc<ClientId>>>,
     num_panes_by_workspace: RwLock<HashMap<String, usize>>,
     main_thread_id: std::thread::ThreadId,
-    agent_observer_tx: Sender<AgentObserverRequest>,
+    agent_observer_tx: Sender<AgentObserverCommand>,
     agent: Option<AgentProxy>,
 }
 
@@ -214,6 +219,21 @@ struct AgentObserverRequest {
     requested_at: Instant,
     metadata: AgentMetadata,
     runtime: AgentRuntimeSnapshot,
+    adopted: bool,
+    schedule_trailing_refresh: bool,
+}
+
+enum AgentObserverCommand {
+    Refresh(AgentObserverRequest),
+    Project {
+        metadata: AgentMetadata,
+        runtime: AgentRuntimeSnapshot,
+    },
+    Unavailable {
+        metadata: AgentMetadata,
+        observed_at: DateTime<Utc>,
+        reason: String,
+    },
 }
 
 struct AgentObserverUpdate {
@@ -222,6 +242,7 @@ struct AgentObserverUpdate {
     runtime: AgentRuntimeSnapshot,
     queue_delay: Duration,
     refresh_elapsed: Duration,
+    schedule_trailing_refresh: bool,
 }
 
 #[derive(Default)]
@@ -230,6 +251,7 @@ struct AgentObserverState {
     inflight_generation: Option<u64>,
     pending_request: Option<AgentObserverRequest>,
     last_requested_at: Option<DateTime<Utc>>,
+    trailing_refresh_scheduled: bool,
 }
 
 /// This function applies parsed actions to the pane and notifies any
@@ -509,50 +531,60 @@ fn read_from_pane_pty(
     dead.store(true, Ordering::Relaxed);
 }
 
-fn spawn_agent_observer_worker() -> Sender<AgentObserverRequest> {
+fn spawn_agent_observer_worker(event_store: AgentEventStore) -> Sender<AgentObserverCommand> {
     let (tx, rx) = mpsc::channel();
-    thread::spawn(move || run_agent_observer_worker(rx));
+    thread::spawn(move || run_agent_observer_worker(rx, event_store));
     tx
 }
 
-fn run_agent_observer_worker(rx: Receiver<AgentObserverRequest>) {
-    let mut pending = HashMap::<PaneId, AgentObserverRequest>::new();
-
-    loop {
-        let request = match rx.recv() {
-            Ok(request) => request,
-            Err(_) => return,
-        };
-        pending.insert(request.pane_id, request);
-
-        while let Ok(request) = rx.try_recv() {
-            pending.insert(request.pane_id, request);
-        }
-
-        for request in pending.drain().map(|(_, request)| request) {
-            counter!("mux.agent_observer.refresh.rate").increment(1);
-            let started = Instant::now();
-            let mut runtime = request.runtime;
-            refresh_runtime_from_harness(&mut runtime, &request.metadata);
-            let refresh_elapsed = started.elapsed();
-            let queue_delay = started.saturating_duration_since(request.requested_at);
-            histogram!("mux.agent_observer.refresh.latency").record(refresh_elapsed);
-            histogram!("mux.agent_observer.refresh.queue_delay").record(queue_delay);
-
-            let update = AgentObserverUpdate {
-                pane_id: request.pane_id,
-                generation: request.generation,
-                runtime,
-                queue_delay,
-                refresh_elapsed,
-            };
-
-            promise::spawn::spawn_into_main_thread(async move {
-                if let Some(mux) = Mux::try_get() {
-                    mux.apply_agent_observer_update(update);
+fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: AgentEventStore) {
+    while let Ok(command) = rx.recv() {
+        match command {
+            AgentObserverCommand::Refresh(request) => {
+                counter!("mux.agent_observer.refresh.rate").increment(1);
+                let started = Instant::now();
+                let mut runtime = request.runtime;
+                refresh_runtime_from_harness(&mut runtime, &request.metadata);
+                if request.adopted {
+                    if let Err(err) = event_store.observe_agent(&request.metadata, &runtime) {
+                        log::error!("failed to persist agent observation events: {err:#}");
+                    }
                 }
-            })
-            .detach();
+                let refresh_elapsed = started.elapsed();
+                let queue_delay = started.saturating_duration_since(request.requested_at);
+                histogram!("mux.agent_observer.refresh.latency").record(refresh_elapsed);
+                histogram!("mux.agent_observer.refresh.queue_delay").record(queue_delay);
+
+                let update = AgentObserverUpdate {
+                    pane_id: request.pane_id,
+                    generation: request.generation,
+                    runtime,
+                    queue_delay,
+                    refresh_elapsed,
+                    schedule_trailing_refresh: request.schedule_trailing_refresh,
+                };
+
+                promise::spawn::spawn_into_main_thread(async move {
+                    if let Some(mux) = Mux::try_get() {
+                        mux.apply_agent_observer_update(update);
+                    }
+                })
+                .detach();
+            }
+            AgentObserverCommand::Project { metadata, runtime } => {
+                if let Err(err) = event_store.observe_agent(&metadata, &runtime) {
+                    log::error!("failed to persist agent observation events: {err:#}");
+                }
+            }
+            AgentObserverCommand::Unavailable {
+                metadata,
+                observed_at,
+                reason,
+            } => {
+                if let Err(err) = event_store.record_unavailable(&metadata, observed_at, &reason) {
+                    log::error!("failed to persist unavailable agent event: {err:#}");
+                }
+            }
         }
     }
 }
@@ -626,6 +658,21 @@ impl std::ops::Deref for MuxWindowBuilder {
 
 impl Mux {
     pub fn new(default_domain: Option<Arc<dyn Domain>>) -> Self {
+        #[cfg(test)]
+        let agent_state_path = std::env::temp_dir().join(format!(
+            "wakterm-agent-test-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        #[cfg(not(test))]
+        let agent_state_path = config::DATA_DIR.join("agent-requests.sqlite3");
+        Self::new_with_agent_state_path(default_domain, agent_state_path)
+    }
+
+    #[doc(hidden)]
+    pub fn new_with_agent_state_path(
+        default_domain: Option<Arc<dyn Domain>>,
+        agent_state_path: std::path::PathBuf,
+    ) -> Self {
         let mut domains = HashMap::new();
         let mut domains_by_name = HashMap::new();
         if let Some(default_domain) = default_domain.as_ref() {
@@ -642,10 +689,11 @@ impl Mux {
         } else {
             None
         };
-        let agent_observer_tx = spawn_agent_observer_worker();
-        let agent_state_path = config::DATA_DIR.join("agent-requests.sqlite3");
+        let agent_event_store = AgentEventStore::new(agent_state_path.clone());
+        let agent_observer_tx = spawn_agent_observer_worker(agent_event_store.clone());
 
         Self {
+            instance_id: MUX_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
             tabs: RwLock::new(HashMap::new()),
             panes: RwLock::new(HashMap::new()),
             mirrored_agent_harness_by_pane: RwLock::new(HashMap::new()),
@@ -657,6 +705,7 @@ impl Mux {
             agent_observer_state_by_pane: RwLock::new(HashMap::new()),
             agent_request_store: AgentRequestStore::new(agent_state_path.clone()),
             agent_admission_store: agent_admission::AgentAdmissionStore::new(agent_state_path),
+            agent_event_store,
             agent_input_generation_by_pane: RwLock::new(HashMap::new()),
             agent_attention_seen_by_view: RwLock::new(HashMap::new()),
             windows: RwLock::new(HashMap::new()),
@@ -674,6 +723,13 @@ impl Mux {
             agent_observer_tx,
             agent,
         }
+    }
+
+    /// Begin one authoritative mux runtime epoch for durable agent lifecycle
+    /// projection. Call this once for a mux that will serve Agent API clients,
+    /// after construction and before accepting requests.
+    pub fn start_agent_event_runtime_epoch(&self) -> anyhow::Result<()> {
+        self.agent_event_store.start_runtime_epoch()
     }
 
     fn get_default_workspace(&self) -> String {
@@ -870,6 +926,17 @@ impl Mux {
                 |_| {},
             ),
         }
+        if matches!(initial_refresh, InitialAgentRefresh::Sync) {
+            if let (Some(metadata), Some(runtime)) = (
+                self.get_agent_metadata_for_pane(pane_id),
+                self.agent_runtime_by_pane.read().get(&pane_id).cloned(),
+            ) {
+                let _ = self.agent_observer_tx.send(AgentObserverCommand::Project {
+                    metadata: (*metadata).clone(),
+                    runtime,
+                });
+            }
+        }
         if let Some(tab_id) = tab_id {
             self.notify_tab_title_changed(tab_id);
         }
@@ -883,6 +950,13 @@ impl Mux {
             let mut metadata_by_pane = self.agent_metadata_by_pane.write();
             metadata_by_pane.remove(&pane_id)?
         };
+        let _ = self
+            .agent_observer_tx
+            .send(AgentObserverCommand::Unavailable {
+                metadata: (*metadata).clone(),
+                observed_at: Utc::now(),
+                reason: "metadata_cleared".to_string(),
+            });
         self.agent_panes_by_name.write().remove(&metadata.name);
         self.agent_runtime_by_pane.write().remove(&pane_id);
         self.agent_observer_state_by_pane.write().remove(&pane_id);
@@ -1164,6 +1238,7 @@ impl Mux {
             &metadata,
             &runtime,
             AgentRefreshPolicy::Throttled,
+            false,
         );
         finalize_runtime_snapshot(&mut runtime);
         runtime.status = derive_runtime_status(&runtime);
@@ -1297,7 +1372,11 @@ impl Mux {
     }
 
     fn dispatch_agent_observer_request(&self, request: AgentObserverRequest) {
-        if self.agent_observer_tx.send(request).is_err() {
+        if self
+            .agent_observer_tx
+            .send(AgentObserverCommand::Refresh(request))
+            .is_err()
+        {
             log::error!("agent observer worker is no longer available");
         }
     }
@@ -1316,12 +1395,20 @@ impl Mux {
         metadata: &AgentMetadata,
         runtime: &AgentRuntimeSnapshot,
         refresh_policy: AgentRefreshPolicy,
+        schedule_trailing_refresh: bool,
     ) {
         let now = Utc::now();
+        let adopted = !self.detected_agent_panes.read().contains(&pane_id);
+        let requires_lossless_observation = adopted
+            && metadata.adopted_pid.is_some()
+            && metadata.adopted_start_time.is_some()
+            && runtime.session_path.is_some();
         let request = {
             let mut observer_state_by_pane = self.agent_observer_state_by_pane.write();
             let observer_state = observer_state_by_pane.entry(pane_id).or_default();
-            if !Self::should_refresh_harness_runtime(observer_state, refresh_policy, now) {
+            if !requires_lossless_observation
+                && !Self::should_refresh_harness_runtime(observer_state, refresh_policy, now)
+            {
                 counter!("mux.agent_observer.refresh.skipped.rate").increment(1);
                 return;
             }
@@ -1334,6 +1421,9 @@ impl Mux {
                 requested_at: Instant::now(),
                 metadata: metadata.clone(),
                 runtime: runtime.clone(),
+                adopted,
+                schedule_trailing_refresh: schedule_trailing_refresh
+                    && requires_lossless_observation,
             };
 
             if observer_state.inflight_generation.is_some() {
@@ -1354,6 +1444,7 @@ impl Mux {
     }
 
     fn apply_agent_observer_update(&self, update: AgentObserverUpdate) {
+        let schedule_trailing_refresh = update.schedule_trailing_refresh;
         let next_request = {
             let mut observer_state_by_pane = self.agent_observer_state_by_pane.write();
             let Some(observer_state) = observer_state_by_pane.get_mut(&update.pane_id) else {
@@ -1427,6 +1518,10 @@ impl Mux {
         histogram!("mux.agent_observer.refresh.apply.latency").record(update.refresh_elapsed);
         counter!("mux.agent_observer.refresh.applied.rate").increment(1);
 
+        if schedule_trailing_refresh {
+            self.schedule_trailing_agent_observer_refresh(update.pane_id);
+        }
+
         if Self::agent_auto_adopt_on_confirmed_session_match()
             && self.get_agent_metadata_for_pane(update.pane_id).is_none()
             && self.detected_agent_panes.read().contains(&update.pane_id)
@@ -1443,6 +1538,52 @@ impl Mux {
         if before_title != after_title {
             self.notify_tab_title_changed(tab_id);
         }
+    }
+
+    fn schedule_trailing_agent_observer_refresh(&self, pane_id: PaneId) {
+        let should_schedule = {
+            let mut states = self.agent_observer_state_by_pane.write();
+            let Some(state) = states.get_mut(&pane_id) else {
+                return;
+            };
+            if state.trailing_refresh_scheduled {
+                false
+            } else {
+                state.trailing_refresh_scheduled = true;
+                true
+            }
+        };
+        if !should_schedule {
+            return;
+        }
+        let mux_instance_id = self.instance_id;
+
+        thread::spawn(move || {
+            thread::sleep(AGENT_HARNESS_REFRESH_THROTTLE);
+            promise::spawn::spawn_into_main_thread(async move {
+                let Some(mux) = Mux::try_get() else {
+                    return;
+                };
+                if mux.instance_id != mux_instance_id {
+                    return;
+                }
+                {
+                    let mut states = mux.agent_observer_state_by_pane.write();
+                    let Some(state) = states.get_mut(&pane_id) else {
+                        return;
+                    };
+                    state.trailing_refresh_scheduled = false;
+                }
+                mux.refresh_agent_runtime_for_pane_with_update_inner(
+                    pane_id,
+                    false,
+                    AgentRefreshPolicy::Throttled,
+                    false,
+                    |_| {},
+                );
+            })
+            .detach();
+        });
     }
 
     fn title_fingerprint(runtime: &AgentRuntimeSnapshot) -> AgentTitleFingerprint {
@@ -1649,6 +1790,25 @@ impl Mux {
     ) where
         F: FnOnce(&mut AgentRuntimeSnapshot),
     {
+        self.refresh_agent_runtime_for_pane_with_update_inner(
+            pane_id,
+            notify_title,
+            refresh_policy,
+            true,
+            update,
+        );
+    }
+
+    fn refresh_agent_runtime_for_pane_with_update_inner<F>(
+        &self,
+        pane_id: PaneId,
+        notify_title: bool,
+        refresh_policy: AgentRefreshPolicy,
+        schedule_trailing_refresh: bool,
+        update: F,
+    ) where
+        F: FnOnce(&mut AgentRuntimeSnapshot),
+    {
         let Some(metadata) = self.get_agent_metadata_for_pane(pane_id) else {
             return;
         };
@@ -1674,7 +1834,13 @@ impl Mux {
             &metadata.launch_cmd,
             runtime.foreground_process_name.as_deref(),
         );
-        self.schedule_agent_observer_refresh(pane_id, metadata.as_ref(), &runtime, refresh_policy);
+        self.schedule_agent_observer_refresh(
+            pane_id,
+            metadata.as_ref(),
+            &runtime,
+            refresh_policy,
+            schedule_trailing_refresh,
+        );
         finalize_runtime_snapshot(&mut runtime);
         runtime.status = derive_runtime_status(&runtime);
         let after_title = notify_title.then(|| Self::title_fingerprint(&runtime));
@@ -4975,6 +5141,7 @@ mod test {
             },
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
+            schedule_trailing_refresh: false,
         });
 
         assert_eq!(*title_changes.lock(), 1);
@@ -5095,6 +5262,48 @@ mod test {
         unsafe {
             std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");
         }
+    }
+
+    #[test]
+    fn confirmed_observer_burst_retains_latest_refresh_without_throttle_drop() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let pane_id = 9_001;
+        let mut metadata = sample_agent_metadata("lossless-observer");
+        metadata.adopted_pid = Some(std::process::id());
+        metadata.adopted_start_time = Some(1);
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = crate::agent::AgentHarness::Codex;
+        runtime.session_path = Some("/tmp/nonexistent-lossless-session.jsonl".to_string());
+
+        mux.schedule_agent_observer_refresh(
+            pane_id,
+            &metadata,
+            &runtime,
+            AgentRefreshPolicy::Throttled,
+            true,
+        );
+        mux.schedule_agent_observer_refresh(
+            pane_id,
+            &metadata,
+            &runtime,
+            AgentRefreshPolicy::Throttled,
+            true,
+        );
+
+        let states = mux.agent_observer_state_by_pane.read();
+        let state = states.get(&pane_id).unwrap();
+        assert_eq!(state.latest_generation, 2);
+        assert_eq!(state.inflight_generation, Some(1));
+        assert_eq!(
+            state
+                .pending_request
+                .as_ref()
+                .map(|request| request.generation),
+            Some(2)
+        );
     }
 
     #[test]
