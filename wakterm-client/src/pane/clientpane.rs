@@ -233,10 +233,11 @@ impl ClientPane {
                 // has been changed on the server, so we work to apply
                 // it here.
                 log::trace!("advised of remote pane focus: {pane_id}");
-                *self.suppress_next_focus_advise.lock() = true;
-
                 let mux = Mux::get();
-                if let Err(err) = mux.focus_pane_and_containing_tab(self.local_pane_id) {
+                let result = self.with_suppressed_focus_advise(|| {
+                    mux.focus_pane_and_containing_tab(self.local_pane_id)
+                });
+                if let Err(err) = result {
                     log::error!("Error reconciling remote PaneFocused notification: {err:#}");
                 }
             }
@@ -260,12 +261,15 @@ impl ClientPane {
         *self.ignore_next_kill.lock() = true;
     }
 
-    /// Suppress the next local focus echo back to the remote.
-    /// Used during attach/reconcile where the server already told us which
-    /// pane is active and we don't want to immediately bounce that focus
-    /// state back over RPC.
-    pub fn suppress_next_focus_advise(&self) {
+    /// Suppress local focus echoes while applying remote focus state.
+    ///
+    /// The suppression must end with the operation because the operation can
+    /// be a no-op and therefore produce no focus callback to consume it.
+    pub fn with_suppressed_focus_advise<T>(&self, action: impl FnOnce() -> T) -> T {
         *self.suppress_next_focus_advise.lock() = true;
+        let result = action();
+        *self.suppress_next_focus_advise.lock() = false;
+        result
     }
 }
 

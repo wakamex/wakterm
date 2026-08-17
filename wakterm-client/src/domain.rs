@@ -1469,9 +1469,12 @@ impl ClientDomain {
                     if let Some(tab) = mux.get_tab(local_tab_id) {
                         if let Some(pane) = mux.get_pane(local_active_pane_id) {
                             if let Some(client_pane) = pane.downcast_ref::<ClientPane>() {
-                                client_pane.suppress_next_focus_advise();
+                                client_pane.with_suppressed_focus_advise(|| {
+                                    tab.set_active_pane(&pane, mux::tab::NotifyMux::No);
+                                });
+                            } else {
+                                tab.set_active_pane(&pane, mux::tab::NotifyMux::No);
                             }
-                            tab.set_active_pane(&pane, mux::tab::NotifyMux::No);
                         }
                     }
                 }
@@ -1497,9 +1500,12 @@ impl ClientDomain {
                 if let Some(tab) = mux.get_tab(local_tab_id) {
                     if let Some(pane) = mux.get_pane(local_pane_id) {
                         if let Some(client_pane) = pane.downcast_ref::<ClientPane>() {
-                            client_pane.suppress_next_focus_advise();
+                            client_pane.with_suppressed_focus_advise(|| {
+                                tab.set_active_pane(&pane, mux::tab::NotifyMux::No);
+                            });
+                        } else {
+                            tab.set_active_pane(&pane, mux::tab::NotifyMux::No);
                         }
-                        tab.set_active_pane(&pane, mux::tab::NotifyMux::No);
                     }
                 }
             }
@@ -2430,6 +2436,36 @@ mod test {
                 .map(|pane| pane.pane_id()),
             Some(local_pane_id)
         );
+    }
+
+    #[test]
+    fn no_op_reconcile_does_not_suppress_next_user_focus_advice() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        ensure_test_executor();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let (_domain, inner, client_id, _view_id) = install_client_domain(&mux, "no-op-focus-seed");
+        let tab = leaf(1, 101, 1001, size(120, 40), true);
+
+        apply_panes(
+            &mux,
+            inner.clone(),
+            client_id.clone(),
+            panes_response(vec![tab.clone()], 101, 1001),
+        );
+        apply_panes(
+            &mux,
+            inner.clone(),
+            client_id,
+            panes_response(vec![tab], 101, 1001),
+        );
+
+        assert_eq!(*inner.focused_remote_pane_id.lock().unwrap(), None);
+        let local_pane_id = inner.remote_to_local_pane_id(1001).unwrap();
+        mux.get_pane(local_pane_id).unwrap().focus_changed(true);
+        assert_eq!(*inner.focused_remote_pane_id.lock().unwrap(), Some(1001));
     }
 
     #[test]
