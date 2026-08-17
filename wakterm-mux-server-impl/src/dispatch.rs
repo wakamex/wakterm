@@ -6,7 +6,7 @@ use futures::FutureExt;
 use mux::{Mux, MuxNotification};
 use smol::prelude::*;
 use smol::Async;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use wakterm_uds::UnixStream;
 
@@ -41,9 +41,22 @@ const CONTROL_REPLY_QUEUE_CAPACITY: usize = MAX_INFLIGHT_CONTROL_REQUESTS;
 const RENDER_BATCH_QUEUE_CAPACITY: usize = 1;
 const NOTIFICATION_QUEUE_CAPACITY: usize = 256;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum AlertStateKey {
+    CurrentWorkingDirectory,
+    IconTitle,
+    WindowTitle,
+    TabTitle,
+    Palette,
+    UserVar(String),
+    OutputSinceFocusLost,
+    Progress,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum NotificationKey {
     PaneOutput(mux::pane::PaneId),
+    Alert(mux::pane::PaneId, AlertStateKey),
     WindowWorkspace(mux::window::WindowId),
     PaneFocus,
     TabResized(mux::tab::TabId),
@@ -52,9 +65,27 @@ enum NotificationKey {
     WindowTitle(mux::window::WindowId),
 }
 
+fn alert_state_key(alert: &wakterm_term::Alert) -> Option<AlertStateKey> {
+    use wakterm_term::Alert;
+    match alert {
+        Alert::Bell | Alert::ToastNotification { .. } => None,
+        Alert::CurrentWorkingDirectoryChanged => Some(AlertStateKey::CurrentWorkingDirectory),
+        Alert::IconTitleChanged(_) => Some(AlertStateKey::IconTitle),
+        Alert::WindowTitleChanged(_) => Some(AlertStateKey::WindowTitle),
+        Alert::TabTitleChanged(_) => Some(AlertStateKey::TabTitle),
+        Alert::PaletteChanged => Some(AlertStateKey::Palette),
+        Alert::SetUserVar { name, .. } => Some(AlertStateKey::UserVar(name.clone())),
+        Alert::OutputSinceFocusLost => Some(AlertStateKey::OutputSinceFocusLost),
+        Alert::Progress(_) => Some(AlertStateKey::Progress),
+    }
+}
+
 fn notification_key(notification: &MuxNotification) -> Option<NotificationKey> {
     match notification {
         MuxNotification::PaneOutput(pane_id) => Some(NotificationKey::PaneOutput(*pane_id)),
+        MuxNotification::Alert { pane_id, alert } => {
+            alert_state_key(alert).map(|key| NotificationKey::Alert(*pane_id, key))
+        }
         MuxNotification::WindowWorkspaceChanged(window_id) => {
             Some(NotificationKey::WindowWorkspace(*window_id))
         }
@@ -68,6 +99,43 @@ fn notification_key(notification: &MuxNotification) -> Option<NotificationKey> {
             Some(NotificationKey::WindowTitle(*window_id))
         }
         _ => None,
+    }
+}
+
+fn notification_is_forwarded(notification: &MuxNotification) -> bool {
+    !matches!(
+        notification,
+        MuxNotification::PaneAdded(_)
+            | MuxNotification::WindowCreated(_)
+            | MuxNotification::WindowRemoved(_)
+            | MuxNotification::WindowInvalidated(_)
+            | MuxNotification::ActiveWorkspaceChanged(_)
+            | MuxNotification::Empty
+            | MuxNotification::SaveToDownloads { .. }
+    )
+}
+
+fn notification_kind(notification: &MuxNotification) -> &'static str {
+    match notification {
+        MuxNotification::PaneOutput(_) => "pane_output",
+        MuxNotification::PaneAdded(_) => "pane_added",
+        MuxNotification::PaneRemoved(_) => "pane_removed",
+        MuxNotification::WindowCreated(_) => "window_created",
+        MuxNotification::WindowRemoved(_) => "window_removed",
+        MuxNotification::WindowInvalidated(_) => "window_invalidated",
+        MuxNotification::WindowWorkspaceChanged(_) => "window_workspace_changed",
+        MuxNotification::ActiveWorkspaceChanged(_) => "active_workspace_changed",
+        MuxNotification::Alert { .. } => "alert",
+        MuxNotification::Empty => "empty",
+        MuxNotification::AssignClipboard { .. } => "assign_clipboard",
+        MuxNotification::SaveToDownloads { .. } => "save_to_downloads",
+        MuxNotification::TabAddedToWindow { .. } => "tab_added_to_window",
+        MuxNotification::PaneFocused(_) => "pane_focused",
+        MuxNotification::TabResized { .. } => "tab_resized",
+        MuxNotification::TabOrderChanged { .. } => "tab_order_changed",
+        MuxNotification::TabTitleChanged { .. } => "tab_title_changed",
+        MuxNotification::WindowTitleChanged { .. } => "window_title_changed",
+        MuxNotification::WorkspaceRenamed { .. } => "workspace_renamed",
     }
 }
 
@@ -95,18 +163,23 @@ impl NotificationQueue {
     }
 
     fn push(&self, notification: MuxNotification) -> bool {
+        if !notification_is_forwarded(&notification) {
+            metrics::counter!("mux_server.notification.ignored_before_queue").increment(1);
+            return true;
+        }
+
         let mut state = self.state.lock().unwrap();
         if state.closed {
             return false;
         }
 
         let key = notification_key(&notification);
-        if let Some(key) = key {
-            if state.pending_state.contains(&key) {
+        if let Some(key) = key.as_ref() {
+            if state.pending_state.contains(key) {
                 if let Some(pending) = state
                     .queue
                     .iter_mut()
-                    .find(|pending| notification_key(pending) == Some(key))
+                    .find(|pending| notification_key(pending).as_ref() == Some(key))
                 {
                     *pending = notification;
                 }
@@ -118,9 +191,16 @@ impl NotificationQueue {
         if state.queue.len() >= NOTIFICATION_QUEUE_CAPACITY {
             state.closed = true;
             metrics::counter!("mux_server.notification.overflow").increment(1);
+            let mut queued_kinds = BTreeMap::<&'static str, usize>::new();
+            for pending in &state.queue {
+                *queued_kinds.entry(notification_kind(pending)).or_default() += 1;
+            }
             log::warn!(
-                "closing mux client connection after notification queue reached {} items",
-                NOTIFICATION_QUEUE_CAPACITY
+                "closing mux client connection after notification queue reached {} items; \
+                 incoming_kind={} queued_kinds={:?}",
+                NOTIFICATION_QUEUE_CAPACITY,
+                notification_kind(&notification),
+                queued_kinds,
             );
             self.wake_tx.close();
             return false;
@@ -560,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn notification_queue_coalesces_output_and_fails_closed_at_its_bound() {
+    fn notification_queue_coalesces_state_and_fails_closed_at_its_bound() {
         let queue = NotificationQueue::new();
         for _ in 0..100_000 {
             assert!(queue.push(MuxNotification::PaneOutput(42)));
@@ -602,11 +682,49 @@ mod tests {
                 if tab_ids == vec![3, 2, 1]
         ));
 
+        for percent in 0..100_000 {
+            assert!(queue.push(MuxNotification::Alert {
+                pane_id: 42,
+                alert: wakterm_term::Alert::Progress(wakterm_term::terminal::Progress::Percentage(
+                    (percent % 100) as u8
+                ),),
+            }));
+        }
+        assert_eq!(queue.len(), 1);
+        assert!(matches!(
+            queue.try_pop(),
+            Some(MuxNotification::Alert {
+                pane_id: 42,
+                alert: wakterm_term::Alert::Progress(wakterm_term::terminal::Progress::Percentage(
+                    99
+                )),
+            })
+        ));
+
         for _ in 0..NOTIFICATION_QUEUE_CAPACITY {
+            assert!(queue.push(MuxNotification::Alert {
+                pane_id: 42,
+                alert: wakterm_term::Alert::Bell,
+            }));
+        }
+        assert!(!queue.push(MuxNotification::Alert {
+            pane_id: 42,
+            alert: wakterm_term::Alert::Bell,
+        }));
+        assert_eq!(queue.len(), NOTIFICATION_QUEUE_CAPACITY);
+    }
+
+    #[test]
+    fn ignored_mux_notifications_do_not_consume_remote_queue_capacity() {
+        let queue = NotificationQueue::new();
+        for _ in 0..100_000 {
+            assert!(queue.push(MuxNotification::WindowInvalidated(7)));
             assert!(queue.push(MuxNotification::Empty));
         }
-        assert!(!queue.push(MuxNotification::Empty));
-        assert_eq!(queue.len(), NOTIFICATION_QUEUE_CAPACITY);
+        assert_eq!(queue.len(), 0);
+
+        assert!(queue.push(MuxNotification::PaneOutput(42)));
+        assert_eq!(queue.len(), 1);
     }
 
     #[cfg(unix)]
