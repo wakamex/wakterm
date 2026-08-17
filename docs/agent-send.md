@@ -48,6 +48,19 @@ wakterm cli agent admit zola \
   "Complete phases 2 and 3"
 ```
 
+An orchestrator retrying a persisted identity that may no longer appear in the
+current catalog uses `--exact-agent-id`. This bypasses display-name and catalog
+resolution so the server can return a structured `unavailable` or
+`stale_incarnation` receipt:
+
+```sh
+wakterm cli agent admit PERSISTED_AGENT_ID \
+  --exact-agent-id \
+  --incarnation PERSISTED_INCARNATION \
+  --request-id REQUEST_ID \
+  "Complete phases 2 and 3"
+```
+
 The catalog supplies the stable agent ID and opaque process incarnation. The
 admission call requires both, refreshes the provider observer away from the mux
 reactor, and rechecks the same incarnation and authoritative idle state

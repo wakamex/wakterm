@@ -76,6 +76,18 @@
       "request": null,
       "detail": "the target is not authoritatively idle"
     },
+    "unavailable": {
+      "schema": "wakterm.agent-api.v1",
+      "request_id": "request-unavailable",
+      "status": "unavailable",
+      "definitive": true,
+      "prompt_written": false,
+      "agent_id": "agent-no-longer-listed",
+      "incarnation_id": "incarnation-old-7",
+      "return_final": true,
+      "request": null,
+      "detail": "the target agent is not available"
+    },
     "indeterminate": {
       "schema": "wakterm.agent-api.v1",
       "request_id": "request-indeterminate",

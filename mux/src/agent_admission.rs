@@ -687,6 +687,18 @@ mod tests {
     }
 
     #[test]
+    fn missing_exact_agent_is_definitively_unavailable_without_prompt_write() {
+        let mux = Mux::new(None);
+        let request = request("request-missing", "work");
+        let AgentAdmissionCapture::Rejected(receipt) = mux.capture_agent_admission(request) else {
+            panic!("expected unavailable admission receipt");
+        };
+        assert_eq!(receipt.status, AgentAdmissionStatus::Unavailable);
+        assert!(receipt.definitive);
+        assert_eq!(receipt.prompt_written, Some(false));
+    }
+
+    #[test]
     fn capability_probe_does_not_claim_a_durable_general_event_stream() {
         let capabilities = AgentApiCapabilities::current();
         assert!(capabilities
@@ -783,6 +795,11 @@ mod tests {
                 }
                 "busy" => {
                     assert_eq!(receipt.status, AgentAdmissionStatus::Busy);
+                    assert!(receipt.definitive);
+                    assert_eq!(receipt.prompt_written, Some(false));
+                }
+                "unavailable" => {
+                    assert_eq!(receipt.status, AgentAdmissionStatus::Unavailable);
                     assert!(receipt.definitive);
                     assert_eq!(receipt.prompt_written, Some(false));
                 }

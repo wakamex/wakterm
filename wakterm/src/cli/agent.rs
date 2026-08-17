@@ -1317,8 +1317,12 @@ impl AgentCatalogCommand {
 
 #[derive(Debug, Parser, Clone)]
 pub struct AdmitAgentCommand {
-    /// Stable agent id or unique display name from `agent catalog`
+    /// Current agent id or unique display name from `agent catalog`
     target: String,
+
+    /// Treat TARGET as an opaque agent id and bypass current catalog lookup
+    #[arg(long)]
+    exact_agent_id: bool,
 
     /// Opaque process incarnation from `agent catalog`
     #[arg(long)]
@@ -1346,20 +1350,15 @@ pub struct AdmitAgentCommand {
 
 impl AdmitAgentCommand {
     async fn run(&self, client: Client) -> anyhow::Result<()> {
-        let catalog = client
-            .list_agent_api_catalog(codec::ListAgentApiCatalog {})
-            .await?
-            .catalog;
-        let matches = catalog
-            .agents
-            .iter()
-            .filter(|agent| agent.agent_id == self.target || agent.name == self.target)
-            .collect::<Vec<_>>();
-        anyhow::ensure!(
-            matches.len() == 1,
-            "target must match exactly one catalog agent"
-        );
-        let target = matches[0];
+        let agent_id = if self.exact_agent_id {
+            self.target.clone()
+        } else {
+            let catalog = client
+                .list_agent_api_catalog(codec::ListAgentApiCatalog {})
+                .await?
+                .catalog;
+            resolve_catalog_agent_id(&catalog, &self.target)?
+        };
         let prompt = match self.text.as_ref() {
             Some(text) => text.clone(),
             None => {
@@ -1370,7 +1369,7 @@ impl AdmitAgentCommand {
             .admit_agent_prompt(codec::AdmitAgentPrompt {
                 request: mux::agent_admission::AgentPromptAdmissionRequest {
                     request_id: self.request_id.clone(),
-                    agent_id: target.agent_id.clone(),
+                    agent_id,
                     incarnation_id: self.incarnation.clone(),
                     prompt,
                     paste: !self.no_paste,
@@ -1382,6 +1381,25 @@ impl AdmitAgentCommand {
             .receipt;
         write_json(&receipt)
     }
+}
+
+fn resolve_catalog_agent_id(
+    catalog: &mux::agent_admission::AgentCatalog,
+    target: &str,
+) -> anyhow::Result<String> {
+    if let Some(agent) = catalog.agents.iter().find(|agent| agent.agent_id == target) {
+        return Ok(agent.agent_id.clone());
+    }
+    let matches = catalog
+        .agents
+        .iter()
+        .filter(|agent| agent.name == target)
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        matches.len() == 1,
+        "target must match exactly one current catalog agent; use --exact-agent-id for a persisted agent id"
+    );
+    Ok(matches[0].agent_id.clone())
 }
 
 #[derive(Debug, Parser, Clone)]
@@ -4299,10 +4317,33 @@ mod test {
             panic!("expected admit command");
         };
         assert_eq!(command.target, "zola");
+        assert!(!command.exact_agent_id);
         assert_eq!(command.incarnation, "incarnation-1");
         assert_eq!(command.request_id, "request-1");
         assert!(command.return_final);
         assert_eq!(command.final_timeout_ms, 60_000);
+        assert_eq!(command.text.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn admit_parser_accepts_exact_persisted_agent_id_mode() {
+        let parsed = AgentCommand::try_parse_from([
+            "agent",
+            "admit",
+            "agent-no-longer-listed",
+            "--exact-agent-id",
+            "--incarnation",
+            "incarnation-1",
+            "--request-id",
+            "request-1",
+            "work",
+        ])
+        .unwrap();
+        let AgentSubCommand::Admit(command) = parsed.sub else {
+            panic!("expected admit command");
+        };
+        assert_eq!(command.target, "agent-no-longer-listed");
+        assert!(command.exact_agent_id);
         assert_eq!(command.text.as_deref(), Some("work"));
     }
 
