@@ -1905,10 +1905,24 @@ pub(crate) fn read_codex_output_messages(
             break;
         }
         let start_offset = next_offset;
+        let remaining_bytes =
+            MAX_CODEX_OUTPUT_BYTES_PER_READ.saturating_sub(next_offset.saturating_sub(offset));
         let mut line = Vec::new();
-        let read = reader.read_until(b'\n', &mut line)?;
+        let read = reader
+            .by_ref()
+            .take(remaining_bytes + 1)
+            .read_until(b'\n', &mut line)?;
         if read == 0 {
             break;
+        }
+        if read as u64 > remaining_bytes || line.last() != Some(&b'\n') {
+            if records_read > 0 {
+                break;
+            }
+            anyhow::bail!(
+                "Codex output record at offset {start_offset} exceeds the {} byte read bound",
+                MAX_CODEX_OUTPUT_BYTES_PER_READ
+            );
         }
         records_read += 1;
         next_offset += read as u64;
@@ -2710,6 +2724,23 @@ mod test {
             (tool.len() * MAX_CODEX_OUTPUT_RECORDS_PER_READ) as u64
         );
         assert_eq!(second_page[0].text, "done");
+    }
+
+    #[test]
+    fn rejects_a_codex_output_record_larger_than_the_byte_bound() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout-output-oversized.jsonl");
+        let oversized = format!(
+            "{{\"value\":\"{}\"}}\n",
+            "x".repeat(MAX_CODEX_OUTPUT_BYTES_PER_READ as usize)
+        );
+        fs::write(&session, oversized).unwrap();
+
+        let error = read_codex_output_messages(&session, 0, 1).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("exceeds the 1048576 byte read bound"));
     }
 
     #[cfg(target_os = "linux")]

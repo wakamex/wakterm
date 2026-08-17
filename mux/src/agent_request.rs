@@ -220,6 +220,14 @@ impl AgentRequest {
                 return;
             }
             let Some(primary_prompt_sha256) = turn.primary_user_message_sha256.as_deref() else {
+                if matches!(turn.outcome, AgentObservedTurnOutcome::Running) {
+                    return;
+                }
+                self.finish(
+                    AgentRequestState::Indeterminate,
+                    now,
+                    "provider turn ended without observable prompt identity",
+                );
                 return;
             };
             if primary_prompt_sha256 != self.prompt_sha256 {
@@ -624,6 +632,39 @@ mod tests {
         request.reconcile(Some(&metadata), Some(&observed), Utc::now());
         assert_eq!(request.state, AgentRequestState::Bound);
         assert_eq!(request.provider_turn_id.as_deref(), Some("turn-2"));
+    }
+
+    #[test]
+    fn terminal_turn_without_prompt_identity_is_indeterminate() {
+        let metadata = metadata();
+        let runtime = runtime();
+        let mut request = AgentRequest::new(
+            "request-1".to_string(),
+            &metadata,
+            7,
+            &runtime,
+            "expected",
+            true,
+            0,
+            None,
+        )
+        .unwrap();
+        request.mark_submitted();
+
+        let mut observed = runtime.clone();
+        observed.observed_turn = Some(turn(
+            "turn-2",
+            11,
+            None,
+            AgentObservedTurnOutcome::Completed,
+        ));
+        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
+
+        assert_eq!(request.state, AgentRequestState::Indeterminate);
+        assert_eq!(
+            request.detail.as_deref(),
+            Some("provider turn ended without observable prompt identity")
+        );
     }
 
     #[test]
