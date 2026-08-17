@@ -3315,6 +3315,7 @@ mod test {
         assert_eq!(catalog.schema, mux::agent_admission::AGENT_API_SCHEMA);
         assert_eq!(catalog.agents.len(), 1);
         assert_eq!(catalog.agents[0].agent_id, "agent-alpha");
+        assert_eq!(catalog.agents[0].pane_id, layout.left_pane_id as u64);
         assert_eq!(catalog.agents[0].incarnation_id, None);
 
         let output = match handler.request(

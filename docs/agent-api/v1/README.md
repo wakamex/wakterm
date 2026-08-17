@@ -17,6 +17,12 @@ stream. Admission is scoped to a stable Wakterm agent ID and opaque process
 incarnation. A definitive non-acceptance means no prompt bytes were written.
 An indeterminate result is never safe to retry under a new request ID.
 
+Each catalog entry also contains a fixed-width `pane_id`. It is the smallest
+authoritative locator for joining a Panetone live route to the current Wakterm
+catalog when route titles and agent names differ. Pane IDs are ephemeral mux
+coordinates. Consumers must resolve them from a fresh catalog and must never
+persist them as agent identity, process identity, or an idempotency key.
+
 The fixture-only event page defines only what the fake adapter needs to prove:
 
 - durable increasing sequence order

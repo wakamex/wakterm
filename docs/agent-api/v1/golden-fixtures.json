@@ -30,6 +30,7 @@
       {
         "agent_id": "agent-zola",
         "incarnation_id": "incarnation-zola-7",
+        "pane_id": 9,
         "name": "zola",
         "harness": "codex",
         "status": "idle",
@@ -40,6 +41,7 @@
       {
         "agent_id": "agent-old",
         "incarnation_id": "incarnation-old-2",
+        "pane_id": 12,
         "name": "old-worker",
         "harness": "codex",
         "status": "exited",

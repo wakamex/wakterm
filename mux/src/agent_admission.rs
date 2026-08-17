@@ -41,6 +41,9 @@ impl AgentApiCapabilities {
 pub struct AgentCatalogEntry {
     pub agent_id: String,
     pub incarnation_id: Option<String>,
+    /// Ephemeral mux pane locator for joining a current live route. This is
+    /// not a durable agent or process identity.
+    pub pane_id: u64,
     pub name: String,
     pub harness: String,
     pub status: String,
@@ -417,6 +420,7 @@ fn catalog_entry(agent: AgentSnapshot) -> AgentCatalogEntry {
     AgentCatalogEntry {
         agent_id: agent.metadata.agent_id.clone(),
         incarnation_id: incarnation_id(&agent.metadata),
+        pane_id: agent.pane_id as u64,
         name: agent.metadata.name.clone(),
         harness: harness_name(&agent.runtime.harness).to_string(),
         status: status_name(&agent.runtime.status).to_string(),
@@ -761,6 +765,8 @@ mod tests {
 
         let catalog: AgentCatalog = serde_json::from_value(fixtures["catalog"].clone()).unwrap();
         assert_eq!(catalog.agents.len(), 2);
+        assert_eq!(catalog.agents[0].pane_id, 9);
+        assert_eq!(catalog.agents[1].pane_id, 12);
         assert_ne!(catalog.agents[0].agent_id, catalog.agents[1].agent_id);
         assert_ne!(
             catalog.agents[0].incarnation_id,
