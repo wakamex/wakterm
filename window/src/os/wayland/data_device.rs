@@ -38,12 +38,16 @@ impl DataDeviceHandler for WaylandState {
 
         let offer = data.drag_offer().unwrap();
 
+        log::trace!("Data offer entered: {:?}", offer);
+
+        // Skip the event if not for a top-level surface (no associated top-level user data)
+        let window_id = match SurfaceUserData::try_from_wl(&offer.surface) {
+            Some(userdata) => userdata.window_id,
+            None => return,
+        };
+
         offer.with_mime_types(|mime_types| {
-            log::trace!(
-                "Data offer entered: {:?}, mime_types: {:?}",
-                offer,
-                mime_types
-            );
+            log::trace!("Data offer mime_types: {:?}", mime_types);
 
             if let Some(mime) = mime_types.iter().find(|s| *s == URI_MIME_TYPE) {
                 offer.accept_mime_type(*self.last_serial.borrow(), Some(mime.clone()));
@@ -60,8 +64,6 @@ impl DataDeviceHandler for WaylandState {
             .state
             .lock()
             .unwrap();
-
-        let window_id = SurfaceUserData::from_wl(&offer.surface).window_id;
 
         pstate.drag_and_drop.offer = Some(SurfaceAndOffer { window_id, offer });
     }
