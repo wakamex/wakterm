@@ -1,0 +1,225 @@
+{
+  "fixture_schema": "wakterm.agent-api-golden.v1",
+  "contract_schema": "wakterm.agent-api.v1",
+  "current_capabilities": {
+    "schema": "wakterm.agent-api.v1",
+    "api_major": 1,
+    "capabilities": [
+      "catalog.v1",
+      "prompt_admission.v1",
+      "return_request_terminal_stream.v1",
+      "codex_output_shadow.experimental.v1"
+    ]
+  },
+  "event_stream_capabilities": {
+    "availability": "fixture_only",
+    "schema": "wakterm.agent-api.v1",
+    "api_major": 1,
+    "capabilities": [
+      "catalog.v1",
+      "prompt_admission.v1",
+      "return_request_terminal_stream.v1",
+      "event_stream.v1"
+    ]
+  },
+  "catalog": {
+    "availability": "fixture_only_until_event_stream_v1",
+    "schema": "wakterm.agent-api.v1",
+    "as_of_event_sequence": 100,
+    "agents": [
+      {
+        "agent_id": "agent-zola",
+        "incarnation_id": "incarnation-zola-7",
+        "name": "zola",
+        "harness": "codex",
+        "status": "idle",
+        "turn_state": "waiting_on_user",
+        "alive": true,
+        "observed_at": "2026-08-16T18:00:00Z"
+      },
+      {
+        "agent_id": "agent-old",
+        "incarnation_id": "incarnation-old-2",
+        "name": "old-worker",
+        "harness": "codex",
+        "status": "exited",
+        "turn_state": "unknown",
+        "alive": false,
+        "observed_at": "2026-08-16T17:59:00Z"
+      }
+    ]
+  },
+  "admission_receipts": {
+    "accepted": {
+      "schema": "wakterm.agent-api.v1",
+      "request_id": "request-accepted",
+      "status": "accepted",
+      "definitive": true,
+      "prompt_written": true,
+      "agent_id": "agent-zola",
+      "incarnation_id": "incarnation-zola-7",
+      "return_final": false,
+      "request": null,
+      "detail": null
+    },
+    "busy": {
+      "schema": "wakterm.agent-api.v1",
+      "request_id": "request-busy",
+      "status": "busy",
+      "definitive": true,
+      "prompt_written": false,
+      "agent_id": "agent-zola",
+      "incarnation_id": "incarnation-zola-7",
+      "return_final": true,
+      "request": null,
+      "detail": "the target is not authoritatively idle"
+    },
+    "indeterminate": {
+      "schema": "wakterm.agent-api.v1",
+      "request_id": "request-indeterminate",
+      "status": "indeterminate",
+      "definitive": false,
+      "prompt_written": null,
+      "agent_id": "agent-zola",
+      "incarnation_id": "incarnation-zola-7",
+      "return_final": true,
+      "request": null,
+      "detail": "prompt delivery may have been partial"
+    }
+  },
+  "event_page": {
+    "availability": "fixture_only",
+    "schema": "wakterm.agent-events.v1",
+    "status": "ok",
+    "requested_after_sequence": 100,
+    "oldest_available_sequence": 90,
+    "latest_sequence": 107,
+    "next_after_sequence": 107,
+    "events": [
+      {
+        "sequence": 101,
+        "event_id": "event-101",
+        "kind": "agent_lifecycle",
+        "agent_id": "agent-zola",
+        "incarnation_id": "incarnation-zola-7",
+        "observed_at": "2026-08-16T18:00:01Z",
+        "lifecycle": "available"
+      },
+      {
+        "sequence": 102,
+        "event_id": "event-102",
+        "kind": "turn_started",
+        "agent_id": "agent-zola",
+        "incarnation_id": "incarnation-zola-7",
+        "turn_id": "turn-42",
+        "observed_at": "2026-08-16T18:00:02Z"
+      },
+      {
+        "sequence": 103,
+        "event_id": "event-103",
+        "kind": "turn_state_changed",
+        "agent_id": "agent-zola",
+        "incarnation_id": "incarnation-zola-7",
+        "turn_id": "turn-42",
+        "observed_at": "2026-08-16T18:00:03Z",
+        "turn_state": "waiting_on_agent"
+      },
+      {
+        "sequence": 104,
+        "event_id": "event-104",
+        "kind": "plan",
+        "agent_id": "agent-zola",
+        "incarnation_id": "incarnation-zola-7",
+        "turn_id": "turn-42",
+        "observed_at": "2026-08-16T18:00:04Z",
+        "text": "Inspect, implement, and test."
+      },
+      {
+        "sequence": 105,
+        "event_id": "event-105",
+        "kind": "assistant_message",
+        "agent_id": "agent-zola",
+        "incarnation_id": "incarnation-zola-7",
+        "turn_id": "turn-42",
+        "observed_at": "2026-08-16T18:00:05Z",
+        "text": "Working on café support ✓"
+      },
+      {
+        "sequence": 106,
+        "event_id": "event-106",
+        "kind": "observer_failure",
+        "agent_id": "agent-zola",
+        "incarnation_id": "incarnation-zola-7",
+        "turn_id": "turn-42",
+        "observed_at": "2026-08-16T18:00:06Z",
+        "recoverable": true,
+        "detail": "one observation refresh failed"
+      },
+      {
+        "sequence": 107,
+        "event_id": "event-107",
+        "kind": "turn_final",
+        "agent_id": "agent-zola",
+        "incarnation_id": "incarnation-zola-7",
+        "turn_id": "turn-42",
+        "observed_at": "2026-08-16T18:00:07Z",
+        "outcome": "completed",
+        "text": "Completed café support ✓"
+      }
+    ]
+  },
+  "lifecycle_page": {
+    "availability": "fixture_only",
+    "schema": "wakterm.agent-events.v1",
+    "status": "ok",
+    "requested_after_sequence": 107,
+    "oldest_available_sequence": 90,
+    "latest_sequence": 108,
+    "next_after_sequence": 108,
+    "events": [
+      {
+        "sequence": 108,
+        "event_id": "event-108",
+        "kind": "agent_lifecycle",
+        "agent_id": "agent-zola",
+        "incarnation_id": "incarnation-zola-7",
+        "observed_at": "2026-08-16T18:01:00Z",
+        "lifecycle": "unavailable",
+        "reason": "process_exited"
+      }
+    ]
+  },
+  "cursor_too_old": {
+    "availability": "fixture_only",
+    "schema": "wakterm.agent-events.v1",
+    "status": "cursor_too_old",
+    "requested_after_sequence": 12,
+    "oldest_available_sequence": 90,
+    "latest_sequence": 108,
+    "recovery": {
+      "kind": "catalog_snapshot",
+      "catalog_as_of_sequence": 100
+    }
+  },
+  "retention": {
+    "availability": "fixture_only",
+    "mode": "bounded",
+    "oldest_available_sequence": 90,
+    "latest_sequence": 108,
+    "gap_behavior": "cursor_too_old",
+    "durable_consumer_cursor_protection": "not_advertised"
+  },
+  "classified_errors": [
+    {"operation": "admit_prompt", "code": "unsupported", "definitive": true, "prompt_written": false},
+    {"operation": "admit_prompt", "code": "unavailable", "definitive": true, "prompt_written": false},
+    {"operation": "admit_prompt", "code": "stale_incarnation", "definitive": true, "prompt_written": false},
+    {"operation": "admit_prompt", "code": "busy", "definitive": true, "prompt_written": false},
+    {"operation": "admit_prompt", "code": "invalid", "definitive": true, "prompt_written": false},
+    {"operation": "admit_prompt", "code": "observer_failure", "definitive": true, "prompt_written": false},
+    {"operation": "admit_prompt", "code": "internal_failure", "definitive": true, "prompt_written": false},
+    {"operation": "admit_prompt", "code": "indeterminate", "definitive": false, "prompt_written": null},
+    {"operation": "read_events", "code": "cursor_too_old", "definitive": true},
+    {"operation": "negotiate", "code": "incompatible_major", "definitive": true},
+    {"operation": "read_events", "code": "unknown_event_kind", "definitive": true}
+  ]
+}

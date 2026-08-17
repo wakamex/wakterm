@@ -632,6 +632,8 @@ pub fn reconcile_written_request_after_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+    use std::collections::HashSet;
     use tempfile::tempdir;
 
     fn request(id: &str, prompt: &str) -> AgentPromptAdmissionRequest {
@@ -731,5 +733,147 @@ mod tests {
         assert_eq!(receipt.status, AgentAdmissionStatus::Indeterminate);
         assert!(!receipt.definitive);
         assert_eq!(receipt.prompt_written, None);
+    }
+
+    #[test]
+    fn wakterm_agent_api_golden_contract_is_self_consistent() {
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../docs/agent-api/v1/golden-fixtures.json"))
+                .unwrap();
+        assert_eq!(fixtures["fixture_schema"], "wakterm.agent-api-golden.v1");
+
+        let current: AgentApiCapabilities =
+            serde_json::from_value(fixtures["current_capabilities"].clone()).unwrap();
+        assert_eq!(current, AgentApiCapabilities::current());
+        assert!(!current
+            .capabilities
+            .iter()
+            .any(|capability| capability == "event_stream.v1"));
+        assert_eq!(
+            fixtures["event_stream_capabilities"]["availability"],
+            "fixture_only"
+        );
+        assert!(fixtures["event_stream_capabilities"]["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|capability| capability == "event_stream.v1"));
+
+        let catalog: AgentCatalog = serde_json::from_value(fixtures["catalog"].clone()).unwrap();
+        assert_eq!(catalog.agents.len(), 2);
+        assert_ne!(catalog.agents[0].agent_id, catalog.agents[1].agent_id);
+        assert_ne!(
+            catalog.agents[0].incarnation_id,
+            catalog.agents[1].incarnation_id
+        );
+
+        let receipts = fixtures["admission_receipts"].as_object().unwrap();
+        for (name, fixture) in receipts {
+            let receipt: AgentAdmissionReceipt = serde_json::from_value(fixture.clone()).unwrap();
+            match name.as_str() {
+                "accepted" => {
+                    assert_eq!(receipt.status, AgentAdmissionStatus::Accepted);
+                    assert_eq!(receipt.prompt_written, Some(true));
+                }
+                "busy" => {
+                    assert_eq!(receipt.status, AgentAdmissionStatus::Busy);
+                    assert!(receipt.definitive);
+                    assert_eq!(receipt.prompt_written, Some(false));
+                }
+                "indeterminate" => {
+                    assert_eq!(receipt.status, AgentAdmissionStatus::Indeterminate);
+                    assert!(!receipt.definitive);
+                    assert_eq!(receipt.prompt_written, None);
+                }
+                other => panic!("unexpected receipt fixture {}", other),
+            }
+        }
+
+        let page = &fixtures["event_page"];
+        assert_eq!(page["availability"], "fixture_only");
+        let events = page["events"].as_array().unwrap();
+        let sequences = events
+            .iter()
+            .map(|event| event["sequence"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(sequences
+            .iter()
+            .all(|sequence| *sequence > page["requested_after_sequence"].as_u64().unwrap()));
+        assert_eq!(
+            sequences.last().copied(),
+            page["next_after_sequence"].as_u64()
+        );
+        let kinds = events
+            .iter()
+            .map(|event| event["kind"].as_str().unwrap())
+            .collect::<HashSet<_>>();
+        for required in [
+            "agent_lifecycle",
+            "turn_started",
+            "turn_state_changed",
+            "plan",
+            "assistant_message",
+            "observer_failure",
+            "turn_final",
+        ] {
+            assert!(kinds.contains(required), "missing event kind {}", required);
+        }
+        for event in events {
+            assert!(event["agent_id"].is_string());
+            assert!(event["incarnation_id"].is_string());
+            if event["kind"] != "agent_lifecycle" {
+                assert!(event["turn_id"].is_string());
+            }
+        }
+
+        let catalog_sequence = fixtures["catalog"]["as_of_event_sequence"]
+            .as_u64()
+            .unwrap();
+        assert!(catalog_sequence < sequences[0]);
+        let lifecycle = &fixtures["lifecycle_page"];
+        assert_eq!(lifecycle["events"][0]["kind"], "agent_lifecycle");
+        assert_eq!(
+            lifecycle["events"][0]["sequence"],
+            lifecycle["next_after_sequence"]
+        );
+
+        let gap = &fixtures["cursor_too_old"];
+        assert!(
+            gap["requested_after_sequence"].as_u64().unwrap()
+                < gap["oldest_available_sequence"].as_u64().unwrap()
+        );
+        assert_eq!(gap["recovery"]["kind"], "catalog_snapshot");
+        assert_eq!(fixtures["retention"]["gap_behavior"], "cursor_too_old");
+        assert_eq!(
+            fixtures["retention"]["durable_consumer_cursor_protection"],
+            "not_advertised"
+        );
+
+        let error_codes = fixtures["classified_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|error| error["code"].as_str().unwrap())
+            .collect::<HashSet<_>>();
+        for required in [
+            "unsupported",
+            "unavailable",
+            "stale_incarnation",
+            "busy",
+            "invalid",
+            "observer_failure",
+            "internal_failure",
+            "indeterminate",
+            "cursor_too_old",
+            "incompatible_major",
+            "unknown_event_kind",
+        ] {
+            assert!(
+                error_codes.contains(required),
+                "missing error class {}",
+                required
+            );
+        }
     }
 }
