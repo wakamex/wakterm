@@ -219,7 +219,10 @@ impl AgentRequest {
                 );
                 return;
             }
-            if turn.primary_user_message_sha256.as_deref() != Some(self.prompt_sha256.as_str()) {
+            let Some(primary_prompt_sha256) = turn.primary_user_message_sha256.as_deref() else {
+                return;
+            };
+            if primary_prompt_sha256 != self.prompt_sha256 {
                 self.finish(
                     AgentRequestState::Indeterminate,
                     now,
@@ -590,6 +593,37 @@ mod tests {
         request.reconcile(Some(&metadata), Some(&observed), Utc::now());
         assert_eq!(request.state, AgentRequestState::Indeterminate);
         assert!(request.final_message.is_none());
+    }
+
+    #[test]
+    fn waits_for_new_turn_prompt_before_deciding_correlation() {
+        let metadata = metadata();
+        let runtime = runtime();
+        let mut request = AgentRequest::new(
+            "request-1".to_string(),
+            &metadata,
+            7,
+            &runtime,
+            "expected",
+            true,
+            0,
+            None,
+        )
+        .unwrap();
+        request.mark_submitted();
+
+        let mut next = turn("turn-2", 11, None, AgentObservedTurnOutcome::Running);
+        let mut observed = runtime.clone();
+        observed.observed_turn = Some(next.clone());
+        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
+        assert_eq!(request.state, AgentRequestState::Submitted);
+        assert!(request.provider_turn_id.is_none());
+
+        next.primary_user_message_sha256 = Some(prompt_sha256("expected"));
+        observed.observed_turn = Some(next);
+        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
+        assert_eq!(request.state, AgentRequestState::Bound);
+        assert_eq!(request.provider_turn_id.as_deref(), Some("turn-2"));
     }
 
     #[test]
