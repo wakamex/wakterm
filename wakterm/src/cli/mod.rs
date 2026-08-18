@@ -227,6 +227,7 @@ async fn run_cli_async(opts: &crate::Opt, cli: CliCommand) -> anyhow::Result<()>
             .as_deref()
             .unwrap_or(wakterm_gui_subcommands::DEFAULT_WINDOW_CLASS),
     )?;
+    client.verify_version_compat(&ui).await?;
 
     match cli.sub {
         CliSubCommand::Agent(cmd) => cmd.run(client, &crate::init_config(opts)?).await,

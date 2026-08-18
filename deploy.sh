@@ -150,7 +150,12 @@ echo ""
 if $SAVE_SESSION; then
     echo "=== Step 2: Save manual layout snapshot ==="
     cd "$REPO_ROOT"
-    "$SRC/wakterm" cli save-layout
+    if [ ! -x "$DEST/wakterm" ]; then
+        echo "  Cannot save through the running mux: $DEST/wakterm is not installed"
+        echo "  Install once with --no-save, or pass --no-save intentionally"
+        exit 1
+    fi
+    "$DEST/wakterm" cli save-layout
     echo ""
 else
     echo "=== Step 2: Skip manual layout snapshot ==="

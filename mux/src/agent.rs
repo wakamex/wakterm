@@ -32,7 +32,7 @@ pub struct AgentMetadata {
     pub worktree: Option<String>,
     pub branch: Option<String>,
     pub managed_checkout: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub codex_app_server: Option<CodexAppServerSession>,
 }
 

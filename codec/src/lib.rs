@@ -470,7 +470,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 63;
+pub const CODEC_VERSION: usize = 64;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -1820,6 +1820,62 @@ mod test {
                 DecodedPdu { serial: 43, pdu }
             );
         }
+    }
+
+    #[test]
+    fn list_agents_response_round_trips_mixed_transports() {
+        fn snapshot(
+            name: &str,
+            codex_app_server: Option<mux::agent::CodexAppServerSession>,
+        ) -> AgentSnapshot {
+            let metadata = AgentMetadata {
+                agent_id: format!("agent-{name}"),
+                name: name.to_string(),
+                launch_cmd: "codex".to_string(),
+                declared_cwd: format!("file:///tmp/{name}"),
+                adopted_pid: None,
+                adopted_start_time: None,
+                created_at: "2026-08-18T00:00:00Z".parse().unwrap(),
+                repo_root: None,
+                worktree: None,
+                branch: None,
+                managed_checkout: false,
+                codex_app_server,
+            };
+            AgentSnapshot {
+                runtime: mux::agent::AgentRuntimeSnapshot::new(&metadata),
+                metadata,
+                pane_id: 1,
+                tab_id: 2,
+                window_id: 3,
+                workspace: "default".to_string(),
+                domain_id: 4,
+                origin: mux::agent::AgentOrigin::Adopted,
+                detection_source: None,
+            }
+        }
+
+        let pdu = Pdu::ListAgentsResponse(ListAgentsResponse {
+            agents: vec![
+                snapshot("observed", None),
+                snapshot(
+                    "managed",
+                    Some(mux::agent::CodexAppServerSession {
+                        thread_id: "thread-1".to_string(),
+                        session_id: "session-1".to_string(),
+                        executable: "codex".to_string(),
+                        version: "codex-cli 1.0".to_string(),
+                        tui_args: vec![],
+                    }),
+                ),
+            ],
+        });
+        let mut encoded = Vec::new();
+        pdu.encode(&mut encoded, 44).unwrap();
+        assert_eq!(
+            Pdu::decode(encoded.as_slice()).unwrap(),
+            DecodedPdu { serial: 44, pdu }
+        );
     }
 
     #[test]
