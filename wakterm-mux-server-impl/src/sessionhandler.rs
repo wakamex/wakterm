@@ -968,7 +968,6 @@ impl SessionHandler {
                                 .get_pane(pane_id)
                                 .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
                             pane.writer().write_all(&data)?;
-                            mux.record_agent_input(pane_id);
                             render_scheduler.schedule(pane_id, per_pane, None);
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
@@ -1027,7 +1026,6 @@ impl SessionHandler {
                                 .get_pane(pane_id)
                                 .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
                             pane.send_paste(&data)?;
-                            mux.record_agent_input(pane_id);
                             render_scheduler.schedule(pane_id, per_pane, None);
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
@@ -1258,7 +1256,6 @@ impl SessionHandler {
                                 .get_pane(pane_id)
                                 .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
                             pane.key_down(event.key, event.modifiers)?;
-                            mux.record_agent_input(pane_id);
                             metrics::histogram!("mux_server.input.dispatch_to_pty_latency")
                                 .record(input_received_at.elapsed());
 
@@ -2891,6 +2888,51 @@ mod test {
         assert!(state.active);
         assert_eq!(state.dirty.len(), 1);
         assert_eq!(harness.render_batches.len(), 1);
+    }
+
+    #[test]
+    fn codex_resume_selector_enter_is_not_prompt_submission() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = SimpleExecutor::new();
+        let mux = test_mux();
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let window_id = *mux.new_empty_window(Some("default".to_string()), None);
+        let tab_size = size(120, 40);
+        let tab = Arc::new(Tab::new(&tab_size));
+        let pane =
+            TestPane::new_with_process(alloc_pane_id(), tab_size, "codex", "/usr/local/bin/codex");
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        mux.set_agent_metadata(pane_id, sample_agent_metadata("resume-selector"))
+            .unwrap();
+
+        let mut harness = HandlerHarness::new_unregistered();
+        assert!(matches!(
+            harness.request(
+                &executor,
+                Pdu::SendKeyDown(SendKeyDown {
+                    pane_id,
+                    event: termwiz::input::KeyEvent {
+                        key: KeyCode::Enter,
+                        modifiers: KeyModifiers::NONE,
+                    },
+                    input_serial: InputSerial::now(),
+                })
+            ),
+            Pdu::UnitResponse(_)
+        ));
+
+        let runtime = mux
+            .list_agents()
+            .into_iter()
+            .find(|agent| agent.pane_id == pane_id)
+            .expect("agent runtime")
+            .runtime;
+        assert_eq!(runtime.last_input_at, None);
     }
 
     #[test]

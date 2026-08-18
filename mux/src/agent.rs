@@ -333,7 +333,7 @@ pub fn detect_harness_process(
     })
 }
 
-pub(crate) fn harness_process_is_compatible(
+fn harness_process_is_compatible(
     configured_harness: &AgentHarness,
     process_harness: &AgentHarness,
     foreground_process_name: Option<&str>,

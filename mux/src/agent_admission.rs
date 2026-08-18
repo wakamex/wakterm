@@ -386,7 +386,7 @@ impl Mux {
             .get_pane(candidate.pane_id)
             .with_context(|| format!("target pane {} disappeared", candidate.pane_id))?;
         pane.send_text_and_submit(&candidate.request.prompt, candidate.request.paste)?;
-        self.record_agent_input(candidate.pane_id);
+        self.record_agent_prompt_submission(candidate.pane_id);
         Ok(())
     }
 
