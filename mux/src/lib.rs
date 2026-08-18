@@ -1,9 +1,9 @@
 use crate::agent::{
     adopted_agent_matches_process_info, agent_observer_watch_roots, codex_session_id,
     default_launch_cmd_for_harness, derive_runtime_status, detect_harness_process,
-    finalize_runtime_snapshot, infer_harness, prime_runtime_for_new_agent,
-    refresh_runtime_from_harness, AgentHarness, AgentMetadata, AgentOrigin, AgentRuntimeSnapshot,
-    AgentSnapshot, AgentTabBadgeState,
+    finalize_runtime_snapshot, harness_process_is_compatible, infer_harness,
+    prime_runtime_for_new_agent, refresh_runtime_from_harness, AgentHarness, AgentMetadata,
+    AgentOrigin, AgentRuntimeSnapshot, AgentSnapshot, AgentTabBadgeState,
 };
 use crate::agent_event::AgentEventStore;
 use crate::agent_request::{AgentRequest, AgentRequestState, AgentRequestStore};
@@ -2215,13 +2215,34 @@ impl Mux {
 
     pub fn record_agent_input(&self, pane_id: PaneId) {
         self.record_agent_input_generation(pane_id);
+        // Keystrokes used to launch a provider from its shell must not look
+        // like a provider prompt. Otherwise `codex resume ...` leaves the
+        // restored session stuck in waiting-agent until another turn ends.
+        let provider_process_is_foreground = self
+            .get_agent_metadata_for_pane(pane_id)
+            .and_then(|metadata| self.get_pane(pane_id).map(|pane| (metadata, pane)))
+            .map(|(metadata, pane)| {
+                let foreground_process_name =
+                    pane.get_foreground_process_name(CachePolicy::AllowStale);
+                let configured_harness = infer_harness(&metadata.launch_cmd, None);
+                let process_harness = infer_harness("", foreground_process_name.as_deref());
+                foreground_process_name.is_none()
+                    || harness_process_is_compatible(
+                        &configured_harness,
+                        &process_harness,
+                        foreground_process_name.as_deref(),
+                    )
+            })
+            .unwrap_or(false);
         self.refresh_agent_runtime_for_pane_with_update(
             pane_id,
             true,
             AgentRefreshPolicy::Throttled,
             |runtime| {
                 let now = chrono::Utc::now();
-                runtime.last_input_at = Some(now);
+                if provider_process_is_foreground {
+                    runtime.last_input_at = Some(now);
+                }
                 runtime.observed_at = now;
             },
         );
@@ -5633,6 +5654,113 @@ mod test {
         assert!(runtime.last_input_at.is_some());
         assert!(runtime.last_output_at.is_some());
         assert_eq!(runtime.foreground_process_name, None);
+    }
+
+    #[test]
+    fn shell_launch_input_does_not_mark_provider_turn_active() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new_detected(
+            42,
+            size,
+            domain.id,
+            "codex",
+            "/tmp/manual-resume",
+            "/usr/bin/zsh",
+            &["zsh"],
+        );
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        mux.set_agent_metadata(pane_id, sample_agent_metadata("manual-resume"))
+            .unwrap();
+
+        {
+            let mut runtimes = mux.agent_runtime_by_pane.write();
+            let runtime = runtimes.get_mut(&pane_id).unwrap();
+            runtime.turn_state = crate::agent::AgentTurnState::WaitingOnUser;
+            runtime.last_turn_completed_at = Some(Utc::now() - chrono::Duration::minutes(1));
+        }
+
+        mux.record_agent_input(pane_id);
+
+        let runtime = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .unwrap();
+        assert_eq!(runtime.last_input_at, None);
+        assert_eq!(
+            runtime.turn_state,
+            crate::agent::AgentTurnState::WaitingOnUser
+        );
+    }
+
+    #[test]
+    fn provider_input_marks_agent_turn_active() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new_detected(
+            43,
+            size,
+            domain.id,
+            "codex",
+            "/tmp/provider-input",
+            "/usr/local/bin/codex",
+            &["codex"],
+        );
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        mux.set_agent_metadata(pane_id, sample_agent_metadata("provider-input"))
+            .unwrap();
+
+        mux.record_agent_input(pane_id);
+
+        let runtime = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .unwrap();
+        assert!(runtime.last_input_at.is_some());
+        assert_eq!(
+            runtime.turn_state,
+            crate::agent::AgentTurnState::WaitingOnAgent
+        );
     }
 
     #[test]
