@@ -1287,7 +1287,7 @@ impl ClientDomain {
                         metadata.is_some(),
                         metadata.as_ref().map(|m| m.launch_cmd.as_str())
                     );
-                    mux.set_mirrored_agent_harness(pane_id, metadata.as_ref());
+                    mux.set_mirrored_agent_metadata(pane_id, metadata.as_ref());
                 }
 
                 if let Some(local_window_id) = inner.remote_to_local_window(remote_window_id) {

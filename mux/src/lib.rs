@@ -142,6 +142,7 @@ pub struct Mux {
     tabs: RwLock<HashMap<TabId, Arc<Tab>>>,
     panes: RwLock<HashMap<PaneId, Arc<dyn Pane>>>,
     mirrored_agent_harness_by_pane: RwLock<HashMap<PaneId, crate::agent::AgentHarness>>,
+    mirrored_agent_cwd_by_pane: RwLock<HashMap<PaneId, String>>,
     agent_panes_by_name: RwLock<HashMap<String, PaneId>>,
     agent_metadata_by_pane: RwLock<HashMap<PaneId, Arc<AgentMetadata>>>,
     detected_agent_panes: RwLock<HashSet<PaneId>>,
@@ -870,6 +871,7 @@ impl Mux {
             tabs: RwLock::new(HashMap::new()),
             panes: RwLock::new(HashMap::new()),
             mirrored_agent_harness_by_pane: RwLock::new(HashMap::new()),
+            mirrored_agent_cwd_by_pane: RwLock::new(HashMap::new()),
             agent_panes_by_name: RwLock::new(HashMap::new()),
             agent_metadata_by_pane: RwLock::new(HashMap::new()),
             detected_agent_panes: RwLock::new(HashSet::new()),
@@ -1128,7 +1130,7 @@ impl Mux {
         Some(((*metadata).clone(), session_id))
     }
 
-    pub fn set_mirrored_agent_harness(&self, pane_id: PaneId, metadata: Option<&AgentMetadata>) {
+    pub fn set_mirrored_agent_metadata(&self, pane_id: PaneId, metadata: Option<&AgentMetadata>) {
         let tab_id = self.resolve_pane_id(pane_id).map(|(_, _, tab_id)| tab_id);
         let harness = metadata.and_then(|metadata| {
             let harness = infer_harness(&metadata.launch_cmd, None);
@@ -1146,6 +1148,16 @@ impl Mux {
             }
             None => {
                 self.mirrored_agent_harness_by_pane.write().remove(&pane_id);
+            }
+        }
+        match metadata {
+            Some(metadata) => {
+                self.mirrored_agent_cwd_by_pane
+                    .write()
+                    .insert(pane_id, metadata.declared_cwd.clone());
+            }
+            None => {
+                self.mirrored_agent_cwd_by_pane.write().remove(&pane_id);
             }
         }
         if let Some(tab_id) = tab_id {
@@ -1268,6 +1280,7 @@ impl Mux {
 
     pub fn clear_agent_metadata(&self, pane_id: PaneId) -> Option<Arc<AgentMetadata>> {
         self.mirrored_agent_harness_by_pane.write().remove(&pane_id);
+        self.mirrored_agent_cwd_by_pane.write().remove(&pane_id);
         let tab_id = self.resolve_pane_id(pane_id).map(|(_, _, tab_id)| tab_id);
         let metadata = {
             let mut metadata_by_pane = self.agent_metadata_by_pane.write();
@@ -1442,6 +1455,7 @@ impl Mux {
 
     fn clear_detected_agent_info(&self, pane_id: PaneId) {
         self.mirrored_agent_harness_by_pane.write().remove(&pane_id);
+        self.mirrored_agent_cwd_by_pane.write().remove(&pane_id);
         self.detected_agent_panes.write().remove(&pane_id);
         self.agent_adoption_candidates.write().remove(&pane_id);
         self.agent_artifact_watcher
@@ -2638,8 +2652,35 @@ impl Mux {
 
     pub fn raw_tab_title(&self, tab_id: TabId) -> String {
         self.get_tab(tab_id)
-            .map(|tab| Self::sanitize_tab_title_text(&tab.get_title()))
+            .and_then(|tab| tab.get_explicit_title())
+            .map(|title| Self::sanitize_tab_title_text(&title))
             .unwrap_or_default()
+    }
+
+    fn cwd_leaf_for_tab_title(cwd: &str) -> Option<String> {
+        let path = if cwd.starts_with("file://") {
+            Url::parse(cwd)
+                .ok()
+                .and_then(|url| url.to_file_path().ok())
+                .unwrap_or_else(|| PathBuf::from(cwd))
+        } else {
+            PathBuf::from(cwd)
+        };
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+            .filter(|name| !name.is_empty())
+    }
+
+    pub fn agent_folder_title_for_pane(&self, pane_id: PaneId) -> Option<String> {
+        let cwd = if let Some(metadata) = self.get_agent_metadata_for_pane(pane_id) {
+            metadata.declared_cwd.clone()
+        } else if let Some(cwd) = self.mirrored_agent_cwd_by_pane.read().get(&pane_id) {
+            cwd.clone()
+        } else {
+            return None;
+        };
+        Self::cwd_leaf_for_tab_title(&cwd)
     }
 
     fn cached_tab_badge_state_for_agents(
@@ -6100,7 +6141,7 @@ mod test {
             managed_checkout: false,
             codex_app_server: None,
         };
-        mux.set_mirrored_agent_harness(pane_id, Some(&metadata));
+        mux.set_mirrored_agent_metadata(pane_id, Some(&metadata));
 
         assert!(matches!(
             mux.cached_agent_harness_for_pane(pane_id),
@@ -7595,6 +7636,151 @@ mod test {
 
         assert!(mux.get_agent_metadata_for_pane(pane_id).is_some());
         assert_eq!(*title_changes.lock(), 1);
+    }
+
+    #[test]
+    fn agent_folder_title_does_not_set_an_explicit_tab_name() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new(243, size, domain.id);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        tab.set_title_from_terminal("code");
+        assert_eq!(tab.get_title(), "code");
+        assert_eq!(tab.get_explicit_title(), None);
+        assert_eq!(mux.raw_tab_title(tab.tab_id()), "");
+
+        let mut metadata = sample_agent_metadata("codex");
+        metadata.declared_cwd = "file:///code/testytest".to_string();
+        mux.set_agent_metadata(pane_id, metadata).unwrap();
+        assert_eq!(
+            mux.agent_folder_title_for_pane(pane_id).as_deref(),
+            Some("testytest")
+        );
+        assert_eq!(mux.effective_tab_title(tab.tab_id()), "");
+
+        tab.set_title("review");
+        assert_eq!(tab.get_explicit_title().as_deref(), Some("review"));
+        assert_eq!(mux.raw_tab_title(tab.tab_id()), "review");
+        assert_eq!(mux.effective_tab_title(tab.tab_id()), "review");
+
+        tab.set_title("");
+        assert_eq!(tab.get_explicit_title(), None);
+        assert_eq!(mux.effective_tab_title(tab.tab_id()), "");
+    }
+
+    #[test]
+    fn mirrored_agent_folder_is_available_to_the_automatic_title_path() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new(244, size, domain.id);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let mut metadata = sample_agent_metadata("remote_codex");
+        metadata.declared_cwd = "file:///code/testytest".to_string();
+        mux.set_mirrored_agent_metadata(pane_id, Some(&metadata));
+        assert_eq!(
+            mux.agent_folder_title_for_pane(pane_id).as_deref(),
+            Some("testytest")
+        );
+        assert_eq!(mux.raw_tab_title(tab.tab_id()), "");
+
+        mux.set_mirrored_agent_metadata(pane_id, None);
+        assert_eq!(mux.agent_folder_title_for_pane(pane_id), None);
+    }
+
+    #[test]
+    fn agent_folder_titles_are_pane_local_within_a_tab() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let first_pane = FakePane::new(245, size, domain.id);
+        let second_pane = FakePane::new(246, size, domain.id);
+        tab.assign_pane(&first_pane);
+        let second_index = tab
+            .split_and_insert(
+                0,
+                SplitRequest {
+                    direction: crate::tab::SplitDirection::Horizontal,
+                    target_is_second: true,
+                    size: crate::tab::SplitSize::Percent(50),
+                    top_level: false,
+                },
+                second_pane.clone(),
+            )
+            .unwrap();
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_pane(&second_pane).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let mut first = sample_agent_metadata("planner");
+        first.declared_cwd = "file:///code/frontend".to_string();
+        let mut second = sample_agent_metadata("reviewer");
+        second.declared_cwd = "file:///code/backend".to_string();
+        mux.set_mirrored_agent_metadata(first_pane.pane_id(), Some(&first));
+        mux.set_mirrored_agent_metadata(second_pane.pane_id(), Some(&second));
+
+        assert_eq!(
+            mux.agent_folder_title_for_pane(first_pane.pane_id())
+                .as_deref(),
+            Some("frontend")
+        );
+        tab.set_active_idx_no_notify(second_index);
+        assert_eq!(
+            mux.agent_folder_title_for_pane(second_pane.pane_id())
+                .as_deref(),
+            Some("backend")
+        );
     }
 
     #[test]

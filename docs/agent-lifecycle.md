@@ -49,6 +49,11 @@ the distinct Codex thread ID and session ID. Each pane runs `codex resume`
 against that socket, so input, rendering, approvals, and native interaction
 remain Codex TUI responsibilities.
 
+When invoked inside a Wakterm pane, the command runs the native TUI in that
+current pane and returns to its shell when Codex exits. `--new-tab` explicitly
+creates a separate tab instead. Invocations outside Wakterm must use
+`--new-tab`, because there is no current Wakterm PTY to own the TUI.
+
 This transport is intentionally narrower than managed mode. It does not render
 a Wakterm agent UI, does not adopt an existing PTY into the app-server, and
 does not change the observed-PTY path for manually launched Codex processes.
@@ -74,6 +79,15 @@ unrelated process. Neither value is a durable session identity.
 Automatic adoption may promote a detected pane only after a confirmed session
 match. If the harness exits back to a shell, stale automatically adopted state
 must be cleared instead of making the shell look like a live agent.
+
+Unnamed tabs whose active pane contains an adopted or app-server agent use that
+agent's leaf folder name as an automatic display title. The title follows the
+active pane because one tab may contain multiple agent panes with different
+working directories. An explicit user title always wins and is the only title
+persisted as layout identity. Terminal and folder-derived titles remain
+automatic. The rename-tab prompt preloads only an explicit title, so an empty
+prompt also indicates that the visible title is automatic. Submitting an empty
+title clears the explicit name and returns the tab to automatic naming.
 
 ## Restoration contract
 

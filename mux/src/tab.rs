@@ -734,11 +734,21 @@ impl Tab {
         self.inner.lock().title.clone()
     }
 
+    /// Return the stable title explicitly assigned by the user or API.
+    /// Terminal-provided titles are deliberately excluded.
+    pub fn get_explicit_title(&self) -> Option<String> {
+        let inner = self.inner.lock();
+        inner
+            .title_is_user_set
+            .then(|| inner.title.clone())
+            .filter(|title| !title.is_empty())
+    }
+
     /// Set the tab title explicitly (user action or API).
     /// Marks the title as user-set so terminal escape sequences won't override it.
     pub fn set_title(&self, title: &str) {
         let mut inner = self.inner.lock();
-        inner.title_is_user_set = true;
+        inner.title_is_user_set = !title.is_empty();
         if inner.title != title {
             inner.title = title.to_string();
             Mux::try_get().map(|mux| {
@@ -754,7 +764,7 @@ impl Tab {
     /// into the mux as a local user action.
     pub fn set_title_from_remote(&self, title: &str) {
         let mut inner = self.inner.lock();
-        inner.title_is_user_set = true;
+        inner.title_is_user_set = !title.is_empty();
         if inner.title != title {
             inner.title = title.to_string();
         }

@@ -24,6 +24,12 @@ When diagnosing flicker or stale state, identify the mutation, ID-translation, n
 
 ## Agent lifecycle and recovery
 
+A tab may contain zero, one, or multiple agent panes. Never model a tab as an
+agent identity or assume that its active pane is the tab's only agent. Keep
+watching, routing, lifecycle, and recovery keyed by exact pane and provider
+identity. Tab titles and badges are presentation only and may follow the active
+pane; never use them as agent identity.
+
 Follow the lifecycle and protocol boundaries in [docs/agent-lifecycle.md](docs/agent-lifecycle.md). Detection, confirmed adoption, restorability, and managed mode are distinct guarantees. Do not persist weak process or title detection as session identity, and do not treat a PID as a recovery handle.
 
 When restoring an expected harness, resume the exact confirmed provider session or surface a visible failure. Never silently substitute a fresh shell or a new provider session. Keep PTY restoration separate from future managed backends, and do not automatically promote a live PTY into managed mode.

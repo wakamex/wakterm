@@ -2510,13 +2510,14 @@ impl TermWindow {
         let description = "Enter new name for tab".to_string();
         let prompt = "> ".to_string();
         let tab_id = tab.tab_id();
+        let initial_value = tab.get_explicit_title();
 
         let (overlay, future) = start_overlay(self, &tab, move |_tab_id, term| {
             crate::overlay::prompt::show_rename_tab_prompt_overlay(
                 term,
                 description,
                 prompt,
-                None,
+                initial_value,
                 tab_id,
             )
         });
@@ -3722,7 +3723,13 @@ impl TermWindow {
                     tab_title: mux.effective_tab_title(tab.tab_id()),
                     harness_icons,
                     assigned_color: None,
-                    active_pane: active_pane.map(Self::pos_pane_to_pane_info),
+                    active_pane: active_pane.map(|pane| {
+                        let mut info = Self::pos_pane_to_pane_info(pane);
+                        if let Some(title) = mux.agent_folder_title_for_pane(info.pane_id) {
+                            info.title = title;
+                        }
+                        info
+                    }),
                 }
             })
             .collect();

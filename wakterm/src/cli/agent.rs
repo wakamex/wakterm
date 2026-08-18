@@ -2,7 +2,7 @@ use crate::cli::{resolve_relative_cwd, CliOutputFormatKind};
 use anyhow::{bail, Context};
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum, ValueHint};
-use codec::{InputSerial, ListPanesResponse, SendKeyDown, SpawnV2, TabTitleChanged};
+use codec::{InputSerial, ListPanesResponse, SendKeyDown, SpawnV2};
 use config::keyassignment::SpawnTabDomain;
 use config::ConfigHandle;
 use mux::agent::{
@@ -152,7 +152,6 @@ struct PreparedAgentLaunch {
 struct PaneContext {
     window_id: WindowId,
     tab_id: mux::tab::TabId,
-    tab_title: String,
     tab_size: wakterm_term::TerminalSize,
     cwd: Option<String>,
 }
@@ -313,7 +312,6 @@ impl SpawnAgentCommand {
                 |request| client.split_pane(request),
                 |request| client.send_paste(request),
                 |request| client.key_down(request),
-                |request| client.set_tab_title(request),
                 |request| client.set_agent_metadata(request),
                 |request| client.clear_agent_metadata(request),
                 |request| client.kill_pane(request),
@@ -342,8 +340,6 @@ impl SpawnAgentCommand {
         SendPasteFut,
         KeyDownFn,
         KeyDownFut,
-        SetTabTitleFn,
-        SetTabTitleFut,
         SetAgentMetadataFn,
         SetAgentMetadataFut,
         ClearAgentMetadataFn,
@@ -362,7 +358,6 @@ impl SpawnAgentCommand {
         split_pane: SplitPaneFn,
         mut send_paste: SendPasteFn,
         mut key_down: KeyDownFn,
-        mut set_tab_title: SetTabTitleFn,
         mut set_agent_metadata: SetAgentMetadataFn,
         mut clear_agent_metadata: ClearAgentMetadataFn,
         mut kill_pane: KillPaneFn,
@@ -385,8 +380,6 @@ impl SpawnAgentCommand {
         SendPasteFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
         KeyDownFn: FnMut(SendKeyDown) -> KeyDownFut,
         KeyDownFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
-        SetTabTitleFn: FnMut(codec::TabTitleChanged) -> SetTabTitleFut,
-        SetTabTitleFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
         SetAgentMetadataFn: FnMut(codec::SetAgentMetadata) -> SetAgentMetadataFut,
         SetAgentMetadataFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
         ClearAgentMetadataFn: FnMut(codec::ClearAgentMetadata) -> ClearAgentMetadataFut,
@@ -512,15 +505,6 @@ impl SpawnAgentCommand {
                 return Err(err.context("sent launch command but failed to submit it"));
             }
 
-            if pane_context.tab_title.is_empty() {
-                let _ = set_tab_title(TabTitleChanged {
-                    tab_id: pane_context.tab_id,
-                    title: agent_name.clone(),
-                    badge: Default::default(),
-                })
-                .await;
-            }
-
             codec::SpawnResponse {
                 tab_id: pane_context.tab_id,
                 pane_id,
@@ -578,22 +562,6 @@ impl SpawnAgentCommand {
             })
             .await?
         };
-
-        if !self.split && !self.here {
-            if let Err(err) = set_tab_title(TabTitleChanged {
-                tab_id: spawned.tab_id,
-                title: agent_name.clone(),
-                badge: Default::default(),
-            })
-            .await
-            {
-                let _ = kill_pane(codec::KillPane {
-                    pane_id: spawned.pane_id,
-                })
-                .await;
-                return Err(err.context("spawned pane but failed to set initial tab title"));
-            }
-        }
 
         if !self.here {
             if let Err(err) = set_agent_metadata(codec::SetAgentMetadata {
@@ -715,6 +683,10 @@ pub struct LaunchCodexCommand {
     #[arg(long, value_name = "THREAD_ID")]
     resume: Option<String>,
 
+    /// Launch in a new tab instead of using the current Wakterm pane.
+    #[arg(long)]
+    new_tab: bool,
+
     /// Options passed to the native Codex TUI after `--`.
     #[arg(last = true, allow_hyphen_values = true)]
     codex_options: Vec<String>,
@@ -722,6 +694,10 @@ pub struct LaunchCodexCommand {
 
 impl LaunchCodexCommand {
     pub async fn run(&self, client: Client, config: &ConfigHandle) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.new_tab || std::env::var_os("WAKTERM_PANE").is_some(),
+            "wakterm launch codex must run inside a Wakterm pane; pass --new-tab to launch from another terminal"
+        );
         let pane_id = client.resolve_pane_id(None).await?;
         let panes = client.list_panes().await?;
         let pane_context = find_pane_context(&panes, pane_id)
@@ -739,6 +715,30 @@ impl LaunchCodexCommand {
                 tui_args: self.codex_options.clone(),
             })
             .await?;
+
+        if !self.new_tab {
+            let metadata = AgentMetadata {
+                agent_id: Uuid::new_v4().to_string(),
+                name,
+                launch_cmd: prepared.session.executable.clone(),
+                declared_cwd: cwd.clone(),
+                adopted_pid: None,
+                adopted_start_time: None,
+                created_at: Utc::now(),
+                repo_root: None,
+                worktree: None,
+                branch: None,
+                managed_checkout: false,
+                codex_app_server: Some(prepared.session.clone()),
+            };
+            return run_managed_codex_in_current_pane(
+                pane_id,
+                || client.set_agent_metadata(codec::SetAgentMetadata { pane_id, metadata }),
+                || client.clear_agent_metadata(codec::ClearAgentMetadata { pane_id }),
+                || run_native_codex_tui(&prepared.argv, &cwd),
+            )
+            .await;
+        }
 
         SpawnAgentCommand {
             harness: Some(AgentStartHarness::Codex),
@@ -765,6 +765,56 @@ impl LaunchCodexCommand {
         }
         .run(client, config)
         .await
+    }
+}
+
+async fn run_native_codex_tui(argv: &[String], cwd: &str) -> anyhow::Result<()> {
+    let (program, args) = argv
+        .split_first()
+        .context("Codex native TUI command was empty")?;
+    let status = smol::process::Command::new(program)
+        .args(args)
+        .current_dir(cwd)
+        .status()
+        .await
+        .with_context(|| format!("launching native Codex TUI via {program}"))?;
+    anyhow::ensure!(status.success(), "native Codex TUI exited with {status}");
+    Ok(())
+}
+
+async fn run_managed_codex_in_current_pane<
+    SetMetadata,
+    SetMetadataFut,
+    ClearMetadata,
+    ClearMetadataFut,
+    RunNative,
+    RunNativeFut,
+>(
+    pane_id: PaneId,
+    set_metadata: SetMetadata,
+    clear_metadata: ClearMetadata,
+    run_native: RunNative,
+) -> anyhow::Result<()>
+where
+    SetMetadata: FnOnce() -> SetMetadataFut,
+    SetMetadataFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
+    ClearMetadata: FnOnce() -> ClearMetadataFut,
+    ClearMetadataFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
+    RunNative: FnOnce() -> RunNativeFut,
+    RunNativeFut: Future<Output = anyhow::Result<()>>,
+{
+    set_metadata()
+        .await
+        .with_context(|| format!("attaching managed Codex metadata to pane {pane_id}"))?;
+    let run_result = run_native().await;
+    let clear_result = clear_metadata()
+        .await
+        .with_context(|| format!("clearing managed Codex metadata from pane {pane_id}"));
+    match (run_result, clear_result) {
+        (Ok(()), Ok(_)) => Ok(()),
+        (Err(run_err), Ok(_)) => Err(run_err),
+        (Ok(()), Err(clear_err)) => Err(clear_err),
+        (Err(run_err), Err(clear_err)) => Err(run_err.context(clear_err)),
     }
 }
 
@@ -855,7 +905,7 @@ fn build_in_place_launch_command(
 }
 
 fn find_pane_context(panes: &ListPanesResponse, pane_id: PaneId) -> Option<PaneContext> {
-    for (idx, tabroot) in panes.tabs.iter().enumerate() {
+    for tabroot in &panes.tabs {
         let Some(root_size) = tabroot.root_size() else {
             continue;
         };
@@ -867,7 +917,6 @@ fn find_pane_context(panes: &ListPanesResponse, pane_id: PaneId) -> Option<PaneC
                     return Some(PaneContext {
                         window_id: entry.window_id,
                         tab_id: entry.tab_id,
-                        tab_title: panes.tab_titles.get(idx).cloned().unwrap_or_default(),
                         tab_size: root_size,
                         cwd: pane_working_dir(entry.working_dir.as_ref()),
                     });
@@ -4061,7 +4110,6 @@ mod test {
             },
             |_| async { panic!("send_paste should not be used for split agent start") },
             |_| async { panic!("key_down should not be used for split agent start") },
-            |_| async { panic!("set_tab_title should not be used for split agent spawn") },
             {
                 let set_calls = Rc::clone(&set_calls);
                 move |request| {
@@ -4107,7 +4155,6 @@ mod test {
     #[test]
     fn spawn_new_tab_in_existing_window_sends_current_pane_context() {
         let spawn_calls = Rc::new(RefCell::new(vec![]));
-        let title_calls = Rc::new(RefCell::new(vec![]));
         let set_calls = Rc::new(RefCell::new(vec![]));
         let command = SpawnAgentCommand {
             harness: Some(AgentStartHarness::Codex),
@@ -4155,13 +4202,6 @@ mod test {
             |_| async { panic!("send_paste should not be used for new-tab agent spawn") },
             |_| async { panic!("key_down should not be used for new-tab agent spawn") },
             {
-                let title_calls = Rc::clone(&title_calls);
-                move |request| {
-                    title_calls.borrow_mut().push(request);
-                    async { Ok(UnitResponse {}) }
-                }
-            },
-            {
                 let set_calls = Rc::clone(&set_calls);
                 move |request| {
                     set_calls.borrow_mut().push(request);
@@ -4188,11 +4228,6 @@ mod test {
             spawn_calls[0].command_dir.as_deref(),
             Some(pane_30_cwd.as_str())
         );
-
-        let title_calls = title_calls.borrow();
-        assert_eq!(title_calls.len(), 1);
-        assert_eq!(title_calls[0].tab_id, 20);
-        assert_eq!(title_calls[0].title, "reviewer");
 
         let set_calls = set_calls.borrow();
         assert_eq!(set_calls.len(), 1);
@@ -4236,7 +4271,6 @@ mod test {
             |_| async { panic!("split_pane should not be used") },
             |_| async { panic!("send_paste should not be used for new-window agent spawn") },
             |_| async { panic!("key_down should not be used for new-window agent spawn") },
-            |_| async { Ok(UnitResponse {}) },
             |_| async { Err(anyhow::anyhow!("metadata attach failed")) },
             |_| async { panic!("clear_agent_metadata should not be used on metadata failure") },
             {
@@ -4261,7 +4295,7 @@ mod test {
     }
 
     #[test]
-    fn spawn_cleans_up_spawned_pane_when_initial_tab_title_fails() {
+    fn spawn_uses_agent_metadata_for_automatic_title() {
         let kill_calls = Rc::new(RefCell::new(vec![]));
         let command = SpawnAgentCommand {
             harness: Some(AgentStartHarness::Codex),
@@ -4287,19 +4321,22 @@ mod test {
             prepared_override: None,
         };
 
-        let err = promise::spawn::block_on(command.run_with(
+        let agent = promise::spawn::block_on(command.run_with(
             &ConfigHandle::default_config(),
             || async { Ok(ListAgentsResponse { agents: vec![] }) },
             || async { panic!("list_panes should not be used for new-window agent spawn") },
-            || async { panic!("list_agents_after_set should not be used on failure") },
+            || async {
+                Ok(ListAgentsResponse {
+                    agents: vec![sample_agent(77, "reviewer")],
+                })
+            },
             |_| async { panic!("resolve_pane_id should not be called") },
             |_| async { Ok(sample_spawn_response(77, 22)) },
             |_| async { panic!("split_pane should not be used") },
             |_| async { panic!("send_paste should not be used for new-window agent spawn") },
             |_| async { panic!("key_down should not be used for new-window agent spawn") },
-            |_| async { Err(anyhow::anyhow!("title set failed")) },
-            |_| async { panic!("set_agent_metadata should not be used on title failure") },
-            |_| async { panic!("clear_agent_metadata should not be used on title failure") },
+            |_| async { Ok(UnitResponse {}) },
+            |_| async { panic!("clear_agent_metadata should not be used on success") },
             {
                 let kill_calls = Rc::clone(&kill_calls);
                 move |request| {
@@ -4311,21 +4348,16 @@ mod test {
                 cmd.prepare_launch(agent_name, agents, current_cwd)
             },
         ))
-        .unwrap_err();
+        .unwrap();
 
-        assert!(err
-            .to_string()
-            .contains("spawned pane but failed to set initial tab title"));
-        let kill_calls = kill_calls.borrow();
-        assert_eq!(kill_calls.len(), 1);
-        assert_eq!(kill_calls[0].pane_id, 77);
+        assert_eq!(agent.metadata.name, "reviewer");
+        assert!(kill_calls.borrow().is_empty());
     }
 
     #[test]
     fn spawn_with_auto_worktree_creates_and_registers_worktree() {
         let (_temp, repo_root) = init_git_repo();
         let spawn_calls = Rc::new(RefCell::new(vec![]));
-        let title_calls = Rc::new(RefCell::new(vec![]));
         let set_calls = Rc::new(RefCell::new(vec![]));
         let command = SpawnAgentCommand {
             harness: Some(AgentStartHarness::Codex),
@@ -4373,13 +4405,6 @@ mod test {
             |_| async { panic!("send_paste should not be used for new-window agent spawn") },
             |_| async { panic!("key_down should not be used for new-window agent spawn") },
             {
-                let title_calls = Rc::clone(&title_calls);
-                move |request| {
-                    title_calls.borrow_mut().push(request);
-                    async { Ok(UnitResponse {}) }
-                }
-            },
-            {
                 let set_calls = Rc::clone(&set_calls);
                 move |request| {
                     set_calls.borrow_mut().push(request);
@@ -4407,11 +4432,6 @@ mod test {
             spawn_calls[0].command_dir.as_deref(),
             Some(worktree_string.as_str())
         );
-
-        let title_calls = title_calls.borrow();
-        assert_eq!(title_calls.len(), 1);
-        assert_eq!(title_calls[0].tab_id, 30);
-        assert_eq!(title_calls[0].title, "scrape-api");
 
         let set_calls = set_calls.borrow();
         assert_eq!(set_calls.len(), 1);
@@ -4599,7 +4619,6 @@ mod test {
     #[test]
     fn spawn_without_name_uses_harness_base_name() {
         let spawn_calls = Rc::new(RefCell::new(vec![]));
-        let title_calls = Rc::new(RefCell::new(vec![]));
         let set_calls = Rc::new(RefCell::new(vec![]));
         let command = SpawnAgentCommand {
             harness: Some(AgentStartHarness::Codex),
@@ -4646,13 +4665,6 @@ mod test {
             |_| async { panic!("send_paste should not be used for new-window agent spawn") },
             |_| async { panic!("key_down should not be used for new-window agent spawn") },
             {
-                let title_calls = Rc::clone(&title_calls);
-                move |request| {
-                    title_calls.borrow_mut().push(request);
-                    async { Ok(UnitResponse {}) }
-                }
-            },
-            {
                 let set_calls = Rc::clone(&set_calls);
                 move |request| {
                     set_calls.borrow_mut().push(request);
@@ -4668,9 +4680,6 @@ mod test {
         .unwrap();
 
         assert_eq!(agent.metadata.name, "codex");
-        let title_calls = title_calls.borrow();
-        assert_eq!(title_calls.len(), 1);
-        assert_eq!(title_calls[0].title, "codex");
         let set_calls = set_calls.borrow();
         assert_eq!(set_calls.len(), 1);
         assert_eq!(set_calls[0].metadata.name, "codex");
@@ -4700,10 +4709,73 @@ mod test {
     }
 
     #[test]
+    fn managed_codex_launch_defaults_to_current_pane_and_new_tab_is_explicit() {
+        let current = LaunchCodexCommand::try_parse_from(["codex"]).unwrap();
+        assert!(!current.new_tab);
+
+        let new_tab = LaunchCodexCommand::try_parse_from(["codex", "--new-tab"]).unwrap();
+        assert!(new_tab.new_tab);
+    }
+
+    #[test]
+    fn current_pane_managed_launch_attaches_runs_and_clears_metadata() {
+        let events = Rc::new(RefCell::new(vec![]));
+        let result = promise::spawn::block_on(run_managed_codex_in_current_pane(
+            30,
+            {
+                let events = Rc::clone(&events);
+                move || {
+                    events.borrow_mut().push("set");
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            {
+                let events = Rc::clone(&events);
+                move || {
+                    events.borrow_mut().push("clear");
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            {
+                let events = Rc::clone(&events);
+                move || {
+                    events.borrow_mut().push("run");
+                    async { Ok(()) }
+                }
+            },
+        ));
+
+        result.unwrap();
+        assert_eq!(*events.borrow(), vec!["set", "run", "clear"]);
+    }
+
+    #[test]
+    fn current_pane_managed_launch_clears_metadata_after_tui_failure() {
+        let cleared = Rc::new(RefCell::new(false));
+        let result = promise::spawn::block_on(run_managed_codex_in_current_pane(
+            30,
+            || async { Ok(UnitResponse {}) },
+            {
+                let cleared = Rc::clone(&cleared);
+                move || {
+                    *cleared.borrow_mut() = true;
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            || async { Err(anyhow::anyhow!("native TUI failed")) },
+        ));
+
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("native TUI failed"));
+        assert!(*cleared.borrow());
+    }
+
+    #[test]
     fn start_here_preserves_shell_and_sets_metadata() {
         let paste_calls = Rc::new(RefCell::new(vec![]));
         let key_calls = Rc::new(RefCell::new(vec![]));
-        let title_calls = Rc::new(RefCell::new(vec![]));
         let set_calls = Rc::new(RefCell::new(vec![]));
         let clear_calls = Rc::new(RefCell::new(vec![]));
         let command = SpawnAgentCommand {
@@ -4765,13 +4837,6 @@ mod test {
                 }
             },
             {
-                let title_calls = Rc::clone(&title_calls);
-                move |request| {
-                    title_calls.borrow_mut().push(request);
-                    async { Ok(UnitResponse {}) }
-                }
-            },
-            {
                 let set_calls = Rc::clone(&set_calls);
                 move |request| {
                     set_calls.borrow_mut().push(request);
@@ -4815,11 +4880,6 @@ mod test {
         assert_eq!(key_calls.len(), 1);
         assert_eq!(key_calls[0].pane_id, 30);
         assert_eq!(key_calls[0].event.key, KeyCode::Enter);
-
-        let title_calls = title_calls.borrow();
-        assert_eq!(title_calls.len(), 1);
-        assert_eq!(title_calls[0].tab_id, 20);
-        assert_eq!(title_calls[0].title, "codex");
 
         let clear_calls = clear_calls.borrow();
         assert!(clear_calls.is_empty());
@@ -4871,7 +4931,6 @@ mod test {
             |_| async { panic!("split_pane should not be used for --here") },
             |_| async { Err(anyhow::anyhow!("paste failed")) },
             |_| async { panic!("key_down should not be used when send_paste fails") },
-            |_| async { panic!("set_tab_title should not be used when send_paste fails") },
             {
                 let set_calls = Rc::clone(&set_calls);
                 move |request| {
@@ -4957,7 +5016,6 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
-            |_| async { Ok(UnitResponse {}) },
             |_| async { Ok(UnitResponse {}) },
             |_| async { Ok(UnitResponse {}) },
             |_| async { Ok(UnitResponse {}) },

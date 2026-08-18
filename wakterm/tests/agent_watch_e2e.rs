@@ -571,7 +571,7 @@ fn run_managed_codex_launch(socket: &Path, pane_id: u64, cwd: &Path) -> Value {
         .current_dir(cwd)
         .env("WAKTERM_PANE", pane_id.to_string())
         .env("WAKTERM_UNIX_SOCKET", socket)
-        .args(["-n", "launch", "codex", "--cwd"])
+        .args(["-n", "launch", "codex", "--new-tab", "--cwd"])
         .arg(cwd)
         .stdin(Stdio::null())
         .output()
