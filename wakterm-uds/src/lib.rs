@@ -101,6 +101,15 @@ impl UnixStream {
     pub fn connect<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
         Ok(Self(StreamImpl::connect(path)?))
     }
+
+    pub fn pair() -> std::io::Result<(Self, Self)> {
+        let (first, second) = StreamImpl::pair()?;
+        Ok((Self(first), Self(second)))
+    }
+
+    pub fn try_clone(&self) -> std::io::Result<Self> {
+        Ok(Self(self.0.try_clone()?))
+    }
 }
 
 impl std::ops::Deref for UnixStream {

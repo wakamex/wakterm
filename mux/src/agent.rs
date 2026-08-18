@@ -32,6 +32,17 @@ pub struct AgentMetadata {
     pub worktree: Option<String>,
     pub branch: Option<String>,
     pub managed_checkout: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_app_server: Option<CodexAppServerSession>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodexAppServerSession {
+    pub thread_id: String,
+    pub session_id: String,
+    pub executable: String,
+    pub version: String,
+    pub tui_args: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -47,6 +58,7 @@ pub enum AgentHarness {
 pub enum AgentTransport {
     PlainPty,
     ObservedPty,
+    CodexAppServerTui,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -189,6 +201,14 @@ pub fn prime_runtime_for_new_agent(
     metadata: &AgentMetadata,
     foreground_process_name: Option<&str>,
 ) {
+    if metadata.codex_app_server.is_some() {
+        runtime.harness = AgentHarness::Codex;
+        runtime.transport = AgentTransport::CodexAppServerTui;
+        runtime.harness_mode = Some("app-server-tui".to_string());
+        runtime.observer_started_at = None;
+        runtime.observer_error = None;
+        return;
+    }
     let configured_harness = infer_harness(&metadata.launch_cmd, None);
     let process_harness = infer_harness("", foreground_process_name);
 
@@ -452,6 +472,14 @@ fn derive_attention_reason(runtime: &AgentRuntimeSnapshot) -> Option<String> {
 }
 
 pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata: &AgentMetadata) {
+    if metadata.codex_app_server.is_some() {
+        runtime.harness = AgentHarness::Codex;
+        runtime.transport = AgentTransport::CodexAppServerTui;
+        runtime.harness_mode = Some("app-server-tui".to_string());
+        runtime.last_harness_refresh_at = Some(Utc::now());
+        finalize_runtime_snapshot(runtime);
+        return;
+    }
     let now = Utc::now();
     runtime.last_harness_refresh_at = Some(now);
     let normalized_cwd = normalize_declared_cwd(&metadata.declared_cwd);
@@ -2595,6 +2623,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         assert_eq!(derive_runtime_status(&runtime), AgentStatus::Starting);
@@ -2626,6 +2655,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         runtime.harness = AgentHarness::Codex;
@@ -2675,6 +2705,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         runtime.harness = AgentHarness::Gemini;
@@ -2704,6 +2735,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         };
         let runtime = AgentRuntimeSnapshot::new(&metadata);
 
@@ -3462,6 +3494,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         };
         let mut gemini_runtime = AgentRuntimeSnapshot::new(&gemini_metadata);
         gemini_runtime.foreground_process_name =
@@ -3531,6 +3564,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         };
         let mut opencode_runtime = AgentRuntimeSnapshot::new(&opencode_metadata);
         opencode_runtime.foreground_process_name = Some("opencode".to_string());
@@ -3572,6 +3606,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         runtime.foreground_process_name = Some("claude".to_string());
@@ -3618,6 +3653,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         runtime.foreground_process_name = Some("zsh".to_string());
@@ -3648,6 +3684,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         runtime.foreground_process_name = Some("claude".to_string());
@@ -3676,6 +3713,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         runtime.foreground_process_name = Some("codex".to_string());
@@ -3725,6 +3763,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         runtime.foreground_process_name = Some("codex".to_string());

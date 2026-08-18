@@ -53,6 +53,7 @@ uuid = { workspace=true, features=["v4", "fast-rng"] }
 wakterm-dynamic.workspace = true
 wakterm-ssh.workspace = true
 wakterm-term = { workspace=true, features=["use_serde"] }
+wakterm-uds.workspace = true
 
 [target."cfg(windows)".dependencies]
 ntapi.workspace = true

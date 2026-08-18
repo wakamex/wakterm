@@ -54,6 +54,7 @@ pub mod agent_event;
 pub mod agent_request;
 pub mod agent_service;
 pub mod client;
+pub mod codex_app_server;
 pub mod connui;
 pub mod domain;
 pub mod localpane;
@@ -170,6 +171,7 @@ pub struct Mux {
     num_panes_by_workspace: RwLock<HashMap<String, usize>>,
     main_thread_id: std::thread::ThreadId,
     agent_observer_tx: Sender<AgentObserverCommand>,
+    codex_app_server: codex_app_server::CodexAppServer,
     agent: Option<AgentProxy>,
 }
 
@@ -862,8 +864,9 @@ impl Mux {
         let agent_event_store = AgentEventStore::new(agent_state_path.clone());
         let agent_observer_tx = spawn_agent_observer_worker(agent_event_store.clone());
 
+        let instance_id = MUX_INSTANCE_ID.fetch_add(1, Ordering::Relaxed);
         Self {
-            instance_id: MUX_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
+            instance_id,
             tabs: RwLock::new(HashMap::new()),
             panes: RwLock::new(HashMap::new()),
             mirrored_agent_harness_by_pane: RwLock::new(HashMap::new()),
@@ -896,7 +899,75 @@ impl Mux {
             num_panes_by_workspace: RwLock::new(HashMap::new()),
             main_thread_id: std::thread::current().id(),
             agent_observer_tx,
+            codex_app_server: codex_app_server::CodexAppServer::new(instance_id),
             agent,
+        }
+    }
+
+    pub fn prepare_codex_app_server_launch(
+        &self,
+        request: codex_app_server::PrepareCodexLaunch,
+    ) -> anyhow::Result<codex_app_server::PreparedCodexLaunch> {
+        self.codex_app_server.prepare(request)
+    }
+
+    pub(crate) fn apply_codex_app_server_notification(&self, message: &serde_json::Value) {
+        codex_app_server::apply_notification_to_runtime(self, message);
+    }
+
+    pub(crate) fn codex_app_server_disconnected(&self) {
+        self.codex_app_server.mark_disconnected();
+        let managed: Vec<_> = self
+            .agent_metadata_by_pane
+            .read()
+            .iter()
+            .filter_map(|(pane_id, metadata)| {
+                metadata.codex_app_server.as_ref().map(|session| {
+                    (
+                        *pane_id,
+                        codex_app_server::RecoveryThread {
+                            name: metadata.name.clone(),
+                            cwd: metadata.declared_cwd.clone(),
+                            session: session.clone(),
+                        },
+                    )
+                })
+            })
+            .collect();
+        let recovery = self.codex_app_server.recover(
+            &managed
+                .iter()
+                .map(|(_, thread)| thread.clone())
+                .collect::<Vec<_>>(),
+        );
+        let mut runtimes = self.agent_runtime_by_pane.write();
+        for (pane_id, thread) in &managed {
+            if let Some(runtime) = runtimes.get_mut(pane_id) {
+                let error = match recovery.as_ref() {
+                    Err(err) => Some(format!("{err:#}")),
+                    Ok(failures) => failures.get(&thread.session.thread_id).cloned(),
+                };
+                if let Some(error) = error {
+                    runtime.status = crate::agent::AgentStatus::Errored;
+                    runtime.observer_error =
+                        Some(format!("shared Codex app-server recovery failed: {error}"));
+                } else {
+                    runtime.observer_error = None;
+                }
+                runtime.observed_at = Utc::now();
+            }
+        }
+        drop(runtimes);
+        let pane_ids: Vec<_> = self
+            .agent_metadata_by_pane
+            .read()
+            .iter()
+            .filter_map(|(pane_id, metadata)| metadata.codex_app_server.as_ref().map(|_| *pane_id))
+            .collect();
+        for pane_id in pane_ids {
+            if let Some((_, _, tab_id)) = self.resolve_pane_id(pane_id) {
+                self.notify_tab_title_changed(tab_id);
+            }
         }
     }
 
@@ -1036,6 +1107,9 @@ impl Mux {
         pane_id: PaneId,
     ) -> Option<(AgentMetadata, String)> {
         let metadata = self.get_agent_metadata_for_pane(pane_id)?;
+        if let Some(session) = metadata.codex_app_server.as_ref() {
+            return Some(((*metadata).clone(), session.session_id.clone()));
+        }
         if !matches!(
             infer_harness(&metadata.launch_cmd, None),
             AgentHarness::Codex
@@ -1507,6 +1581,7 @@ impl Mux {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         };
         let existing_candidate = self.agent_adoption_candidates.read().get(&pane_id).cloned();
         let same_process_incarnation = existing_candidate
@@ -1639,6 +1714,7 @@ impl Mux {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         }
     }
 
@@ -1803,6 +1879,7 @@ impl Mux {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                codex_app_server: None,
             },
             runtime: state.runtime,
             pane_id: state.pane_id,
@@ -1898,6 +1975,7 @@ impl Mux {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         };
         if self
             .install_agent_metadata_runtime_without_process_identity(pane_id, metadata, runtime)
@@ -2917,6 +2995,7 @@ impl Mux {
                     worktree: None,
                     branch: None,
                     managed_checkout: false,
+                    codex_app_server: None,
                 },
                 runtime,
                 AgentOrigin::Detected,
@@ -2947,6 +3026,7 @@ impl Mux {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                codex_app_server: None,
             },
             runtime,
             AgentOrigin::Detected,
@@ -5214,6 +5294,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         }
     }
 
@@ -5876,6 +5957,7 @@ mod test {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                codex_app_server: None,
             },
         )
         .unwrap();
@@ -6016,6 +6098,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         };
         mux.set_mirrored_agent_harness(pane_id, Some(&metadata));
 
@@ -6103,6 +6186,7 @@ mod test {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                codex_app_server: None,
             },
         )
         .unwrap();
@@ -6201,6 +6285,7 @@ mod test {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                codex_app_server: None,
             },
         )
         .unwrap();
@@ -6321,6 +6406,7 @@ mod test {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                codex_app_server: None,
             },
         )
         .unwrap();
@@ -6435,6 +6521,7 @@ mod test {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                codex_app_server: None,
             },
         )
         .unwrap();

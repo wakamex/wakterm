@@ -76,6 +76,36 @@ pub struct CliCommand {
 }
 
 #[derive(Debug, Parser, Clone)]
+pub enum LaunchCommand {
+    #[command(
+        name = "codex",
+        about = "launch Codex through the mux-owned app-server"
+    )]
+    Codex(agent::LaunchCodexCommand),
+}
+
+pub fn run_launch(opts: &crate::Opt, launch: LaunchCommand) -> anyhow::Result<()> {
+    let executor = promise::spawn::ScopedExecutor::new();
+    match promise::spawn::block_on(executor.run(async move {
+        let mut ui = mux::connui::ConnectionUI::new_headless();
+        let client = Client::new_default_unix_domain(
+            true,
+            &mut ui,
+            false,
+            true,
+            wakterm_gui_subcommands::DEFAULT_WINDOW_CLASS,
+        )?;
+        client.verify_version_compat(&ui).await?;
+        match launch {
+            LaunchCommand::Codex(command) => command.run(client, &crate::init_config(opts)?).await,
+        }
+    })) {
+        Ok(_) => Ok(()),
+        Err(err) => crate::terminate_with_error(err),
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
 enum CliSubCommand {
     #[command(name = "list", about = "list windows, tabs and panes")]
     List(list::ListCommand),

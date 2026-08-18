@@ -347,12 +347,7 @@ async fn restore_tab(
                 .first()
                 .map(|positioned| positioned.pane.pane_id())
                 .context("restored tab has no first pane")?;
-            Mux::get()
-                .register_codex_restore_intent(
-                    pane_id,
-                    intent.metadata.clone(),
-                    intent.session_id.clone(),
-                )
+            restore_agent_intent(pane_id, intent)
                 .context("registering Codex restore intent for first pane")?;
         }
     }
@@ -428,12 +423,7 @@ fn restore_node<'a>(
 
                 if let Some(entry) = right_entry {
                     if let Some(intent) = restore_intents.get(&entry.pane_id) {
-                        Mux::get()
-                            .register_codex_restore_intent(
-                                pane.pane_id(),
-                                intent.metadata.clone(),
-                                intent.session_id.clone(),
-                            )
+                        restore_agent_intent(pane.pane_id(), intent)
                             .context("registering Codex restore intent for split pane")?;
                     }
                 }
@@ -510,6 +500,18 @@ fn first_leaf_entry(node: &PaneNode) -> Option<&crate::tab::PaneEntry> {
     }
 }
 
+fn restore_agent_intent(pane_id: PaneId, intent: &SavedAgentRestoreIntent) -> anyhow::Result<()> {
+    if intent.metadata.codex_app_server.is_some() {
+        Mux::get().restore_agent_metadata(pane_id, intent.metadata.clone())
+    } else {
+        Mux::get().register_codex_restore_intent(
+            pane_id,
+            intent.metadata.clone(),
+            intent.session_id.clone(),
+        )
+    }
+}
+
 fn restore_command_for_entry(
     entry: &crate::tab::PaneEntry,
     restore_intents: &HashMap<PaneId, SavedAgentRestoreIntent>,
@@ -517,6 +519,32 @@ fn restore_command_for_entry(
     let Some(intent) = restore_intents.get(&entry.pane_id) else {
         return Ok(None);
     };
+    if let Some(session) = intent.metadata.codex_app_server.as_ref() {
+        anyhow::ensure!(
+            session.session_id == intent.session_id,
+            "persisted Codex session identity mismatch for pane {}",
+            entry.pane_id
+        );
+        let prepared = Mux::get().prepare_codex_app_server_launch(
+            crate::codex_app_server::PrepareCodexLaunch {
+                name: intent.metadata.name.clone(),
+                cwd: intent.metadata.declared_cwd.clone(),
+                resume_thread_id: Some(session.thread_id.clone()),
+                tui_args: session.tui_args.clone(),
+            },
+        )?;
+        anyhow::ensure!(
+            prepared.session.thread_id == session.thread_id
+                && prepared.session.session_id == session.session_id
+                && prepared.session.executable == session.executable
+                && prepared.session.version == session.version,
+            "Codex restored a different identity for pane {}",
+            entry.pane_id
+        );
+        return Ok(Some(CommandBuilder::from_argv(
+            prepared.argv.into_iter().map(Into::into).collect(),
+        )));
+    }
     codex_resume_command(&intent.metadata.launch_cmd, &intent.session_id)
         .map(Some)
         .with_context(|| {
@@ -765,6 +793,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         }
     }
 

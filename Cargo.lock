@@ -3514,6 +3514,7 @@ dependencies = [
  "wakterm-dynamic",
  "wakterm-ssh",
  "wakterm-term",
+ "wakterm-uds",
  "winapi",
 ]
 

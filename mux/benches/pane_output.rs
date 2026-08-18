@@ -341,6 +341,7 @@ fn sample_agent_metadata(name: &str) -> AgentMetadata {
         worktree: None,
         branch: None,
         managed_checkout: false,
+        codex_app_server: None,
     }
 }
 
@@ -476,6 +477,7 @@ fn setup_codex_refresh_bench() -> CodexRefreshBench {
         worktree: None,
         branch: None,
         managed_checkout: false,
+        codex_app_server: None,
     };
     let mut runtime = AgentRuntimeSnapshot::new(&metadata);
     runtime.foreground_process_name = Some("/usr/bin/codex".to_string());

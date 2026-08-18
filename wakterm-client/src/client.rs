@@ -1714,6 +1714,11 @@ impl Client {
     rpc!(list_panes, ListPanes = (), ListPanesResponse);
     rpc!(list_agents, ListAgents = (), ListAgentsResponse);
     rpc!(
+        prepare_codex_launch,
+        PrepareCodexLaunch,
+        PreparedCodexLaunch
+    );
+    rpc!(
         list_agents_cached,
         ListAgentsCached = (),
         ListAgentsCachedResponse

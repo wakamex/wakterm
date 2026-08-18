@@ -853,6 +853,17 @@ impl SessionHandler {
                 })
                 .detach();
             }
+            Pdu::PrepareCodexLaunch(request) => {
+                spawn_into_main_thread(async move {
+                    let result = promise::spawn::spawn_into_new_thread(move || {
+                        Mux::get().prepare_codex_app_server_launch(request)
+                    })
+                    .await
+                    .map(Pdu::PreparedCodexLaunch);
+                    send_response(result);
+                })
+                .detach();
+            }
             Pdu::ListPanes(ListPanes {}) => {
                 let client_id = self.client_id.clone();
                 spawn_into_main_thread(async move {
@@ -1631,6 +1642,7 @@ impl SessionHandler {
             | Pdu::GetAgentApiCapabilitiesResponse { .. }
             | Pdu::ListAgentApiCatalogResponse { .. }
             | Pdu::AdmitAgentPromptResponse { .. }
+            | Pdu::PreparedCodexLaunch { .. }
             | Pdu::SetClipboard { .. }
             | Pdu::NotifyAlert { .. }
             | Pdu::SpawnResponse { .. }
@@ -2749,6 +2761,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
             adopted_pid: None,
             adopted_start_time: None,
         }

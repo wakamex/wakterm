@@ -21,6 +21,7 @@ use mux::agent_event::AgentEventPage;
 use mux::agent_request::AgentRequest;
 use mux::agent_service::AgentOutputPage;
 use mux::client::{ClientId, ClientInfo, ClientViewId, ClientWindowViewState};
+pub use mux::codex_app_server::{PrepareCodexLaunch, PreparedCodexLaunch};
 use mux::pane::PaneId;
 use mux::renderable::{RenderableDimensions, StableCursorPosition};
 use mux::tab::{PaneNode, SerdeUrl, SplitRequest, TabId};
@@ -469,7 +470,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 62;
+pub const CODEC_VERSION: usize = 63;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -564,6 +565,8 @@ pdu! {
     AdmitAgentPromptResponse: 89,
     ReadAgentEvents: 90,
     ReadAgentEventsResponse: 91,
+    PrepareCodexLaunch: 92,
+    PreparedCodexLaunch: 93,
 }
 
 impl Pdu {
@@ -585,7 +588,8 @@ impl Pdu {
             | Self::ClearAgentMetadata(_)
             | Self::SubmitAgentRequest(_)
             | Self::AdmitAgentPrompt(_)
-            | Self::CancelAgentRequest(_) => true,
+            | Self::CancelAgentRequest(_)
+            | Self::PrepareCodexLaunch(_) => true,
             _ => false,
         }
     }

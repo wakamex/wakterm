@@ -689,6 +689,7 @@ mod tests {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            codex_app_server: None,
         }
     }
 

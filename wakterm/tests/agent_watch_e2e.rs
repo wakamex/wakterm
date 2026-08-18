@@ -36,6 +36,28 @@ impl ChildGuard {
     }
 }
 
+#[derive(Debug)]
+struct MuxServerGuard {
+    child: Child,
+}
+
+impl Drop for MuxServerGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::kill(self.child.id() as libc::pid_t, libc::SIGINT);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if matches!(self.child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -209,6 +231,66 @@ fn agent_watch_smoke_with_real_harnesses_headless() {
 }
 
 #[test]
+#[ignore = "requires a locally installed Codex CLI with app-server support"]
+fn managed_codex_launch_smoke_uses_one_isolated_app_server() {
+    let runtime = tempfile::tempdir().expect("tempdir");
+    let socket = runtime.path().join("wakterm/sock");
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root");
+    let _server = start_clean_mux_server(runtime.path());
+    wait_for_mux_ready(&socket);
+
+    let panes = run_cli_json(&socket, workspace_root, ["list", "--format", "json"]);
+    let source_pane = panes[0]["pane_id"].as_u64().expect("source pane id");
+    let first = run_managed_codex_launch(&socket, source_pane, workspace_root);
+    let second = run_managed_codex_launch(&socket, source_pane, runtime.path());
+
+    let first_thread = first["metadata"]["codex_app_server"]["thread_id"]
+        .as_str()
+        .expect("first Codex thread id");
+    let second_thread = second["metadata"]["codex_app_server"]["thread_id"]
+        .as_str()
+        .expect("second Codex thread id");
+    assert_ne!(first_thread, second_thread);
+    assert_eq!(
+        first["runtime"]["transport"].as_str(),
+        Some("CodexAppServerTui")
+    );
+    assert_eq!(
+        second["runtime"]["transport"].as_str(),
+        Some("CodexAppServerTui")
+    );
+    assert_eq!(
+        first["metadata"]["declared_cwd"].as_str(),
+        workspace_root.to_str()
+    );
+    assert_eq!(
+        second["metadata"]["declared_cwd"].as_str(),
+        runtime.path().to_str()
+    );
+
+    let app_server_sockets = std::fs::read_dir(runtime.path().join("wakterm"))
+        .expect("read runtime directory")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("codex-app-server-")
+        })
+        .count();
+    assert_eq!(app_server_sockets, 1);
+
+    let agents = run_cli_json(
+        &socket,
+        workspace_root,
+        ["agent", "list", "--format", "json"],
+    );
+    assert_eq!(agents.as_array().map(Vec::len), Some(2));
+}
+
+#[test]
 #[ignore = "requires locally installed/authenticated opencode harness with a free model"]
 fn opencode_auto_adopt_transitions_from_detected_to_adopted() {
     let runtime = tempfile::tempdir().expect("tempdir");
@@ -289,6 +371,22 @@ fn start_mux_server(runtime_dir: &Path) -> ChildGuard {
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
     ChildGuard::spawn(&mut command)
+}
+
+fn start_clean_mux_server(runtime_dir: &Path) -> MuxServerGuard {
+    let mut command = Command::new(mux_server_bin());
+    let child = command
+        .arg("-n")
+        .env("XDG_RUNTIME_DIR", runtime_dir)
+        .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
+        .env("XDG_DATA_HOME", runtime_dir.join("data"))
+        .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap_or_else(|err| panic!("failed to spawn {:?}: {err}", command));
+    MuxServerGuard { child }
 }
 
 fn start_agent_watch(socket: &Path) -> (ChildGuard, Receiver<AgentWatchEvent>) {
@@ -466,6 +564,31 @@ where
         .stdin(Stdio::null())
         .output()
         .expect("run wakterm cli")
+}
+
+fn run_managed_codex_launch(socket: &Path, pane_id: u64, cwd: &Path) -> Value {
+    let output = Command::new(wakterm_bin())
+        .current_dir(cwd)
+        .env("WAKTERM_PANE", pane_id.to_string())
+        .env("WAKTERM_UNIX_SOCKET", socket)
+        .args(["-n", "launch", "codex", "--cwd"])
+        .arg(cwd)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run managed Codex launch");
+    assert!(
+        output.status.success(),
+        "wakterm launch codex failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|err| {
+        panic!(
+            "failed to parse managed Codex launch output: {err}\nstdout:\n{}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    })
 }
 
 #[derive(Debug, Deserialize)]

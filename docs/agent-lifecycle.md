@@ -2,9 +2,11 @@
 
 ## Status
 
-Wakterm currently supports agent harnesses as terminal processes running in PTY
-panes. It can detect supported harnesses, observe provider session state, and
-adopt confirmed sessions into its persistent agent registry.
+Wakterm supports agent harnesses as terminal processes running in PTY panes. It
+can detect supported harnesses, observe provider session state, and adopt
+confirmed sessions into its persistent agent registry. Codex can also be
+started as an app-server TUI: the mux supervises one shared Codex app-server
+and each pane still renders the native Codex TUI.
 
 Reliable automatic restoration of adopted harnesses is the next lifecycle
 goal. Structured managed-agent backends are a later project. This document
@@ -22,6 +24,7 @@ stronger guarantees than the previous one.
 | Confirmed | The process is matched to a concrete provider session reference | No |
 | Adopted | Wakterm persistently associates an agent identity with the pane and confirmed harness | Yes |
 | Restorable | Wakterm has a verified recipe for starting the harness and resuming that exact provider session | Yes |
+| App-server TUI | The mux owns a structured provider connection while the pane renders the provider's native TUI | Yes |
 | Managed | Wakterm owns a structured backend connection and renders its own agent presentation | Yes |
 
 These states are not aliases:
@@ -29,11 +32,30 @@ These states are not aliases:
 - Detection does not authorize persistence.
 - Adoption does not prove that a session can be resumed.
 - Restoration of a native TUI does not make the session managed.
+- An app-server TUI is not managed mode because Wakterm does not render its
+  presentation or own its approval UI.
 - Managed mode is a separate way to start a session, not an automatic upgrade
   of a running PTY.
 
-`Restorable` and `Managed` describe target lifecycle capabilities. They are not
-currently represented as public `AgentOrigin` or `AgentTransport` variants.
+`Restorable` and `Managed` describe lifecycle capabilities rather than public
+origins. `App-server TUI` is represented by the `CodexAppServerTui` transport.
+
+## Codex app-server TUI transport
+
+`wakterm launch codex` starts or resumes an exact Codex thread through one
+mux-owned app-server on a private Unix socket. The mux keeps one initialized
+protocol connection, routes lifecycle events by exact thread ID, and persists
+the distinct Codex thread ID and session ID. Each pane runs `codex resume`
+against that socket, so input, rendering, approvals, and native interaction
+remain Codex TUI responsibilities.
+
+This transport is intentionally narrower than managed mode. It does not render
+a Wakterm agent UI, does not adopt an existing PTY into the app-server, and
+does not change the observed-PTY path for manually launched Codex processes.
+The shared process has one executable, version, `CODEX_HOME`, authentication
+identity, environment policy, feature set, and remote Code Mode host. Launches
+that need a different process-wide configuration must use a different mux or
+the observed-PTY path.
 
 ## Detection and confirmed adoption
 
@@ -87,8 +109,9 @@ For each expected harness pane, restoration should:
 
 1. Load and validate the persisted restore intent.
 2. Verify that the provider executable and referenced session are available.
-3. Construct the provider's exact resume invocation without reparsing it
-   through an unnecessary shell.
+3. Construct the provider's exact resume invocation. A supervised native TUI
+   may use a minimal shell wrapper only when it provides a bounded reconnect
+   after its mux-owned backend restarts.
 4. Spawn the TUI in the restored pane and declared working directory.
 5. Observe the new process incarnation.
 6. Confirm that it opened the expected provider session.
@@ -190,7 +213,7 @@ Useful upstream references:
 - [OpenCode CLI ACP mode](https://opencode.ai/docs/cli/)
 - [Claude Agent ACP adapter](https://github.com/agentclientprotocol/claude-agent-acp)
 - [Codex ACP adapter](https://github.com/agentclientprotocol/codex-acp)
-- [Codex app-server](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
+- [Codex app-server](https://developers.openai.com/codex/app-server)
 
 ## Managed runtime authority
 

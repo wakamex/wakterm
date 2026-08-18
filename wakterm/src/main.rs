@@ -119,6 +119,12 @@ enum SubCommand {
     #[command(name = "cli", about = "Interact with experimental mux server")]
     Cli(cli::CliCommand),
 
+    #[command(name = "launch", about = "Launch a mux-managed application")]
+    Launch {
+        #[command(subcommand)]
+        command: cli::LaunchCommand,
+    },
+
     #[command(name = "imgcat", about = "Output an image to the terminal")]
     ImageCat(ImgCatCommand),
 
@@ -753,6 +759,7 @@ fn run() -> anyhow::Result<()> {
         SubCommand::ImageCat(cmd) => cmd.run(),
         SubCommand::SetCwd(cmd) => cmd.run(),
         SubCommand::Cli(cli) => cli::run_cli(&opts, cli),
+        SubCommand::Launch { command } => cli::run_launch(&opts, command),
         SubCommand::Record(cmd) => cmd.run(init_config(&opts)?),
         SubCommand::Replay(cmd) => cmd.run(),
         SubCommand::ShellCompletion { shell } => {

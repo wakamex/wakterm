@@ -9,6 +9,7 @@ use mux::agent::{
     infer_harness, pending_observer_detail, AgentHarness, AgentMetadata, AgentOrigin,
     AgentSnapshot, AgentStatus, AgentTransport, AgentTurnState,
 };
+use mux::codex_app_server::PreparedCodexLaunch;
 use mux::pane::PaneId;
 use mux::tab::{SplitDirection, SplitRequest, SplitSize};
 use mux::window::WindowId;
@@ -265,6 +266,9 @@ pub struct SpawnAgentCommand {
     /// Explicit command line to launch. Overrides the default command for the selected harness.
     #[arg(long)]
     cmd: Option<String>,
+
+    #[arg(skip)]
+    prepared_override: Option<PreparedCodexLaunch>,
 }
 
 impl SpawnAgentCommand {
@@ -419,14 +423,32 @@ impl SpawnAgentCommand {
         let launch_cmd = self.resolved_launch_cmd()?;
         let agent_name = resolve_spawn_agent_name(harness, self.name.as_deref(), &agents)?;
 
-        let prepared = prepare_launch(
-            self,
-            &agent_name,
-            &agents,
-            pane_context
-                .as_ref()
-                .and_then(|context| context.cwd.clone()),
-        )?;
+        let prepared = if let Some(prepared) = self.prepared_override.as_ref() {
+            PreparedAgentLaunch {
+                command: CommandBuilder::from_argv(
+                    prepared.argv.iter().map(OsString::from).collect(),
+                ),
+                launch_cmd: prepared.session.executable.clone(),
+                command_dir: self
+                    .cwd
+                    .as_ref()
+                    .map(|cwd| cwd.to_string_lossy().to_string())
+                    .context("managed Codex launch omitted cwd")?,
+                repo_root: None,
+                worktree: None,
+                branch: None,
+                managed_checkout: false,
+            }
+        } else {
+            prepare_launch(
+                self,
+                &agent_name,
+                &agents,
+                pane_context
+                    .as_ref()
+                    .and_then(|context| context.cwd.clone()),
+            )?
+        };
 
         let metadata = AgentMetadata {
             agent_id: Uuid::new_v4().to_string(),
@@ -440,6 +462,10 @@ impl SpawnAgentCommand {
             worktree: prepared.worktree.clone(),
             branch: prepared.branch.clone(),
             managed_checkout: prepared.managed_checkout,
+            codex_app_server: self
+                .prepared_override
+                .as_ref()
+                .map(|prepared| prepared.session.clone()),
         };
 
         let spawned = if self.here {
@@ -676,6 +702,69 @@ impl SpawnAgentCommand {
             branch: self.branch.clone(),
             managed_checkout,
         })
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
+pub struct LaunchCodexCommand {
+    /// Working directory for the Codex thread. Defaults to the current Wakterm pane cwd.
+    #[arg(long, value_hint = ValueHint::DirPath)]
+    cwd: Option<OsString>,
+
+    /// Resume this exact Codex thread UUID. A failed resume never creates a replacement.
+    #[arg(long, value_name = "THREAD_ID")]
+    resume: Option<String>,
+
+    /// Options passed to the native Codex TUI after `--`.
+    #[arg(last = true, allow_hyphen_values = true)]
+    codex_options: Vec<String>,
+}
+
+impl LaunchCodexCommand {
+    pub async fn run(&self, client: Client, config: &ConfigHandle) -> anyhow::Result<()> {
+        let pane_id = client.resolve_pane_id(None).await?;
+        let panes = client.list_panes().await?;
+        let pane_context = find_pane_context(&panes, pane_id)
+            .ok_or_else(|| anyhow::anyhow!("unable to resolve current pane context"))?;
+        let agents = client.list_agents().await?.agents;
+        let name = resolve_spawn_agent_name(AgentHarness::Codex, None, &agents)?;
+        let cwd = resolve_relative_cwd(self.cwd.clone())?
+            .or(pane_context.cwd)
+            .unwrap_or(std::env::current_dir()?.to_string_lossy().to_string());
+        let prepared = client
+            .prepare_codex_launch(mux::codex_app_server::PrepareCodexLaunch {
+                name: name.clone(),
+                cwd: cwd.clone(),
+                resume_thread_id: self.resume.clone(),
+                tui_args: self.codex_options.clone(),
+            })
+            .await?;
+
+        SpawnAgentCommand {
+            harness: Some(AgentStartHarness::Codex),
+            here: false,
+            replace: false,
+            name: Some(name),
+            split: false,
+            pane_id: Some(pane_id),
+            new_window: false,
+            workspace: None,
+            horizontal: false,
+            left: false,
+            right: false,
+            top: false,
+            bottom: false,
+            cells: None,
+            percent: None,
+            repo: None,
+            worktree: WorktreeMode::None,
+            branch: None,
+            cwd: Some(cwd.into()),
+            cmd: None,
+            prepared_override: Some(prepared),
+        }
+        .run(client, config)
+        .await
     }
 }
 
@@ -1964,6 +2053,7 @@ impl AdoptDetectedAgentCommand {
             worktree: detected.metadata.worktree.clone(),
             branch: detected.metadata.branch.clone(),
             managed_checkout: detected.metadata.managed_checkout,
+            codex_app_server: None,
         };
 
         set_agent_metadata(codec::SetAgentMetadata {
@@ -2329,6 +2419,7 @@ fn build_agent_metadata(
         managed_checkout: managed_checkout
             .or_else(|| existing.map(|agent| agent.metadata.managed_checkout))
             .unwrap_or(false),
+        codex_app_server: existing.and_then(|agent| agent.metadata.codex_app_server.clone()),
     })
 }
 
@@ -2531,6 +2622,7 @@ fn transport_label(transport: &AgentTransport) -> String {
     match transport {
         AgentTransport::PlainPty => "pty",
         AgentTransport::ObservedPty => "observed-pty",
+        AgentTransport::CodexAppServerTui => "app-server-tui",
     }
     .to_string()
 }
@@ -2934,6 +3026,7 @@ mod test {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                codex_app_server: None,
             },
             runtime: mux::agent::AgentRuntimeSnapshot {
                 harness: mux::agent::AgentHarness::Codex,
@@ -3932,6 +4025,7 @@ mod test {
             branch: None,
             cwd: None,
             cmd: Some("codex --model gpt-5".to_string()),
+            prepared_override: None,
         };
         let left_size = size(80, 24);
         let right_size = size(39, 24);
@@ -4036,6 +4130,7 @@ mod test {
             branch: None,
             cwd: None,
             cmd: None,
+            prepared_override: None,
         };
         let root_size = size(80, 24);
 
@@ -4128,6 +4223,7 @@ mod test {
             branch: None,
             cwd: None,
             cmd: None,
+            prepared_override: None,
         };
 
         let err = promise::spawn::block_on(command.run_with(
@@ -4188,6 +4284,7 @@ mod test {
             branch: None,
             cwd: None,
             cmd: None,
+            prepared_override: None,
         };
 
         let err = promise::spawn::block_on(command.run_with(
@@ -4251,6 +4348,7 @@ mod test {
             branch: Some("agent/scrape-api".to_string()),
             cwd: None,
             cmd: None,
+            prepared_override: None,
         };
         let expected_worktree = auto_worktree_path(&repo_root, "scrape-api");
 
@@ -4357,6 +4455,7 @@ mod test {
             branch: None,
             cwd: None,
             cmd: None,
+            prepared_override: None,
         };
         let mut owner = sample_agent(40, "alpha");
         owner.metadata.worktree = Some(requested_worktree.to_string_lossy().to_string());
@@ -4391,6 +4490,7 @@ mod test {
             branch: None,
             cwd: None,
             cmd: Some("zsh".to_string()),
+            prepared_override: None,
         };
 
         let err = command.prepare_launch("shell", &[], None).unwrap_err();
@@ -4522,6 +4622,7 @@ mod test {
             branch: None,
             cwd: None,
             cmd: None,
+            prepared_override: None,
         };
 
         let agent = promise::spawn::block_on(command.run_with(
@@ -4626,6 +4727,7 @@ mod test {
             branch: None,
             cwd: Some(test_path_string("agent-start").into()),
             cmd: None,
+            prepared_override: None,
         };
 
         let agent = promise::spawn::block_on(command.run_with(
@@ -4748,6 +4850,7 @@ mod test {
             branch: None,
             cwd: None,
             cmd: None,
+            prepared_override: None,
         };
 
         let err = promise::spawn::block_on(command.run_with(
@@ -4824,6 +4927,7 @@ mod test {
             branch: None,
             cwd: Some(test_path_string("agent-start").into()),
             cmd: None,
+            prepared_override: None,
         };
 
         promise::spawn::block_on(command.run_with(
