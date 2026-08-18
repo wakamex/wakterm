@@ -2,12 +2,15 @@ use crate::domain::DomainId;
 use crate::pane::PaneId;
 use crate::tab::TabId;
 use crate::window::WindowId;
+use anyhow::Context;
 use chrono::{DateTime, Duration, TimeZone, Utc};
+use portable_pty::CommandBuilder;
 use procinfo::LocalProcessInfo;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -1148,6 +1151,24 @@ fn opencode_db_path() -> Option<PathBuf> {
         })
 }
 
+pub fn codex_resume_command(launch_cmd: &str, session_id: &str) -> anyhow::Result<CommandBuilder> {
+    anyhow::ensure!(
+        !session_id.trim().is_empty(),
+        "Codex session ID must not be empty"
+    );
+    let mut argv = shell_words::split(launch_cmd).context("parsing Codex launch command")?;
+    anyhow::ensure!(!argv.is_empty(), "Codex launch command must not be empty");
+    anyhow::ensure!(
+        matches!(infer_harness(launch_cmd, None), AgentHarness::Codex),
+        "Codex restore requires a Codex launch command"
+    );
+    argv.push("resume".to_string());
+    argv.push(session_id.trim().to_string());
+    Ok(CommandBuilder::from_argv(
+        argv.into_iter().map(OsString::from).collect(),
+    ))
+}
+
 pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> Vec<PathBuf> {
     let paths = match harness {
         AgentHarness::Claude => claude_sessions_root().map(|root| {
@@ -1212,6 +1233,32 @@ fn codex_session_matches_cwd(path: &Path, cwd: &str) -> anyhow::Result<bool> {
         .and_then(|payload| payload.get("cwd"))
         .and_then(Value::as_str)
         == Some(cwd))
+}
+
+pub fn codex_session_id(path: &Path) -> anyhow::Result<Option<String>> {
+    let Some(first_line) = BufReader::new(fs::File::open(path)?)
+        .lines()
+        .next()
+        .transpose()?
+    else {
+        return Ok(None);
+    };
+    let record: Value = serde_json::from_str(&first_line)
+        .with_context(|| format!("parsing Codex session header {}", path.display()))?;
+    let id = record
+        .get("session_id")
+        .or_else(|| record.get("id"))
+        .or_else(|| {
+            record
+                .get("payload")
+                .and_then(|payload| payload.get("session_id"))
+        })
+        .or_else(|| record.get("payload").and_then(|payload| payload.get("id")))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToOwned::to_owned);
+    Ok(id)
 }
 
 #[cfg(target_os = "linux")]
@@ -2926,6 +2973,42 @@ mod test {
         );
         assert_eq!(observed.progress_summary.as_deref(), Some("live"));
         assert!(mismatched_incarnation.is_none());
+    }
+
+    #[test]
+    fn codex_restore_command_uses_the_persisted_session_id() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout-resume.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"session_meta\",\"payload\":{\"session_id\":\"session-resume\",\"cwd\":\"/tmp/project\"}}\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            codex_session_id(&session).unwrap().as_deref(),
+            Some("session-resume")
+        );
+
+        let command =
+            codex_resume_command("codex -a never -s danger-full-access", "session-resume").unwrap();
+        let argv = command
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            argv,
+            vec![
+                "codex",
+                "-a",
+                "never",
+                "-s",
+                "danger-full-access",
+                "resume",
+                "session-resume",
+            ]
+        );
     }
 
     #[test]
