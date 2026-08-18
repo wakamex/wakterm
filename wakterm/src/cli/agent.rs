@@ -1003,6 +1003,10 @@ pub struct ListAgentsCommand {
     #[arg(long = "format", default_value = "table")]
     format: CliOutputFormatKind,
 
+    /// Show pane ids, workspace, turn state, transport, progress, and command.
+    #[arg(short = 'v', long)]
+    verbose: bool,
+
     /// Stream latest observer-backed harness message updates instead of printing a snapshot.
     #[arg(short = 'f', long)]
     follow: bool,
@@ -1027,87 +1031,12 @@ impl ListAgentsCommand {
 
         match self.format {
             CliOutputFormatKind::Json => write_json(&agents),
-            CliOutputFormatKind::Table => {
-                let cols = vec![
-                    Column {
-                        name: "NAME".to_string(),
-                        alignment: Alignment::Left,
-                    },
-                    Column {
-                        name: "ORIGIN".to_string(),
-                        alignment: Alignment::Left,
-                    },
-                    Column {
-                        name: "PANEID".to_string(),
-                        alignment: Alignment::Right,
-                    },
-                    Column {
-                        name: "TABID".to_string(),
-                        alignment: Alignment::Right,
-                    },
-                    Column {
-                        name: "WINID".to_string(),
-                        alignment: Alignment::Right,
-                    },
-                    Column {
-                        name: "WORKSPACE".to_string(),
-                        alignment: Alignment::Left,
-                    },
-                    Column {
-                        name: "STATUS".to_string(),
-                        alignment: Alignment::Left,
-                    },
-                    Column {
-                        name: "TURN".to_string(),
-                        alignment: Alignment::Left,
-                    },
-                    Column {
-                        name: "HARNESS".to_string(),
-                        alignment: Alignment::Left,
-                    },
-                    Column {
-                        name: "TRANSPORT".to_string(),
-                        alignment: Alignment::Left,
-                    },
-                    Column {
-                        name: "CWD".to_string(),
-                        alignment: Alignment::Left,
-                    },
-                    Column {
-                        name: "PROGRESS".to_string(),
-                        alignment: Alignment::Left,
-                    },
-                    Column {
-                        name: "CMD".to_string(),
-                        alignment: Alignment::Left,
-                    },
-                ];
-                let data = agents
-                    .iter()
-                    .map(|agent| {
-                        vec![
-                            agent.metadata.name.clone(),
-                            match agent.origin {
-                                AgentOrigin::Adopted => "adopted".to_string(),
-                                AgentOrigin::Detected => "detected".to_string(),
-                            },
-                            agent.pane_id.to_string(),
-                            agent.tab_id.to_string(),
-                            agent.window_id.to_string(),
-                            agent.workspace.clone(),
-                            runtime_status_label(&agent.runtime.status),
-                            turn_state_label(&agent.runtime.turn_state),
-                            harness_label(&agent.runtime.harness),
-                            transport_label(&agent.runtime.transport),
-                            agent.metadata.declared_cwd.clone(),
-                            inline_progress_summary_for_table(agent),
-                            agent.metadata.launch_cmd.clone(),
-                        ]
-                    })
-                    .collect::<Vec<_>>();
-                tabulate_output(&cols, &data, &mut std::io::stdout().lock())?;
-                Ok(())
-            }
+            CliOutputFormatKind::Table => write_agent_table(
+                &agents,
+                self.verbose,
+                Utc::now(),
+                &mut std::io::stdout().lock(),
+            ),
         }
     }
 }
@@ -2606,6 +2535,167 @@ fn transport_label(transport: &AgentTransport) -> String {
     .to_string()
 }
 
+fn write_agent_table<W: Write>(
+    agents: &[AgentSnapshot],
+    verbose: bool,
+    now: chrono::DateTime<Utc>,
+    out: &mut W,
+) -> anyhow::Result<()> {
+    let cols = if verbose {
+        vec![
+            Column {
+                name: "NAME".to_string(),
+                alignment: Alignment::Left,
+            },
+            Column {
+                name: "ORIGIN".to_string(),
+                alignment: Alignment::Left,
+            },
+            Column {
+                name: "PANEID".to_string(),
+                alignment: Alignment::Right,
+            },
+            Column {
+                name: "TABID".to_string(),
+                alignment: Alignment::Right,
+            },
+            Column {
+                name: "WINID".to_string(),
+                alignment: Alignment::Right,
+            },
+            Column {
+                name: "WORKSPACE".to_string(),
+                alignment: Alignment::Left,
+            },
+            Column {
+                name: "STATUS".to_string(),
+                alignment: Alignment::Left,
+            },
+            Column {
+                name: "TURN".to_string(),
+                alignment: Alignment::Left,
+            },
+            Column {
+                name: "HARNESS".to_string(),
+                alignment: Alignment::Left,
+            },
+            Column {
+                name: "TRANSPORT".to_string(),
+                alignment: Alignment::Left,
+            },
+            Column {
+                name: "CWD".to_string(),
+                alignment: Alignment::Left,
+            },
+            Column {
+                name: "PROGRESS".to_string(),
+                alignment: Alignment::Left,
+            },
+            Column {
+                name: "CMD".to_string(),
+                alignment: Alignment::Left,
+            },
+        ]
+    } else {
+        vec![
+            Column {
+                name: "NAME".to_string(),
+                alignment: Alignment::Left,
+            },
+            Column {
+                name: "ORIGIN".to_string(),
+                alignment: Alignment::Left,
+            },
+            Column {
+                name: "STATUS".to_string(),
+                alignment: Alignment::Left,
+            },
+            Column {
+                name: "HARNESS".to_string(),
+                alignment: Alignment::Left,
+            },
+            Column {
+                name: "CWD".to_string(),
+                alignment: Alignment::Left,
+            },
+            Column {
+                name: "LAST TURN END".to_string(),
+                alignment: Alignment::Left,
+            },
+        ]
+    };
+
+    let data = agents
+        .iter()
+        .map(|agent| {
+            let origin = match agent.origin {
+                AgentOrigin::Adopted => "adopted".to_string(),
+                AgentOrigin::Detected => "detected".to_string(),
+            };
+            if verbose {
+                vec![
+                    agent.metadata.name.clone(),
+                    origin,
+                    agent.pane_id.to_string(),
+                    agent.tab_id.to_string(),
+                    agent.window_id.to_string(),
+                    agent.workspace.clone(),
+                    runtime_status_label(&agent.runtime.status),
+                    turn_state_label(&agent.runtime.turn_state),
+                    harness_label(&agent.runtime.harness),
+                    transport_label(&agent.runtime.transport),
+                    agent.metadata.declared_cwd.clone(),
+                    inline_progress_summary_for_table(agent),
+                    agent.metadata.launch_cmd.clone(),
+                ]
+            } else {
+                vec![
+                    agent.metadata.name.clone(),
+                    origin,
+                    runtime_status_label(&agent.runtime.status),
+                    harness_label(&agent.runtime.harness),
+                    agent.metadata.declared_cwd.clone(),
+                    last_turn_age_label(agent.runtime.last_turn_completed_at, now),
+                ]
+            }
+        })
+        .collect::<Vec<_>>();
+
+    tabulate_output(&cols, &data, out)?;
+    Ok(())
+}
+
+fn last_turn_age_label(
+    last_turn_completed_at: Option<chrono::DateTime<Utc>>,
+    now: chrono::DateTime<Utc>,
+) -> String {
+    let Some(completed_at) = last_turn_completed_at else {
+        return "-".to_string();
+    };
+
+    let seconds = now.signed_duration_since(completed_at).num_seconds().max(0);
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        return format!("{}m {}s", minutes, seconds % 60);
+    }
+
+    let hours = minutes / 60;
+    if hours < 24 {
+        return format!("{}h {}m", hours, minutes % 60);
+    }
+
+    let days = hours / 24;
+    if days < 7 {
+        return format!("{}d {}h", days, hours % 24);
+    }
+
+    format!("{}w {}d", days / 7, days % 7)
+}
+
 fn inline_progress_summary(agent: &AgentSnapshot) -> String {
     let summary = agent
         .runtime
@@ -3100,6 +3190,38 @@ mod test {
         let summary = inline_progress_summary_for_table(&agent);
         assert!(summary.len() <= 99);
         assert!(summary.ends_with("..."));
+    }
+
+    #[test]
+    fn last_turn_age_uses_compact_human_readable_units() {
+        let now = Utc.with_ymd_and_hms(2026, 3, 17, 14, 30, 0).unwrap();
+        let completed_at = Utc.with_ymd_and_hms(2026, 3, 17, 12, 15, 0).unwrap();
+
+        assert_eq!(last_turn_age_label(Some(completed_at), now), "2h 15m");
+        assert_eq!(last_turn_age_label(None, now), "-");
+    }
+
+    #[test]
+    fn agent_list_table_is_compact_by_default_and_verbose_preserves_details() {
+        let now = Utc.with_ymd_and_hms(2026, 3, 17, 14, 30, 0).unwrap();
+        let mut agent = sample_agent(30, "reviewer");
+        agent.runtime.last_turn_completed_at =
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 15, 0).unwrap());
+
+        let mut compact = Vec::new();
+        write_agent_table(&[agent.clone()], false, now, &mut compact).unwrap();
+        let compact = String::from_utf8(compact).unwrap();
+        assert!(compact.contains("LAST TURN END"));
+        assert!(compact.contains("2h 15m"));
+        assert!(!compact.contains("PANEID"));
+        assert!(!compact.contains("PROGRESS"));
+
+        let mut verbose = Vec::new();
+        write_agent_table(&[agent], true, now, &mut verbose).unwrap();
+        let verbose = String::from_utf8(verbose).unwrap();
+        assert!(verbose.contains("PANEID"));
+        assert!(verbose.contains("PROGRESS"));
+        assert!(verbose.contains("CMD"));
     }
 
     #[test]
