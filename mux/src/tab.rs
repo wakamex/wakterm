@@ -748,7 +748,9 @@ impl Tab {
     /// Marks the title as user-set so terminal escape sequences won't override it.
     pub fn set_title(&self, title: &str) {
         let mut inner = self.inner.lock();
+        let was_user_set = inner.title_is_user_set;
         inner.title_is_user_set = !title.is_empty();
+        let persistence_changed = was_user_set != inner.title_is_user_set || inner.title != title;
         if inner.title != title {
             inner.title = title.to_string();
             Mux::try_get().map(|mux| {
@@ -757,6 +759,9 @@ impl Tab {
                     title: title.to_string(),
                 })
             });
+        }
+        if persistence_changed {
+            crate::session_persistence::request_session_save();
         }
     }
 
@@ -1055,9 +1060,14 @@ impl Tab {
         request: SplitRequest,
         pane: Arc<dyn Pane>,
     ) -> anyhow::Result<usize> {
-        self.inner
+        let result = self
+            .inner
             .lock()
-            .split_and_insert(pane_index, request, pane)
+            .split_and_insert(pane_index, request, pane);
+        if result.is_ok() {
+            Mux::try_get().map(|mux| mux.notify_tab_resized(self.tab_id));
+        }
+        result
     }
 
     pub fn get_zoomed_pane(&self) -> Option<Arc<dyn Pane>> {
@@ -1323,6 +1333,7 @@ impl TabInner {
         if let Some(pane) = self.get_active_pane() {
             pane.send_rotate_panes(self.id, false);
         }
+        Mux::try_get().map(|mux| mux.notify_tab_resized(self.id));
     }
 
     fn rotate_clockwise(&mut self) {

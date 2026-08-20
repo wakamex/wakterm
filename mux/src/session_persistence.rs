@@ -15,7 +15,10 @@ use portable_pty::CommandBuilder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// Saved state for one tab.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +56,107 @@ pub struct SavedSession {
 }
 
 const SESSION_VERSION: u32 = 5;
+const AUTO_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
+const AUTO_SAVE_INTERVAL: Duration = Duration::from_secs(60);
+
+static AUTO_SAVE_TX: OnceLock<SyncSender<()>> = OnceLock::new();
+static SAVE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+struct AutoSaveSchedule {
+    debounce: Duration,
+    interval: Duration,
+    dirty_deadline: Option<Instant>,
+    periodic_deadline: Instant,
+}
+
+impl AutoSaveSchedule {
+    fn new(now: Instant, debounce: Duration, interval: Duration) -> Self {
+        Self {
+            debounce,
+            interval,
+            dirty_deadline: None,
+            periodic_deadline: now + interval,
+        }
+    }
+
+    fn mark_dirty(&mut self, now: Instant) {
+        self.dirty_deadline = Some(now + self.debounce);
+    }
+
+    fn next_deadline(&self) -> Instant {
+        self.dirty_deadline
+            .map(|deadline| deadline.min(self.periodic_deadline))
+            .unwrap_or(self.periodic_deadline)
+    }
+
+    fn take_save_due(&mut self, now: Instant) -> bool {
+        if now >= self.periodic_deadline {
+            while self.periodic_deadline <= now {
+                self.periodic_deadline += self.interval;
+            }
+            self.dirty_deadline = None;
+            return true;
+        }
+
+        if self.dirty_deadline.is_some_and(|deadline| now >= deadline) {
+            self.dirty_deadline = None;
+            return true;
+        }
+
+        false
+    }
+}
+
+/// Mark recovery-relevant mux state dirty. Calls before auto-save starts are
+/// intentionally ignored so startup restoration cannot overwrite its source.
+pub fn request_session_save() {
+    if let Some(tx) = AUTO_SAVE_TX.get() {
+        let _ = tx.try_send(());
+    }
+}
+
+/// Save the fully restored startup state, then start one coalescing owner for
+/// event-driven saves and the periodic reconciliation save.
+pub fn start_auto_save() {
+    if AUTO_SAVE_TX.get().is_some() {
+        return;
+    }
+
+    if let Err(err) = save_session() {
+        log::warn!("initial session auto-save: {err:#}");
+    }
+
+    let (tx, rx) = sync_channel(1);
+    if AUTO_SAVE_TX.set(tx).is_err() {
+        return;
+    }
+
+    thread::Builder::new()
+        .name("session-auto-save".to_string())
+        .spawn(move || run_auto_save(rx))
+        .expect("failed to spawn session auto-save thread");
+}
+
+fn run_auto_save(rx: Receiver<()>) {
+    let mut schedule =
+        AutoSaveSchedule::new(Instant::now(), AUTO_SAVE_DEBOUNCE, AUTO_SAVE_INTERVAL);
+
+    loop {
+        let now = Instant::now();
+        let timeout = schedule.next_deadline().saturating_duration_since(now);
+        match rx.recv_timeout(timeout) {
+            Ok(()) => schedule.mark_dirty(Instant::now()),
+            Err(RecvTimeoutError::Timeout) => {
+                if schedule.take_save_due(Instant::now()) {
+                    if let Err(err) = save_session() {
+                        log::debug!("auto-save session: {err:#}");
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
 
 fn session_path() -> PathBuf {
     config::RUNTIME_DIR.join("session.json")
@@ -177,6 +281,9 @@ fn heal_tree(node: &mut PaneNode) {
 
 /// Save the current mux session to disk.
 pub fn save_session() -> anyhow::Result<PathBuf> {
+    let _save_guard = SAVE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mux = Mux::try_get().context("no mux instance")?;
     let session = build_saved_session(&mux);
 
@@ -576,6 +683,33 @@ mod test {
     use wakterm_term::color::ColorPalette;
     use wakterm_term::{KeyCode, KeyModifiers, MouseEvent, StableRowIndex, TerminalSize};
 
+    #[test]
+    fn auto_save_debounce_tracks_the_latest_dirty_event() {
+        let start = Instant::now();
+        let mut schedule =
+            AutoSaveSchedule::new(start, Duration::from_millis(500), Duration::from_secs(60));
+
+        schedule.mark_dirty(start);
+        schedule.mark_dirty(start + Duration::from_millis(100));
+
+        assert!(!schedule.take_save_due(start + Duration::from_millis(500)));
+        assert!(schedule.take_save_due(start + Duration::from_millis(600)));
+        assert!(!schedule.take_save_due(start + Duration::from_millis(601)));
+    }
+
+    #[test]
+    fn periodic_auto_save_reconciles_and_clears_pending_dirty_state() {
+        let start = Instant::now();
+        let mut schedule =
+            AutoSaveSchedule::new(start, Duration::from_secs(5), Duration::from_secs(60));
+
+        schedule.mark_dirty(start + Duration::from_secs(59));
+
+        assert!(schedule.take_save_due(start + Duration::from_secs(60)));
+        assert!(!schedule.take_save_due(start + Duration::from_secs(64)));
+        assert!(schedule.take_save_due(start + Duration::from_secs(120)));
+    }
+
     struct TestPane {
         id: crate::pane::PaneId,
         size: Mutex<TerminalSize>,
@@ -950,6 +1084,44 @@ mod test {
         assert_eq!(session.agent_restore_intents[0].pane_id, pane_id);
         assert_eq!(session.agent_restore_intents[0].metadata.name, "resume");
         assert_eq!(session.agent_restore_intents[0].session_id, "saved-session");
+    }
+
+    #[test]
+    fn saved_session_preserves_pending_codex_restore_intent() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = crate::TestMuxGuard;
+
+        let window_id = *mux.new_empty_window(Some("default".to_string()), None);
+        let tab_size = size(120, 40);
+        let tab = Arc::new(Tab::new(&tab_size));
+        let pane = TestPane::new(alloc_pane_id(), tab_size);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        mux.register_codex_restore_intent(
+            pane_id,
+            sample_agent_metadata("pending-resume"),
+            "pending-session".to_string(),
+        )
+        .unwrap();
+
+        let session = build_saved_session(&mux);
+
+        assert_eq!(session.agent_restore_intents.len(), 1);
+        assert_eq!(session.agent_restore_intents[0].pane_id, pane_id);
+        assert_eq!(
+            session.agent_restore_intents[0].metadata.name,
+            "pending-resume"
+        );
+        assert_eq!(
+            session.agent_restore_intents[0].session_id,
+            "pending-session"
+        );
     }
 
     #[test]

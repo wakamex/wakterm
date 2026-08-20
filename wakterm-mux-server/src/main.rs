@@ -258,14 +258,12 @@ fn run() -> anyhow::Result<()> {
         });
     }
 
-    // Periodic session auto-save (every 60 seconds)
+    // Periodic memory diagnostics. Session persistence has its own coalescing
+    // worker, started only after initial restoration is complete.
     thread::spawn(|| loop {
         thread::sleep(std::time::Duration::from_secs(60));
         if SHUTDOWN_FLAG.load(std::sync::atomic::Ordering::Relaxed) {
             break;
-        }
-        if let Err(err) = mux::session_persistence::save_session() {
-            log::debug!("auto-save session: {:#}", err);
         }
         mux::memory_report::log_memory_report();
     });
@@ -352,6 +350,7 @@ async fn async_run(cmd: Option<CommandBuilder>) -> anyhow::Result<()> {
                 .await?;
         }
     }
+    mux::session_persistence::start_auto_save();
     Ok(())
 }
 

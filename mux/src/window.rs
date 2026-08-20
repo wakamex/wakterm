@@ -79,6 +79,7 @@ impl Window {
 
     fn invalidate(&self) {
         let mux = Mux::get();
+        crate::session_persistence::request_session_save();
         mux.notify(MuxNotification::WindowInvalidated(self.id));
     }
 

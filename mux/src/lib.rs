@@ -127,6 +127,24 @@ pub enum MuxNotification {
     },
 }
 
+fn notification_changes_saved_session(notification: &MuxNotification) -> bool {
+    matches!(
+        notification,
+        MuxNotification::PaneAdded(_)
+            | MuxNotification::PaneRemoved(_)
+            | MuxNotification::WindowCreated(_)
+            | MuxNotification::WindowRemoved(_)
+            | MuxNotification::WindowWorkspaceChanged(_)
+            | MuxNotification::TabAddedToWindow { .. }
+            | MuxNotification::TabResized { .. }
+            | MuxNotification::TabOrderChanged { .. }
+            | MuxNotification::Alert {
+                alert: wakterm_term::Alert::CurrentWorkingDirectoryChanged,
+                ..
+            }
+    )
+}
+
 static SUB_ID: AtomicUsize = AtomicUsize::new(0);
 static MUX_INSTANCE_ID: AtomicUsize = AtomicUsize::new(1);
 
@@ -1118,6 +1136,7 @@ impl Mux {
                 session_id,
             },
         );
+        crate::session_persistence::request_session_save();
         Ok(())
     }
 
@@ -1125,6 +1144,9 @@ impl Mux {
         &self,
         pane_id: PaneId,
     ) -> Option<(AgentMetadata, String)> {
+        if let Some(pending) = self.pending_codex_restores.read().get(&pane_id).cloned() {
+            return Some((pending.metadata, pending.session_id));
+        }
         let metadata = self.get_agent_metadata_for_pane(pane_id)?;
         if let Some(session) = metadata.codex_app_server.as_ref() {
             return Some(((*metadata).clone(), session.session_id.clone()));
@@ -1257,6 +1279,9 @@ impl Mux {
         runtime.harness = infer_harness(&metadata.launch_cmd, foreground_process_name.as_deref());
         self.agent_runtime_by_pane.write().insert(pane_id, runtime);
         metadata_by_pane.insert(pane_id, Arc::new(metadata));
+        drop(metadata_by_pane);
+        drop(names);
+        crate::session_persistence::request_session_save();
         Ok(())
     }
 
@@ -1297,9 +1322,16 @@ impl Mux {
             let mut metadata_by_pane = self.agent_metadata_by_pane.write();
             metadata_by_pane.remove(&pane_id)
         };
-        self.pending_codex_restores.write().remove(&pane_id);
+        let removed_pending = self
+            .pending_codex_restores
+            .write()
+            .remove(&pane_id)
+            .is_some();
         self.failed_codex_restores.write().remove(&pane_id);
         let Some(metadata) = metadata else {
+            if removed_pending {
+                crate::session_persistence::request_session_save();
+            }
             return None;
         };
         let _ = self
@@ -1320,6 +1352,7 @@ impl Mux {
         for seen in self.agent_attention_seen_by_view.write().values_mut() {
             seen.remove(&pane_id);
         }
+        crate::session_persistence::request_session_save();
         if let Some(tab_id) = tab_id {
             self.notify_tab_title_changed(tab_id);
         }
@@ -1679,9 +1712,10 @@ impl Mux {
             &candidate.harness,
             &candidate.declared_cwd,
         );
+        let observer_metadata = self.observer_metadata_for_candidate(&candidate);
         self.schedule_agent_observer_refresh(
             pane_id,
-            &metadata,
+            &observer_metadata,
             &runtime,
             AgentRefreshPolicy::Throttled,
             false,
@@ -1743,6 +1777,22 @@ impl Mux {
         }
     }
 
+    fn observer_metadata_for_candidate(&self, candidate: &AgentAdoptionCandidate) -> AgentMetadata {
+        if let Some(pending) = self
+            .pending_codex_restores
+            .read()
+            .get(&candidate.pane_id)
+            .cloned()
+        {
+            let mut metadata = pending.metadata;
+            metadata.adopted_pid = candidate.foreground_pid;
+            metadata.adopted_start_time = candidate.process_start_time;
+            return metadata;
+        }
+
+        Self::metadata_from_adoption_candidate(candidate)
+    }
+
     fn refresh_detected_agent_runtime_for_pane(&self, pane_id: PaneId) {
         let Some(candidate) = self.agent_adoption_candidates.read().get(&pane_id).cloned() else {
             return;
@@ -1750,7 +1800,7 @@ impl Mux {
         let Some(runtime) = self.agent_runtime_by_pane.read().get(&pane_id).cloned() else {
             return;
         };
-        let metadata = Self::metadata_from_adoption_candidate(&candidate);
+        let metadata = self.observer_metadata_for_candidate(&candidate);
         self.schedule_agent_observer_refresh(
             pane_id,
             &metadata,
@@ -1761,7 +1811,11 @@ impl Mux {
     }
 
     fn fail_pending_codex_restore(&self, pane_id: PaneId, candidate: &AgentAdoptionCandidate) {
-        self.pending_codex_restores.write().remove(&pane_id);
+        let removed = self
+            .pending_codex_restores
+            .write()
+            .remove(&pane_id)
+            .is_some();
         self.failed_codex_restores.write().insert(
             pane_id,
             FailedCodexRestore {
@@ -1770,6 +1824,9 @@ impl Mux {
             },
         );
         self.clear_detected_agent_info(pane_id);
+        if removed {
+            crate::session_persistence::request_session_save();
+        }
     }
 
     fn complete_pending_codex_restore(
@@ -1876,7 +1933,7 @@ impl Mux {
             .write()
             .insert(pane_id, runtime.clone());
 
-        let metadata = Self::metadata_from_adoption_candidate(&candidate);
+        let metadata = self.observer_metadata_for_candidate(&candidate);
         self.schedule_agent_observer_refresh(
             pane_id,
             &metadata,
@@ -2185,7 +2242,7 @@ impl Mux {
             return;
         }
 
-        let (before_title, after_title) = {
+        let (before_title, after_title, session_identity_changed) = {
             let mut runtime_by_pane = self.agent_runtime_by_pane.write();
             let Some(runtime) = runtime_by_pane.get_mut(&update.pane_id) else {
                 counter!("mux.agent_observer.refresh.dropped_missing_runtime.rate").increment(1);
@@ -2193,6 +2250,7 @@ impl Mux {
             };
 
             let before_title = Self::title_fingerprint(runtime);
+            let before_session_path = runtime.session_path.clone();
             runtime.harness = update.runtime.harness;
             runtime.transport = update.runtime.transport;
             runtime.observed_at = update.runtime.observed_at;
@@ -2208,7 +2266,11 @@ impl Mux {
             runtime.last_harness_refresh_at = update.runtime.last_harness_refresh_at;
             finalize_runtime_snapshot(runtime);
             runtime.status = derive_runtime_status(runtime);
-            (before_title, Self::title_fingerprint(runtime))
+            (
+                before_title,
+                Self::title_fingerprint(runtime),
+                before_session_path != runtime.session_path,
+            )
         };
 
         histogram!("mux.agent_observer.refresh.apply.queue_delay").record(update.queue_delay);
@@ -2265,6 +2327,9 @@ impl Mux {
 
         if !adopted && before_title != after_title {
             self.notify_tab_title_changed(tab_id);
+        }
+        if session_identity_changed && self.get_agent_metadata_for_pane(update.pane_id).is_some() {
+            crate::session_persistence::request_session_save();
         }
     }
 
@@ -3841,6 +3906,9 @@ impl Mux {
 
     pub fn notify(&self, notification: MuxNotification) {
         self.clear_pending_notification(&notification);
+        if notification_changes_saved_session(&notification) {
+            crate::session_persistence::request_session_save();
+        }
         match &notification {
             MuxNotification::PaneOutput(pane_id) => self.record_agent_output(*pane_id),
             MuxNotification::Alert {
@@ -7127,6 +7195,97 @@ mod test {
             .all(|agent| agent.pane_id != mismatching_pane_id));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pending_codex_restore_observes_with_persisted_cwd() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout-pending-restore.jsonl");
+        std::fs::write(
+            &session,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"pending-session\",\"cwd\":\"/tmp/pending-restore\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"task_complete\"}}\n"
+            ),
+        )
+        .unwrap();
+        let _open_session = std::fs::File::open(&session).unwrap();
+        unsafe {
+            std::env::set_var("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        }
+
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let mut process = LocalProcessInfo::with_root_pid(std::process::id()).unwrap();
+        process.name = "codex".to_string();
+        process.executable = PathBuf::from("/usr/bin/codex");
+        process.argv = vec![
+            "codex".to_string(),
+            "resume".to_string(),
+            "pending-session".to_string(),
+        ];
+        process.cwd = PathBuf::from("/tmp/pending-restore");
+        let pane: Arc<dyn Pane> = Arc::new(FakePane {
+            id: 212,
+            size: Mutex::new(size),
+            domain_id: domain.id,
+            title: "codex".to_string(),
+            cwd: Some(FakePane::test_file_url("/tmp/pending-restore/")),
+            foreground_process_name: Some("/usr/bin/codex".to_string()),
+            foreground_process_info: Some(process),
+            foreground_process_info_calls: None,
+        });
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let mut metadata = sample_agent_metadata("pending-restore");
+        metadata.declared_cwd = "/tmp/pending-restore".to_string();
+        mux.register_codex_restore_intent(pane_id, metadata.clone(), "pending-session".to_string())
+            .unwrap();
+
+        let agents = mux.list_agents();
+        assert_eq!(agents.len(), 1);
+        assert!(matches!(agents[0].origin, AgentOrigin::Detected));
+        assert_eq!(agents[0].metadata.declared_cwd, "/tmp/pending-restore/");
+
+        wait_for_main_thread_work(
+            &executor,
+            || mux.get_agent_metadata_for_pane(pane_id).is_some(),
+            "pending Codex restore confirmation",
+        );
+        unsafe {
+            std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");
+        }
+
+        let restored = mux.get_agent_metadata_for_pane(pane_id).unwrap();
+        assert_eq!(restored.name, metadata.name);
+        assert_eq!(restored.declared_cwd, metadata.declared_cwd);
+        assert!(!mux.pending_codex_restores.read().contains_key(&pane_id));
+        assert_eq!(
+            mux.agent_runtime_by_pane
+                .read()
+                .get(&pane_id)
+                .and_then(|runtime| runtime.session_path.as_deref())
+                .map(Path::new),
+            Some(session.as_path())
+        );
+    }
+
     #[test]
     fn confirmed_harnesses_keep_provider_identity_during_auto_adoption() {
         let _test_lock = TEST_MUX_LOCK.lock();
@@ -8563,6 +8722,40 @@ mod test {
             .unwrap();
 
         assert_eq!(*invalidations.lock(), 0);
+    }
+
+    #[test]
+    fn session_save_notifications_exclude_ordinary_agent_activity() {
+        assert!(notification_changes_saved_session(
+            &MuxNotification::TabResized {
+                tab_id: 1,
+                origin: None,
+            }
+        ));
+        assert!(notification_changes_saved_session(
+            &MuxNotification::Alert {
+                pane_id: 1,
+                alert: wakterm_term::Alert::CurrentWorkingDirectoryChanged,
+            }
+        ));
+        assert!(!notification_changes_saved_session(
+            &MuxNotification::PaneOutput(1)
+        ));
+        assert!(!notification_changes_saved_session(
+            &MuxNotification::Alert {
+                pane_id: 1,
+                alert: wakterm_term::Alert::Progress(wakterm_term::Progress::None),
+            }
+        ));
+        assert!(!notification_changes_saved_session(
+            &MuxNotification::WindowInvalidated(1)
+        ));
+        assert!(!notification_changes_saved_session(
+            &MuxNotification::TabTitleChanged {
+                tab_id: 1,
+                title: "generated title".to_string(),
+            }
+        ));
     }
 
     #[test]
