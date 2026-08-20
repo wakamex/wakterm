@@ -571,14 +571,14 @@ fn run_managed_codex_launch(socket: &Path, pane_id: u64, cwd: &Path) -> Value {
         .current_dir(cwd)
         .env("WAKTERM_PANE", pane_id.to_string())
         .env("WAKTERM_UNIX_SOCKET", socket)
-        .args(["-n", "launch", "codex", "--new-tab", "--cwd"])
+        .args(["-n", "agent", "launch", "codex", "--new-tab", "--cwd"])
         .arg(cwd)
         .stdin(Stdio::null())
         .output()
         .expect("run managed Codex launch");
     assert!(
         output.status.success(),
-        "wakterm launch codex failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+        "wakterm agent launch codex failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)

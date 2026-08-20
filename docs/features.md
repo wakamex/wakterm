@@ -13,8 +13,8 @@ reliability, persistent layouts, and agent-driven workflows.
 * Manual layout snapshots via `wakterm cli save-layout` and
   `wakterm cli restore-layout`
 * First-class [agent harness panes](agent-lifecycle.md) for Claude, Codex, Gemini, and OpenCode
-* Live agent progress with `wakterm cli agent watch` and
-  `wakterm cli agent list -f`
+* Live agent progress with `wakterm agent watch` and
+  `wakterm agent list -f`
 * Prompt send and interrupt flows that keep the real harness UI in the pane
 * Better multi-client mux behavior, including fewer flickers, redraw storms,
   and resize feedback loops

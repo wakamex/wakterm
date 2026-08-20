@@ -1,6 +1,6 @@
 use crate::agent::{
-    AgentObservedTurn, AgentObservedTurnOutcome, AgentStatus, AgentTransport, AgentTurnState,
-    CodexAppServerSession,
+    finalize_runtime_snapshot, AgentObservedTurn, AgentObservedTurnOutcome, AgentTransport,
+    AgentTurnState, CodexAppServerSession,
 };
 use crate::Mux;
 use anyhow::{bail, Context};
@@ -725,10 +725,10 @@ pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
         match method {
             "turn/started" => {
                 if let Some(turn_id) = params.pointer("/turn/id").and_then(Value::as_str) {
-                    runtime.status = AgentStatus::Busy;
                     runtime.turn_state = AgentTurnState::WaitingOnAgent;
                     runtime.turn_phase = Some("running".to_string());
                     runtime.attention_reason = None;
+                    runtime.observer_error = None;
                     runtime.observed_turn = Some(AgentObservedTurn {
                         provider_turn_id: turn_id.to_string(),
                         outcome: AgentObservedTurnOutcome::Running,
@@ -758,19 +758,11 @@ pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
                     .and_then(|item| item.get("text"))
                     .and_then(Value::as_str)
                     .map(str::to_string);
-                runtime.status = if status == "completed" {
-                    AgentStatus::Idle
-                } else {
-                    AgentStatus::Errored
-                };
                 runtime.turn_state = AgentTurnState::WaitingOnUser;
                 runtime.turn_phase = Some(status.to_string());
                 runtime.last_turn_completed_at = Some(Utc::now());
-                runtime.attention_reason = if status == "completed" {
-                    None
-                } else {
-                    Some("turn-aborted".to_string())
-                };
+                runtime.attention_reason = None;
+                runtime.observer_error = None;
                 if let Some(turn) = runtime.observed_turn.as_mut() {
                     turn.outcome = if status == "completed" {
                         AgentObservedTurnOutcome::Completed
@@ -783,13 +775,30 @@ pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
             }
             "thread/status/changed" => {
                 match params.pointer("/status/type").and_then(Value::as_str) {
-                    Some("active") => runtime.status = AgentStatus::Busy,
-                    Some("idle") => runtime.status = AgentStatus::Idle,
-                    Some("systemError") => runtime.status = AgentStatus::Errored,
+                    Some("active") => {
+                        runtime.turn_state = AgentTurnState::WaitingOnAgent;
+                        runtime.attention_reason = None;
+                        runtime.observer_error = None;
+                        if matches!(runtime.turn_phase.as_deref(), Some("systemError")) {
+                            runtime.turn_phase = Some("running".to_string());
+                        }
+                    }
+                    Some("idle") => {
+                        runtime.turn_state = AgentTurnState::WaitingOnUser;
+                        runtime.observer_error = None;
+                        if matches!(runtime.turn_phase.as_deref(), Some("systemError")) {
+                            runtime.turn_phase = None;
+                        }
+                    }
+                    Some("systemError") => {
+                        runtime.turn_phase = Some("systemError".to_string());
+                    }
                     _ => {}
                 }
             }
             "item/started" => {
+                runtime.turn_state = AgentTurnState::WaitingOnAgent;
+                runtime.attention_reason = None;
                 runtime.last_progress_at = Some(Utc::now());
                 runtime.progress_summary = params
                     .pointer("/item/type")
@@ -802,19 +811,21 @@ pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
             "item/commandExecution/requestApproval"
             | "item/fileChange/requestApproval"
             | "item/permissions/requestApproval" => {
-                runtime.status = AgentStatus::Busy;
                 runtime.turn_state = AgentTurnState::WaitingOnUser;
                 runtime.attention_reason = Some("approval-requested".to_string());
             }
             "error" => {
-                runtime.status = AgentStatus::Errored;
-                runtime.observer_error = params
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
+                runtime.observer_error = Some(
+                    params
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Codex app-server error")
+                        .to_string(),
+                );
             }
             _ => {}
         }
+        finalize_runtime_snapshot(runtime);
         drop(runtimes);
         if let Some((_, _, tab_id)) = mux.resolve_pane_id(pane_id) {
             mux.notify_tab_title_changed(tab_id);
@@ -825,7 +836,7 @@ pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::agent::{AgentMetadata, AgentRuntimeSnapshot};
+    use crate::agent::{AgentMetadata, AgentRuntimeSnapshot, AgentStatus};
 
     fn metadata(name: &str, thread_id: &str) -> AgentMetadata {
         AgentMetadata {
@@ -940,6 +951,15 @@ mod test {
                 "params": {"threadId": "thread-b", "turn": {"id": "turn-b", "status": "interrupted"}}
             }),
         );
+        {
+            let runtimes = mux.agent_runtime_by_pane.read();
+            assert_eq!(runtimes[&2].status, AgentStatus::Idle);
+            assert_eq!(runtimes[&2].turn_state, AgentTurnState::WaitingOnUser);
+            assert_eq!(
+                runtimes[&2].attention_reason.as_deref(),
+                Some("turn-aborted")
+            );
+        }
         apply_notification_to_runtime(
             &mux,
             &json!({
@@ -956,6 +976,66 @@ mod test {
             Some("turn-after-cancel")
         );
         assert_eq!(runtimes[&2].status, AgentStatus::Busy);
+        drop(runtimes);
+
+        apply_notification_to_runtime(
+            &mux,
+            &json!({
+                "method": "item/commandExecution/requestApproval",
+                "params": {"threadId": "thread-b"}
+            }),
+        );
+        {
+            let runtimes = mux.agent_runtime_by_pane.read();
+            assert_eq!(runtimes[&2].status, AgentStatus::Busy);
+            assert_eq!(runtimes[&2].turn_state, AgentTurnState::WaitingOnUser);
+            assert_eq!(
+                runtimes[&2].attention_reason.as_deref(),
+                Some("approval-requested")
+            );
+        }
+
+        apply_notification_to_runtime(
+            &mux,
+            &json!({
+                "method": "item/started",
+                "params": {"threadId": "thread-b", "item": {"type": "commandExecution"}}
+            }),
+        );
+        {
+            let runtimes = mux.agent_runtime_by_pane.read();
+            assert_eq!(runtimes[&2].status, AgentStatus::Busy);
+            assert_eq!(runtimes[&2].turn_state, AgentTurnState::WaitingOnAgent);
+            assert_eq!(runtimes[&2].attention_reason, None);
+        }
+
+        apply_notification_to_runtime(
+            &mux,
+            &json!({
+                "method": "thread/status/changed",
+                "params": {"threadId": "thread-b", "status": {"type": "systemError"}}
+            }),
+        );
+        {
+            let runtimes = mux.agent_runtime_by_pane.read();
+            assert_eq!(runtimes[&2].status, AgentStatus::Errored);
+            assert_eq!(
+                runtimes[&2].attention_reason.as_deref(),
+                Some("system-error")
+            );
+        }
+
+        apply_notification_to_runtime(
+            &mux,
+            &json!({
+                "method": "thread/status/changed",
+                "params": {"threadId": "thread-b", "status": {"type": "active"}}
+            }),
+        );
+        let runtimes = mux.agent_runtime_by_pane.read();
+        assert_eq!(runtimes[&2].status, AgentStatus::Busy);
+        assert_eq!(runtimes[&2].turn_state, AgentTurnState::WaitingOnAgent);
+        assert_eq!(runtimes[&2].attention_reason, None);
     }
 
     #[cfg(unix)]

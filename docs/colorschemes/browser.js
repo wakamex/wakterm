@@ -316,7 +316,7 @@
       "</span>" +
       "</div>" +
       '<div class="scheme-preview__screen">' +
-      '<div><span class="scheme-preview__fg-2">mihai@wakterm</span> <span class="scheme-preview__fg-4">~/demo</span> <span class="scheme-preview__fg-3">$</span> wakterm cli agent watch</div>' +
+      '<div><span class="scheme-preview__fg-2">mihai@wakterm</span> <span class="scheme-preview__fg-4">~/demo</span> <span class="scheme-preview__fg-3">$</span> wakterm agent watch</div>' +
       '<div class="scheme-preview__muted">layout restored · 4 panes attached · 1 mux server</div>' +
       '<div><span class="scheme-preview__fg-6">smoke-codex</span> <span class="scheme-preview__fg-5">final-answer</span> codex smoke ok</div>' +
       '<div><span class="scheme-preview__selection">selected text</span> <span class="scheme-preview__cursor">&nbsp;</span></div>' +

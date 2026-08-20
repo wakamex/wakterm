@@ -910,7 +910,7 @@ mod test {
     }
 
     #[test]
-    fn saved_session_includes_idle_codex_restore_intent() {
+    fn saved_session_includes_busy_codex_restore_intent() {
         let _test_lock = crate::TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
         let mux = Arc::new(Mux::new(None));
@@ -941,7 +941,7 @@ mod test {
             .get(&pane_id)
             .cloned()
             .expect("agent runtime");
-        runtime.turn_state = crate::agent::AgentTurnState::WaitingOnUser;
+        runtime.turn_state = crate::agent::AgentTurnState::WaitingOnAgent;
         runtime.session_path = Some(session_path.to_string_lossy().into_owned());
         mux.agent_runtime_by_pane.write().insert(pane_id, runtime);
 
@@ -953,7 +953,7 @@ mod test {
     }
 
     #[test]
-    fn restore_tab_spawns_codex_resume_and_registers_pending_intent() {
+    fn restore_tab_resumes_exact_busy_codex_session_and_registers_pending_intent() {
         let _test_lock = crate::TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
         let source_mux = Arc::new(Mux::new(None));
@@ -985,7 +985,7 @@ mod test {
             .get(&pane_id)
             .cloned()
             .expect("agent runtime");
-        runtime.turn_state = crate::agent::AgentTurnState::WaitingOnUser;
+        runtime.turn_state = crate::agent::AgentTurnState::WaitingOnAgent;
         runtime.session_path = Some(session_path.to_string_lossy().into_owned());
         source_mux
             .agent_runtime_by_pane

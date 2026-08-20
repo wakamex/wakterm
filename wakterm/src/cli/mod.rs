@@ -25,6 +25,8 @@ mod split_pane;
 mod tls_creds;
 mod zoom_pane;
 
+pub use agent::AgentCommand;
+
 #[derive(Debug, Parser, Clone, Copy)]
 enum CliOutputFormatKind {
     #[command(name = "table", about = "multi line space separated table")]
@@ -84,7 +86,7 @@ pub enum LaunchCommand {
     Codex(agent::LaunchCodexCommand),
 }
 
-pub fn run_launch(opts: &crate::Opt, launch: LaunchCommand) -> anyhow::Result<()> {
+pub fn run_agent(opts: &crate::Opt, command: AgentCommand) -> anyhow::Result<()> {
     let executor = promise::spawn::ScopedExecutor::new();
     match promise::spawn::block_on(executor.run(async move {
         let mut ui = mux::connui::ConnectionUI::new_headless();
@@ -96,9 +98,7 @@ pub fn run_launch(opts: &crate::Opt, launch: LaunchCommand) -> anyhow::Result<()
             wakterm_gui_subcommands::DEFAULT_WINDOW_CLASS,
         )?;
         client.verify_version_compat(&ui).await?;
-        match launch {
-            LaunchCommand::Codex(command) => command.run(client, &crate::init_config(opts)?).await,
-        }
+        command.run(client, &crate::init_config(opts)?).await
     })) {
         Ok(_) => Ok(()),
         Err(err) => crate::terminate_with_error(err),
@@ -110,7 +110,7 @@ enum CliSubCommand {
     #[command(name = "list", about = "list windows, tabs and panes")]
     List(list::ListCommand),
 
-    #[command(name = "agent", about = "manage pane-attached agent metadata")]
+    #[command(name = "agent", hide = true)]
     Agent(agent::AgentCommand),
 
     #[command(name = "list-clients", about = "list clients")]

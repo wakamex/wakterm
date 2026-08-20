@@ -403,8 +403,27 @@ pub fn derive_runtime_status(runtime: &AgentRuntimeSnapshot) -> AgentStatus {
         return AgentStatus::Exited;
     }
 
-    if matches!(runtime.terminal_progress, Progress::Error(_)) {
+    if runtime.observer_error.is_some()
+        || matches!(runtime.terminal_progress, Progress::Error(_))
+        || matches!(
+            runtime.turn_phase.as_deref(),
+            Some("failed" | "systemError")
+        )
+    {
         return AgentStatus::Errored;
+    }
+
+    if matches!(
+        runtime.attention_reason.as_deref(),
+        Some("approval-requested")
+    ) {
+        return AgentStatus::Busy;
+    }
+
+    match runtime.turn_state {
+        AgentTurnState::WaitingOnAgent => return AgentStatus::Busy,
+        AgentTurnState::WaitingOnUser => return AgentStatus::Idle,
+        AgentTurnState::Unknown => {}
     }
 
     if matches!(
@@ -433,6 +452,10 @@ fn derive_effective_turn_state(runtime: &AgentRuntimeSnapshot) -> AgentTurnState
         return AgentTurnState::Unknown;
     }
 
+    if matches!(runtime.turn_state, AgentTurnState::WaitingOnAgent) {
+        return AgentTurnState::WaitingOnAgent;
+    }
+
     if let Some(completed_at) = runtime.last_turn_completed_at {
         if runtime
             .last_input_at
@@ -456,8 +479,27 @@ fn derive_attention_reason(runtime: &AgentRuntimeSnapshot) -> Option<String> {
         return Some("observer-error".to_string());
     }
 
-    if matches!(runtime.turn_phase.as_deref(), Some("aborted")) {
+    if matches!(runtime.turn_phase.as_deref(), Some("failed")) {
+        return Some("turn-failed".to_string());
+    }
+
+    if matches!(runtime.turn_phase.as_deref(), Some("systemError")) {
+        return Some("system-error".to_string());
+    }
+
+    if matches!(
+        runtime.turn_phase.as_deref(),
+        Some("aborted" | "interrupted" | "cancelled")
+    ) {
         return Some("turn-aborted".to_string());
+    }
+
+    if matches!(
+        runtime.attention_reason.as_deref(),
+        Some("approval-requested")
+    ) && matches!(runtime.turn_state, AgentTurnState::WaitingOnUser)
+    {
+        return Some("approval-requested".to_string());
     }
 
     if matches!(runtime.terminal_progress, Progress::Error(_)) {
@@ -1406,7 +1448,8 @@ fn derive_turn_state(
         (Some(user_at), Some(assistant_at)) if assistant_at >= user_at => {
             (AgentTurnState::WaitingOnUser, Some(assistant_at))
         }
-        (Some(_), Some(_)) | (Some(_), None) => (AgentTurnState::WaitingOnAgent, None),
+        (Some(_), Some(assistant_at)) => (AgentTurnState::WaitingOnAgent, Some(assistant_at)),
+        (Some(_), None) => (AgentTurnState::WaitingOnAgent, None),
         (None, Some(assistant_at)) => (AgentTurnState::WaitingOnUser, Some(assistant_at)),
         (None, None) => (AgentTurnState::Unknown, None),
     }
@@ -2184,6 +2227,7 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
     let mut last_assistant_at = None;
     let mut last_lifecycle = None;
     let mut last_lifecycle_at = None;
+    let mut previous_turn_completed_at = None;
     let mut current_turn_id = None;
     let mut current_turn_latest_cursor = None;
     let mut current_turn_started_cursor = None;
@@ -2327,6 +2371,14 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
                     }
                     Some("task_complete") => {
                         if !belongs_to_current_turn {
+                            previous_turn_completed_at = parse_record_timestamp(&record);
+                            return Ok(false);
+                        }
+                        if current_turn_id.is_none()
+                            && saw_task_started
+                            && matches!(last_lifecycle, Some(CodexTaskLifecycle::Running))
+                        {
+                            previous_turn_completed_at = parse_record_timestamp(&record);
                             return Ok(false);
                         }
                         saw_task_complete = true;
@@ -2353,6 +2405,14 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
                     }
                     Some("turn_aborted") => {
                         if !belongs_to_current_turn {
+                            previous_turn_completed_at = parse_record_timestamp(&record);
+                            return Ok(false);
+                        }
+                        if current_turn_id.is_none()
+                            && saw_task_started
+                            && matches!(last_lifecycle, Some(CodexTaskLifecycle::Running))
+                        {
+                            previous_turn_completed_at = parse_record_timestamp(&record);
                             return Ok(false);
                         }
                         current_turn_completed_at = parse_record_timestamp(&record);
@@ -2376,14 +2436,14 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
         let summary_settled = summary.is_some();
         let harness_mode_settled = harness_mode.is_some();
         let turn_settled = match last_lifecycle {
-            Some(CodexTaskLifecycle::Running) => true,
+            Some(CodexTaskLifecycle::Running) => previous_turn_completed_at.is_some(),
             Some(CodexTaskLifecycle::Completed) | Some(CodexTaskLifecycle::Aborted) => {
                 last_lifecycle_at.is_some()
             }
             None => false,
         };
         Ok(if current_turn_id.is_some() {
-            saw_current_turn_start
+            saw_current_turn_start && turn_settled
         } else {
             summary_settled && harness_mode_settled && phase_settled && turn_settled
         })
@@ -2405,7 +2465,7 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
     match last_lifecycle {
         Some(CodexTaskLifecycle::Running) => {
             turn_state = AgentTurnState::WaitingOnAgent;
-            last_turn_completed_at = None;
+            last_turn_completed_at = previous_turn_completed_at;
         }
         Some(CodexTaskLifecycle::Completed) | Some(CodexTaskLifecycle::Aborted) => {
             turn_state = AgentTurnState::WaitingOnUser;
@@ -2610,7 +2670,7 @@ mod test {
     }
 
     #[test]
-    fn derives_runtime_status_from_liveness_progress_and_recent_activity() {
+    fn derives_runtime_status_from_authoritative_turn_state_then_fallback_signals() {
         let metadata = AgentMetadata {
             agent_id: "id".to_string(),
             name: "alpha".to_string(),
@@ -2634,7 +2694,27 @@ mod test {
         runtime.last_output_at = Some(Utc::now() - Duration::minutes(5));
         assert_eq!(derive_runtime_status(&runtime), AgentStatus::Idle);
 
+        runtime.turn_state = AgentTurnState::WaitingOnAgent;
+        assert_eq!(derive_runtime_status(&runtime), AgentStatus::Busy);
+
+        runtime.turn_state = AgentTurnState::WaitingOnUser;
+        runtime.last_output_at = Some(Utc::now());
+        runtime.terminal_progress = Progress::Indeterminate;
+        assert_eq!(derive_runtime_status(&runtime), AgentStatus::Idle);
+
+        runtime.attention_reason = Some("approval-requested".to_string());
+        assert_eq!(derive_runtime_status(&runtime), AgentStatus::Busy);
+        runtime.attention_reason = None;
+
         runtime.terminal_progress = Progress::Error(1);
+        assert_eq!(derive_runtime_status(&runtime), AgentStatus::Errored);
+
+        runtime.terminal_progress = Progress::None;
+        runtime.observer_error = Some("observer failed".to_string());
+        assert_eq!(derive_runtime_status(&runtime), AgentStatus::Errored);
+
+        runtime.observer_error = None;
+        runtime.turn_phase = Some("failed".to_string());
         assert_eq!(derive_runtime_status(&runtime), AgentStatus::Errored);
 
         runtime.alive = false;
@@ -3146,6 +3226,47 @@ mod test {
     }
 
     #[test]
+    fn running_codex_turn_keeps_previous_completed_turn_timestamp() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout-running-after-complete.jsonl");
+        fs::write(
+            &session,
+            concat!(
+                "{\"ordinal\":1,\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\",\"collaboration_mode_kind\":\"default\"}}\n",
+                "{\"ordinal\":2,\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:00:01Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"first answer\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-1\"}}}\n",
+                "{\"ordinal\":3,\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:02Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\",\"last_agent_message\":\"first answer\"}}\n",
+                "{\"ordinal\":4,\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:05:00Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-2\",\"collaboration_mode_kind\":\"default\"}}\n",
+                "{\"ordinal\":5,\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:05:01Z\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"second request\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-2\"}}}\n",
+                "{\"ordinal\":6,\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:05:02Z\",\"payload\":{\"type\":\"agent_message\",\"turn_id\":\"turn-2\",\"phase\":\"commentary\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        let observed = read_last_codex_observation(&session).unwrap();
+
+        assert_eq!(observed.turn_state, AgentTurnState::WaitingOnAgent);
+        assert_eq!(
+            observed.last_turn_completed_at,
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 2).unwrap())
+        );
+        let turn = observed.observed_turn.unwrap();
+        assert_eq!(turn.provider_turn_id, "turn-2");
+        assert_eq!(turn.outcome, AgentObservedTurnOutcome::Running);
+        assert_eq!(turn.completed_at, None);
+    }
+
+    #[test]
+    fn waiting_on_agent_keeps_the_previous_assistant_completion_timestamp() {
+        let previous_assistant = Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap();
+        let current_user = Utc.with_ymd_and_hms(2026, 3, 17, 12, 5, 0).unwrap();
+
+        assert_eq!(
+            derive_turn_state(Some(current_user), Some(previous_assistant)),
+            (AgentTurnState::WaitingOnAgent, Some(previous_assistant))
+        );
+    }
+
+    #[test]
     fn observe_codex_marks_aborted_turn_as_waiting_on_user() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
@@ -3577,7 +3698,7 @@ mod test {
     }
 
     #[test]
-    fn refresh_runtime_marks_waiting_on_agent_after_new_user_turn() {
+    fn refresh_runtime_marks_waiting_on_agent_and_keeps_previous_turn_end() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let cwd = "/tmp/project-c";
@@ -3614,7 +3735,10 @@ mod test {
         remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
 
         assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnAgent);
-        assert_eq!(runtime.last_turn_completed_at, None);
+        assert_eq!(
+            runtime.last_turn_completed_at,
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 0).unwrap())
+        );
         assert_eq!(runtime.attention_reason, None);
         assert_eq!(runtime.transport, AgentTransport::ObservedPty);
     }
@@ -3767,11 +3891,14 @@ mod test {
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         runtime.foreground_process_name = Some("codex".to_string());
+        runtime.last_output_at = Some(Utc::now());
+        runtime.terminal_progress = Progress::Indeterminate;
         refresh_runtime_from_harness(&mut runtime, &metadata);
         remove_env_var("WAKTERM_AGENT_CODEX_DIR");
 
         assert_eq!(runtime.turn_phase.as_deref(), Some("aborted"));
         assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(runtime.status, AgentStatus::Idle);
         assert_eq!(runtime.attention_reason.as_deref(), Some("turn-aborted"));
     }
 

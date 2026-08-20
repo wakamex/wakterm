@@ -42,7 +42,7 @@ origins. `App-server TUI` is represented by the `CodexAppServerTui` transport.
 
 ## Codex app-server TUI transport
 
-`wakterm launch codex` starts or resumes an exact Codex thread through one
+`wakterm agent launch codex` starts or resumes an exact Codex thread through one
 mux-owned app-server on a private Unix socket. The mux keeps one initialized
 protocol connection, routes lifecycle events by exact thread ID, and persists
 the distinct Codex thread ID and session ID. Each pane runs `codex resume`

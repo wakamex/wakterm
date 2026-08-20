@@ -166,6 +166,11 @@ pub struct AgentEventStore {
     live: Arc<AtomicBool>,
 }
 
+pub(crate) struct AgentEventWriter {
+    store: AgentEventStore,
+    conn: Connection,
+}
+
 impl AgentEventStore {
     pub fn new(path: PathBuf) -> Self {
         Self::with_retention_limit(path, DEFAULT_EVENT_RETENTION)
@@ -266,25 +271,35 @@ impl AgentEventStore {
         Ok(conn)
     }
 
+    pub(crate) fn writer(&self) -> anyhow::Result<AgentEventWriter> {
+        Ok(AgentEventWriter {
+            store: self.clone(),
+            conn: self.connect()?,
+        })
+    }
+
     pub fn observe_agent(
         &self,
         metadata: &AgentMetadata,
         runtime: &AgentRuntimeSnapshot,
     ) -> anyhow::Result<()> {
-        let result = self.observe_agent_inner(metadata, runtime);
+        let result = (|| {
+            let mut writer = self.writer()?;
+            writer.observe_agent(metadata, runtime)
+        })();
         self.live.store(result.is_ok(), Ordering::Release);
         result
     }
 
     fn observe_agent_inner(
         &self,
+        conn: &mut Connection,
         metadata: &AgentMetadata,
         runtime: &AgentRuntimeSnapshot,
     ) -> anyhow::Result<()> {
         let Some(current_incarnation) = incarnation_id(metadata) else {
             return Ok(());
         };
-        let mut conn = self.connect()?;
         let loaded_state = load_projection(&conn, &metadata.agent_id)?.unwrap_or_default();
         let mut state = loaded_state.clone();
         let mut pending = Vec::<(String, PendingEvent)>::new();
@@ -389,6 +404,10 @@ impl AgentEventStore {
             state.observer_error = None;
         }
 
+        if state == loaded_state && pending.is_empty() {
+            return Ok(());
+        }
+
         let tx = conn.transaction()?;
         anyhow::ensure!(
             load_projection(&tx, &metadata.agent_id)?.unwrap_or_default() == loaded_state,
@@ -411,13 +430,17 @@ impl AgentEventStore {
         observed_at: DateTime<Utc>,
         reason: &str,
     ) -> anyhow::Result<()> {
-        let result = self.record_unavailable_inner(metadata, observed_at, reason);
+        let result = (|| {
+            let mut writer = self.writer()?;
+            writer.record_unavailable(metadata, observed_at, reason)
+        })();
         self.live.store(result.is_ok(), Ordering::Release);
         result
     }
 
     fn record_unavailable_inner(
         &self,
+        conn: &mut Connection,
         metadata: &AgentMetadata,
         observed_at: DateTime<Utc>,
         reason: &str,
@@ -425,7 +448,6 @@ impl AgentEventStore {
         let Some(incarnation) = incarnation_id(metadata) else {
             return Ok(());
         };
-        let mut conn = self.connect()?;
         let tx = conn.transaction()?;
         let mut state = load_projection(&tx, &metadata.agent_id)?.unwrap_or_default();
         if state.incarnation_id == incarnation && state.lifecycle.as_deref() != Some("unavailable")
@@ -508,6 +530,33 @@ impl AgentEventStore {
             events,
             recovery: None,
         })
+    }
+}
+
+impl AgentEventWriter {
+    pub(crate) fn observe_agent(
+        &mut self,
+        metadata: &AgentMetadata,
+        runtime: &AgentRuntimeSnapshot,
+    ) -> anyhow::Result<()> {
+        let result = self
+            .store
+            .observe_agent_inner(&mut self.conn, metadata, runtime);
+        self.store.live.store(result.is_ok(), Ordering::Release);
+        result
+    }
+
+    pub(crate) fn record_unavailable(
+        &mut self,
+        metadata: &AgentMetadata,
+        observed_at: DateTime<Utc>,
+        reason: &str,
+    ) -> anyhow::Result<()> {
+        let result =
+            self.store
+                .record_unavailable_inner(&mut self.conn, metadata, observed_at, reason);
+        self.store.live.store(result.is_ok(), Ordering::Release);
+        result
     }
 }
 
@@ -1830,6 +1879,29 @@ mod tests {
         store.start_runtime_epoch().unwrap();
         assert!(store.is_live());
         assert!(path.exists());
+    }
+
+    #[test]
+    fn persistent_writer_keeps_wal_open_and_skips_unchanged_projection_writes() {
+        let temp = TempDir::new().unwrap();
+        let db = temp.path().join("events.sqlite3");
+        let wal = PathBuf::from(format!("{}-wal", db.display()));
+        let store = AgentEventStore::new(db);
+        let metadata = metadata("unknown");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Unknown,
+            "/tmp/unused-session".to_string(),
+        );
+        let mut writer = store.writer().unwrap();
+
+        writer.observe_agent(&metadata, &runtime).unwrap();
+        let changes_after_first_observation = writer.conn.total_changes();
+        assert!(wal.exists());
+
+        writer.observe_agent(&metadata, &runtime).unwrap();
+        assert_eq!(writer.conn.total_changes(), changes_after_first_observation);
+        assert!(wal.exists());
     }
 
     #[test]

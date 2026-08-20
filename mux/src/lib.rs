@@ -716,7 +716,15 @@ fn spawn_agent_observer_worker(event_store: AgentEventStore) -> Sender<AgentObse
 }
 
 fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: AgentEventStore) {
+    let mut event_writer = None;
     while let Ok(command) = rx.recv() {
+        if event_writer.is_none() {
+            match event_store.writer() {
+                Ok(writer) => event_writer = Some(writer),
+                Err(err) => log::error!("failed to open agent event writer: {err:#}"),
+            }
+        }
+        let mut writer_failed = false;
         match command {
             AgentObserverCommand::Refresh(request) => {
                 counter!("mux.agent_observer.refresh.rate").increment(1);
@@ -724,8 +732,11 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                 let mut runtime = request.runtime;
                 refresh_runtime_from_harness(&mut runtime, &request.metadata);
                 if request.adopted {
-                    if let Err(err) = event_store.observe_agent(&request.metadata, &runtime) {
-                        log::error!("failed to persist agent observation events: {err:#}");
+                    if let Some(writer) = event_writer.as_mut() {
+                        if let Err(err) = writer.observe_agent(&request.metadata, &runtime) {
+                            log::error!("failed to persist agent observation events: {err:#}");
+                            writer_failed = true;
+                        }
                     }
                 }
                 let refresh_elapsed = started.elapsed();
@@ -754,10 +765,16 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                 observed_at,
                 reason,
             } => {
-                if let Err(err) = event_store.record_unavailable(&metadata, observed_at, &reason) {
-                    log::error!("failed to persist unavailable agent event: {err:#}");
+                if let Some(writer) = event_writer.as_mut() {
+                    if let Err(err) = writer.record_unavailable(&metadata, observed_at, &reason) {
+                        log::error!("failed to persist unavailable agent event: {err:#}");
+                        writer_failed = true;
+                    }
                 }
             }
+        }
+        if writer_failed {
+            event_writer = None;
         }
     }
 }
@@ -1119,12 +1136,6 @@ impl Mux {
             return None;
         }
         let runtime = self.agent_runtime_by_pane.read().get(&pane_id).cloned()?;
-        if !matches!(
-            runtime.turn_state,
-            crate::agent::AgentTurnState::WaitingOnUser
-        ) {
-            return None;
-        }
         let session_path = runtime.session_path.as_deref()?;
         let session_id = codex_session_id(Path::new(session_path)).ok().flatten()?;
         Some(((*metadata).clone(), session_id))
@@ -2075,45 +2086,54 @@ impl Mux {
             .get(&pane_id)
             .copied()
             .unwrap_or_default();
+        let mut schedule_rate_limited_trailing_refresh = false;
         let request = {
             let mut observer_state_by_pane = self.agent_observer_state_by_pane.write();
             let observer_state = observer_state_by_pane.entry(pane_id).or_default();
             observer_state.latest_generation =
                 observer_state.latest_generation.max(prior_generation);
-            if !requires_lossless_observation
-                && !Self::should_refresh_harness_runtime(observer_state, refresh_policy, now)
-            {
+            if !Self::should_refresh_harness_runtime(observer_state, refresh_policy, now) {
                 counter!("mux.agent_observer.refresh.skipped.rate").increment(1);
-                return;
-            }
+                schedule_rate_limited_trailing_refresh =
+                    schedule_trailing_refresh && requires_lossless_observation;
+                None
+            } else {
+                observer_state.latest_generation += 1;
+                self.agent_observer_generation_by_pane
+                    .write()
+                    .insert(pane_id, observer_state.latest_generation);
+                observer_state.last_requested_at = Some(now);
+                let request = AgentObserverRequest {
+                    pane_id,
+                    generation: observer_state.latest_generation,
+                    requested_at: Instant::now(),
+                    metadata: metadata.clone(),
+                    runtime: runtime.clone(),
+                    adopted,
+                    schedule_trailing_refresh: schedule_trailing_refresh
+                        && requires_lossless_observation,
+                };
 
-            observer_state.latest_generation += 1;
-            self.agent_observer_generation_by_pane
-                .write()
-                .insert(pane_id, observer_state.latest_generation);
-            observer_state.last_requested_at = Some(now);
-            let request = AgentObserverRequest {
-                pane_id,
-                generation: observer_state.latest_generation,
-                requested_at: Instant::now(),
-                metadata: metadata.clone(),
-                runtime: runtime.clone(),
-                adopted,
-                schedule_trailing_refresh: schedule_trailing_refresh
-                    && requires_lossless_observation,
-            };
-
-            if observer_state.inflight_generation.is_some() {
-                if observer_state.pending_request.replace(request).is_some() {
-                    counter!("mux.agent_observer.refresh.replaced_pending.rate").increment(1);
+                if observer_state.inflight_generation.is_some() {
+                    if observer_state.pending_request.replace(request).is_some() {
+                        counter!("mux.agent_observer.refresh.replaced_pending.rate").increment(1);
+                    } else {
+                        counter!("mux.agent_observer.refresh.coalesced.rate").increment(1);
+                    }
+                    None
                 } else {
-                    counter!("mux.agent_observer.refresh.coalesced.rate").increment(1);
+                    observer_state.inflight_generation = Some(request.generation);
+                    Some(request)
                 }
-                return;
             }
+        };
 
-            observer_state.inflight_generation = Some(request.generation);
-            request
+        if schedule_rate_limited_trailing_refresh {
+            self.schedule_trailing_agent_observer_refresh(pane_id);
+        }
+
+        let Some(request) = request else {
+            return;
         };
 
         counter!("mux.agent_observer.refresh.scheduled.rate").increment(1);
@@ -6059,7 +6079,7 @@ mod test {
     }
 
     #[test]
-    fn confirmed_observer_burst_retains_latest_refresh_without_throttle_drop() {
+    fn confirmed_observer_burst_is_throttled_with_one_trailing_refresh() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let mux = Arc::new(Mux::new(None));
         Mux::set_mux(&mux);
@@ -6089,15 +6109,10 @@ mod test {
 
         let states = mux.agent_observer_state_by_pane.read();
         let state = states.get(&pane_id).unwrap();
-        assert_eq!(state.latest_generation, 2);
+        assert_eq!(state.latest_generation, 1);
         assert_eq!(state.inflight_generation, Some(1));
-        assert_eq!(
-            state
-                .pending_request
-                .as_ref()
-                .map(|request| request.generation),
-            Some(2)
-        );
+        assert!(state.pending_request.is_none());
+        assert!(state.trailing_refresh_scheduled);
     }
 
     #[test]
@@ -6780,15 +6795,16 @@ mod test {
         assert_eq!(*title_changes.lock(), 1);
         let process_calls_after_adoption = process_info_calls.load(Ordering::SeqCst);
 
+        let adopted_runtime = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .expect("adopted runtime");
         mux.apply_agent_observer_update(AgentObserverUpdate {
             pane_id,
             generation: 1,
-            runtime: mux
-                .agent_runtime_by_pane
-                .read()
-                .get(&pane_id)
-                .cloned()
-                .expect("adopted runtime"),
+            runtime: adopted_runtime,
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
             schedule_trailing_refresh: false,

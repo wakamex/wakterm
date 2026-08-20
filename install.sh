@@ -88,12 +88,13 @@ for bin in wakterm wakterm-gui wakterm-mux-server; do
     echo "  $bin -> $prefix/$bin"
 done
 
-cat >"$prefix/agent" <<EOF
-#!/usr/bin/env bash
-exec "$prefix/wakterm" cli agent "\$@"
-EOF
-chmod 755 "$prefix/agent"
-echo "  agent -> $prefix/agent"
+legacy_agent_shim="$prefix/agent"
+legacy_agent_body="$(printf '#!/usr/bin/env bash\nexec "%s/wakterm" cli agent "$@"' "$prefix")"
+if [ -f "$legacy_agent_shim" ] && [ ! -L "$legacy_agent_shim" ] && \
+    [ "$(<"$legacy_agent_shim")" = "$legacy_agent_body" ]; then
+    rm "$legacy_agent_shim"
+    echo "  removed legacy Wakterm agent shim: $legacy_agent_shim"
+fi
 
 echo ""
 echo "Installed versions:"

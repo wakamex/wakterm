@@ -43,6 +43,15 @@ enum AgentSubCommand {
     )]
     Start(SpawnAgentCommand),
 
+    #[command(
+        name = "launch",
+        about = "launch an agent through a mux-owned transport"
+    )]
+    Launch {
+        #[command(subcommand)]
+        command: super::LaunchCommand,
+    },
+
     #[command(name = "adopt", about = "adopt an existing pane as an agent")]
     Adopt(AdoptAgentCommand),
 
@@ -111,6 +120,9 @@ impl AgentCommand {
     pub async fn run(&self, client: Client, config: &ConfigHandle) -> anyhow::Result<()> {
         match &self.sub {
             AgentSubCommand::Start(cmd) => cmd.run(client, config).await,
+            AgentSubCommand::Launch { command } => match command {
+                super::LaunchCommand::Codex(command) => command.run(client, config).await,
+            },
             AgentSubCommand::Adopt(cmd) => cmd.run(client).await,
             AgentSubCommand::AdoptDetected(cmd) => cmd.run(client).await,
             AgentSubCommand::List(cmd) => cmd.run(client).await,
@@ -696,7 +708,7 @@ impl LaunchCodexCommand {
     pub async fn run(&self, client: Client, config: &ConfigHandle) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.new_tab || std::env::var_os("WAKTERM_PANE").is_some(),
-            "wakterm launch codex must run inside a Wakterm pane; pass --new-tab to launch from another terminal"
+            "wakterm agent launch codex must run inside a Wakterm pane; pass --new-tab to launch from another terminal"
         );
         let pane_id = client.resolve_pane_id(None).await?;
         let panes = client.list_panes().await?;
@@ -3347,6 +3359,8 @@ mod test {
     fn agent_list_table_is_compact_by_default_and_verbose_preserves_details() {
         let now = Utc.with_ymd_and_hms(2026, 3, 17, 14, 30, 0).unwrap();
         let mut agent = sample_agent(30, "reviewer");
+        agent.runtime.status = AgentStatus::Busy;
+        agent.runtime.turn_state = AgentTurnState::WaitingOnAgent;
         agent.runtime.last_turn_completed_at =
             Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 15, 0).unwrap());
 
@@ -3354,6 +3368,7 @@ mod test {
         write_agent_table(&[agent.clone()], false, now, &mut compact).unwrap();
         let compact = String::from_utf8(compact).unwrap();
         assert!(compact.contains("LAST TURN END"));
+        assert!(compact.contains("busy"));
         assert!(compact.contains("2h 15m"));
         assert!(!compact.contains("PANEID"));
         assert!(!compact.contains("PROGRESS"));
@@ -4709,11 +4724,24 @@ mod test {
     }
 
     #[test]
-    fn managed_codex_launch_defaults_to_current_pane_and_new_tab_is_explicit() {
-        let current = LaunchCodexCommand::try_parse_from(["codex"]).unwrap();
+    fn agent_launch_codex_defaults_to_current_pane_and_new_tab_is_explicit() {
+        let current = AgentCommand::try_parse_from(["agent", "launch", "codex"]).unwrap();
+        let AgentSubCommand::Launch {
+            command: crate::cli::LaunchCommand::Codex(current),
+        } = current.sub
+        else {
+            panic!("expected Codex launch command");
+        };
         assert!(!current.new_tab);
 
-        let new_tab = LaunchCodexCommand::try_parse_from(["codex", "--new-tab"]).unwrap();
+        let new_tab =
+            AgentCommand::try_parse_from(["agent", "launch", "codex", "--new-tab"]).unwrap();
+        let AgentSubCommand::Launch {
+            command: crate::cli::LaunchCommand::Codex(new_tab),
+        } = new_tab.sub
+        else {
+            panic!("expected Codex launch command");
+        };
         assert!(new_tab.new_tab);
     }
 

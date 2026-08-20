@@ -83,7 +83,7 @@ event consumer polling provider files or calling the catalog.
 The CLI page operation is:
 
 ```console
-wakterm cli agent events --after 123 --limit 100
+wakterm agent events --after 123 --limit 100
 ```
 
 Unknown additive fields must be tolerated. An incompatible major schema or an

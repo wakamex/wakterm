@@ -1,6 +1,6 @@
 # Agent prompt submission and final responses
 
-`wakterm cli agent send TARGET MESSAGE` keeps its existing behavior. It writes
+`wakterm agent send TARGET MESSAGE` keeps its existing behavior. It writes
 the prompt to the native harness pane, submits it, waits briefly for observer
 acknowledgement, and prints structured JSON.
 
@@ -8,7 +8,7 @@ For an idle Codex agent with a confirmed observer session, `--return-final`
 creates a durable asynchronous return request:
 
 ```sh
-wakterm cli agent send zola --return-final "Complete phases 2 and 3"
+wakterm agent send zola --return-final "Complete phases 2 and 3"
 ```
 
 The command registers the exact correlation boundary, submits the prompt, and
@@ -20,7 +20,7 @@ turn.
 Use a caller-generated UUID when another durable system owns the request:
 
 ```sh
-wakterm cli agent send zola \
+wakterm agent send zola \
   --return-final \
   --request-id fe57dc90-994e-4e73-b09c-fac483d9f05b \
   --final-timeout-ms 3600000 \
@@ -38,9 +38,9 @@ the deadline.
 must not steer an active turn uses the versioned admission API instead:
 
 ```sh
-wakterm cli agent capabilities
-wakterm cli agent catalog
-wakterm cli agent admit zola \
+wakterm agent capabilities
+wakterm agent catalog
+wakterm agent admit zola \
   --incarnation PROCESS_INCARNATION \
   --request-id REQUEST_ID \
   --return-final \
@@ -54,7 +54,7 @@ resolution so the server can return a structured `unavailable` or
 `stale_incarnation` receipt:
 
 ```sh
-wakterm cli agent admit PERSISTED_AGENT_ID \
+wakterm agent admit PERSISTED_AGENT_ID \
   --exact-agent-id \
   --incarnation PERSISTED_INCARNATION \
   --request-id REQUEST_ID \
@@ -94,15 +94,15 @@ request stream described below.
 Inspect or cancel one request:
 
 ```sh
-wakterm cli agent request get REQUEST_ID
-wakterm cli agent request cancel REQUEST_ID
+wakterm agent request get REQUEST_ID
+wakterm agent request cancel REQUEST_ID
 ```
 
 Terminal results are appended to a durable ordered event stream. A consumer
 keeps the last processed `terminal_event_sequence` and resumes after it:
 
 ```sh
-wakterm cli agent request watch --after 42
+wakterm agent request watch --after 42
 ```
 
 The command emits one JSON object per terminal request and remains attached as

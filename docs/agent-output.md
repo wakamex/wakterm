@@ -1,17 +1,17 @@
 # Experimental agent output shadow page
 
-`wakterm cli agent output TARGET` reads normalized provider output without exposing provider session files to the caller. It is an experimental, per-agent discovery interface for side-effect-free Panetone shadow comparisons. It is not the durable Wakterm Agent API event contract and must not be used as production cutover evidence.
+`wakterm agent output TARGET` reads normalized provider output without exposing provider session files to the caller. It is an experimental, per-agent discovery interface for side-effect-free Panetone shadow comparisons. It is not the durable Wakterm Agent API event contract and must not be used as production cutover evidence.
 
 The first read establishes a baseline at the current complete provider record and returns no historical messages:
 
 ```sh
-wakterm cli agent output zola
+wakterm agent output zola
 ```
 
 Save the returned `next_cursor` and pass it back after more output appears:
 
 ```sh
-wakterm cli agent output zola --after OPAQUE_CURSOR
+wakterm agent output zola --after OPAQUE_CURSOR
 ```
 
 The command always returns structured JSON using schema `wakterm.agent-output-shadow.experimental.v1`. The experimental marker is intentional. Compatibility is not promised until the durable Agent API gate is defined. A successful page contains:

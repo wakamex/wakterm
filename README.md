@@ -15,12 +15,12 @@ See [CHANGELOG-FORK.md](CHANGELOG-FORK.md) for the detailed fork fix history.
 
 **Agent harnesses**
 - Claude, Codex, Gemini, and OpenCode are first-class citizens
-- Start them directly with `wakterm cli agent start claude|codex|gemini|opencode`
-- Watch live progress across running harnesses with `wakterm cli agent watch` or `wakterm cli agent list -f`
-- Run experimental normalized Codex shadow reads with opaque cursors using `wakterm cli agent output`
+- Start them directly with `wakterm agent start claude|codex|gemini|opencode`
+- Launch Codex through the mux-owned app-server with `wakterm agent launch codex`
+- Watch live progress across running harnesses with `wakterm agent watch` or `wakterm agent list -f`
+- Run experimental normalized Codex shadow reads with opaque cursors using `wakterm agent output`
 - Send prompts and interrupts through wakterm while keeping the real harness UI in the pane
 - Tab title tells you if an agent is waiting on you, or if it's your turn (configurable)
-- `agent` is a shortcut for `wakterm cli agent`
 
 **Usability**
 - macOS remembers window position and size across restarts via native `NSWindow` autosave
