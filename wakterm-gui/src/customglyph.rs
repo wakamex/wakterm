@@ -232,6 +232,8 @@ pub enum BlockKey {
     Branches(Branch),
     Spinner(u8),
 
+    HarnessIconStack(u8),
+
     Poly(&'static [Poly]),
 
     PolyWithCustomMetrics {
@@ -245,6 +247,16 @@ pub const HARNESS_ICON_CLAUDE: char = '\u{e000}';
 pub const HARNESS_ICON_CODEX: char = '\u{e001}';
 pub const HARNESS_ICON_GEMINI: char = '\u{e002}';
 pub const HARNESS_ICON_OPENCODE: char = '\u{e003}';
+pub const HARNESS_ICON_STACK_BASE: u32 = 0xe010;
+
+pub fn harness_icon_stack_glyph(mask: u8) -> Option<char> {
+    let mask = mask & 0x0f;
+    if mask == 0 {
+        None
+    } else {
+        char::from_u32(HARNESS_ICON_STACK_BASE + mask as u32)
+    }
+}
 
 pub const HARNESS_ICON_CLAUDE_POLY: &[Poly] = &[Poly {
     path: &[
@@ -1527,30 +1539,38 @@ pub enum PolyCommand {
 }
 
 impl PolyCommand {
-    fn to_skia(&self, width: usize, height: usize, underline_height: f32, pb: &mut PathBuilder) {
+    fn to_skia_at(
+        &self,
+        width: usize,
+        height: usize,
+        underline_height: f32,
+        x_offset: f32,
+        pb: &mut PathBuilder,
+    ) {
         match self {
             Self::MoveTo(x, y) => pb.move_to(
-                x.to_pixel(width, underline_height, width.min(height)),
+                x_offset + x.to_pixel(width, underline_height, width.min(height)),
                 y.to_pixel(height, underline_height, width.min(height)),
             ),
             Self::LineTo(x, y) => pb.line_to(
-                x.to_pixel(width, underline_height, width.min(height)),
+                x_offset + x.to_pixel(width, underline_height, width.min(height)),
                 y.to_pixel(height, underline_height, width.min(height)),
             ),
             Self::QuadTo {
                 control: (x1, y1),
                 to: (x, y),
             } => pb.quad_to(
-                x1.to_pixel(width, underline_height, width.min(height)),
+                x_offset + x1.to_pixel(width, underline_height, width.min(height)),
                 y1.to_pixel(height, underline_height, width.min(height)),
-                x.to_pixel(width, underline_height, width.min(height)),
+                x_offset + x.to_pixel(width, underline_height, width.min(height)),
                 y.to_pixel(height, underline_height, width.min(height)),
             ),
             Self::Oval {
                 center: (x, y),
                 radiuses: (w, h),
             } => {
-                let x = x.to_pixel(width, underline_height, width.min(height)) - width as f32;
+                let x = x_offset + x.to_pixel(width, underline_height, width.min(height))
+                    - width as f32;
                 let y = y.to_pixel(height, underline_height, width.min(height)) - height as f32;
                 let w = w.to_pixel(width, underline_height, width.min(height)) * 2.0;
                 let h = h.to_pixel(height, underline_height, width.min(height)) * 2.0;
@@ -1565,7 +1585,7 @@ impl PolyCommand {
                 center: (x, y),
                 radius: r,
             } => {
-                let x = x.to_pixel(width, underline_height, width.min(height));
+                let x = x_offset + x.to_pixel(width, underline_height, width.min(height));
                 let y = y.to_pixel(height, underline_height, width.min(height));
                 let r = r.to_pixel(width.min(height), underline_height, width.min(height));
 
@@ -1635,6 +1655,9 @@ impl BlockKey {
     pub fn from_char(c: char) -> Option<Self> {
         let c = c as u32;
         Some(match c {
+            x if (HARNESS_ICON_STACK_BASE + 1..=HARNESS_ICON_STACK_BASE + 15).contains(&x) => {
+                Self::HarnessIconStack((c - HARNESS_ICON_STACK_BASE) as u8)
+            }
             x if x == HARNESS_ICON_CLAUDE as u32 => Self::Poly(HARNESS_ICON_CLAUDE_POLY),
             x if x == HARNESS_ICON_CODEX as u32 => Self::Poly(HARNESS_ICON_CODEX_POLY),
             x if x == HARNESS_ICON_GEMINI as u32 => Self::Poly(HARNESS_ICON_GEMINI_POLY),
@@ -5967,6 +5990,18 @@ impl GlyphCache {
         aa: PolyAA,
         blend_mode: BlendMode,
     ) {
+        self.draw_polys_at(metrics, polys, buffer, aa, blend_mode, 0.);
+    }
+
+    fn draw_polys_at(
+        &mut self,
+        metrics: &RenderMetrics,
+        polys: &[Poly],
+        buffer: &mut Image,
+        aa: PolyAA,
+        blend_mode: BlendMode,
+        x_offset: f32,
+    ) {
         let (width, height) = buffer.image_dimensions();
         let Some(mut pixmap) = Self::pixmap_mut_from_image(buffer) else {
             log::error!(
@@ -5996,7 +6031,13 @@ impl GlyphCache {
             paint.force_hq_pipeline = true;
             let mut pb = PathBuilder::new();
             for item in path.iter() {
-                item.to_skia(width, height, metrics.underline_height as f32, &mut pb);
+                item.to_skia_at(
+                    metrics.cell_size.width as usize,
+                    metrics.cell_size.height as usize,
+                    metrics.underline_height as f32,
+                    x_offset,
+                    &mut pb,
+                );
             }
             let path = pb.finish().expect("poly path to be valid");
             style.apply(metrics.underline_height as f32, &paint, &path, &mut pixmap);
@@ -6111,6 +6152,7 @@ impl GlyphCache {
                 strike_row: 0,
                 cell_size: cell_size.clone(),
             },
+            BlockKey::HarnessIconStack(_) => render_metrics.scale_cell_width(3.),
             _ => render_metrics.clone(),
         };
 
@@ -6125,6 +6167,36 @@ impl GlyphCache {
         buffer.clear_rect(cell_rect, black);
 
         match key.block {
+            BlockKey::HarnessIconStack(mask) => {
+                let aa = if config::configuration().anti_alias_custom_block_glyphs {
+                    PolyAA::AntiAlias
+                } else {
+                    PolyAA::MoarPixels
+                };
+                let icon_metrics = render_metrics;
+                let stride = icon_metrics.cell_size.width as f32 * 0.65;
+                let icon_polys = [
+                    (1, HARNESS_ICON_CLAUDE_POLY),
+                    (2, HARNESS_ICON_CODEX_POLY),
+                    (4, HARNESS_ICON_GEMINI_POLY),
+                    (8, HARNESS_ICON_OPENCODE_POLY),
+                ];
+                let mut icon_index = 0;
+                for (bit, polys) in icon_polys {
+                    if mask & bit == 0 {
+                        continue;
+                    }
+                    self.draw_polys_at(
+                        icon_metrics,
+                        polys,
+                        &mut buffer,
+                        aa,
+                        BlendMode::default(),
+                        icon_index as f32 * stride,
+                    );
+                    icon_index += 1;
+                }
+            }
             BlockKey::Blocks(blocks) => {
                 let width = metrics.cell_size.width as f32;
                 let height = metrics.cell_size.height as f32;
@@ -6999,4 +7071,21 @@ fn fill_rect(buffer: &mut Image, x: Range<f32>, y: Range<f32>, intensity: BlockA
         Transform::identity(),
         None,
     );
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn harness_icon_stack_glyphs_round_trip_every_combination() {
+        assert_eq!(harness_icon_stack_glyph(0), None);
+        for mask in 1..=15 {
+            let glyph = harness_icon_stack_glyph(mask).unwrap();
+            assert_eq!(
+                BlockKey::from_char(glyph),
+                Some(BlockKey::HarnessIconStack(mask))
+            );
+        }
+    }
 }
