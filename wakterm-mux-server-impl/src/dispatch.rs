@@ -254,6 +254,16 @@ impl NotificationQueue {
     }
 }
 
+fn subscribe_notification_queue(mux: &Mux, notifications: &Arc<NotificationQueue>) {
+    let notifications = Arc::downgrade(notifications);
+    mux.subscribe(move |notification| {
+        let Some(notifications) = notifications.upgrade() else {
+            return false;
+        };
+        notifications.push(notification)
+    });
+}
+
 async fn write_decoded_pdu<T>(stream: &mut Async<T>, queued: QueuedPdu) -> anyhow::Result<u64>
 where
     T: 'static,
@@ -614,8 +624,7 @@ where
                 handler.process_one(decoded);
                 if !subscribed_to_mux && handler.wants_mux_notifications() {
                     let mux = Mux::get();
-                    let notifications = Arc::clone(&notifications);
-                    mux.subscribe(move |n| notifications.push(n));
+                    subscribe_notification_queue(&mux, &notifications);
                     subscribed_to_mux = true;
                 }
             }
@@ -635,10 +644,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{process, NotificationQueue, NOTIFICATION_QUEUE_CAPACITY};
+    use super::{
+        process, subscribe_notification_queue, NotificationQueue, NOTIFICATION_QUEUE_CAPACITY,
+    };
     use codec::{Pdu, Ping, SetClientId};
     use mux::client::{ClientId, ClientViewId};
     use mux::MuxNotification;
+    use std::sync::Arc;
     use std::time::Duration;
     use wakterm_uds::UnixStream;
 
@@ -745,6 +757,25 @@ mod tests {
             alert: wakterm_term::Alert::Bell,
         }));
         assert_eq!(queue.len(), NOTIFICATION_QUEUE_CAPACITY);
+    }
+
+    #[test]
+    fn mux_subscription_does_not_retain_a_disconnected_notification_queue() {
+        let temp = tempfile::tempdir().unwrap();
+        let mux =
+            mux::Mux::new_with_agent_state_path(None, temp.path().join("agent-requests.sqlite3"));
+        let queue = NotificationQueue::new();
+        let queue_ref = Arc::downgrade(&queue);
+
+        subscribe_notification_queue(&mux, &queue);
+        assert_eq!(Arc::strong_count(&queue), 1);
+
+        drop(queue);
+        assert!(queue_ref.upgrade().is_none());
+
+        // The first notification after disconnect observes the dead weak
+        // reference and removes the subscriber. No queue saturation is needed.
+        mux.notify(MuxNotification::Empty);
     }
 
     #[test]

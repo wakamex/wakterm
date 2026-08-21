@@ -5623,6 +5623,22 @@ mod test {
     }
 
     #[test]
+    fn notification_subscriber_is_removed_after_first_false_result() {
+        let mux = Mux::new(None);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let subscriber_calls = Arc::clone(&calls);
+        mux.subscribe(move |_| {
+            subscriber_calls.fetch_add(1, Ordering::SeqCst);
+            false
+        });
+
+        mux.notify(MuxNotification::Empty);
+        mux.notify(MuxNotification::Empty);
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn register_client_bootstraps_existing_session_view_state() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
