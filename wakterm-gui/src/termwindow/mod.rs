@@ -3845,7 +3845,7 @@ impl TermWindow {
             .collect();
 
         for tab in &tabs {
-            log::info!(
+            log::trace!(
                 "get_tab_information tab_id={} title={:?} active={} harness_icons={:?} active_pane_id={:?}",
                 tab.tab_id,
                 tab.tab_title,

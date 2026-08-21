@@ -1493,6 +1493,7 @@ dependencies = [
  "share-data",
  "spawn-funcs",
  "ssh-funcs",
+ "tempfile",
  "termwiz",
  "termwiz-funcs",
  "time-funcs",

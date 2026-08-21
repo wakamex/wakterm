@@ -3181,7 +3181,7 @@ impl Mux {
             }
         }
 
-        log::info!(
+        log::trace!(
             "visible_harness_icons_for_tab tab_id={} view_id={:?} badge_mode={:?} icons={:?}",
             tab_id,
             view_id.map(|v| &v.0),

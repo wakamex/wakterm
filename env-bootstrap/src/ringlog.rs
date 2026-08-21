@@ -7,12 +7,20 @@ use chrono::prelude::*;
 use env_logger::filter::{Builder as FilterBuilder, Filter};
 use log::{Level, LevelFilter, Log, Record};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufWriter, Write};
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
 use termwiz::istty::IsTty;
+
+const LOG_SEGMENT_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_RETAINED_LOG_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_RETAINED_LOG_FILES: usize = 8;
+const LOG_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
+const LOG_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+const MAX_LOG_MESSAGE_BYTES: usize = 64 * 1024;
 
 lazy_static::lazy_static! {
     static ref RINGS: Mutex<Rings> = Mutex::new(Rings::new());
@@ -131,9 +139,114 @@ impl Rings {
     }
 }
 
-struct Logger {
+struct OpenLogFile {
+    writer: BufWriter<File>,
+    bytes_written: u64,
+    last_flush: Instant,
+}
+
+struct BoundedLogFile {
     file_name: PathBuf,
-    file: Mutex<Option<BufWriter<File>>>,
+    rotated_file_name: PathBuf,
+    open: Option<OpenLogFile>,
+    max_segment_bytes: u64,
+    flush_interval: Duration,
+}
+
+impl BoundedLogFile {
+    fn new(file_name: PathBuf, max_segment_bytes: u64, flush_interval: Duration) -> Self {
+        let mut rotated = file_name.as_os_str().to_os_string();
+        rotated.push(".1");
+        Self {
+            file_name,
+            rotated_file_name: PathBuf::from(rotated),
+            open: None,
+            max_segment_bytes: max_segment_bytes.max(1),
+            flush_interval,
+        }
+    }
+
+    fn open(&mut self) -> io::Result<()> {
+        if self.open.is_some() {
+            return Ok(());
+        }
+        if let Some(parent) = self.file_name.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&self.file_name)?;
+        let bytes_written = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+        let now = Instant::now();
+        self.open = Some(OpenLogFile {
+            writer: BufWriter::new(file),
+            bytes_written,
+            // Persist an isolated first message immediately. Subsequent DEBUG
+            // and TRACE messages are batched for the configured interval.
+            last_flush: now.checked_sub(self.flush_interval).unwrap_or(now),
+        });
+        Ok(())
+    }
+
+    fn rotate(&mut self) -> io::Result<()> {
+        if let Some(mut open) = self.open.take() {
+            open.writer.flush()?;
+        }
+        let _ = std::fs::remove_file(&self.rotated_file_name);
+        if self.file_name.exists()
+            && std::fs::rename(&self.file_name, &self.rotated_file_name).is_err()
+        {
+            // The log is diagnostic data. If a platform cannot rename it after
+            // the writer is closed, discard that segment rather than allowing
+            // an unbounded append-only file.
+            let _ = std::fs::remove_file(&self.file_name);
+        }
+        self.open()
+    }
+
+    fn write_line(&mut self, line: &[u8], level: Level) -> io::Result<()> {
+        self.open()?;
+        let should_rotate = self.open.as_ref().is_some_and(|open| {
+            open.bytes_written > 0
+                && open.bytes_written.saturating_add(line.len() as u64) > self.max_segment_bytes
+        });
+        if should_rotate {
+            self.rotate()?;
+            if let Some(parent) = self.file_name.parent() {
+                prune_log_dir(
+                    parent,
+                    &[self.file_name.as_path(), self.rotated_file_name.as_path()],
+                    MAX_RETAINED_LOG_FILES,
+                    MAX_RETAINED_LOG_BYTES,
+                    LOG_RETENTION,
+                );
+            }
+        }
+
+        let open = self.open.as_mut().expect("log file should be open");
+        open.writer.write_all(line)?;
+        open.bytes_written = open.bytes_written.saturating_add(line.len() as u64);
+        if matches!(level, Level::Error | Level::Warn | Level::Info)
+            || open.last_flush.elapsed() >= self.flush_interval
+        {
+            open.writer.flush()?;
+            open.last_flush = Instant::now();
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if let Some(open) = self.open.as_mut() {
+            open.writer.flush()?;
+            open.last_flush = Instant::now();
+        }
+        Ok(())
+    }
+}
+
+struct Logger {
+    file: Mutex<BoundedLogFile>,
     filter: Filter,
     padding: AtomicUsize,
     is_tty: bool,
@@ -151,9 +264,7 @@ impl log::Log for Logger {
     }
 
     fn flush(&self) {
-        if let Some(file) = self.file.lock().unwrap().as_mut() {
-            let _ = file.flush();
-        }
+        let _ = self.file.lock().unwrap().flush();
         let _ = std::io::stderr().flush();
     }
 
@@ -163,7 +274,7 @@ impl log::Log for Logger {
             let ts = Local::now().format("%H:%M:%S%.3f").to_string();
             let level = record.level().as_str();
             let target = record.target().to_string();
-            let msg = record.args().to_string();
+            let msg = truncate_message(record.args().to_string());
 
             let padding = self.padding.fetch_max(target.len(), Ordering::SeqCst);
 
@@ -202,33 +313,37 @@ impl log::Log for Logger {
                     target_color = target_color
                 );
                 let _ = stderr.write_all(logline.as_bytes());
-                let _ = stderr.flush();
             }
 
-            let mut file = self.file.lock().unwrap();
-            if file.is_none() {
-                if let Ok(f) = std::fs::OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open(&self.file_name)
-                {
-                    file.replace(BufWriter::new(f));
-                }
-            }
-            if let Some(file) = file.as_mut() {
-                let _ = writeln!(
-                    file,
-                    "{}  {:6} {:padding$} > {}",
-                    ts,
-                    level,
-                    target,
-                    msg,
-                    padding = padding
-                );
-                let _ = file.flush();
-            }
+            let logline = format!(
+                "{}  {:6} {:padding$} > {}\n",
+                ts,
+                level,
+                target,
+                msg,
+                padding = padding
+            );
+            let _ = self
+                .file
+                .lock()
+                .unwrap()
+                .write_line(logline.as_bytes(), record.level());
         }
     }
+}
+
+fn truncate_message(mut message: String) -> String {
+    if message.len() <= MAX_LOG_MESSAGE_BYTES {
+        return message;
+    }
+    const SUFFIX: &str = "... [log message truncated]";
+    let mut end = MAX_LOG_MESSAGE_BYTES.saturating_sub(SUFFIX.len());
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    message.truncate(end);
+    message.push_str(SUFFIX);
+    message
 }
 
 /// Returns the current set of log information, sorted by time
@@ -238,25 +353,71 @@ pub fn get_entries() -> Vec<Entry> {
     entries
 }
 
-fn prune_old_logs() {
-    let one_week = std::time::Duration::from_secs(86400 * 7);
-    if let Ok(dir) = std::fs::read_dir(&*config::RUNTIME_DIR) {
-        for entry in dir {
-            if let Ok(entry) = entry {
-                if let Some(name) = entry.file_name().to_str() {
-                    if name.contains("-log-") {
-                        if let Ok(meta) = entry.metadata() {
-                            if let Ok(modified) = meta.modified() {
-                                if let Ok(elapsed) = modified.elapsed() {
-                                    if elapsed > one_week {
-                                        let _ = std::fs::remove_file(entry.path());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+struct RetainedLog {
+    path: PathBuf,
+    bytes: u64,
+    modified: SystemTime,
+}
+
+fn is_wakterm_log(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.contains("-log-"))
+}
+
+fn is_protected(path: &Path, protected: &[&Path]) -> bool {
+    protected.contains(&path)
+}
+
+fn prune_log_dir(
+    dir: &Path,
+    protected: &[&Path],
+    max_files: usize,
+    max_bytes: u64,
+    max_age: Duration,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut logs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !is_wakterm_log(&path) {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let expired = modified.elapsed().is_ok_and(|elapsed| elapsed > max_age);
+        if expired && !is_protected(&path, protected) && std::fs::remove_file(&path).is_ok() {
+            continue;
+        }
+        logs.push(RetainedLog {
+            path,
+            bytes: metadata.len(),
+            modified,
+        });
+    }
+
+    logs.sort_by_key(|log| log.modified);
+    let mut file_count = logs.len();
+    let mut total_bytes = logs
+        .iter()
+        .fold(0u64, |total, log| total.saturating_add(log.bytes));
+    for log in logs {
+        if file_count <= max_files && total_bytes <= max_bytes {
+            break;
+        }
+        if is_protected(&log.path, protected) {
+            continue;
+        }
+        if std::fs::remove_file(&log.path).is_ok() {
+            file_count = file_count.saturating_sub(1);
+            total_bytes = total_bytes.saturating_sub(log.bytes);
         }
     }
 }
@@ -267,16 +428,17 @@ fn setup_pretty() -> (LevelFilter, Logger) {
         .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
         .unwrap_or_else(|| "wakterm".to_string());
 
-    if base_name.contains("gui") {
-        // Only tidy up logs when the gui process is starting.
-        // rationale: `wakterm cli` commands should have as low startup
-        // overhead as possible
-        prune_old_logs();
-    }
-
     let log_file_name = config::RUNTIME_DIR.join(format!("{}-log-{}.txt", base_name, unsafe {
         libc::getpid()
     }));
+    let bounded_log = BoundedLogFile::new(log_file_name, LOG_SEGMENT_BYTES, LOG_FLUSH_INTERVAL);
+    prune_log_dir(
+        &config::RUNTIME_DIR,
+        &[],
+        MAX_RETAINED_LOG_FILES,
+        MAX_RETAINED_LOG_BYTES,
+        LOG_RETENTION,
+    );
 
     let mut filters = FilterBuilder::new();
     for (module, level) in [
@@ -300,8 +462,7 @@ fn setup_pretty() -> (LevelFilter, Logger) {
     (
         max_level,
         Logger {
-            file_name: log_file_name,
-            file: Mutex::new(None),
+            file: Mutex::new(bounded_log),
             filter,
             padding: AtomicUsize::new(0),
             is_tty: std::io::stderr().is_tty(),
@@ -313,5 +474,102 @@ pub fn setup_logger() {
     let (max_level, logger) = setup_pretty();
     if log::set_boxed_logger(Box::new(logger)).is_ok() {
         log::set_max_level(max_level);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn bounded_log_rotates_and_keeps_one_previous_segment() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("wakterm-gui-log-1.txt");
+        let mut log = BoundedLogFile::new(path.clone(), 64, Duration::ZERO);
+        let first = vec![b'a'; 40];
+        let second = vec![b'b'; 40];
+        let third = vec![b'c'; 40];
+
+        log.write_line(&first, Level::Info).unwrap();
+        log.write_line(&second, Level::Info).unwrap();
+        log.write_line(&third, Level::Info).unwrap();
+        log.flush().unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), third);
+        assert_eq!(std::fs::read(path.with_extension("txt.1")).unwrap(), second);
+        assert!(!path.with_extension("txt.2").exists());
+    }
+
+    #[test]
+    fn pruning_bounds_log_count_and_bytes_without_touching_other_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let protected = temp.path().join("wakterm-gui-log-current.txt");
+        for idx in 0..6 {
+            let path = if idx == 0 {
+                protected.clone()
+            } else {
+                temp.path().join(format!("wakterm-gui-log-{idx}.txt"))
+            };
+            let file = File::create(path).unwrap();
+            file.set_len(10).unwrap();
+        }
+        let unrelated = temp.path().join("keep-me.txt");
+        File::create(&unrelated).unwrap().set_len(100).unwrap();
+
+        prune_log_dir(
+            temp.path(),
+            &[protected.as_path()],
+            3,
+            25,
+            Duration::from_secs(u64::MAX),
+        );
+
+        let retained = std::fs::read_dir(temp.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| is_wakterm_log(&entry.path()))
+            .collect::<Vec<_>>();
+        let retained_bytes = retained
+            .iter()
+            .fold(0u64, |total, entry| total + entry.metadata().unwrap().len());
+        assert!(retained.len() <= 3);
+        assert!(retained_bytes <= 25);
+        assert!(protected.exists());
+        assert!(unrelated.exists());
+    }
+
+    #[test]
+    fn warnings_are_flushed_without_an_explicit_flush_call() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("wakterm-gui-log-1.txt");
+        let mut log = BoundedLogFile::new(path.clone(), 1024, Duration::from_secs(60));
+
+        log.write_line(b"context\n", Level::Info).unwrap();
+        log.write_line(b"warning\n", Level::Warn).unwrap();
+
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "context\nwarning\n");
+    }
+
+    #[test]
+    fn info_messages_are_flushed_without_an_explicit_flush_call() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("wakterm-gui-log-1.txt");
+        let mut log = BoundedLogFile::new(path.clone(), 1024, Duration::from_secs(60));
+
+        log.write_line(b"startup context\n", Level::Info).unwrap();
+        log.write_line(b"runtime context\n", Level::Info).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "startup context\nruntime context\n"
+        );
+    }
+
+    #[test]
+    fn oversized_messages_are_truncated_on_a_character_boundary() {
+        let message = "🙂".repeat(MAX_LOG_MESSAGE_BYTES);
+        let truncated = truncate_message(message);
+        assert!(truncated.len() <= MAX_LOG_MESSAGE_BYTES);
+        assert!(truncated.ends_with("... [log message truncated]"));
     }
 }
