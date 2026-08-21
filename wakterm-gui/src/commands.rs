@@ -53,6 +53,19 @@ fn us_layout_shift(s: &str) -> String {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn pane_navigation_keys(key: &str) -> Vec<(Modifiers, String)> {
+    vec![
+        (Modifiers::CTRL.union(Modifiers::SHIFT), key.into()),
+        (Modifiers::SUPER.union(Modifiers::ALT), key.into()),
+    ]
+}
+
+#[cfg(not(target_os = "macos"))]
+fn pane_navigation_keys(key: &str) -> Vec<(Modifiers, String)> {
+    vec![(Modifiers::CTRL.union(Modifiers::SHIFT), key.into())]
+}
+
 /// `CommandDef` defines a command in the UI.
 pub struct CommandDef {
     /// Brief description
@@ -1584,7 +1597,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
         ActivatePaneDirection(PaneDirection::Left) => CommandDef {
             brief: "Activate Pane Left".into(),
             doc: "Activates the pane to the left of the current pane".into(),
-            keys: vec![(Modifiers::CTRL.union(Modifiers::SHIFT), "LeftArrow".into())],
+            keys: pane_navigation_keys("LeftArrow"),
             args: &[ArgType::ActivePane],
             menubar: &["Window", "Select Pane"],
             icon: Some("fa_long_arrow_left"),
@@ -1592,7 +1605,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
         ActivatePaneDirection(PaneDirection::Right) => CommandDef {
             brief: "Activate Pane Right".into(),
             doc: "Activates the pane to the right of the current pane".into(),
-            keys: vec![(Modifiers::CTRL.union(Modifiers::SHIFT), "RightArrow".into())],
+            keys: pane_navigation_keys("RightArrow"),
             args: &[ArgType::ActivePane],
             menubar: &["Window", "Select Pane"],
             icon: Some("fa_long_arrow_right"),
@@ -1600,7 +1613,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
         ActivatePaneDirection(PaneDirection::Up) => CommandDef {
             brief: "Activate Pane Up".into(),
             doc: "Activates the pane to the top of the current pane".into(),
-            keys: vec![(Modifiers::CTRL.union(Modifiers::SHIFT), "UpArrow".into())],
+            keys: pane_navigation_keys("UpArrow"),
             args: &[ArgType::ActivePane],
             menubar: &["Window", "Select Pane"],
             icon: Some("fa_long_arrow_up"),
@@ -1608,7 +1621,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
         ActivatePaneDirection(PaneDirection::Down) => CommandDef {
             brief: "Activate Pane Down".into(),
             doc: "Activates the pane to the bottom of the current pane".into(),
-            keys: vec![(Modifiers::CTRL.union(Modifiers::SHIFT), "DownArrow".into())],
+            keys: pane_navigation_keys("DownArrow"),
             args: &[ArgType::ActivePane],
             menubar: &["Window", "Select Pane"],
             icon: Some("fa_long_arrow_down"),

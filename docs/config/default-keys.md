@@ -89,6 +89,10 @@ in a form that you can copy and paste into your own configuration.
 | `CTRL+SHIFT` | `RightArrow`    | `ActivatePaneDirection="Right"` |
 | `CTRL+SHIFT` | `UpArrow`    | `ActivatePaneDirection="Up"` |
 | `CTRL+SHIFT` | `DownArrow`    | `ActivatePaneDirection="Down"` |
+| `SUPER+ALT` | `LeftArrow`    | `ActivatePaneDirection="Left"` (macOS only) |
+| `SUPER+ALT` | `RightArrow`    | `ActivatePaneDirection="Right"` (macOS only) |
+| `SUPER+ALT` | `UpArrow`    | `ActivatePaneDirection="Up"` (macOS only) |
+| `SUPER+ALT` | `DownArrow`    | `ActivatePaneDirection="Down"` (macOS only) |
 | `CTRL+SHIFT` | `Z`    | `TogglePaneZoomState` |
 
 If you don't want the default assignments to be registered, you can
