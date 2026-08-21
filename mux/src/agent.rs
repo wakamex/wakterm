@@ -516,6 +516,14 @@ fn derive_attention_reason(runtime: &AgentRuntimeSnapshot) -> Option<String> {
 }
 
 pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata: &AgentMetadata) {
+    refresh_runtime_from_harness_with_expected_codex_session(runtime, metadata, None);
+}
+
+pub(crate) fn refresh_runtime_from_harness_with_expected_codex_session(
+    runtime: &mut AgentRuntimeSnapshot,
+    metadata: &AgentMetadata,
+    expected_codex_session_id: Option<&str>,
+) {
     if metadata.codex_app_server.is_some() {
         runtime.harness = AgentHarness::Codex;
         runtime.transport = AgentTransport::CodexAppServerTui;
@@ -581,6 +589,7 @@ pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata
             runtime.observer_started_at,
             metadata.adopted_pid,
             metadata.adopted_start_time,
+            expected_codex_session_id,
         ),
         AgentHarness::Gemini => observe_gemini(
             cwd,
@@ -808,14 +817,20 @@ fn observe_codex(
     updated_after: Option<DateTime<Utc>>,
     process_id: Option<u32>,
     process_start_time: Option<u64>,
+    expected_session_id: Option<&str>,
 ) -> anyhow::Result<Option<HarnessObservation>> {
     let Some(root) = codex_sessions_root() else {
         return Ok(None);
     };
 
-    if let Some(process_session) =
-        codex_session_owned_by_process(&root, cwd, process_id, process_start_time)?
-    {
+    if let Some(process_session) = codex_session_owned_by_process(
+        &root,
+        cwd,
+        process_id,
+        process_start_time,
+        preferred_session,
+        expected_session_id,
+    )? {
         let modified_at = DateTime::<Utc>::from(fs::metadata(&process_session)?.modified()?);
         let details = read_last_codex_observation(&process_session)?;
         return Ok(Some(HarnessObservation {
@@ -1339,6 +1354,8 @@ fn codex_session_owned_by_process(
     cwd: &str,
     process_id: Option<u32>,
     process_start_time: Option<u64>,
+    preferred_session: Option<&str>,
+    expected_session_id: Option<&str>,
 ) -> anyhow::Result<Option<PathBuf>> {
     let (Some(process_id), Some(process_start_time)) = (process_id, process_start_time) else {
         return Ok(None);
@@ -1368,9 +1385,14 @@ fn codex_session_owned_by_process(
     }
 
     let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let canonical_preferred = preferred_session
+        .map(Path::new)
+        .map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
     let mut pids = Vec::new();
     collect_pids(process_id, &mut pids);
     let mut selected: Option<(PathBuf, std::time::SystemTime)> = None;
+    let mut preferred_match = None;
+    let mut expected_match = None;
 
     for pid in pids {
         let Ok(entries) = fs::read_dir(format!("/proc/{pid}/fd")) else {
@@ -1391,6 +1413,14 @@ fn codex_session_owned_by_process(
             {
                 continue;
             }
+            if expected_session_id.is_some_and(|expected| {
+                codex_session_id(&canonical_path).ok().flatten().as_deref() == Some(expected)
+            }) {
+                expected_match = Some(canonical_path.clone());
+            }
+            if canonical_preferred.as_ref() == Some(&canonical_path) {
+                preferred_match = Some(canonical_path.clone());
+            }
             let modified = fs::metadata(&canonical_path)?.modified()?;
             if selected
                 .as_ref()
@@ -1403,7 +1433,9 @@ fn codex_session_owned_by_process(
         }
     }
 
-    Ok(selected.map(|(path, _)| path))
+    Ok(expected_match
+        .or(preferred_match)
+        .or_else(|| selected.map(|(path, _)| path)))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1412,6 +1444,8 @@ fn codex_session_owned_by_process(
     _cwd: &str,
     _process_id: Option<u32>,
     _process_start_time: Option<u64>,
+    _preferred_session: Option<&str>,
+    _expected_session_id: Option<&str>,
 ) -> anyhow::Result<Option<PathBuf>> {
     Ok(None)
 }
@@ -2886,7 +2920,7 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
-        let observed = observe_codex("/tmp/project-b", None, None, None, None)
+        let observed = observe_codex("/tmp/project-b", None, None, None, None, None)
             .unwrap()
             .unwrap();
         remove_env_var("WAKTERM_AGENT_CODEX_DIR");
@@ -3068,6 +3102,7 @@ mod test {
             None,
             Some(process_id),
             Some(process.start_time),
+            None,
         )
         .unwrap()
         .unwrap();
@@ -3077,6 +3112,7 @@ mod test {
             None,
             Some(process_id),
             Some(process.start_time + 1),
+            None,
         )
         .unwrap();
         remove_env_var("WAKTERM_AGENT_CODEX_DIR");
@@ -3087,6 +3123,62 @@ mod test {
         );
         assert_eq!(observed.progress_summary.as_deref(), Some("live"));
         assert!(mismatched_incarnation.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn observe_codex_prefers_expected_session_when_process_owns_multiple() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let expected = temp.path().join("rollout-expected.jsonl");
+        let newer = temp.path().join("rollout-newer.jsonl");
+        fs::write(
+            &expected,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-expected\",\"cwd\":\"/tmp/process-owned\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"expected\"}]}}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &newer,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-other\",\"cwd\":\"/tmp/process-owned\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"other\"}]}}\n"
+            ),
+        )
+        .unwrap();
+        fs::File::open(&expected)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+        fs::File::open(&newer)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(2))
+            .unwrap();
+        let _open_expected = fs::File::open(&expected).unwrap();
+        let _open_newer = fs::File::open(&newer).unwrap();
+        let process_id = std::process::id();
+        let process = LocalProcessInfo::with_root_pid(process_id).unwrap();
+
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        let observed = observe_codex(
+            "/tmp/process-owned",
+            None,
+            None,
+            Some(process_id),
+            Some(process.start_time),
+            Some("session-expected"),
+        )
+        .unwrap()
+        .unwrap();
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
+
+        assert_eq!(
+            observed.session_path.as_deref(),
+            Some(expected.to_string_lossy().as_ref())
+        );
+        assert_eq!(observed.progress_summary.as_deref(), Some("expected"));
     }
 
     #[test]
@@ -3147,7 +3239,7 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
-        let observed = observe_codex("/tmp/project-live", None, None, None, None)
+        let observed = observe_codex("/tmp/project-live", None, None, None, None, None)
             .unwrap()
             .unwrap();
         remove_env_var("WAKTERM_AGENT_CODEX_DIR");
@@ -3215,7 +3307,7 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
-        let observed = observe_codex("/tmp/project-f", None, None, None, None)
+        let observed = observe_codex("/tmp/project-f", None, None, None, None, None)
             .unwrap()
             .unwrap();
         remove_env_var("WAKTERM_AGENT_CODEX_DIR");
@@ -3292,7 +3384,7 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
-        let observed = observe_codex("/tmp/project-g", None, None, None, None)
+        let observed = observe_codex("/tmp/project-g", None, None, None, None, None)
             .unwrap()
             .unwrap();
         remove_env_var("WAKTERM_AGENT_CODEX_DIR");
@@ -3938,6 +4030,7 @@ mod test {
         let observed = observe_codex(
             "/tmp/project-e",
             Some(older.to_string_lossy().as_ref()),
+            None,
             None,
             None,
             None,

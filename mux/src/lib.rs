@@ -2,8 +2,8 @@ use crate::agent::{
     adopted_agent_matches_process_info, agent_observer_watch_roots, codex_session_id,
     default_launch_cmd_for_harness, derive_runtime_status, detect_harness_process,
     finalize_runtime_snapshot, infer_harness, prime_runtime_for_new_agent,
-    refresh_runtime_from_harness, AgentHarness, AgentMetadata, AgentOrigin, AgentRuntimeSnapshot,
-    AgentSnapshot, AgentTabBadgeState,
+    refresh_runtime_from_harness_with_expected_codex_session, AgentHarness, AgentMetadata,
+    AgentOrigin, AgentRuntimeSnapshot, AgentSnapshot, AgentTabBadgeState,
 };
 use crate::agent_event::AgentEventStore;
 use crate::agent_request::{AgentRequest, AgentRequestState, AgentRequestStore};
@@ -433,6 +433,7 @@ struct AgentObserverRequest {
     requested_at: Instant,
     metadata: AgentMetadata,
     runtime: AgentRuntimeSnapshot,
+    expected_codex_session_id: Option<String>,
     adopted: bool,
     schedule_trailing_refresh: bool,
 }
@@ -762,7 +763,11 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                 counter!("mux.agent_observer.refresh.rate").increment(1);
                 let started = Instant::now();
                 let mut runtime = request.runtime;
-                refresh_runtime_from_harness(&mut runtime, &request.metadata);
+                refresh_runtime_from_harness_with_expected_codex_session(
+                    &mut runtime,
+                    &request.metadata,
+                    request.expected_codex_session_id.as_deref(),
+                );
                 if request.adopted {
                     if let Some(writer) = event_writer.as_mut() {
                         if let Err(err) = writer.observe_agent(&request.metadata, &runtime) {
@@ -2238,6 +2243,11 @@ impl Mux {
                     requested_at: Instant::now(),
                     metadata: metadata.clone(),
                     runtime: runtime.clone(),
+                    expected_codex_session_id: self
+                        .pending_codex_restores
+                        .read()
+                        .get(&pane_id)
+                        .map(|pending| pending.session_id.clone()),
                     adopted,
                     schedule_trailing_refresh: schedule_trailing_refresh
                         && requires_lossless_observation,
@@ -7580,7 +7590,25 @@ mod test {
             ),
         )
         .unwrap();
+        let other_session = temp.path().join("rollout-other.jsonl");
+        std::fs::write(
+            &other_session,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"other-session\",\"cwd\":\"/tmp/pending-restore\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:01Z\",\"payload\":{\"type\":\"task_complete\"}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::File::open(&session)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+        std::fs::File::open(&other_session)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(2))
+            .unwrap();
         let _open_session = std::fs::File::open(&session).unwrap();
+        let _open_other_session = std::fs::File::open(&other_session).unwrap();
         unsafe {
             std::env::set_var("WAKTERM_AGENT_CODEX_DIR", temp.path());
         }
