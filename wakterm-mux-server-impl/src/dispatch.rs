@@ -61,6 +61,7 @@ enum NotificationKey {
     PaneFocus,
     TabResized(mux::tab::TabId),
     TabOrder(mux::window::WindowId),
+    ParkedTabs(mux::window::WindowId),
     TabTitle(mux::tab::TabId),
     WindowTitle(mux::window::WindowId),
 }
@@ -93,6 +94,9 @@ fn notification_key(notification: &MuxNotification) -> Option<NotificationKey> {
         MuxNotification::TabResized { tab_id, .. } => Some(NotificationKey::TabResized(*tab_id)),
         MuxNotification::TabOrderChanged { window_id, .. } => {
             Some(NotificationKey::TabOrder(*window_id))
+        }
+        MuxNotification::ParkedTabsChanged { window_id, .. } => {
+            Some(NotificationKey::ParkedTabs(*window_id))
         }
         MuxNotification::TabTitleChanged { tab_id, .. } => Some(NotificationKey::TabTitle(*tab_id)),
         MuxNotification::WindowTitleChanged { window_id, .. } => {
@@ -133,6 +137,7 @@ fn notification_kind(notification: &MuxNotification) -> &'static str {
         MuxNotification::PaneFocused(_) => "pane_focused",
         MuxNotification::TabResized { .. } => "tab_resized",
         MuxNotification::TabOrderChanged { .. } => "tab_order_changed",
+        MuxNotification::ParkedTabsChanged { .. } => "parked_tabs_changed",
         MuxNotification::TabTitleChanged { .. } => "tab_title_changed",
         MuxNotification::WindowTitleChanged { .. } => "window_title_changed",
         MuxNotification::WorkspaceRenamed { .. } => "workspace_renamed",
@@ -407,6 +412,23 @@ where
                 Pdu::TabOrderChanged(codec::TabOrderChanged { window_id, tab_ids })
                     .encode_async(stream, 0)
                     .await?;
+                stream.flush().await.context("flushing PDU to client")?;
+            }
+        }
+        MuxNotification::ParkedTabsChanged {
+            window_id,
+            tab_ids,
+            parked_tab_ids,
+            origin,
+        } => {
+            if !handler.notification_originates_here(origin.as_ref()) {
+                Pdu::ParkedTabsChanged(codec::ParkedTabsChanged {
+                    window_id,
+                    tab_ids,
+                    parked_tab_ids,
+                })
+                .encode_async(stream, 0)
+                .await?;
                 stream.flush().await.context("flushing PDU to client")?;
             }
         }

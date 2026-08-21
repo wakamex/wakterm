@@ -3067,6 +3067,9 @@ mod test {
             tabs: panes,
             tab_titles: vec!["tab".to_string()],
             tab_badges: vec![Default::default()],
+            agents: vec![],
+            tab_rss_bytes: HashMap::new(),
+            parked_tab_ids: vec![],
             window_titles: HashMap::new(),
             client_window_view_state: HashMap::<mux::window::WindowId, ClientWindowViewState>::new(
             ),
@@ -3120,6 +3123,7 @@ mod test {
             domain_id: 1,
             origin: AgentOrigin::Adopted,
             detection_source: None,
+            needs_attention: false,
         }
     }
 
@@ -4838,6 +4842,9 @@ mod test {
                     tabs: vec![leaf(10, 20, 30)],
                     tab_titles: vec!["".into()],
                     tab_badges: vec![Default::default()],
+                    agents: vec![],
+                    tab_rss_bytes: HashMap::new(),
+                    parked_tab_ids: vec![],
                     window_titles: HashMap::new(),
                     client_window_view_state: HashMap::new(),
                 })
@@ -4949,6 +4956,9 @@ mod test {
                     tabs: vec![leaf(10, 20, 30)],
                     tab_titles: vec!["existing".into()],
                     tab_badges: vec![Default::default()],
+                    agents: vec![],
+                    tab_rss_bytes: HashMap::new(),
+                    parked_tab_ids: vec![],
                     window_titles: HashMap::new(),
                     client_window_view_state: HashMap::new(),
                 })
@@ -5025,6 +5035,9 @@ mod test {
                     tabs: vec![leaf(10, 20, 30)],
                     tab_titles: vec!["existing".into()],
                     tab_badges: vec![Default::default()],
+                    agents: vec![],
+                    tab_rss_bytes: HashMap::new(),
+                    parked_tab_ids: vec![],
                     window_titles: HashMap::new(),
                     client_window_view_state: HashMap::new(),
                 })

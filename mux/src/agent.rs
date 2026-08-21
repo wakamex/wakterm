@@ -188,6 +188,8 @@ pub struct AgentSnapshot {
     pub origin: AgentOrigin,
     #[serde(default)]
     pub detection_source: Option<String>,
+    #[serde(default)]
+    pub needs_attention: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

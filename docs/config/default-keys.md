@@ -45,6 +45,7 @@ in a form that you can copy and paste into your own configuration.
 | `SUPER`     | `8`      | `ActivateTab=7` |
 | `SUPER`     | `9`      | `ActivateTab=-1` |
 | `CTRL+SHIFT`     | `w`      | `CloseCurrentTab{confirm=true}` |
+| `CTRL+SHIFT`     | `s`      | `ParkCurrentTab` |
 | `CTRL+SHIFT`     | `1`      | `ActivateTab=0` |
 | `CTRL+SHIFT`     | `2`      | `ActivateTab=1` |
 | `CTRL+SHIFT`     | `3`      | `ActivateTab=2` |

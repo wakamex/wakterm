@@ -524,6 +524,41 @@ fn process_unilateral(
             .detach();
             return Ok(());
         }
+        Pdu::ParkedTabsChanged(ParkedTabsChanged {
+            window_id,
+            tab_ids,
+            parked_tab_ids,
+        }) => {
+            let window_id = *window_id;
+            let tab_ids = tab_ids.clone();
+            let parked_tab_ids = parked_tab_ids.clone();
+            promise::spawn::spawn_into_main_thread(async move {
+                let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
+                let client_domain = mux
+                    .get_domain(local_domain_id)
+                    .ok_or_else(|| anyhow!("no such domain {}", local_domain_id))?;
+                let client_domain =
+                    client_domain
+                        .downcast_ref::<ClientDomain>()
+                        .ok_or_else(|| {
+                            anyhow!("domain {} is not a ClientDomain instance", local_domain_id)
+                        })?;
+
+                if let Err(err) =
+                    client_domain.process_remote_parked_tabs(window_id, &tab_ids, &parked_tab_ids)
+                {
+                    log::warn!(
+                        "cannot apply remote parked tabs for window {}: {:#}; resyncing",
+                        window_id,
+                        err
+                    );
+                    client_domain.resync_coalesced().await?;
+                }
+                anyhow::Result::<()>::Ok(())
+            })
+            .detach();
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -1770,6 +1805,7 @@ impl Client {
     rpc!(resize, Resize, UnitResponse);
     rpc!(resize_tab, ResizeTab, UnitResponse);
     rpc!(set_tab_order, SetTabOrder, UnitResponse);
+    rpc!(set_parked_tabs, SetParkedTabs, UnitResponse);
     rpc!(rotate_panes, RotatePanes, UnitResponse);
     rpc!(set_zoomed, SetPaneZoomed, UnitResponse);
     rpc!(activate_pane_direction, ActivatePaneDirection, UnitResponse);
@@ -1797,6 +1833,11 @@ impl Client {
     rpc!(set_window_workspace, SetWindowWorkspace, UnitResponse);
     rpc!(set_client_active_tab, SetClientActiveTab, UnitResponse);
     rpc!(set_focused_pane_id, SetFocusedPane, UnitResponse);
+    rpc!(
+        acknowledge_agent_attention,
+        AcknowledgeAgentAttention,
+        UnitResponse
+    );
     rpc!(set_agent_metadata, SetAgentMetadata, UnitResponse);
     rpc!(clear_agent_metadata, ClearAgentMetadata, UnitResponse);
     rpc!(get_image_cell, GetImageCell, GetImageCellResponse);

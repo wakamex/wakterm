@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 pub struct SavedTab {
     pub title: String,
     pub tree: PaneNode,
+    #[serde(default)]
+    pub parked: bool,
 }
 
 /// Saved state for one window (a window contains multiple tabs).
@@ -44,6 +46,8 @@ pub struct SavedAgentRestoreIntent {
     pub pane_id: PaneId,
     pub metadata: AgentMetadata,
     pub session_id: String,
+    #[serde(default)]
+    pub attention_seen_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Saved state for the entire mux session.
@@ -178,14 +182,17 @@ fn build_saved_session(mux: &Mux) -> SavedSession {
         .filter_map(|&window_id| {
             let window = mux.get_window(window_id)?;
             let workspace = window.get_workspace().to_string();
-            let tabs: Vec<_> = window.iter().cloned().collect();
+            let tabs: Vec<_> = window
+                .iter()
+                .map(|tab| (Arc::clone(tab), window.is_tab_parked(tab.tab_id())))
+                .collect();
             Some((workspace, tabs))
         })
         .collect();
 
     for (workspace, tabs) in window_data {
         let mut saved_tabs = Vec::new();
-        for tab in tabs {
+        for (tab, parked) in tabs {
             let title = mux.raw_tab_title(tab.tab_id());
             let mut tree = tab.codec_pane_tree_with_active_pane_id(None);
             mux.annotate_pane_tree_with_agent_metadata(&mut tree);
@@ -193,7 +200,11 @@ fn build_saved_session(mux: &Mux) -> SavedSession {
             // Fix any degenerate splits (< 3 cols/rows on one side)
             // before saving, so the restore produces a usable layout
             heal_tree(&mut tree);
-            saved_tabs.push(SavedTab { title, tree });
+            saved_tabs.push(SavedTab {
+                title,
+                tree,
+                parked,
+            });
         }
         if !saved_tabs.is_empty() {
             windows.push(SavedWindow {
@@ -223,6 +234,7 @@ fn collect_agent_restore_intents(
                     pane_id: entry.pane_id,
                     metadata,
                     session_id,
+                    attention_seen_at: mux.agent_attention_seen_at(entry.pane_id),
                 });
             }
         }
@@ -372,6 +384,8 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
         let workspace = Some(saved_window.workspace.clone());
         let position = None;
         let window_id = mux.new_empty_window(workspace, position);
+        let mut restored_tab_ids = Vec::new();
+        let mut restored_parked_tab_ids = Vec::new();
 
         for saved_tab in &saved_window.tabs {
             match restore_tab(
@@ -383,12 +397,29 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
             )
             .await
             {
-                Ok(()) => {
+                Ok(tab_id) => {
                     total_tabs += 1;
+                    restored_tab_ids.push(tab_id);
+                    if saved_tab.parked {
+                        restored_parked_tab_ids.push(tab_id);
+                    }
                 }
                 Err(err) => {
                     log::error!("Failed to restore tab '{}': {:#}", saved_tab.title, err);
                 }
+            }
+        }
+        if !restored_parked_tab_ids.is_empty() {
+            let result = mux
+                .get_window_mut(*window_id)
+                .context("restored window disappeared")?
+                .apply_parked_tabs(&restored_tab_ids, &restored_parked_tab_ids);
+            if let Err(err) = result {
+                log::warn!(
+                    "Could not restore parked tabs for window {}: {:#}",
+                    *window_id,
+                    err
+                );
             }
         }
     }
@@ -417,7 +448,7 @@ async fn restore_tab(
     default_size: wakterm_term::TerminalSize,
     window_id: crate::WindowId,
     restore_intents: &HashMap<PaneId, SavedAgentRestoreIntent>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<crate::tab::TabId> {
     let first_cwd = first_leaf_cwd(&saved_tab.tree);
     let first_entry = first_leaf_entry(&saved_tab.tree);
     let first_command = match first_entry {
@@ -479,7 +510,7 @@ async fn restore_tab(
     // (e.g., column heights not matching across an H-split).
     tab.resize(restore_size);
 
-    Ok(())
+    Ok(tab.tab_id())
 }
 
 /// Recursively restore a PaneNode subtree.
@@ -608,15 +639,22 @@ fn first_leaf_entry(node: &PaneNode) -> Option<&crate::tab::PaneEntry> {
 }
 
 fn restore_agent_intent(pane_id: PaneId, intent: &SavedAgentRestoreIntent) -> anyhow::Result<()> {
-    if intent.metadata.codex_app_server.is_some() {
-        Mux::get().restore_agent_metadata(pane_id, intent.metadata.clone())
+    let mux = Mux::get();
+    let result = if intent.metadata.codex_app_server.is_some() {
+        mux.restore_agent_metadata(pane_id, intent.metadata.clone())
     } else {
-        Mux::get().register_codex_restore_intent(
+        mux.register_codex_restore_intent(
             pane_id,
             intent.metadata.clone(),
             intent.session_id.clone(),
         )
+    };
+    if result.is_ok() {
+        if let Some(seen_at) = intent.attention_seen_at {
+            mux.restore_agent_attention_seen_at(pane_id, seen_at);
+        }
     }
+    result
 }
 
 fn restore_command_for_entry(
@@ -1078,12 +1116,18 @@ mod test {
         runtime.turn_state = crate::agent::AgentTurnState::WaitingOnAgent;
         runtime.session_path = Some(session_path.to_string_lossy().into_owned());
         mux.agent_runtime_by_pane.write().insert(pane_id, runtime);
+        let attention_seen_at = chrono::Utc::now();
+        mux.restore_agent_attention_seen_at(pane_id, attention_seen_at);
 
         let session = build_saved_session(&mux);
         assert_eq!(session.agent_restore_intents.len(), 1);
         assert_eq!(session.agent_restore_intents[0].pane_id, pane_id);
         assert_eq!(session.agent_restore_intents[0].metadata.name, "resume");
         assert_eq!(session.agent_restore_intents[0].session_id, "saved-session");
+        assert_eq!(
+            session.agent_restore_intents[0].attention_seen_at,
+            Some(attention_seen_at)
+        );
     }
 
     #[test]
@@ -1289,6 +1333,10 @@ mod test {
             .unwrap()
             .apply_tab_order(&[second.tab_id(), first.tab_id()])
             .unwrap();
+        mux.get_window_mut(window_a)
+            .unwrap()
+            .apply_parked_tabs(&[second.tab_id(), first.tab_id()], &[first.tab_id()])
+            .unwrap();
 
         let window_b = *mux.new_empty_window(Some("default".to_string()), None);
         let third = Arc::new(Tab::new(&tab_size));
@@ -1307,6 +1355,14 @@ mod test {
                 .map(|tab| tab.title.as_str())
                 .collect::<Vec<_>>(),
             vec!["second", "first"]
+        );
+        assert_eq!(
+            session.windows[0]
+                .tabs
+                .iter()
+                .map(|tab| tab.parked)
+                .collect::<Vec<_>>(),
+            vec![false, true]
         );
         assert_eq!(
             session.windows[1]

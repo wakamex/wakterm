@@ -201,6 +201,9 @@ mod test {
             tabs,
             tab_titles: vec![],
             tab_badges: vec![],
+            agents: vec![],
+            tab_rss_bytes: HashMap::new(),
+            parked_tab_ids: vec![],
             window_titles: HashMap::new(),
             client_window_view_state: HashMap::new(),
         }

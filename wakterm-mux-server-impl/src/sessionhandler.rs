@@ -607,6 +607,12 @@ impl SessionHandler {
                         move || {
                             let mux = Mux::get();
                             let _identity = mux.with_identity(client_id);
+                            if mux
+                                .get_window(window_id)
+                                .is_some_and(|window| window.is_tab_parked(tab_id))
+                            {
+                                mux.set_tab_parked(window_id, tab_id, false)?;
+                            }
                             mux.set_active_tab_for_current_identity(window_id, tab_id)?;
                             Ok(Pdu::UnitResponse(UnitResponse {}))
                         },
@@ -876,14 +882,23 @@ impl SessionHandler {
                             let mut tabs = vec![];
                             let mut tab_titles = vec![];
                             let mut tab_badges = vec![];
+                            let mut tab_rss_bytes = HashMap::new();
+                            let mut parked_tab_ids = vec![];
                             let mut window_titles = HashMap::new();
                             for window_id in mux.iter_windows().into_iter() {
                                 let window = mux.get_window(window_id).unwrap();
+                                parked_tab_ids.extend(window.parked_tab_ids());
                                 window_titles.insert(window_id, window.get_title().to_string());
                                 let window_state = view_state.entry(window_id).or_default();
+                                if window_state.active_tab_id.is_none() {
+                                    window_state.active_tab_id =
+                                        window.iter_visible().next().map(|tab| tab.tab_id());
+                                }
                                 for tab in window.iter() {
-                                    if window_state.active_tab_id.is_none() {
-                                        window_state.active_tab_id = Some(tab.tab_id());
+                                    if let Some(rss_bytes) =
+                                        mux.approximate_tab_process_rss(tab.tab_id())
+                                    {
+                                        tab_rss_bytes.insert(tab.tab_id(), rss_bytes);
                                     }
                                     let tab_state =
                                         window_state.tabs.entry(tab.tab_id()).or_default();
@@ -913,6 +928,9 @@ impl SessionHandler {
                                 tabs,
                                 tab_titles,
                                 tab_badges,
+                                agents: mux.list_agents_cached(),
+                                tab_rss_bytes,
+                                parked_tab_ids,
                                 window_titles,
                                 client_window_view_state: view_state,
                             }))
@@ -1628,6 +1646,52 @@ impl SessionHandler {
                 .detach();
             }
 
+            Pdu::SetParkedTabs(SetParkedTabs {
+                window_id,
+                tab_ids,
+                parked_tab_ids,
+            }) => {
+                let client_id = self.client_id.clone();
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let mux = Mux::get();
+                            let _identity = mux.with_identity(client_id);
+                            let changed = mux
+                                .get_window_mut(window_id)
+                                .ok_or_else(|| anyhow!("no such window {}", window_id))?
+                                .apply_parked_tabs(&tab_ids, &parked_tab_ids)?;
+                            if changed {
+                                mux.repair_client_views_after_parked_change(window_id);
+                                mux.notify(MuxNotification::WindowInvalidated(window_id));
+                                mux.notify_parked_tabs_changed(window_id, tab_ids, parked_tab_ids);
+                            }
+                            Ok(Pdu::UnitResponse(UnitResponse {}))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
+
+            Pdu::AcknowledgeAgentAttention(AcknowledgeAgentAttention { pane_id }) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let mux = Mux::get();
+                            anyhow::ensure!(
+                                mux.get_pane(pane_id).is_some(),
+                                "no such pane {pane_id}"
+                            );
+                            mux.acknowledge_agent_attention(pane_id);
+                            Ok(Pdu::UnitResponse(UnitResponse {}))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
+
             Pdu::Invalid { .. } => send_response(Err(anyhow!("invalid PDU {:?}", decoded.pdu))),
             Pdu::Pong { .. }
             | Pdu::ListPanesResponse { .. }
@@ -1660,6 +1724,7 @@ impl SessionHandler {
             | Pdu::PaneFocused { .. }
             | Pdu::TabResized { .. }
             | Pdu::TabOrderChanged { .. }
+            | Pdu::ParkedTabsChanged { .. }
             | Pdu::GetImageCellResponse { .. }
             | Pdu::MovePaneToNewTabResponse { .. }
             | Pdu::TabAddedToWindow { .. }
@@ -2573,6 +2638,144 @@ mod test {
         assert_eq!(observed[1].2.as_ref(), Some(&client_b));
     }
 
+    #[test]
+    fn parked_tab_requests_are_atomic_shared_and_repair_every_client_view() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = SimpleExecutor::new();
+        let mux = test_mux();
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+        let layout = build_test_layout(&mux);
+        let (client_a, view_a, mut handler_a) = register_test_client(&mux, "parked-a");
+        let (client_b, view_b, mut handler_b) = register_test_client(&mux, "parked-b");
+        for view in [&view_a, &view_b] {
+            mux.set_active_tab_for_client_view(
+                view.as_ref(),
+                layout.window_id,
+                layout.right_tab_id,
+            )
+            .unwrap();
+        }
+        mux.set_focused_pane_for_client(client_a.as_ref(), layout.right_pane_id)
+            .unwrap();
+        mux.set_focused_pane_for_client(client_b.as_ref(), layout.right_pane_id)
+            .unwrap();
+
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_subscription = observed.clone();
+        mux.subscribe(move |notification| {
+            if let MuxNotification::ParkedTabsChanged {
+                window_id,
+                tab_ids,
+                parked_tab_ids,
+                origin,
+            } = notification
+            {
+                observed_for_subscription.lock().unwrap().push((
+                    window_id,
+                    tab_ids,
+                    parked_tab_ids,
+                    origin,
+                ));
+            }
+            true
+        });
+
+        let tab_ids = vec![layout.left_tab_id, layout.right_tab_id, layout.split_tab_id];
+        assert!(matches!(
+            handler_a.request(
+                &executor,
+                Pdu::SetParkedTabs(SetParkedTabs {
+                    window_id: layout.window_id,
+                    tab_ids: tab_ids.clone(),
+                    parked_tab_ids: vec![layout.right_tab_id],
+                })
+            ),
+            Pdu::UnitResponse(_)
+        ));
+
+        let window = mux.get_window(layout.window_id).unwrap();
+        assert_eq!(window.parked_tab_ids(), vec![layout.right_tab_id]);
+        assert_eq!(
+            window
+                .iter_visible()
+                .map(|tab| tab.tab_id())
+                .collect::<Vec<_>>(),
+            vec![layout.left_tab_id, layout.split_tab_id]
+        );
+        drop(window);
+        for view in [&view_a, &view_b] {
+            assert_eq!(
+                mux.get_active_tab_for_window_for_client(view.as_ref(), layout.window_id)
+                    .map(|tab| tab.tab_id()),
+                Some(layout.split_tab_id)
+            );
+        }
+        for client in [&client_a, &client_b] {
+            assert_eq!(
+                mux.resolve_focused_pane(client.as_ref())
+                    .map(|(_, _, tab_id, _)| tab_id),
+                Some(layout.split_tab_id)
+            );
+        }
+
+        let listed = match handler_b.request(&executor, Pdu::ListPanes(ListPanes {})) {
+            Pdu::ListPanesResponse(response) => response,
+            other => panic!("expected ListPanesResponse, got {:?}", other),
+        };
+        assert_eq!(listed.parked_tab_ids, vec![layout.right_tab_id]);
+
+        for parked_tab_ids in [
+            vec![layout.right_tab_id, layout.right_tab_id],
+            tab_ids.clone(),
+        ] {
+            assert!(matches!(
+                handler_a.request(
+                    &executor,
+                    Pdu::SetParkedTabs(SetParkedTabs {
+                        window_id: layout.window_id,
+                        tab_ids: tab_ids.clone(),
+                        parked_tab_ids,
+                    })
+                ),
+                Pdu::ErrorResponse(_)
+            ));
+            assert_eq!(
+                mux.get_window(layout.window_id).unwrap().parked_tab_ids(),
+                vec![layout.right_tab_id]
+            );
+        }
+
+        assert!(matches!(
+            handler_b.request(
+                &executor,
+                Pdu::SetClientActiveTab(SetClientActiveTab {
+                    window_id: layout.window_id,
+                    tab_id: layout.right_tab_id,
+                })
+            ),
+            Pdu::UnitResponse(_)
+        ));
+        assert!(!mux
+            .get_window(layout.window_id)
+            .unwrap()
+            .is_tab_parked(layout.right_tab_id));
+        assert_eq!(
+            mux.get_active_tab_for_window_for_client(view_b.as_ref(), layout.window_id)
+                .map(|tab| tab.tab_id()),
+            Some(layout.right_tab_id)
+        );
+
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[0].0, layout.window_id);
+        assert_eq!(observed[0].1, tab_ids);
+        assert_eq!(observed[0].2, vec![layout.right_tab_id]);
+        assert_eq!(observed[0].3.as_ref(), Some(&client_a));
+        assert!(observed[1].2.is_empty());
+        assert_eq!(observed[1].3.as_ref(), Some(&client_b));
+    }
+
     struct TestLayout {
         window_id: WindowId,
         left_tab_id: TabId,
@@ -3243,6 +3446,27 @@ mod test {
             .tab_badges
             .iter()
             .any(|badge| badge.waiting_on_user && badge.needs_attention));
+        assert!(response
+            .agents
+            .iter()
+            .any(|agent| agent.pane_id == pane_id && agent.needs_attention));
+
+        assert!(matches!(
+            handler.request(
+                &executor,
+                Pdu::AcknowledgeAgentAttention(AcknowledgeAgentAttention { pane_id })
+            ),
+            Pdu::UnitResponse(_)
+        ));
+        let response = match handler.request(&executor, Pdu::ListPanes(ListPanes {})) {
+            Pdu::ListPanesResponse(response) => response,
+            other => panic!("expected ListPanesResponse, got {:?}", other),
+        };
+        assert!(response
+            .tab_badges
+            .iter()
+            .all(|badge| !badge.needs_attention));
+        assert!(response.agents.iter().all(|agent| !agent.needs_attention));
     }
 
     #[test]

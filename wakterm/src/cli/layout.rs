@@ -148,6 +148,9 @@ impl SavedLayout {
             tabs,
             tab_titles,
             tab_badges: _,
+            agents: _,
+            tab_rss_bytes: _,
+            parked_tab_ids: _,
             window_titles,
             client_window_view_state,
         } = response;
@@ -623,6 +626,9 @@ mod test {
             tabs: vec![tab0, tab1, tab2],
             tab_titles: vec!["one".into(), "two".into(), "three".into()],
             tab_badges: vec![Default::default(), Default::default(), Default::default()],
+            agents: vec![],
+            tab_rss_bytes: std::collections::HashMap::new(),
+            parked_tab_ids: vec![],
             window_titles: std::collections::HashMap::from([
                 (1, "win-a".into()),
                 (9, "win-b".into()),
@@ -714,6 +720,9 @@ mod test {
                 waiting_on_user: true,
                 needs_attention: true,
             }],
+            agents: vec![],
+            tab_rss_bytes: std::collections::HashMap::new(),
+            parked_tab_ids: vec![],
             window_titles: std::collections::HashMap::from([(1, "win-a".into())]),
             client_window_view_state: std::collections::HashMap::from([(
                 1,

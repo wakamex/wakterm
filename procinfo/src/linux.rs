@@ -20,6 +20,13 @@ impl From<&str> for LocalProcessStatus {
 }
 
 impl LocalProcessInfo {
+    pub fn resident_set_bytes(pid: u32) -> Option<u64> {
+        let statm = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
+        let resident_pages = statm.split_whitespace().nth(1)?.parse::<u64>().ok()?;
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        (page_size > 0).then_some(resident_pages.saturating_mul(page_size as u64))
+    }
+
     pub fn current_working_dir(pid: u32) -> Option<PathBuf> {
         std::fs::read_link(format!("/proc/{}/cwd", pid)).ok()
     }

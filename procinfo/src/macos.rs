@@ -17,6 +17,21 @@ impl From<u32> for LocalProcessStatus {
 }
 
 impl LocalProcessInfo {
+    pub fn resident_set_bytes(pid: u32) -> Option<u64> {
+        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+        let result = unsafe {
+            libc::proc_pidinfo(
+                pid as _,
+                libc::PROC_PIDTASKINFO,
+                0,
+                &mut info as *mut _ as *mut _,
+                size,
+            )
+        };
+        (result == size).then_some(info.pti_resident_size)
+    }
+
     pub fn current_working_dir(pid: u32) -> Option<PathBuf> {
         let mut pathinfo: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
         let size = std::mem::size_of_val(&pathinfo) as libc::c_int;

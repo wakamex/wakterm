@@ -585,6 +585,7 @@ mod tests {
                 progress: Progress::None,
             }),
             harness_icons: vec![],
+            needs_attention: false,
             assigned_color: None,
             window_id: 0,
             tab_title: title.to_string(),

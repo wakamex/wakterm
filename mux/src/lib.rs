@@ -12,7 +12,7 @@ use crate::pane::{CachePolicy, Pane, PaneId};
 use crate::ssh_agent::AgentProxy;
 use crate::tab::{NotifyMux, SplitRequest, Tab, TabId};
 use crate::window::{Window, WindowId};
-use anyhow::{anyhow, Context, Error};
+use anyhow::{anyhow, ensure, Context, Error};
 use chrono::{DateTime, Utc};
 use config::keyassignment::SpawnTabDomain;
 use config::{configuration, ExitBehavior, GuiPosition};
@@ -113,6 +113,12 @@ pub enum MuxNotification {
         tab_ids: Vec<TabId>,
         origin: Option<Arc<ClientId>>,
     },
+    ParkedTabsChanged {
+        window_id: WindowId,
+        tab_ids: Vec<TabId>,
+        parked_tab_ids: Vec<TabId>,
+        origin: Option<Arc<ClientId>>,
+    },
     TabTitleChanged {
         tab_id: TabId,
         title: String,
@@ -138,6 +144,7 @@ fn notification_changes_saved_session(notification: &MuxNotification) -> bool {
             | MuxNotification::TabAddedToWindow { .. }
             | MuxNotification::TabResized { .. }
             | MuxNotification::TabOrderChanged { .. }
+            | MuxNotification::ParkedTabsChanged { .. }
             | MuxNotification::Alert {
                 alert: wakterm_term::Alert::CurrentWorkingDirectoryChanged,
                 ..
@@ -161,6 +168,9 @@ pub struct Mux {
     panes: RwLock<HashMap<PaneId, Arc<dyn Pane>>>,
     mirrored_agent_harness_by_pane: RwLock<HashMap<PaneId, crate::agent::AgentHarness>>,
     mirrored_agent_cwd_by_pane: RwLock<HashMap<PaneId, String>>,
+    mirrored_agent_snapshot_by_pane: RwLock<HashMap<PaneId, AgentSnapshot>>,
+    mirrored_agent_badge_by_tab: RwLock<HashMap<TabId, AgentTabBadgeState>>,
+    mirrored_tab_rss_bytes: RwLock<HashMap<TabId, u64>>,
     agent_panes_by_name: RwLock<HashMap<String, PaneId>>,
     agent_metadata_by_pane: RwLock<HashMap<PaneId, Arc<AgentMetadata>>>,
     detected_agent_panes: RwLock<HashSet<PaneId>>,
@@ -176,7 +186,7 @@ pub struct Mux {
     agent_admission_store: agent_admission::AgentAdmissionStore,
     agent_event_store: AgentEventStore,
     agent_input_generation_by_pane: RwLock<HashMap<PaneId, u64>>,
-    agent_attention_seen_by_view: RwLock<HashMap<ClientViewId, HashMap<PaneId, DateTime<Utc>>>>,
+    agent_attention_seen_at: RwLock<HashMap<PaneId, DateTime<Utc>>>,
     windows: RwLock<HashMap<WindowId, Window>>,
     default_domain: RwLock<Option<Arc<dyn Domain>>>,
     domains: RwLock<HashMap<DomainId, Arc<dyn Domain>>>,
@@ -907,6 +917,9 @@ impl Mux {
             panes: RwLock::new(HashMap::new()),
             mirrored_agent_harness_by_pane: RwLock::new(HashMap::new()),
             mirrored_agent_cwd_by_pane: RwLock::new(HashMap::new()),
+            mirrored_agent_snapshot_by_pane: RwLock::new(HashMap::new()),
+            mirrored_agent_badge_by_tab: RwLock::new(HashMap::new()),
+            mirrored_tab_rss_bytes: RwLock::new(HashMap::new()),
             agent_panes_by_name: RwLock::new(HashMap::new()),
             agent_metadata_by_pane: RwLock::new(HashMap::new()),
             detected_agent_panes: RwLock::new(HashSet::new()),
@@ -922,7 +935,7 @@ impl Mux {
             agent_admission_store: agent_admission::AgentAdmissionStore::new(agent_state_path),
             agent_event_store,
             agent_input_generation_by_pane: RwLock::new(HashMap::new()),
-            agent_attention_seen_by_view: RwLock::new(HashMap::new()),
+            agent_attention_seen_at: RwLock::new(HashMap::new()),
             windows: RwLock::new(HashMap::new()),
             default_domain: RwLock::new(default_domain),
             domains_by_name: RwLock::new(domains_by_name),
@@ -1164,7 +1177,6 @@ impl Mux {
     }
 
     pub fn set_mirrored_agent_metadata(&self, pane_id: PaneId, metadata: Option<&AgentMetadata>) {
-        let tab_id = self.resolve_pane_id(pane_id).map(|(_, _, tab_id)| tab_id);
         let harness = metadata.and_then(|metadata| {
             let harness = infer_harness(&metadata.launch_cmd, None);
             if matches!(harness, crate::agent::AgentHarness::Unknown) {
@@ -1191,11 +1203,58 @@ impl Mux {
             }
             None => {
                 self.mirrored_agent_cwd_by_pane.write().remove(&pane_id);
+                self.mirrored_agent_snapshot_by_pane
+                    .write()
+                    .remove(&pane_id);
             }
         }
-        if let Some(tab_id) = tab_id {
-            self.notify_tab_title_changed(tab_id);
+    }
+
+    pub fn set_mirrored_agent_badge(&self, tab_id: TabId, badge: AgentTabBadgeState) {
+        if badge == AgentTabBadgeState::default() {
+            self.mirrored_agent_badge_by_tab.write().remove(&tab_id);
+        } else {
+            self.mirrored_agent_badge_by_tab
+                .write()
+                .insert(tab_id, badge);
         }
+    }
+
+    pub fn set_mirrored_tab_rss(&self, tab_id: TabId, rss_bytes: Option<u64>) {
+        match rss_bytes {
+            Some(rss_bytes) => {
+                self.mirrored_tab_rss_bytes
+                    .write()
+                    .insert(tab_id, rss_bytes);
+            }
+            None => {
+                self.mirrored_tab_rss_bytes.write().remove(&tab_id);
+            }
+        }
+    }
+
+    pub fn set_mirrored_agent_snapshot(&self, pane_id: PaneId, snapshot: Option<AgentSnapshot>) {
+        match snapshot {
+            Some(snapshot) => {
+                self.mirrored_agent_snapshot_by_pane
+                    .write()
+                    .insert(pane_id, snapshot);
+            }
+            None => {
+                self.mirrored_agent_snapshot_by_pane
+                    .write()
+                    .remove(&pane_id);
+            }
+        }
+    }
+
+    pub fn mirrored_agent_snapshots_for_window(&self, window_id: WindowId) -> Vec<AgentSnapshot> {
+        self.mirrored_agent_snapshot_by_pane
+            .read()
+            .values()
+            .filter(|snapshot| snapshot.window_id == window_id)
+            .cloned()
+            .collect()
     }
 
     fn install_agent_metadata_runtime(
@@ -1269,9 +1328,7 @@ impl Mux {
 
         names.insert(metadata.name.clone(), pane_id);
         let mut runtime = runtime;
-        for seen in self.agent_attention_seen_by_view.write().values_mut() {
-            seen.remove(&pane_id);
-        }
+        self.agent_attention_seen_at.write().remove(&pane_id);
         runtime.alive = alive;
         runtime.foreground_process_name = foreground_process_name.clone();
         runtime.tty_name = tty_name;
@@ -1349,9 +1406,7 @@ impl Mux {
             .unwatch_candidate(pane_id);
         self.agent_observer_state_by_pane.write().remove(&pane_id);
         self.agent_input_generation_by_pane.write().remove(&pane_id);
-        for seen in self.agent_attention_seen_by_view.write().values_mut() {
-            seen.remove(&pane_id);
-        }
+        self.agent_attention_seen_at.write().remove(&pane_id);
         crate::session_persistence::request_session_save();
         if let Some(tab_id) = tab_id {
             self.notify_tab_title_changed(tab_id);
@@ -1944,10 +1999,12 @@ impl Mux {
     }
 
     fn detected_agent_snapshot_from_state(
+        &self,
         state: DetectedAgentState,
         name: String,
     ) -> AgentSnapshot {
         let created_at = Self::detected_agent_created_at(&state.runtime);
+        let needs_attention = self.agent_turn_needs_attention(state.pane_id, &state.runtime);
         AgentSnapshot {
             metadata: AgentMetadata {
                 agent_id: format!("detected-pane-{}", state.pane_id),
@@ -1971,6 +2028,7 @@ impl Mux {
             domain_id: state.domain_id,
             origin: AgentOrigin::Detected,
             detection_source: Some(state.detection_source),
+            needs_attention,
         }
     }
 
@@ -2627,18 +2685,17 @@ impl Mux {
         });
     }
 
-    fn agent_attention_seen_at_for_view(
-        &self,
-        view_id: &ClientViewId,
-        pane_id: PaneId,
-    ) -> Option<DateTime<Utc>> {
-        self.agent_attention_seen_by_view
-            .read()
-            .get(view_id)
-            .and_then(|seen| seen.get(&pane_id).copied())
+    pub fn agent_attention_seen_at(&self, pane_id: PaneId) -> Option<DateTime<Utc>> {
+        self.agent_attention_seen_at.read().get(&pane_id).copied()
     }
 
-    fn acknowledge_agent_attention_for_view(&self, view_id: &ClientViewId, pane_id: PaneId) {
+    pub fn restore_agent_attention_seen_at(&self, pane_id: PaneId, seen_at: DateTime<Utc>) {
+        self.agent_attention_seen_at
+            .write()
+            .insert(pane_id, seen_at);
+    }
+
+    pub fn acknowledge_agent_attention(&self, pane_id: PaneId) {
         let Some((_domain_id, _window_id, tab_id)) = self.resolve_pane_id(pane_id) else {
             return;
         };
@@ -2655,20 +2712,20 @@ impl Mux {
             return;
         };
 
-        self.agent_attention_seen_by_view
-            .write()
-            .entry(view_id.clone())
-            .or_default()
-            .insert(pane_id, completed_at);
+        let mut seen = self.agent_attention_seen_at.write();
+        if seen
+            .get(&pane_id)
+            .is_some_and(|seen_at| *seen_at >= completed_at)
+        {
+            return;
+        }
+        seen.insert(pane_id, completed_at);
+        drop(seen);
+        crate::session_persistence::request_session_save();
         self.notify_tab_title_changed(tab_id);
     }
 
-    fn agent_turn_needs_attention_for_view(
-        &self,
-        view_id: &ClientViewId,
-        pane_id: PaneId,
-        runtime: &AgentRuntimeSnapshot,
-    ) -> bool {
+    fn agent_turn_needs_attention(&self, pane_id: PaneId, runtime: &AgentRuntimeSnapshot) -> bool {
         if !matches!(
             runtime.turn_state,
             crate::agent::AgentTurnState::WaitingOnUser
@@ -2680,7 +2737,7 @@ impl Mux {
             return false;
         };
 
-        self.agent_attention_seen_at_for_view(view_id, pane_id)
+        self.agent_attention_seen_at(pane_id)
             .map(|seen_at| seen_at < completed_at)
             .unwrap_or(true)
     }
@@ -2768,10 +2825,104 @@ impl Mux {
         Self::cwd_leaf_for_tab_title(&cwd)
     }
 
+    pub fn display_tab_titles_for_window(&self, window_id: WindowId) -> HashMap<TabId, String> {
+        let Some(window) = self.get_window(window_id) else {
+            return HashMap::new();
+        };
+        let view_id = self.active_view_id();
+        let mut rows = Vec::with_capacity(window.len());
+        for tab in window.iter() {
+            let explicit = self.raw_tab_title(tab.tab_id());
+            let pane = view_id
+                .as_ref()
+                .and_then(|view_id| {
+                    self.get_active_pane_for_tab_for_client(
+                        view_id.as_ref(),
+                        window_id,
+                        tab.tab_id(),
+                    )
+                })
+                .or_else(|| tab.get_active_pane());
+            let automatic = pane.as_ref().map(|pane| {
+                self.agent_folder_title_for_pane(pane.pane_id())
+                    .unwrap_or_else(|| pane.get_title())
+            });
+            rows.push((tab.tab_id(), explicit, automatic.unwrap_or_default()));
+        }
+        drop(window);
+
+        let mut used = rows
+            .iter()
+            .filter_map(|(_, explicit, _)| (!explicit.is_empty()).then_some(explicit.clone()))
+            .collect::<HashSet<_>>();
+        let mut result = HashMap::with_capacity(rows.len());
+        for (tab_id, explicit, automatic) in rows {
+            let mut title = if !explicit.is_empty() {
+                explicit
+            } else if automatic.is_empty() || !used.contains(&automatic) {
+                used.insert(automatic.clone());
+                automatic
+            } else {
+                let mut ordinal = 2usize;
+                loop {
+                    let candidate = format!("{automatic}{ordinal}");
+                    if used.insert(candidate.clone()) {
+                        break candidate;
+                    }
+                    ordinal += 1;
+                }
+            };
+            if self.should_badge_tab_for_agents(tab_id, view_id.as_deref())
+                && !self.tab_has_known_harness(tab_id)
+            {
+                if let Some(badge) = Self::agent_tab_badge_text() {
+                    title = format!("{badge}{title}");
+                }
+            }
+            result.insert(tab_id, title);
+        }
+        result
+    }
+
+    pub fn approximate_tab_process_rss(&self, tab_id: TabId) -> Option<u64> {
+        fn collect(
+            process: &procinfo::LocalProcessInfo,
+            seen: &mut HashSet<u32>,
+            total: &mut u64,
+            measured: &mut bool,
+        ) {
+            if seen.insert(process.pid) {
+                if let Some(bytes) = procinfo::LocalProcessInfo::resident_set_bytes(process.pid) {
+                    *total = total.saturating_add(bytes);
+                    *measured = true;
+                }
+            }
+            for child in process.children.values() {
+                collect(child, seen, total, measured);
+            }
+        }
+
+        let tab = self.get_tab(tab_id)?;
+        let mut seen = HashSet::new();
+        let mut total = 0u64;
+        let mut measured = false;
+        for pane in tab.iter_panes_ignoring_zoom() {
+            if let Some(process) = pane
+                .pane
+                .get_foreground_process_info(CachePolicy::AllowStale)
+            {
+                collect(&process, &mut seen, &mut total, &mut measured);
+            }
+        }
+        measured
+            .then_some(total)
+            .or_else(|| self.mirrored_tab_rss_bytes.read().get(&tab_id).copied())
+    }
+
     fn cached_tab_badge_state_for_agents(
         &self,
         tab_id: TabId,
-        view_id: Option<&ClientViewId>,
+        _view_id: Option<&ClientViewId>,
     ) -> AgentTabBadgeState {
         let Some(tab) = self.get_tab(tab_id) else {
             return AgentTabBadgeState::default();
@@ -2792,12 +2943,7 @@ impl Mux {
                 if Self::agent_waiting_on_user(runtime) {
                     badge.waiting_on_user = true;
                 }
-                let needs_attention = match view_id {
-                    Some(view_id) => {
-                        self.agent_turn_needs_attention_for_view(view_id, pane_id, runtime)
-                    }
-                    None => Self::agent_waiting_on_user(runtime),
-                };
+                let needs_attention = self.agent_turn_needs_attention(pane_id, runtime);
                 if needs_attention {
                     badge.needs_attention = true;
                 }
@@ -2805,6 +2951,10 @@ impl Mux {
                     break;
                 }
             }
+        }
+        if let Some(mirrored) = self.mirrored_agent_badge_by_tab.read().get(&tab_id) {
+            badge.waiting_on_user |= mirrored.waiting_on_user;
+            badge.needs_attention |= mirrored.needs_attention;
         }
         badge
     }
@@ -2822,6 +2972,37 @@ impl Mux {
             Some(view_id) => self.tab_badge_state_for_view(view_id.as_ref(), tab_id),
             None => self.cached_tab_badge_state_for_agents(tab_id, None),
         }
+    }
+
+    pub fn activate_next_agent_needing_attention(
+        &self,
+        window_id: WindowId,
+    ) -> anyhow::Result<Option<(TabId, PaneId)>> {
+        let mut agents = self.list_agents_cached();
+        agents.extend(self.mirrored_agent_snapshots_for_window(window_id));
+        let mut targets = agents
+            .into_iter()
+            .filter(|agent| agent.window_id == window_id && agent.needs_attention)
+            .map(|agent| {
+                (
+                    agent.runtime.last_turn_completed_at,
+                    agent.tab_id,
+                    agent.pane_id,
+                )
+            })
+            .collect::<Vec<_>>();
+        targets.sort_by(|left, right| right.0.cmp(&left.0));
+        let Some((_completed_at, tab_id, pane_id)) = targets.first().copied() else {
+            return Ok(None);
+        };
+        if self
+            .get_window(window_id)
+            .is_some_and(|window| window.is_tab_parked(tab_id))
+        {
+            self.set_tab_parked(window_id, tab_id, false)?;
+        }
+        self.set_focused_pane_for_current_identity_lightweight(pane_id)?;
+        Ok(Some((tab_id, pane_id)))
     }
 
     fn should_badge_tab_for_agents(&self, tab_id: TabId, view_id: Option<&ClientViewId>) -> bool {
@@ -2892,6 +3073,12 @@ impl Mux {
         };
 
         let runtime_by_pane = self.agent_runtime_by_pane.read();
+        let mirrored_badge = self
+            .mirrored_agent_badge_by_tab
+            .read()
+            .get(&tab_id)
+            .cloned()
+            .unwrap_or_default();
         let mut seen = std::collections::HashSet::new();
         let mut icons = Vec::new();
 
@@ -2911,15 +3098,14 @@ impl Mux {
                 AgentTabBadgeMode::Identity => true,
                 AgentTabBadgeMode::Turn => runtime_by_pane
                     .get(&pane_id)
-                    .map_or(false, |rt| Self::agent_waiting_on_user(rt)),
-                AgentTabBadgeMode::Attention => {
-                    runtime_by_pane
-                        .get(&pane_id)
-                        .map_or(false, |rt| match view_id {
-                            Some(vid) => self.agent_turn_needs_attention_for_view(vid, pane_id, rt),
-                            None => Self::agent_waiting_on_user(rt),
-                        })
-                }
+                    .map_or(mirrored_badge.waiting_on_user, |rt| {
+                        Self::agent_waiting_on_user(rt)
+                    }),
+                AgentTabBadgeMode::Attention => runtime_by_pane
+                    .get(&pane_id)
+                    .map_or(mirrored_badge.needs_attention, |rt| {
+                        self.agent_turn_needs_attention(pane_id, rt)
+                    }),
                 AgentTabBadgeMode::Off => false,
             };
 
@@ -3036,6 +3222,7 @@ impl Mux {
         let pane = self.get_pane(pane_id)?;
         let (_domain_id, window_id, tab_id) = self.resolve_pane_id(pane_id)?;
         let window = self.get_window(window_id)?;
+        let needs_attention = self.agent_turn_needs_attention(pane_id, &runtime);
         Some(AgentSnapshot {
             metadata,
             runtime,
@@ -3046,6 +3233,7 @@ impl Mux {
             domain_id: pane.domain_id(),
             origin,
             detection_source,
+            needs_attention,
         })
     }
 
@@ -3213,7 +3401,7 @@ impl Mux {
                 Self::detected_agent_name_base(&state.runtime.harness, &state.declared_cwd);
             let name = Self::next_available_agent_name(&taken_names, &base_name);
             taken_names.insert(name.clone());
-            agents.push(Self::detected_agent_snapshot_from_state(state, name));
+            agents.push(self.detected_agent_snapshot_from_state(state, name));
         }
         agents.sort_by(|a, b| {
             a.metadata
@@ -3323,7 +3511,7 @@ impl Mux {
             .get_active_tab_for_window_for_current_identity(window_id)?
             .tab_id();
         let window = self.get_window(window_id)?;
-        window.idx_by_id(tab_id)
+        window.visible_idx_by_id(tab_id)
     }
 
     pub fn get_last_active_tab_idx_for_window_for_current_identity(
@@ -3334,7 +3522,7 @@ impl Mux {
         let tab_id =
             self.get_last_active_tab_id_for_window_for_client(view_id.as_ref(), window_id)?;
         let window = self.get_window(window_id)?;
-        window.idx_by_id(tab_id)
+        window.visible_idx_by_id(tab_id)
     }
 
     pub fn get_active_pane_id_for_tab_for_client(
@@ -3398,7 +3586,7 @@ impl Mux {
         {
             let _ =
                 self.set_active_pane_for_client_view(view_id.as_ref(), window_id, tab_id, pane_id);
-            self.acknowledge_agent_attention_for_view(view_id.as_ref(), pane_id);
+            self.acknowledge_agent_attention(pane_id);
         }
 
         if prior == Some(pane_id) {
@@ -3444,6 +3632,8 @@ impl Mux {
         let window_state = view_state.windows.entry(window_id).or_default();
         window_state.set_active_pane(tab_id, pane_id);
         Self::seed_view_state_for_tab(window_state, &tab);
+        drop(client_views);
+        self.acknowledge_agent_attention(pane_id);
 
         Ok(())
     }
@@ -3497,9 +3687,7 @@ impl Mux {
             .resolve_pane_id(pane_id)
             .ok_or_else(|| anyhow::anyhow!("can't find {pane_id} in the mux"))?;
         self.set_active_pane_for_current_identity(window_id, tab_id, pane_id)?;
-        if let Some(view_id) = self.active_view_id() {
-            self.acknowledge_agent_attention_for_view(view_id.as_ref(), pane_id);
-        }
+        self.acknowledge_agent_attention(pane_id);
         Ok(())
     }
 
@@ -3541,7 +3729,13 @@ impl Mux {
                 continue;
             };
             let window_state = view_state.windows.entry(window_id).or_default();
-            for tab in window.iter() {
+            for tab in window.iter_visible() {
+                Self::seed_view_state_for_tab(window_state, tab);
+            }
+            for tab in window
+                .iter()
+                .filter(|tab| window.is_tab_parked(tab.tab_id()))
+            {
                 Self::seed_view_state_for_tab(window_state, &tab);
             }
             if focused_pane_id.is_none() {
@@ -3616,6 +3810,9 @@ impl Mux {
             .ok_or_else(|| anyhow!("window {window_id} not found"))?;
         if window.idx_by_id(tab_id).is_none() {
             anyhow::bail!("tab {tab_id} is not in window {window_id}");
+        }
+        if window.is_tab_parked(tab_id) {
+            anyhow::bail!("tab {tab_id} is parked in window {window_id}");
         }
         drop(window);
 
@@ -3936,6 +4133,136 @@ impl Mux {
         });
     }
 
+    pub fn notify_parked_tabs_changed(
+        &self,
+        window_id: WindowId,
+        tab_ids: Vec<TabId>,
+        parked_tab_ids: Vec<TabId>,
+    ) {
+        self.notify(MuxNotification::ParkedTabsChanged {
+            window_id,
+            tab_ids,
+            parked_tab_ids,
+            origin: self.active_identity(),
+        });
+    }
+
+    pub fn set_tab_parked(
+        &self,
+        window_id: WindowId,
+        tab_id: TabId,
+        parked: bool,
+    ) -> anyhow::Result<bool> {
+        let (tab_ids, parked_tab_ids, changed) = {
+            let mut window = self
+                .get_window_mut(window_id)
+                .ok_or_else(|| anyhow!("no such window {}", window_id))?;
+            let tab_ids = window.iter().map(|tab| tab.tab_id()).collect::<Vec<_>>();
+            ensure!(
+                tab_ids.contains(&tab_id),
+                "tab {} does not belong to window {}",
+                tab_id,
+                window_id
+            );
+            let mut parked_tab_ids = window.parked_tab_ids();
+            if parked {
+                if !parked_tab_ids.contains(&tab_id) {
+                    parked_tab_ids.push(tab_id);
+                }
+            } else {
+                parked_tab_ids.retain(|candidate| *candidate != tab_id);
+            }
+            parked_tab_ids.sort_by_key(|candidate| {
+                tab_ids
+                    .iter()
+                    .position(|tab_id| tab_id == candidate)
+                    .unwrap_or(usize::MAX)
+            });
+            let changed = window.apply_parked_tabs(&tab_ids, &parked_tab_ids)?;
+            (tab_ids, parked_tab_ids, changed)
+        };
+        if changed {
+            self.repair_client_views_after_parked_change(window_id);
+            self.notify(MuxNotification::WindowInvalidated(window_id));
+            self.notify_parked_tabs_changed(window_id, tab_ids, parked_tab_ids);
+        }
+        Ok(changed)
+    }
+
+    pub fn repair_client_views_after_parked_change(&self, window_id: WindowId) {
+        let Some(window) = self.get_window(window_id) else {
+            return;
+        };
+        let tab_ids = window.iter().map(|tab| tab.tab_id()).collect::<Vec<_>>();
+        let visible_tab_ids = window
+            .iter_visible()
+            .map(|tab| tab.tab_id())
+            .collect::<Vec<_>>();
+        let parked_tab_ids = window.parked_tab_ids().into_iter().collect::<HashSet<_>>();
+        drop(window);
+        if visible_tab_ids.is_empty() {
+            return;
+        }
+
+        let replacement_for = |tab_id: TabId| {
+            let old_idx = tab_ids.iter().position(|candidate| *candidate == tab_id)?;
+            visible_tab_ids
+                .iter()
+                .copied()
+                .find(|candidate| {
+                    tab_ids
+                        .iter()
+                        .position(|tab_id| tab_id == candidate)
+                        .is_some_and(|idx| idx >= old_idx)
+                })
+                .or_else(|| visible_tab_ids.last().copied())
+        };
+
+        let mut client_views = self.client_views.write();
+        for view in client_views.values_mut() {
+            let Some(window_state) = view.windows.get_mut(&window_id) else {
+                continue;
+            };
+            if let Some(active_tab_id) = window_state.active_tab_id {
+                if parked_tab_ids.contains(&active_tab_id) {
+                    if let Some(replacement) = replacement_for(active_tab_id) {
+                        window_state.active_tab_id = Some(replacement);
+                    }
+                }
+            } else {
+                window_state.active_tab_id = visible_tab_ids.first().copied();
+            }
+            if window_state
+                .last_active_tab_id
+                .is_some_and(|tab_id| parked_tab_ids.contains(&tab_id))
+            {
+                window_state.last_active_tab_id = None;
+            }
+        }
+        let active_pane_by_view = client_views
+            .iter()
+            .filter_map(|(view_id, view)| {
+                view.windows
+                    .get(&window_id)
+                    .and_then(ClientWindowViewState::active_pane_id)
+                    .map(|pane_id| (view_id.clone(), pane_id))
+            })
+            .collect::<HashMap<_, _>>();
+        drop(client_views);
+
+        for client in self.clients.write().values_mut() {
+            let focused_is_parked_in_window = client
+                .focused_pane_id
+                .and_then(|pane_id| self.resolve_pane_id(pane_id))
+                .is_some_and(|(_, pane_window_id, tab_id)| {
+                    pane_window_id == window_id && parked_tab_ids.contains(&tab_id)
+                });
+            if focused_is_parked_in_window {
+                client.focused_pane_id = active_pane_by_view.get(client.view_id.as_ref()).copied();
+            }
+        }
+    }
+
     pub fn notify_from_any_thread(notification: MuxNotification) {
         if let Some(mux) = Mux::try_get() {
             if mux.is_main_thread() {
@@ -4058,6 +4385,11 @@ impl Mux {
             .lock()
             .unwatch_candidate(pane_id);
         self.agent_observer_state_by_pane.write().remove(&pane_id);
+        self.mirrored_agent_harness_by_pane.write().remove(&pane_id);
+        self.mirrored_agent_cwd_by_pane.write().remove(&pane_id);
+        self.mirrored_agent_snapshot_by_pane
+            .write()
+            .remove(&pane_id);
         if let Some(pane) = self.panes.write().remove(&pane_id).clone() {
             log::debug!("killing pane {}", pane_id);
             pane.kill();
@@ -4091,6 +4423,8 @@ impl Mux {
         log::debug!("remove_tab_internal tab {}", tab_id);
 
         let tab = self.tabs.write().remove(&tab_id)?;
+        self.mirrored_agent_badge_by_tab.write().remove(&tab_id);
+        self.mirrored_tab_rss_bytes.write().remove(&tab_id);
 
         let mut removed_from_windows = vec![];
         if let Some(mut windows) = self.windows.try_write() {
@@ -7896,6 +8230,23 @@ mod test {
         );
         assert_eq!(mux.raw_tab_title(tab.tab_id()), "");
 
+        mux.set_mirrored_agent_badge(
+            tab.tab_id(),
+            AgentTabBadgeState {
+                waiting_on_user: true,
+                needs_attention: true,
+            },
+        );
+        let _config = TestConfigGuard::new("attention", "🤖 ");
+        assert!(
+            mux.tab_badge_state_for_current_identity(tab.tab_id())
+                .needs_attention
+        );
+        assert_eq!(
+            mux.visible_harness_icons_for_tab(tab.tab_id(), None).len(),
+            1
+        );
+
         mux.set_mirrored_agent_metadata(pane_id, None);
         assert_eq!(mux.agent_folder_title_for_pane(pane_id), None);
     }
@@ -7955,6 +8306,62 @@ mod test {
             mux.agent_folder_title_for_pane(second_pane.pane_id())
                 .as_deref(),
             Some("backend")
+        );
+    }
+
+    #[test]
+    fn automatic_agent_folder_titles_use_compact_collision_suffixes() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let mut tab_ids = Vec::new();
+        for ordinal in 1..=3 {
+            let tab = Arc::new(Tab::new(&size));
+            let pane = FakePane::new(alloc_pane_id(), size, domain.id);
+            let pane_id = pane.pane_id();
+            tab.assign_pane(&pane);
+            mux.add_tab_and_active_pane(&tab).unwrap();
+            mux.add_tab_to_window(&tab, window_id).unwrap();
+            let mut metadata = sample_agent_metadata(&format!("wakterm-{ordinal}"));
+            metadata.declared_cwd = "file:///code/wakterm".to_string();
+            mux.set_agent_metadata(pane_id, metadata).unwrap();
+            tab_ids.push(tab.tab_id());
+        }
+
+        let titles = mux.display_tab_titles_for_window(window_id);
+        assert_eq!(titles.get(&tab_ids[0]).map(String::as_str), Some("wakterm"));
+        assert_eq!(
+            titles.get(&tab_ids[1]).map(String::as_str),
+            Some("wakterm2")
+        );
+        assert_eq!(
+            titles.get(&tab_ids[2]).map(String::as_str),
+            Some("wakterm3")
+        );
+
+        mux.get_tab(tab_ids[2]).unwrap().set_title("wakterm2");
+        let titles = mux.display_tab_titles_for_window(window_id);
+        assert_eq!(titles.get(&tab_ids[0]).map(String::as_str), Some("wakterm"));
+        assert_eq!(
+            titles.get(&tab_ids[1]).map(String::as_str),
+            Some("wakterm3")
+        );
+        assert_eq!(
+            titles.get(&tab_ids[2]).map(String::as_str),
+            Some("wakterm2")
         );
     }
 
@@ -8057,7 +8464,7 @@ mod test {
     }
 
     #[test]
-    fn attention_badge_clears_only_for_view_that_focuses_agent() {
+    fn attention_badge_clears_globally_when_any_client_focuses_agent() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
         config::use_test_configuration();
@@ -8099,15 +8506,11 @@ mod test {
         mux.register_client(client_a.clone(), view_a.clone());
         mux.set_active_tab_for_client_view(view_a.as_ref(), window_id, tab.tab_id())
             .unwrap();
-        mux.set_active_pane_for_client_view(view_a.as_ref(), window_id, tab.tab_id(), pane_id)
-            .unwrap();
 
         let client_b = Arc::new(ClientId::new());
         let view_b = Arc::new(ClientViewId("view-b".to_string()));
         mux.register_client(client_b.clone(), view_b.clone());
         mux.set_active_tab_for_client_view(view_b.as_ref(), window_id, tab.tab_id())
-            .unwrap();
-        mux.set_active_pane_for_client_view(view_b.as_ref(), window_id, tab.tab_id(), pane_id)
             .unwrap();
 
         // Known harness → text badge suppressed, but icons reflect attention state
@@ -8133,9 +8536,9 @@ mod test {
 
         mux.set_focused_pane_for_client(client_a.as_ref(), pane_id)
             .unwrap();
-        mux.acknowledge_agent_attention_for_view(view_a.as_ref(), pane_id);
+        mux.acknowledge_agent_attention(pane_id);
 
-        // View A acknowledged → no icon for A, still shows for B
+        // Review acknowledgement is shared across clients.
         assert_eq!(
             mux.visible_harness_icons_for_tab(tab.tab_id(), Some(view_a.as_ref()))
                 .len(),
@@ -8144,7 +8547,7 @@ mod test {
         assert_eq!(
             mux.visible_harness_icons_for_tab(tab.tab_id(), Some(view_b.as_ref()))
                 .len(),
-            1
+            0
         );
     }
 
@@ -8188,8 +8591,6 @@ mod test {
 
         let (client_id, view_id) = register_test_client(&mux, "focus-view");
         mux.set_active_tab_for_client_view(view_id.as_ref(), window_id, tab.tab_id())
-            .unwrap();
-        mux.set_active_pane_for_client_view(view_id.as_ref(), window_id, tab.tab_id(), pane_id)
             .unwrap();
 
         // Known harness → text badge suppressed, icon shows attention

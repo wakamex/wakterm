@@ -250,6 +250,21 @@ impl ClientPane {
         self.remote_pane_id
     }
 
+    pub fn acknowledge_agent_attention(&self) {
+        let client = Arc::clone(&self.client);
+        let pane_id = self.remote_pane_id;
+        promise::spawn::spawn(async move {
+            if let Err(err) = client
+                .client
+                .acknowledge_agent_attention(AcknowledgeAgentAttention { pane_id })
+                .await
+            {
+                log::debug!("could not acknowledge agent attention for pane {pane_id}: {err:#}");
+            }
+        })
+        .detach();
+    }
+
     /// Arrange to suppress the next Pane::kill call.
     /// This is a bit of a hack that we use when closing a window;
     /// our Domain::local_window_is_closing impl calls this for each

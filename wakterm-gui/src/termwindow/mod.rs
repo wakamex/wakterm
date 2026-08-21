@@ -212,7 +212,7 @@ pub struct PaneState {
 }
 
 /// Data used when synchronously formatting pane and window titles
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TabHarnessIcon {
     Claude,
     Codex,
@@ -259,6 +259,7 @@ pub struct TabInformation {
     pub is_last_active: bool,
     pub active_pane: Option<PaneInformation>,
     pub harness_icons: Vec<TabHarnessIcon>,
+    pub needs_attention: bool,
     pub assigned_color: Option<config::RgbaColor>,
     pub window_id: MuxWindowId,
     pub tab_title: String,
@@ -303,6 +304,7 @@ impl UserData for TabInformation {
                 .map(|icon| icon.as_str().to_string())
                 .collect::<Vec<_>>())
         });
+        fields.add_field_method_get("needs_attention", |_, this| Ok(this.needs_attention));
         fields.add_field_method_get("assigned_color", |_, this| {
             Ok(this.assigned_color.map(String::from))
         });
@@ -1461,10 +1463,15 @@ impl TermWindow {
                 }
                 MuxNotification::WindowInvalidated(window_id) => {
                     log::debug!("termwindow handling WindowInvalidated window_id={window_id}");
+                    self.acknowledge_visible_agent_attention(None);
                     window.invalidate();
                     self.update_title_post_status();
                 }
                 MuxNotification::TabOrderChanged { .. } => {}
+                MuxNotification::ParkedTabsChanged { .. } => {
+                    window.invalidate();
+                    self.update_title_post_status();
+                }
                 MuxNotification::WindowRemoved(_window_id) => {
                     // Handled by frontend
                 }
@@ -1491,6 +1498,7 @@ impl TermWindow {
                     log::debug!(
                         "termwindow handling TabTitleChanged tab_id={tab_id} title={title:?}"
                     );
+                    self.acknowledge_visible_agent_attention(Some(tab_id));
                     self.update_title_post_status();
                 }
                 MuxNotification::PaneAdded(_)
@@ -1624,6 +1632,39 @@ impl TermWindow {
         }
     }
 
+    fn acknowledge_visible_agent_attention(&mut self, expected_tab_id: Option<TabId>) {
+        if self.focused.is_none() {
+            return;
+        }
+        let Some(tab) = self.get_active_mux_tab() else {
+            return;
+        };
+        if expected_tab_id.is_some_and(|tab_id| tab_id != tab.tab_id()) {
+            return;
+        }
+        let mux = Mux::get();
+        if !mux
+            .tab_badge_state_for_current_identity(tab.tab_id())
+            .needs_attention
+        {
+            return;
+        }
+        let Some(pane) = self.get_active_pane_no_overlay() else {
+            return;
+        };
+        if self
+            .get_active_pane_or_overlay()
+            .is_none_or(|visible| visible.pane_id() != pane.pane_id())
+        {
+            return;
+        }
+        if let Some(client_pane) = pane.downcast_ref::<wakterm_client::pane::ClientPane>() {
+            client_pane.acknowledge_agent_attention();
+        } else {
+            mux.acknowledge_agent_attention(pane.pane_id());
+        }
+    }
+
     fn mux_pane_output_event_callback(
         n: MuxNotification,
         window: &Window,
@@ -1670,6 +1711,7 @@ impl TermWindow {
             }
             MuxNotification::TabAddedToWindow { window_id, .. }
             | MuxNotification::TabOrderChanged { window_id, .. }
+            | MuxNotification::ParkedTabsChanged { window_id, .. }
             | MuxNotification::WindowTitleChanged { window_id, .. }
             | MuxNotification::WindowInvalidated(window_id) => {
                 if window_id != mux_window_id {
@@ -1930,7 +1972,7 @@ impl TermWindow {
             Some(window) => window,
             _ => return,
         };
-        if window.len() == 1 {
+        if window.visible_len() == 1 {
             self.show_tab_bar = config.enable_tab_bar && !config.hide_tab_bar_if_only_one_tab;
         } else {
             self.show_tab_bar = config.enable_tab_bar;
@@ -2349,7 +2391,7 @@ impl TermWindow {
 
         // This logic is coupled with the CliSubCommand::ActivateTab
         // logic in wakterm/src/main.rs. If you update this, update that!
-        let max = window.len();
+        let max = window.visible_len();
 
         let tab_idx = if tab_idx < 0 {
             max.saturating_sub(tab_idx.abs() as usize)
@@ -2359,7 +2401,7 @@ impl TermWindow {
 
         if tab_idx < max {
             let tab_id = window
-                .get_by_idx(tab_idx)
+                .get_visible_by_idx(tab_idx)
                 .map(|tab| tab.tab_id())
                 .ok_or_else(|| anyhow!("no such tab index {tab_idx}"))?;
             drop(window);
@@ -2394,7 +2436,7 @@ impl TermWindow {
             .get_window(self.mux_window_id)
             .ok_or_else(|| anyhow!("no such window"))?;
 
-        let max = window.len();
+        let max = window.visible_len();
         ensure!(max > 0, "no more tabs");
 
         // This logic is coupled with the CliSubCommand::ActivateTab
@@ -2436,12 +2478,12 @@ impl TermWindow {
             .get_window_mut(self.mux_window_id)
             .ok_or_else(|| anyhow!("no such window"))?;
 
-        let max = window.len();
+        let max = window.visible_len();
         ensure!(max > 0, "no more tabs");
 
         ensure!(tab_idx < max, "cannot move a tab out of range");
 
-        let moved_tab_id = window.move_by_idx(active, tab_idx).tab_id();
+        let moved_tab_id = window.move_visible_by_idx(active, tab_idx)?.tab_id();
         let tab_ids = window.iter().map(|tab| tab.tab_id()).collect();
 
         drop(window);
@@ -2567,19 +2609,36 @@ impl TermWindow {
     }
 
     fn show_tab_navigator(&mut self) {
-        let active_tab_idx = match self.get_active_tab_index() {
-            Some(active_tab_idx) => active_tab_idx,
-            None => return,
+        let Some(tab) = self.get_active_mux_tab() else {
+            return;
         };
-        let title = "Tab Navigator".to_string();
-        let args = LauncherActionArgs {
-            title: Some(title),
-            flags: LauncherFlags::TABS,
-            help_text: None,
-            fuzzy_help_text: None,
-            alphabet: None,
+        let tab_id = tab.tab_id();
+        let args = match crate::overlay::TabNavigatorArgs::new(self.mux_window_id, tab_id) {
+            Ok(args) => args,
+            Err(err) => {
+                log::error!("cannot open tab navigator: {err:#}");
+                return;
+            }
         };
-        self.show_launcher_impl(args, active_tab_idx);
+        let (overlay, future) = start_overlay(self, &tab, move |_tab_id, term| {
+            crate::overlay::tab_navigator(args, term)
+        });
+        self.assign_overlay(tab_id, overlay);
+        promise::spawn::spawn(future).detach();
+    }
+
+    fn activate_next_tab_needing_attention(&mut self) {
+        match Mux::get().activate_next_agent_needing_attention(self.mux_window_id) {
+            Ok(Some((_tab_id, pane_id))) => {
+                if let Some(pane) = Mux::get().get_pane(pane_id) {
+                    pane.focus_changed(true);
+                }
+                self.update_title();
+                self.update_scrollbar();
+            }
+            Ok(None) => {}
+            Err(err) => log::warn!("cannot activate next agent response: {err:#}"),
+        }
     }
 
     fn show_launcher(&mut self) {
@@ -2760,7 +2819,7 @@ impl TermWindow {
             .get_window(self.mux_window_id)
             .ok_or_else(|| anyhow!("no such window"))?;
 
-        let max = window.len();
+        let max = window.visible_len();
         ensure!(max > 0, "no more tabs");
 
         let active = self
@@ -2963,6 +3022,7 @@ impl TermWindow {
                 }
             }
             CloseCurrentTab { confirm } => self.close_current_tab(*confirm),
+            ParkCurrentTab => self.park_current_tab(),
             CloseCurrentPane { confirm } => self.close_current_pane(*confirm),
             Nop | DisableDefaultAssignment => {}
             ReloadConfiguration => config::reload(),
@@ -2975,6 +3035,7 @@ impl TermWindow {
             ScrollToTop => self.scroll_to_top(pane),
             ScrollToBottom => self.scroll_to_bottom(pane),
             ShowTabNavigator => self.show_tab_navigator(),
+            ActivateNextTabNeedingAttention => self.activate_next_tab_needing_attention(),
             ShowDebugOverlay => self.show_debug_overlay(),
             ShowLauncher => self.show_launcher(),
             ShowLauncherArgs(args) => {
@@ -3431,7 +3492,7 @@ impl TermWindow {
             None => return,
         };
 
-        let tab = match mux_window.get_by_idx(tab_idx) {
+        let tab = match mux_window.get_visible_by_idx(tab_idx) {
             Some(tab) => Arc::clone(tab),
             None => return,
         };
@@ -3471,6 +3532,22 @@ impl TermWindow {
             promise::spawn::spawn(future).detach();
         } else {
             mux.remove_tab(tab_id);
+        }
+    }
+
+    fn park_current_tab(&mut self) {
+        let mux = Mux::get();
+        let Some(tab) = self.get_active_mux_tab() else {
+            return;
+        };
+        if let Err(err) = mux.set_tab_parked(self.mux_window_id, tab.tab_id(), true) {
+            log::warn!("cannot park current tab: {err:#}");
+            wakterm_toast_notification::show(wakterm_toast_notification::ToastNotification {
+                title: "Cannot park tab".to_string(),
+                message: err.to_string(),
+                url: None,
+                timeout: Some(Duration::from_secs(5)),
+            });
         }
     }
 
@@ -3572,13 +3649,25 @@ impl TermWindow {
     fn get_active_mux_tab(&self) -> Option<Arc<Tab>> {
         let mux = Mux::get();
         mux.get_active_tab_for_window_for_current_identity(self.mux_window_id)
-            .or_else(|| mux.get_window(self.mux_window_id)?.get_by_idx(0).cloned())
+            .filter(|tab| {
+                mux.get_window(self.mux_window_id)
+                    .is_some_and(|window| !window.is_tab_parked(tab.tab_id()))
+            })
+            .or_else(|| {
+                mux.get_window(self.mux_window_id)?
+                    .get_visible_by_idx(0)
+                    .cloned()
+            })
     }
 
     fn get_active_tab_index(&self) -> Option<usize> {
         let mux = Mux::get();
         mux.get_active_tab_idx_for_window_for_current_identity(self.mux_window_id)
-            .or_else(|| mux.get_window(self.mux_window_id)?.get_by_idx(0).map(|_| 0))
+            .or_else(|| {
+                mux.get_window(self.mux_window_id)?
+                    .get_visible_by_idx(0)
+                    .map(|_| 0)
+            })
     }
 
     fn get_last_active_tab_index(&self) -> Option<usize> {
@@ -3701,9 +3790,10 @@ impl TermWindow {
         };
         let tab_index = self.get_active_tab_index();
         let last_active_idx = self.get_last_active_tab_index();
+        let display_titles = mux.display_tab_titles_for_window(self.mux_window_id);
 
         let mut tabs: Vec<TabInformation> = window
-            .iter()
+            .iter_visible()
             .enumerate()
             .map(|(idx, tab)| {
                 let panes = self.get_pos_panes_for_tab(tab);
@@ -3713,6 +3803,9 @@ impl TermWindow {
                     .into_iter()
                     .filter_map(TabHarnessIcon::from_agent_harness)
                     .collect();
+                let needs_attention = mux
+                    .tab_badge_state_for_current_identity(tab.tab_id())
+                    .needs_attention;
 
                 TabInformation {
                     tab_index: idx,
@@ -3720,8 +3813,12 @@ impl TermWindow {
                     is_active: tab_index == Some(idx),
                     is_last_active: last_active_idx == Some(idx),
                     window_id: self.mux_window_id,
-                    tab_title: mux.effective_tab_title(tab.tab_id()),
+                    tab_title: display_titles
+                        .get(&tab.tab_id())
+                        .cloned()
+                        .unwrap_or_default(),
                     harness_icons,
+                    needs_attention,
                     assigned_color: None,
                     active_pane: active_pane.map(|pane| {
                         let mut info = Self::pos_pane_to_pane_info(pane);
@@ -3924,6 +4021,7 @@ mod test {
             is_last_active: false,
             active_pane: active_pane_title.map(pane_with_title),
             harness_icons: vec![],
+            needs_attention: false,
             assigned_color: None,
             window_id: 0,
             tab_title: tab_title.to_string(),

@@ -470,7 +470,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 64;
+pub const CODEC_VERSION: usize = 65;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -567,6 +567,9 @@ pdu! {
     ReadAgentEventsResponse: 91,
     PrepareCodexLaunch: 92,
     PreparedCodexLaunch: 93,
+    SetParkedTabs: 94,
+    ParkedTabsChanged: 95,
+    AcknowledgeAgentAttention: 96,
 }
 
 impl Pdu {
@@ -583,6 +586,8 @@ impl Pdu {
             | Self::SetClipboard(_)
             | Self::SetPaneZoomed(_)
             | Self::SetTabOrder(_)
+            | Self::SetParkedTabs(_)
+            | Self::AcknowledgeAgentAttention(_)
             | Self::SpawnV2(_)
             | Self::SetAgentMetadata(_)
             | Self::ClearAgentMetadata(_)
@@ -726,6 +731,25 @@ pub struct TabOrderChanged {
     pub tab_ids: Vec<TabId>,
 }
 
+#[derive(Deserialize, Serialize, PartialEq, Debug, Clone)]
+pub struct SetParkedTabs {
+    pub window_id: WindowId,
+    pub tab_ids: Vec<TabId>,
+    pub parked_tab_ids: Vec<TabId>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug, Clone)]
+pub struct ParkedTabsChanged {
+    pub window_id: WindowId,
+    pub tab_ids: Vec<TabId>,
+    pub parked_tab_ids: Vec<TabId>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug, Clone)]
+pub struct AcknowledgeAgentAttention {
+    pub pane_id: PaneId,
+}
+
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct ListAgents {}
 
@@ -841,6 +865,9 @@ pub struct ListPanesResponse {
     pub tabs: Vec<PaneNode>,
     pub tab_titles: Vec<String>,
     pub tab_badges: Vec<AgentTabBadgeState>,
+    pub agents: Vec<AgentSnapshot>,
+    pub tab_rss_bytes: HashMap<TabId, u64>,
+    pub parked_tab_ids: Vec<TabId>,
     pub window_titles: HashMap<WindowId, String>,
     pub client_window_view_state: HashMap<WindowId, ClientWindowViewState>,
 }
@@ -1549,6 +1576,9 @@ mod test {
             tabs,
             tab_titles: vec![],
             tab_badges: vec![],
+            agents: vec![],
+            tab_rss_bytes: HashMap::new(),
+            parked_tab_ids: vec![],
             window_titles: HashMap::new(),
             client_window_view_state: HashMap::new(),
         }
@@ -1733,6 +1763,30 @@ mod test {
     }
 
     #[test]
+    fn parked_tab_pdus_round_trip() {
+        for pdu in [
+            Pdu::SetParkedTabs(SetParkedTabs {
+                window_id: 7,
+                tab_ids: vec![1, 2, 3],
+                parked_tab_ids: vec![2, 3],
+            }),
+            Pdu::ParkedTabsChanged(ParkedTabsChanged {
+                window_id: 7,
+                tab_ids: vec![1, 2, 3],
+                parked_tab_ids: vec![2, 3],
+            }),
+            Pdu::AcknowledgeAgentAttention(AcknowledgeAgentAttention { pane_id: 9 }),
+        ] {
+            let mut encoded = Vec::new();
+            pdu.encode(&mut encoded, 42).unwrap();
+            assert_eq!(
+                Pdu::decode(encoded.as_slice()).unwrap(),
+                DecodedPdu { serial: 42, pdu }
+            );
+        }
+    }
+
+    #[test]
     fn agent_output_pdus_round_trip() {
         for pdu in [
             Pdu::ReadAgentOutput(ReadAgentOutput {
@@ -1852,6 +1906,7 @@ mod test {
                 domain_id: 4,
                 origin: mux::agent::AgentOrigin::Adopted,
                 detection_source: None,
+                needs_attention: false,
             }
         }
 

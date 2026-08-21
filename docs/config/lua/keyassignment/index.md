@@ -38,6 +38,8 @@ clear and convenient.
   - [ClearSelection](ClearSelection.md)
   - [CloseCurrentPane](CloseCurrentPane.md)
   - [CloseCurrentTab](CloseCurrentTab.md)
+  - [ParkCurrentTab](ParkCurrentTab.md)
+  - [ActivateNextTabNeedingAttention](ActivateNextTabNeedingAttention.md)
   - [CompleteSelection](CompleteSelection.md)
   - [CompleteSelectionOrOpenLinkAtMouseCursor](CompleteSelectionOrOpenLinkAtMouseCursor.md)
   - [Confirmation](Confirmation.md)

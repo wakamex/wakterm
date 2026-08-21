@@ -8,6 +8,8 @@ use crate::termwindow::{TabHarnessIcon, UIItem, UIItemType};
 use crate::utilsprites::RenderMetrics;
 use config::{Dimension, DimensionContext, TabBarColors};
 use std::rc::Rc;
+use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 use wakterm_font::LoadedFont;
 use wakterm_term::color::{ColorAttribute, ColorPalette};
 use wakterm_term::{Line, TerminalConfiguration};
@@ -31,6 +33,20 @@ const X_BUTTON: &[Poly] = &[
         style: PolyStyle::Outline,
     },
 ];
+
+const ATTENTION_DOT: &[Poly] = &[Poly {
+    path: &[
+        PolyCommand::MoveTo(BlockCoord::Zero, BlockCoord::Zero),
+        PolyCommand::LineTo(BlockCoord::One, BlockCoord::Zero),
+        PolyCommand::LineTo(BlockCoord::One, BlockCoord::One),
+        PolyCommand::LineTo(BlockCoord::Zero, BlockCoord::One),
+        PolyCommand::Close,
+    ],
+    intensity: BlockAlpha::Full,
+    style: PolyStyle::Fill,
+}];
+
+static ATTENTION_PULSE_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 const PLUS_BUTTON: &[Poly] = &[
     Poly {
@@ -551,7 +567,14 @@ impl crate::TermWindow {
             }
 
             let hovered = hovered_tab_idx == Some(tab_idx);
-            let color = harness_icon_color(entry, &colors, palette, hovered);
+            let mut color = harness_icon_color(entry, &colors, palette, hovered);
+            if entry.needs_attention && self.config.agent_tab_attention_pulse {
+                let cycle = Duration::from_secs(2).as_secs_f32();
+                let phase = ATTENTION_PULSE_START.elapsed().as_secs_f32() % cycle / cycle;
+                let opacity = 0.75 + 0.25 * (phase * std::f32::consts::TAU).cos();
+                color.3 *= opacity;
+                self.update_next_frame_time(Some(Instant::now() + Duration::from_millis(33)));
+            }
             let item_height = item.height as f32;
             let single_icon_size = (item_height - 2.0).max(0.0);
             let overlap_stride = single_icon_size * 0.65;
@@ -569,6 +592,21 @@ impl crate::TermWindow {
                     harness_icon_poly(*icon),
                     metrics.underline_height.max(2),
                     euclid::size2(single_icon_size, single_icon_size),
+                    color,
+                )?;
+            }
+            if entry.needs_attention && !self.config.agent_tab_attention_pulse {
+                let dot_size = (single_icon_size * 0.22).max(3.0);
+                self.poly_quad(
+                    &mut layers,
+                    1,
+                    euclid::point2(
+                        item.x as f32 + tab_left_padding + single_icon_size - dot_size * 0.5,
+                        item.y as f32 + 1.0,
+                    ),
+                    ATTENTION_DOT,
+                    1,
+                    euclid::size2(dot_size, dot_size),
                     color,
                 )?;
             }

@@ -284,6 +284,9 @@ mod test {
                         ],
                         tab_titles: vec!["one".into(), "two".into()],
                         tab_badges: vec![Default::default(), Default::default()],
+                        agents: vec![],
+                        tab_rss_bytes: HashMap::new(),
+                        parked_tab_ids: vec![],
                         window_titles: HashMap::from([(3, "win".into())]),
                         client_window_view_state: HashMap::from([(
                             3,
@@ -367,6 +370,9 @@ mod test {
                         )],
                         tab_titles: vec!["target".into()],
                         tab_badges: vec![Default::default()],
+                        agents: vec![],
+                        tab_rss_bytes: HashMap::new(),
+                        parked_tab_ids: vec![],
                         window_titles: HashMap::from([(5, "win".into())]),
                         client_window_view_state: HashMap::from([(
                             5,

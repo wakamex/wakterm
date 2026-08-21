@@ -1091,6 +1091,15 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             menubar: &[],
             icon: Some("md_close_box_outline"),
         },
+        ParkCurrentTab => CommandDef {
+            brief: "Park current Tab".into(),
+            doc: "Hides the current tab while keeping all of its panes and processes running."
+                .into(),
+            keys: vec![(Modifiers::CTRL | Modifiers::SHIFT, "S".into())],
+            args: &[ArgType::ActiveTab],
+            menubar: &["Shell"],
+            icon: Some("md_archive_arrow_down_outline"),
+        },
         CloseCurrentPane { confirm: true } => CommandDef {
             brief: "Close current Pane".into(),
             doc: "Closes the current pane, terminating the \
@@ -1652,6 +1661,14 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             menubar: &["Window", "Select Tab"],
             icon: Some("cod_list_flat"),
         },
+        ActivateNextTabNeedingAttention => CommandDef {
+            brief: "Review next agent response".into(),
+            doc: "Activates the newest unseen agent response, including parked tabs.".into(),
+            keys: vec![],
+            args: &[ArgType::ActiveWindow],
+            menubar: &["Window", "Select Tab"],
+            icon: Some("md_message_alert_outline"),
+        },
         DetachDomain(SpawnTabDomain::CurrentPaneDomain) => CommandDef {
             brief: "Detach the domain of the active pane".into(),
             doc: "Detaches (disconnects from) the domain of the active pane".into(),
@@ -2056,6 +2073,7 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
             ..Default::default()
         }),
         CloseCurrentTab { confirm: true },
+        ParkCurrentTab,
         CloseCurrentPane { confirm: true },
         DetachDomain(SpawnTabDomain::CurrentPaneDomain),
         ResetTerminal,
@@ -2156,6 +2174,7 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         ActivateLastTab,
         ShowLauncher,
         ShowTabNavigator,
+        ActivateNextTabNeedingAttention,
         // ----------------- Help
         OpenUri("https://wakterm.org/".to_string()),
         OpenUri("https://github.com/wakamex/wakterm/discussions/".to_string()),

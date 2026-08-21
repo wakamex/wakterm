@@ -193,6 +193,11 @@ pub struct Config {
     #[dynamic(default = "default_agent_tab_badge_mode")]
     pub agent_tab_badge_mode: String,
 
+    /// Slowly pulse harness icons when an unseen completed turn needs review.
+    /// When disabled, attention remains visible as a static marker.
+    #[dynamic(default = "default_true")]
+    pub agent_tab_attention_pulse: bool,
+
     /// Text prefix shown in tab titles for agents with no known harness icon.
     /// When a harness-specific icon (Claude, Codex, etc.) is available, the
     /// icon is used instead and this text badge is suppressed.

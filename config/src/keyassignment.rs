@@ -562,6 +562,7 @@ pub enum KeyAssignment {
     CloseCurrentTab {
         confirm: bool,
     },
+    ParkCurrentTab,
     ReloadConfiguration,
     MoveTabRelative(isize),
     MoveTab(usize),
@@ -572,6 +573,7 @@ pub enum KeyAssignment {
     ScrollToTop,
     ScrollToBottom,
     ShowTabNavigator,
+    ActivateNextTabNeedingAttention,
     ShowDebugOverlay,
     HideApplication,
     QuitApplication,

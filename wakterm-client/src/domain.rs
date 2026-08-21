@@ -2,7 +2,7 @@ use crate::client::Client;
 use crate::pane::ClientPane;
 use anyhow::{anyhow, bail, ensure};
 use async_trait::async_trait;
-use codec::{ListPanesResponse, SetTabOrder, SpawnV2, SplitPane};
+use codec::{ListPanesResponse, SetParkedTabs, SetTabOrder, SpawnV2, SplitPane};
 use config::keyassignment::SpawnTabDomain;
 use config::{configuration, SshDomain, TlsDomainClient, UnixDomain};
 use mux::agent::AgentTabBadgeState;
@@ -30,6 +30,7 @@ pub struct ClientInner {
     remote_tab_to_window: Mutex<HashMap<TabId, WindowId>>,
     remote_to_local_pane: Mutex<HashMap<PaneId, PaneId>>,
     tab_order_outbox: Mutex<TabOrderOutbox>,
+    parked_tabs_outbox: Mutex<ParkedTabsOutbox>,
     active_tab_outbox: Mutex<ActiveTabOutbox>,
     pub focused_remote_pane_id: Mutex<Option<PaneId>>,
 }
@@ -148,6 +149,49 @@ struct TabOrderSendState {
 #[derive(Default)]
 struct TabOrderOutbox {
     windows: HashMap<WindowId, TabOrderSendState>,
+}
+
+#[derive(Clone)]
+struct ParkedTabsIntent {
+    tab_ids: Vec<TabId>,
+    parked_tab_ids: Vec<TabId>,
+}
+
+#[derive(Default)]
+struct ParkedTabsSendState {
+    in_flight: bool,
+    pending: Option<ParkedTabsIntent>,
+}
+
+#[derive(Default)]
+struct ParkedTabsOutbox {
+    windows: HashMap<WindowId, ParkedTabsSendState>,
+}
+
+impl ParkedTabsOutbox {
+    fn queue(&mut self, window_id: WindowId, intent: ParkedTabsIntent) -> bool {
+        let state = self.windows.entry(window_id).or_default();
+        state.pending = Some(intent);
+        if state.in_flight {
+            false
+        } else {
+            state.in_flight = true;
+            true
+        }
+    }
+
+    fn take_next_or_finish(&mut self, window_id: WindowId) -> Option<ParkedTabsIntent> {
+        let state = self.windows.get_mut(&window_id)?;
+        if let Some(intent) = state.pending.take() {
+            return Some(intent);
+        }
+        self.windows.remove(&window_id);
+        None
+    }
+
+    fn abort(&mut self, window_id: WindowId) {
+        self.windows.remove(&window_id);
+    }
 }
 
 impl TabOrderOutbox {
@@ -413,6 +457,125 @@ impl ClientInner {
         .detach();
     }
 
+    fn translate_local_parked_tabs(
+        &self,
+        local_window_id: WindowId,
+        local_tab_ids: &[TabId],
+        local_parked_tab_ids: &[TabId],
+    ) -> anyhow::Result<Option<SetParkedTabs>> {
+        let Some(remote_window_id) = self.local_to_remote_window(local_window_id) else {
+            return Ok(None);
+        };
+        let tab_map = self.remote_to_local_tab.lock().unwrap();
+        let tab_windows = self.remote_tab_to_window.lock().unwrap();
+        let local_to_remote = tab_map
+            .iter()
+            .map(|(remote, local)| (*local, *remote))
+            .collect::<HashMap<_, _>>();
+        let expected = tab_windows
+            .iter()
+            .filter_map(|(tab_id, window_id)| (*window_id == remote_window_id).then_some(*tab_id))
+            .collect::<HashSet<_>>();
+        if expected.is_empty() {
+            bail!(
+                "remote window {} has no known tabs while translating parked state",
+                remote_window_id
+            );
+        }
+
+        let tab_ids = local_tab_ids
+            .iter()
+            .filter_map(|local_tab_id| local_to_remote.get(local_tab_id).copied())
+            .filter(|remote_tab_id| tab_windows.get(remote_tab_id) == Some(&remote_window_id))
+            .collect::<Vec<_>>();
+        let actual = tab_ids.iter().copied().collect::<HashSet<_>>();
+        ensure!(
+            tab_ids.len() == expected.len() && actual == expected,
+            "translated parked state for remote window {} does not contain its exact tab set",
+            remote_window_id
+        );
+
+        let parked_tab_ids = local_parked_tab_ids
+            .iter()
+            .filter_map(|local_tab_id| local_to_remote.get(local_tab_id).copied())
+            .filter(|remote_tab_id| expected.contains(remote_tab_id))
+            .collect::<Vec<_>>();
+        ensure!(
+            parked_tab_ids.iter().copied().collect::<HashSet<_>>().len() == parked_tab_ids.len(),
+            "translated parked state for remote window {} contains duplicates",
+            remote_window_id
+        );
+
+        Ok(Some(SetParkedTabs {
+            window_id: remote_window_id,
+            tab_ids,
+            parked_tab_ids,
+        }))
+    }
+
+    fn queue_parked_tabs(self: &Arc<Self>, request: SetParkedTabs) {
+        let remote_window_id = request.window_id;
+        let intent = ParkedTabsIntent {
+            tab_ids: request.tab_ids,
+            parked_tab_ids: request.parked_tab_ids,
+        };
+        let should_start = self
+            .parked_tabs_outbox
+            .lock()
+            .unwrap()
+            .queue(remote_window_id, intent);
+        if !should_start {
+            return;
+        }
+        let inner = Arc::clone(self);
+        promise::spawn::spawn(async move {
+            inner.flush_parked_tabs(remote_window_id).await;
+        })
+        .detach();
+    }
+
+    async fn flush_parked_tabs(self: &Arc<Self>, remote_window_id: WindowId) {
+        loop {
+            let Some(intent) = self
+                .parked_tabs_outbox
+                .lock()
+                .unwrap()
+                .take_next_or_finish(remote_window_id)
+            else {
+                return;
+            };
+            let request = SetParkedTabs {
+                window_id: remote_window_id,
+                tab_ids: intent.tab_ids,
+                parked_tab_ids: intent.parked_tab_ids,
+            };
+            if let Err(err) = self.client.set_parked_tabs(request).await {
+                log::error!(
+                    "failed to update parked tabs for remote window {}: {:#}",
+                    remote_window_id,
+                    err
+                );
+                self.parked_tabs_outbox
+                    .lock()
+                    .unwrap()
+                    .abort(remote_window_id);
+                let local_domain_id = self.local_domain_id;
+                promise::spawn::spawn_into_main_thread(async move {
+                    let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
+                    let domain = mux
+                        .get_domain(local_domain_id)
+                        .ok_or_else(|| anyhow!("no such domain {}", local_domain_id))?;
+                    let domain = domain.downcast_ref::<ClientDomain>().ok_or_else(|| {
+                        anyhow!("domain {} is not a ClientDomain", local_domain_id)
+                    })?;
+                    domain.resync_coalesced().await
+                })
+                .detach();
+                return;
+            }
+        }
+    }
+
     async fn flush_tab_order(self: &Arc<Self>, remote_window_id: WindowId) {
         loop {
             let Some(tab_ids) = self
@@ -587,6 +750,7 @@ impl ClientInner {
         badge: &AgentTabBadgeState,
     ) {
         if let Some(local_tab_id) = self.remote_to_local_tab_id(remote_tab_id) {
+            Mux::get().set_mirrored_agent_badge(local_tab_id, badge.clone());
             if let Some(tab) = Mux::get().get_tab(local_tab_id) {
                 tab.set_title_from_remote(&Self::decorate_tab_title(raw_title, badge));
             }
@@ -666,6 +830,7 @@ impl ClientInner {
             remote_tab_to_window: Mutex::new(HashMap::new()),
             remote_to_local_pane: Mutex::new(HashMap::new()),
             tab_order_outbox: Mutex::new(TabOrderOutbox::default()),
+            parked_tabs_outbox: Mutex::new(ParkedTabsOutbox::default()),
             active_tab_outbox: Mutex::new(ActiveTabOutbox::default()),
             focused_remote_pane_id: Mutex::new(None),
         }
@@ -789,6 +954,38 @@ fn mux_notify_client_domain(local_domain_id: DomainId, notif: MuxNotification) -
                     Err(err) => {
                         log::warn!(
                             "cannot translate tab order for local window {}: {:#}; resyncing",
+                            window_id,
+                            err
+                        );
+                        promise::spawn::spawn_into_main_thread(async move {
+                            let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
+                            let domain = mux
+                                .get_domain(local_domain_id)
+                                .ok_or_else(|| anyhow!("no such domain {}", local_domain_id))?;
+                            let domain =
+                                domain.downcast_ref::<ClientDomain>().ok_or_else(|| {
+                                    anyhow!("domain {} is not a ClientDomain", local_domain_id)
+                                })?;
+                            domain.resync_coalesced().await
+                        })
+                        .detach();
+                    }
+                }
+            }
+        }
+        MuxNotification::ParkedTabsChanged {
+            window_id,
+            tab_ids,
+            parked_tab_ids,
+            ..
+        } => {
+            if let Some(inner) = client_domain.inner() {
+                match inner.translate_local_parked_tabs(window_id, &tab_ids, &parked_tab_ids) {
+                    Ok(Some(request)) => inner.queue_parked_tabs(request),
+                    Ok(None) => {}
+                    Err(err) => {
+                        log::warn!(
+                            "cannot translate parked tabs for local window {}: {:#}; resyncing",
                             window_id,
                             err
                         );
@@ -1010,6 +1207,11 @@ impl ClientDomain {
     ) {
         if let Some(inner) = self.inner() {
             inner.apply_remote_tab_title(remote_tab_id, &title, &badge);
+            if let Some(local_tab_id) = inner.remote_to_local_tab_id(remote_tab_id) {
+                if let Some(window_id) = Mux::get().window_containing_tab(local_tab_id) {
+                    Mux::get().notify(MuxNotification::WindowInvalidated(window_id));
+                }
+            }
         }
     }
 
@@ -1061,6 +1263,77 @@ impl ClientDomain {
             .ok_or_else(|| anyhow!("local window {} is not present", local_window_id))?
             .apply_tab_order_subset(&local_tab_ids)?;
         if changed {
+            mux.notify(MuxNotification::WindowInvalidated(local_window_id));
+        }
+        Ok(changed)
+    }
+
+    pub fn process_remote_parked_tabs(
+        &self,
+        remote_window_id: WindowId,
+        remote_tab_ids: &[TabId],
+        remote_parked_tab_ids: &[TabId],
+    ) -> anyhow::Result<bool> {
+        let inner = self
+            .inner()
+            .ok_or_else(|| anyhow!("domain is not attached"))?;
+        let local_window_id = inner
+            .remote_to_local_window(remote_window_id)
+            .ok_or_else(|| anyhow!("remote window {} is not mapped", remote_window_id))?;
+        let expected = inner
+            .remote_tab_to_window
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(tab_id, window_id)| (*window_id == remote_window_id).then_some(*tab_id))
+            .collect::<HashSet<_>>();
+        let actual = remote_tab_ids.iter().copied().collect::<HashSet<_>>();
+        ensure!(
+            remote_tab_ids.len() == expected.len() && actual == expected,
+            "remote parked state for window {} does not contain its exact known tab set",
+            remote_window_id
+        );
+        let parked = remote_parked_tab_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        ensure!(
+            parked.len() == remote_parked_tab_ids.len() && parked.is_subset(&expected),
+            "remote parked state for window {} contains invalid tab ids",
+            remote_window_id
+        );
+        let local_tab_ids = remote_tab_ids
+            .iter()
+            .map(|tab_id| {
+                inner.remote_to_local_tab_id(*tab_id).ok_or_else(|| {
+                    anyhow!(
+                        "remote tab {} in window {} is not mapped",
+                        tab_id,
+                        remote_window_id
+                    )
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let local_parked_tab_ids = remote_parked_tab_ids
+            .iter()
+            .map(|tab_id| {
+                inner.remote_to_local_tab_id(*tab_id).ok_or_else(|| {
+                    anyhow!(
+                        "remote parked tab {} in window {} is not mapped",
+                        tab_id,
+                        remote_window_id
+                    )
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        let mux = Mux::get();
+        let changed = mux
+            .get_window_mut(local_window_id)
+            .ok_or_else(|| anyhow!("local window {} is not present", local_window_id))?
+            .apply_parked_tabs_subset(&local_tab_ids, &local_parked_tab_ids)?;
+        if changed {
+            mux.repair_client_views_after_parked_change(local_window_id);
             mux.notify(MuxNotification::WindowInvalidated(local_window_id));
         }
         Ok(changed)
@@ -1157,6 +1430,9 @@ impl ClientDomain {
             .collect();
 
         let client_window_view_state = panes.client_window_view_state.clone();
+        let remote_parked_tab_ids = panes.parked_tab_ids.clone();
+        let remote_agents = panes.agents.clone();
+        let remote_tab_rss_bytes = panes.tab_rss_bytes.clone();
         let mut fallback_window_view_state: HashMap<WindowId, (WindowId, TabId, PaneId)> =
             HashMap::new();
         let mut remote_tab_order_by_window: HashMap<WindowId, Vec<TabId>> = HashMap::new();
@@ -1225,6 +1501,10 @@ impl ClientDomain {
                     inner.record_remote_to_local_tab_mapping(remote_tab_id, tab.tab_id());
                 }
                 inner.record_remote_tab_window(remote_tab_id, remote_window_id);
+                mux.set_mirrored_tab_rss(
+                    tab.tab_id(),
+                    remote_tab_rss_bytes.get(&remote_tab_id).copied(),
+                );
 
                 inner.apply_remote_tab_title(remote_tab_id, tab_title, tab_badge);
 
@@ -1287,6 +1567,7 @@ impl ClientDomain {
                         metadata.is_some(),
                         metadata.as_ref().map(|m| m.launch_cmd.as_str())
                     );
+                    mux.set_mirrored_agent_snapshot(pane_id, None);
                     mux.set_mirrored_agent_metadata(pane_id, metadata.as_ref());
                 }
 
@@ -1382,7 +1663,30 @@ impl ClientDomain {
             }
         }
 
+        for mut agent in remote_agents {
+            let Some(local_pane_id) = inner.remote_to_local_pane_id(agent.pane_id) else {
+                continue;
+            };
+            let Some(local_tab_id) = inner.remote_to_local_tab_id(agent.tab_id) else {
+                continue;
+            };
+            let Some(local_window_id) = inner.remote_to_local_window(agent.window_id) else {
+                continue;
+            };
+            agent.pane_id = local_pane_id;
+            agent.tab_id = local_tab_id;
+            agent.window_id = local_window_id;
+            agent.domain_id = inner.local_domain_id;
+            mux.set_mirrored_agent_snapshot(local_pane_id, Some(agent));
+        }
+
+        let remote_tab_sets = remote_tab_order_by_window.clone();
+        let local_windows_to_invalidate = remote_tab_sets
+            .keys()
+            .filter_map(|window_id| inner.remote_to_local_window(*window_id))
+            .collect::<HashSet<_>>();
         Self::reconcile_remote_tab_order(&mux, &inner, remote_tab_order_by_window);
+        Self::reconcile_remote_parked_tabs(&mux, &inner, &remote_tab_sets, &remote_parked_tab_ids);
 
         for (remote_window_id, window_title) in panes.window_titles {
             if let Some(local_window_id) = inner.remote_to_local_window(remote_window_id) {
@@ -1539,6 +1843,10 @@ impl ClientDomain {
             }
         }
 
+        for window_id in local_windows_to_invalidate {
+            mux.notify(MuxNotification::WindowInvalidated(window_id));
+        }
+
         log::debug!(
             "process_pane_list complete for domain {}",
             inner.local_domain_id
@@ -1579,6 +1887,54 @@ impl ClientDomain {
                 })
                 .unwrap_or(false);
             if changed {
+                mux.notify(MuxNotification::WindowInvalidated(local_window_id));
+            }
+        }
+    }
+
+    fn reconcile_remote_parked_tabs(
+        mux: &Arc<Mux>,
+        inner: &Arc<ClientInner>,
+        remote_tab_ids_by_window: &HashMap<WindowId, Vec<TabId>>,
+        remote_parked_tab_ids: &[TabId],
+    ) {
+        let parked = remote_parked_tab_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        for (remote_window_id, remote_tab_ids) in remote_tab_ids_by_window {
+            let Some(local_window_id) = inner.remote_to_local_window(*remote_window_id) else {
+                continue;
+            };
+            let local_tab_ids = remote_tab_ids
+                .iter()
+                .filter_map(|tab_id| inner.remote_to_local_tab_id(*tab_id))
+                .collect::<Vec<_>>();
+            if local_tab_ids.len() != remote_tab_ids.len() {
+                continue;
+            }
+            let local_parked_tab_ids = remote_tab_ids
+                .iter()
+                .filter(|tab_id| parked.contains(tab_id))
+                .filter_map(|tab_id| inner.remote_to_local_tab_id(*tab_id))
+                .collect::<Vec<_>>();
+            let changed = mux
+                .get_window_mut(local_window_id)
+                .and_then(|mut window| {
+                    window
+                        .apply_parked_tabs_subset(&local_tab_ids, &local_parked_tab_ids)
+                        .map_err(|err| {
+                            log::warn!(
+                                "cannot reconcile parked tabs for local window {}: {:#}",
+                                local_window_id,
+                                err
+                            );
+                        })
+                        .ok()
+                })
+                .unwrap_or(false);
+            if changed {
+                mux.repair_client_views_after_parked_change(local_window_id);
                 mux.notify(MuxNotification::WindowInvalidated(local_window_id));
             }
         }
@@ -1975,6 +2331,10 @@ impl Domain for ClientDomain {
 #[cfg(test)]
 mod test {
     use super::*;
+    use mux::agent::{
+        AgentHarness, AgentMetadata, AgentOrigin, AgentRuntimeSnapshot, AgentSnapshot,
+        AgentTurnState,
+    };
     use mux::client::{ClientId, ClientTabViewState, ClientViewId, ClientWindowViewState};
     use mux::renderable::StableCursorPosition;
     use mux::tab::{PaneEntry, PaneNode, SerdeUrl};
@@ -2066,6 +2426,9 @@ mod test {
                 })
                 .collect(),
             tab_badges: tabs.iter().map(|_| AgentTabBadgeState::default()).collect(),
+            agents: vec![],
+            tab_rss_bytes: HashMap::new(),
+            parked_tab_ids: vec![],
             tabs,
             window_titles: HashMap::from([(1, "remote-window".to_string())]),
             client_window_view_state: HashMap::from([(
@@ -2094,6 +2457,9 @@ mod test {
                 })
                 .collect(),
             tab_badges: tabs.iter().map(|_| AgentTabBadgeState::default()).collect(),
+            agents: vec![],
+            tab_rss_bytes: HashMap::new(),
+            parked_tab_ids: vec![],
             tabs,
             window_titles: HashMap::from([(1, "remote-window".to_string())]),
             client_window_view_state: HashMap::new(),
@@ -2713,6 +3079,172 @@ mod test {
         assert_eq!(outbox.take_next_or_finish(7), None);
 
         assert!(outbox.queue(7, vec![3, 1, 2]));
+    }
+
+    #[test]
+    fn parked_tab_translation_filters_other_domains_and_remote_apply_does_not_echo() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        ensure_test_executor();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+        let (domain, inner, client_id, _view_id) =
+            install_client_domain(&mux, "parked-tab-translation");
+        let tab_a = leaf(1, 101, 1001, size(120, 40), false);
+        let tab_b = leaf(1, 102, 1002, size(120, 40), false);
+        apply_panes(
+            &mux,
+            inner.clone(),
+            client_id,
+            panes_response_without_view_state(vec![tab_a, tab_b]),
+        );
+        let local_window_id = inner.remote_to_local_window(1).unwrap();
+        let local_tab_a = inner.remote_to_local_tab_id(101).unwrap();
+        let local_tab_b = inner.remote_to_local_tab_id(102).unwrap();
+        let unrelated = Arc::new(Tab::new(&size(120, 40)));
+        mux.add_tab_no_panes(&unrelated);
+        mux.get_window_mut(local_window_id)
+            .unwrap()
+            .insert(1, &unrelated);
+
+        let translated = inner
+            .translate_local_parked_tabs(
+                local_window_id,
+                &[local_tab_a, unrelated.tab_id(), local_tab_b],
+                &[local_tab_b],
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(translated.tab_ids, vec![101, 102]);
+        assert_eq!(translated.parked_tab_ids, vec![102]);
+
+        let echoes = Arc::new(AtomicUsize::new(0));
+        let echoes_for_subscription = echoes.clone();
+        mux.subscribe(move |notification| {
+            if matches!(notification, MuxNotification::ParkedTabsChanged { .. }) {
+                echoes_for_subscription.fetch_add(1, Ordering::Relaxed);
+            }
+            true
+        });
+        assert!(domain
+            .process_remote_parked_tabs(1, &[101, 102], &[102])
+            .unwrap());
+        let window = mux.get_window(local_window_id).unwrap();
+        assert!(window.is_tab_parked(local_tab_b));
+        assert!(!window.is_tab_parked(local_tab_a));
+        assert!(!window.is_tab_parked(unrelated.tab_id()));
+        assert_eq!(echoes.load(Ordering::Relaxed), 0);
+        assert!(domain.process_remote_parked_tabs(1, &[101], &[]).is_err());
+    }
+
+    #[test]
+    fn parked_tab_outbox_keeps_latest_state_while_a_request_is_in_flight() {
+        let mut outbox = ParkedTabsOutbox::default();
+        let intent = |parked_tab_ids| ParkedTabsIntent {
+            tab_ids: vec![1, 2, 3],
+            parked_tab_ids,
+        };
+        assert!(outbox.queue(7, intent(vec![2])));
+        assert_eq!(
+            outbox.take_next_or_finish(7).unwrap().parked_tab_ids,
+            vec![2]
+        );
+        assert!(!outbox.queue(7, intent(vec![2, 3])));
+        assert!(!outbox.queue(7, intent(vec![3])));
+        assert_eq!(
+            outbox.take_next_or_finish(7).unwrap().parked_tab_ids,
+            vec![3]
+        );
+        assert!(outbox.take_next_or_finish(7).is_none());
+    }
+
+    #[test]
+    fn mirrored_agent_snapshot_drives_exact_parked_attention_navigation() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        ensure_test_executor();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+        let (_domain, inner, client_id, _view_id) =
+            install_client_domain(&mux, "mirrored-attention");
+
+        let metadata = AgentMetadata {
+            agent_id: "remote-codex".to_string(),
+            name: "reviewer".to_string(),
+            launch_cmd: "codex".to_string(),
+            declared_cwd: "/code/reviewer".to_string(),
+            adopted_pid: None,
+            adopted_start_time: None,
+            created_at: "2026-08-20T12:00:00Z".parse().unwrap(),
+            repo_root: Some("/code/reviewer".to_string()),
+            worktree: None,
+            branch: Some("main".to_string()),
+            managed_checkout: false,
+            codex_app_server: None,
+        };
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Codex;
+        runtime.turn_state = AgentTurnState::WaitingOnUser;
+        runtime.last_turn_completed_at = Some("2026-08-20T12:01:00Z".parse().unwrap());
+
+        let tab_a = leaf(1, 101, 1001, size(120, 40), true);
+        let mut tab_b = leaf(1, 102, 1002, size(120, 40), true);
+        if let PaneNode::Leaf(entry) = &mut tab_b {
+            entry.agent_metadata = Some(metadata.clone());
+        }
+        let mut response = panes_response(vec![tab_a, tab_b], 101, 1001);
+        response.parked_tab_ids = vec![102];
+        response.tab_rss_bytes.insert(102, 1_234_567);
+        response.tab_badges[1] = AgentTabBadgeState {
+            waiting_on_user: true,
+            needs_attention: true,
+        };
+        response.agents.push(AgentSnapshot {
+            metadata,
+            runtime,
+            pane_id: 1002,
+            tab_id: 102,
+            window_id: 1,
+            workspace: "default".to_string(),
+            domain_id: 9,
+            origin: AgentOrigin::Adopted,
+            detection_source: None,
+            needs_attention: true,
+        });
+        apply_panes(&mux, inner.clone(), client_id.clone(), response);
+
+        let local_window_id = inner.remote_to_local_window(1).unwrap();
+        let local_tab_id = inner.remote_to_local_tab_id(102).unwrap();
+        let local_pane_id = inner.remote_to_local_pane_id(1002).unwrap();
+        let mirrored = mux.mirrored_agent_snapshots_for_window(local_window_id);
+        assert_eq!(mirrored.len(), 1);
+        assert_eq!(mirrored[0].pane_id, local_pane_id);
+        assert_eq!(mirrored[0].tab_id, local_tab_id);
+        assert!(mirrored[0].needs_attention);
+        assert_eq!(
+            mux.approximate_tab_process_rss(local_tab_id),
+            Some(1_234_567)
+        );
+        assert!(mux
+            .get_window(local_window_id)
+            .unwrap()
+            .is_tab_parked(local_tab_id));
+
+        let _identity = mux.with_identity(Some(client_id));
+        assert_eq!(
+            mux.activate_next_agent_needing_attention(local_window_id)
+                .unwrap(),
+            Some((local_tab_id, local_pane_id))
+        );
+        assert!(!mux
+            .get_window(local_window_id)
+            .unwrap()
+            .is_tab_parked(local_tab_id));
+        assert_eq!(
+            mux.get_active_tab_for_window_for_current_identity(local_window_id)
+                .map(|tab| tab.tab_id()),
+            Some(local_tab_id)
+        );
     }
 
     #[test]

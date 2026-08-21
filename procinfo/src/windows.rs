@@ -15,6 +15,7 @@ use winapi::shared::ntdef::{FALSE, NT_SUCCESS};
 use winapi::um::handleapi::CloseHandle;
 use winapi::um::memoryapi::ReadProcessMemory;
 use winapi::um::processthreadsapi::{GetCurrentProcessId, GetProcessTimes, OpenProcess};
+use winapi::um::psapi::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use winapi::um::shellapi::CommandLineToArgvW;
 use winapi::um::tlhelp32::*;
 use winapi::um::winbase::{LocalFree, QueryFullProcessImageNameW};
@@ -343,6 +344,20 @@ impl Drop for ProcHandle {
 }
 
 impl LocalProcessInfo {
+    pub fn resident_set_bytes(pid: u32) -> Option<u64> {
+        let handle = ProcHandle::new(pid)?;
+        let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+        counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as _;
+        let result = unsafe {
+            GetProcessMemoryInfo(
+                handle.proc,
+                &mut counters,
+                std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as _,
+            )
+        };
+        (result != 0).then_some(counters.WorkingSetSize as u64)
+    }
+
     pub fn current_working_dir(pid: u32) -> Option<PathBuf> {
         log::trace!("current_working_dir({})", pid);
         let proc = ProcHandle::new(pid)?;

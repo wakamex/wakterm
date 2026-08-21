@@ -24,5 +24,5 @@ winapi = { workspace=true, features = [
     "processthreadsapi",
     "shellapi",
     "tlhelp32",
+    "winbase",
 ]}
-

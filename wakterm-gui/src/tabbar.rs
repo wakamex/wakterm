@@ -34,6 +34,7 @@ pub struct TabEntry {
     pub item: TabBarItem,
     pub title: Line,
     pub icons: Vec<TabHarnessIcon>,
+    pub needs_attention: bool,
     pub assigned_color: Option<RgbaColor>,
     pub title_bg: Option<ColorAttribute>,
     pub title_fg: Option<ColorAttribute>,
@@ -246,6 +247,11 @@ fn compute_tab_title(
                         len += unicode_column_width(&graphic, None);
                         items.push(FormatItem::Text(graphic));
                     }
+                    if tab.needs_attention {
+                        let graphic = "• ".to_string();
+                        len += unicode_column_width(&graphic, None);
+                        items.push(FormatItem::Text(graphic));
+                    }
                 }
 
                 // We have a preferred soft minimum on tab width to make it
@@ -299,6 +305,7 @@ impl TabBarState {
                 item: TabBarItem::None,
                 title: Line::from_text(" ", &CellAttributes::blank(), 1, None),
                 icons: vec![],
+                needs_attention: false,
                 assigned_color: None,
                 title_bg: None,
                 title_fg: None,
@@ -396,6 +403,7 @@ impl TabBarState {
                 item: TabBarItem::WindowButton(*button),
                 title: title.to_owned(),
                 icons: vec![],
+                needs_attention: false,
                 assigned_color: None,
                 title_bg: None,
                 title_fg: None,
@@ -527,6 +535,7 @@ impl TabBarState {
                 item: TabBarItem::LeftStatus,
                 title: left_status_line.clone(),
                 icons: vec![],
+                needs_attention: false,
                 assigned_color: None,
                 title_bg: None,
                 title_fg: None,
@@ -612,6 +621,7 @@ impl TabBarState {
                 item: TabBarItem::Tab { tab_idx, active },
                 title,
                 icons: tab_info[tab_idx].harness_icons.clone(),
+                needs_attention: tab_info[tab_idx].needs_attention,
                 assigned_color: tab_info[tab_idx].assigned_color,
                 title_bg: tab_title.title_bg,
                 title_fg: tab_title.title_fg,
@@ -638,6 +648,7 @@ impl TabBarState {
                 item: TabBarItem::NewTabButton,
                 title: new_tab_button.clone(),
                 icons: vec![],
+                needs_attention: false,
                 assigned_color: None,
                 title_bg: None,
                 title_fg: None,
@@ -704,6 +715,7 @@ impl TabBarState {
             item: TabBarItem::RightStatus,
             title: right_status_line.clone(),
             icons: vec![],
+            needs_attention: false,
             assigned_color: None,
             title_bg: None,
             title_fg: None,

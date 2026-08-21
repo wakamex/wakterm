@@ -11,6 +11,7 @@ pub type WindowId = usize;
 pub struct Window {
     id: WindowId,
     tabs: Vec<Arc<Tab>>,
+    parked_tabs: HashSet<TabId>,
     workspace: String,
     title: String,
     initial_position: Option<GuiPosition>,
@@ -21,6 +22,7 @@ impl Window {
         Self {
             id: WIN_ID.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed),
             tabs: vec![],
+            parked_tabs: HashSet::new(),
             title: String::new(),
             workspace: workspace.unwrap_or_else(|| Mux::get().active_workspace()),
             initial_position,
@@ -97,6 +99,21 @@ impl Window {
         self.tabs.insert(to, Arc::clone(&tab));
         self.invalidate();
         tab
+    }
+
+    pub fn move_visible_by_idx(&mut self, from: usize, to: usize) -> anyhow::Result<Arc<Tab>> {
+        let mut visible = self.iter_visible().cloned().collect::<Vec<_>>();
+        ensure!(
+            from < visible.len() && to < visible.len(),
+            "visible tab index out of range"
+        );
+        let moved = visible.remove(from);
+        visible.insert(to, Arc::clone(&moved));
+        let ids = visible.iter().map(|tab| tab.tab_id()).collect::<Vec<_>>();
+        if self.apply_tab_order_subset(&ids)? {
+            self.invalidate();
+        }
+        Ok(moved)
     }
 
     /// Apply a complete tab order without emitting a notification.
@@ -201,8 +218,124 @@ impl Window {
         self.tabs.len()
     }
 
+    pub fn is_tab_parked(&self, tab_id: TabId) -> bool {
+        self.parked_tabs.contains(&tab_id)
+    }
+
+    pub fn parked_tab_ids(&self) -> Vec<TabId> {
+        self.tabs
+            .iter()
+            .filter_map(|tab| {
+                self.parked_tabs
+                    .contains(&tab.tab_id())
+                    .then_some(tab.tab_id())
+            })
+            .collect()
+    }
+
+    /// Replace the complete parked-tab set for this window.
+    ///
+    /// `tab_ids` is the caller's complete view of the window and prevents a
+    /// stale aggregate request from silently changing a newer topology.
+    pub fn apply_parked_tabs(
+        &mut self,
+        tab_ids: &[TabId],
+        parked_tab_ids: &[TabId],
+    ) -> anyhow::Result<bool> {
+        let current = self.tabs.iter().map(|tab| tab.tab_id()).collect::<Vec<_>>();
+        ensure!(
+            tab_ids == current,
+            "parked-tab state for window {} does not match its current ordered tab set",
+            self.id
+        );
+        let parked = parked_tab_ids.iter().copied().collect::<HashSet<_>>();
+        ensure!(
+            parked.len() == parked_tab_ids.len(),
+            "parked-tab state for window {} contains duplicate tab ids",
+            self.id
+        );
+        let current_set = current.iter().copied().collect::<HashSet<_>>();
+        ensure!(
+            parked.is_subset(&current_set),
+            "parked-tab state for window {} contains an unknown tab id",
+            self.id
+        );
+        ensure!(
+            parked.len() < current.len(),
+            "cannot park the last visible tab in window {}",
+            self.id
+        );
+        if parked == self.parked_tabs {
+            return Ok(false);
+        }
+        self.parked_tabs = parked;
+        Ok(true)
+    }
+
+    /// Replace parked state for one remote-domain subset without touching tabs
+    /// belonging to other domains in the same local mirror window.
+    pub fn apply_parked_tabs_subset(
+        &mut self,
+        domain_tab_ids: &[TabId],
+        parked_tab_ids: &[TabId],
+    ) -> anyhow::Result<bool> {
+        let domain = domain_tab_ids.iter().copied().collect::<HashSet<_>>();
+        ensure!(
+            domain.len() == domain_tab_ids.len(),
+            "parked-tab domain subset for window {} contains duplicate tab ids",
+            self.id
+        );
+        let current = self
+            .tabs
+            .iter()
+            .map(|tab| tab.tab_id())
+            .collect::<HashSet<_>>();
+        ensure!(
+            domain.is_subset(&current),
+            "parked-tab domain subset for window {} contains an unknown tab id",
+            self.id
+        );
+        let parked = parked_tab_ids.iter().copied().collect::<HashSet<_>>();
+        ensure!(
+            parked.len() == parked_tab_ids.len() && parked.is_subset(&domain),
+            "parked-tab state for window {} is not a valid domain subset",
+            self.id
+        );
+        let mut desired = self.parked_tabs.clone();
+        desired.retain(|tab_id| !domain.contains(tab_id));
+        desired.extend(parked);
+        ensure!(
+            desired.len() < current.len(),
+            "cannot park the last visible tab in window {}",
+            self.id
+        );
+        if desired == self.parked_tabs {
+            return Ok(false);
+        }
+        self.parked_tabs = desired;
+        Ok(true)
+    }
+
     pub fn get_by_idx(&self, idx: usize) -> Option<&Arc<Tab>> {
         self.tabs.get(idx)
+    }
+
+    pub fn visible_len(&self) -> usize {
+        self.tabs.len().saturating_sub(self.parked_tabs.len())
+    }
+
+    pub fn get_visible_by_idx(&self, idx: usize) -> Option<&Arc<Tab>> {
+        self.iter_visible().nth(idx)
+    }
+
+    pub fn visible_idx_by_id(&self, id: TabId) -> Option<usize> {
+        self.iter_visible().position(|tab| tab.tab_id() == id)
+    }
+
+    pub fn iter_visible(&self) -> impl Iterator<Item = &Arc<Tab>> {
+        self.tabs
+            .iter()
+            .filter(move |tab| !self.parked_tabs.contains(&tab.tab_id()))
     }
 
     pub fn can_close_without_prompting(&self) -> bool {
@@ -225,12 +358,15 @@ impl Window {
 
     pub fn remove_by_idx(&mut self, idx: usize) -> Arc<Tab> {
         self.invalidate();
-        self.tabs.remove(idx)
+        let tab = self.tabs.remove(idx);
+        self.parked_tabs.remove(&tab.tab_id());
+        tab
     }
 
     pub fn remove_by_id(&mut self, id: TabId) {
         if let Some(idx) = self.idx_by_id(id) {
             self.tabs.remove(idx);
+            self.parked_tabs.remove(&id);
             self.invalidate();
         }
     }
@@ -326,6 +462,52 @@ mod test {
             window.iter().map(|tab| tab.tab_id()).collect::<Vec<_>>(),
             vec![tab_c.tab_id(), tab_a.tab_id(), tab_b.tab_id()]
         );
+    }
+
+    #[test]
+    fn parked_tabs_are_hidden_without_leaving_authoritative_order() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = crate::TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let first = Arc::new(Tab::new(&size));
+        let second = Arc::new(Tab::new(&size));
+        let third = Arc::new(Tab::new(&size));
+        let mut window = Window::new(None, None);
+        window.push(&first);
+        window.push(&second);
+        window.push(&third);
+        let all = vec![first.tab_id(), second.tab_id(), third.tab_id()];
+
+        assert!(window.apply_parked_tabs(&all, &[second.tab_id()]).unwrap());
+        assert_eq!(window.parked_tab_ids(), vec![second.tab_id()]);
+        assert_eq!(
+            window
+                .iter_visible()
+                .map(|tab| tab.tab_id())
+                .collect::<Vec<_>>(),
+            vec![first.tab_id(), third.tab_id()]
+        );
+        assert_eq!(
+            window.iter().map(|tab| tab.tab_id()).collect::<Vec<_>>(),
+            all
+        );
+        assert!(window
+            .apply_parked_tabs(
+                &[first.tab_id(), third.tab_id(), second.tab_id()],
+                &[second.tab_id()]
+            )
+            .is_err());
+        assert!(window
+            .apply_parked_tabs(&all, &[first.tab_id(), second.tab_id(), third.tab_id()])
+            .is_err());
     }
 
     #[test]
