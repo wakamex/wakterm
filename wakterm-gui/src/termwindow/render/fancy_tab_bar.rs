@@ -1,5 +1,6 @@
 use crate::color::LinearRgba;
 use crate::customglyph::*;
+use crate::quad::QuadTrait;
 use crate::tab_colors::{tab_render_colors, TabColorVisualState};
 use crate::tabbar::{TabBarItem, TabEntry};
 use crate::termwindow::box_model::*;
@@ -593,7 +594,8 @@ impl crate::TermWindow {
                     metrics.underline_height.max(2),
                     euclid::size2(single_icon_size, single_icon_size),
                     color,
-                )?;
+                )?
+                .set_grayscale();
             }
             if entry.needs_attention && !self.config.agent_tab_attention_pulse {
                 let dot_size = (single_icon_size * 0.22).max(3.0);
