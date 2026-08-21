@@ -449,8 +449,8 @@ async fn restore_tab(
     window_id: crate::WindowId,
     restore_intents: &HashMap<PaneId, SavedAgentRestoreIntent>,
 ) -> anyhow::Result<crate::tab::TabId> {
-    let first_cwd = first_leaf_cwd(&saved_tab.tree);
     let first_entry = first_leaf_entry(&saved_tab.tree);
+    let first_cwd = first_entry.and_then(|entry| restore_cwd_for_entry(entry, restore_intents));
     let first_command = match first_entry {
         Some(entry) => restore_command_for_entry(entry, restore_intents)?,
         None => None,
@@ -546,8 +546,9 @@ fn restore_node<'a>(
                 let split_pane_index = leaf_index.saturating_sub(1);
 
                 // Spawn a new pane for the right side
-                let cwd = first_leaf_cwd(right);
                 let right_entry = first_leaf_entry(right);
+                let cwd =
+                    right_entry.and_then(|entry| restore_cwd_for_entry(entry, restore_intents));
                 let right_command = match right_entry {
                     Some(entry) => restore_command_for_entry(entry, restore_intents)?,
                     None => None,
@@ -614,18 +615,31 @@ fn restore_node<'a>(
     })
 }
 
-/// Get the CWD of the first leaf in a subtree.
-fn first_leaf_cwd(node: &PaneNode) -> Option<String> {
-    match node {
-        PaneNode::Empty => None,
-        PaneNode::Leaf(entry) => entry
-            .working_dir
-            .as_ref()
-            .map(|url| url.url.path().to_string()),
-        PaneNode::Split { left, right, .. } => {
-            first_leaf_cwd(left).or_else(|| first_leaf_cwd(right))
+fn restore_cwd_for_entry(
+    entry: &crate::tab::PaneEntry,
+    restore_intents: &HashMap<PaneId, SavedAgentRestoreIntent>,
+) -> Option<String> {
+    if let Some(intent) = restore_intents.get(&entry.pane_id) {
+        let cwd = intent.metadata.declared_cwd.trim();
+        if !cwd.is_empty() {
+            if cwd.starts_with("file://") {
+                if let Ok(url) = url::Url::parse(cwd) {
+                    return Some(
+                        url.to_file_path()
+                            .unwrap_or_else(|_| PathBuf::from(url.path()))
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                }
+            }
+            return Some(cwd.to_string());
         }
     }
+
+    entry
+        .working_dir
+        .as_ref()
+        .map(|url| url.url.path().to_string())
 }
 
 fn first_leaf_entry(node: &PaneNode) -> Option<&crate::tab::PaneEntry> {
@@ -764,12 +778,14 @@ mod test {
 
     struct TestDomain {
         commands: Arc<Mutex<Vec<Vec<String>>>>,
+        command_dirs: Arc<Mutex<Vec<Option<String>>>>,
     }
 
     impl TestDomain {
         fn new() -> Self {
             Self {
                 commands: Arc::new(Mutex::new(Vec::new())),
+                command_dirs: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
@@ -780,8 +796,9 @@ mod test {
             &self,
             size: TerminalSize,
             command: Option<CommandBuilder>,
-            _command_dir: Option<String>,
+            command_dir: Option<String>,
         ) -> anyhow::Result<Arc<dyn Pane>> {
+            self.command_dirs.lock().unwrap().push(command_dir);
             if let Some(command) = command {
                 self.commands.lock().unwrap().push(
                     command
@@ -1222,6 +1239,7 @@ mod test {
         let restored_window = *restored_mux.new_empty_window(Some("default".to_string()), None);
         let recording_domain = Arc::new(TestDomain::new());
         let commands = Arc::clone(&recording_domain.commands);
+        let command_dirs = Arc::clone(&recording_domain.command_dirs);
         let domain: Arc<dyn Domain> = recording_domain;
 
         smol::block_on(async {
@@ -1237,6 +1255,10 @@ mod test {
                 "resume".to_string(),
                 "resume-session".to_string(),
             ]]
+        );
+        assert_eq!(
+            command_dirs.lock().unwrap().as_slice(),
+            &[Some(metadata.declared_cwd)]
         );
         assert_eq!(restored_mux.pending_codex_restores.read().len(), 1);
     }
