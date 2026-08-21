@@ -1445,6 +1445,19 @@ impl Mux {
             return Some(harness.clone());
         }
 
+        if let Some(snapshot) = self.mirrored_agent_snapshot_by_pane.read().get(&pane_id) {
+            if !matches!(
+                snapshot.runtime.harness,
+                crate::agent::AgentHarness::Unknown
+            ) {
+                return Some(snapshot.runtime.harness.clone());
+            }
+            let harness = infer_harness(&snapshot.metadata.launch_cmd, None);
+            if !matches!(harness, crate::agent::AgentHarness::Unknown) {
+                return Some(harness);
+            }
+        }
+
         if let Some(runtime) = self.agent_runtime_by_pane.read().get(&pane_id) {
             if !matches!(runtime.harness, crate::agent::AgentHarness::Unknown) {
                 return Some(runtime.harness.clone());
@@ -2843,6 +2856,8 @@ impl Mux {
             metadata.declared_cwd.clone()
         } else if let Some(cwd) = self.mirrored_agent_cwd_by_pane.read().get(&pane_id) {
             cwd.clone()
+        } else if let Some(snapshot) = self.mirrored_agent_snapshot_by_pane.read().get(&pane_id) {
+            snapshot.metadata.declared_cwd.clone()
         } else {
             return None;
         };
@@ -3055,6 +3070,10 @@ impl Mux {
                 || self.detected_agent_panes.read().contains(&pane_id)
                 || self
                     .mirrored_agent_harness_by_pane
+                    .read()
+                    .contains_key(&pane_id)
+                || self
+                    .mirrored_agent_snapshot_by_pane
                     .read()
                     .contains_key(&pane_id)
             {
@@ -8260,7 +8279,7 @@ mod test {
     }
 
     #[test]
-    fn mirrored_agent_folder_is_available_to_the_automatic_title_path() {
+    fn mirrored_agent_identity_is_available_from_metadata_or_snapshot() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
         config::use_test_configuration();
@@ -8312,6 +8331,31 @@ mod test {
 
         mux.set_mirrored_agent_metadata(pane_id, None);
         assert_eq!(mux.agent_folder_title_for_pane(pane_id), None);
+
+        let runtime = AgentRuntimeSnapshot::new(&metadata);
+        mux.set_mirrored_agent_snapshot(
+            pane_id,
+            Some(AgentSnapshot {
+                metadata,
+                runtime,
+                pane_id,
+                tab_id: tab.tab_id(),
+                window_id,
+                workspace: DEFAULT_WORKSPACE.to_string(),
+                domain_id: domain.id,
+                origin: AgentOrigin::Adopted,
+                detection_source: None,
+                needs_attention: true,
+            }),
+        );
+        assert_eq!(
+            mux.agent_folder_title_for_pane(pane_id).as_deref(),
+            Some("testytest")
+        );
+        assert_eq!(
+            mux.visible_harness_icons_for_tab(tab.tab_id(), None).len(),
+            1
+        );
     }
 
     #[test]

@@ -3250,10 +3250,7 @@ mod test {
         runtime.last_turn_completed_at = Some("2026-08-20T12:01:00Z".parse().unwrap());
 
         let tab_a = leaf(1, 101, 1001, size(120, 40), true);
-        let mut tab_b = leaf(1, 102, 1002, size(120, 40), true);
-        if let PaneNode::Leaf(entry) = &mut tab_b {
-            entry.agent_metadata = Some(metadata.clone());
-        }
+        let tab_b = leaf(1, 102, 1002, size(120, 40), true);
         let mut response = panes_response(vec![tab_a, tab_b], 101, 1001);
         response.parked_tab_ids = vec![102];
         response.tab_rss_bytes.insert(102, 1_234_567);
@@ -3283,6 +3280,14 @@ mod test {
         assert_eq!(mirrored[0].pane_id, local_pane_id);
         assert_eq!(mirrored[0].tab_id, local_tab_id);
         assert!(mirrored[0].needs_attention);
+        assert_eq!(
+            mux.visible_harness_icons_for_tab(local_tab_id, None),
+            vec![AgentHarness::Codex]
+        );
+        assert_eq!(
+            mux.agent_folder_title_for_pane(local_pane_id).as_deref(),
+            Some("reviewer")
+        );
         assert_eq!(
             mux.approximate_tab_process_rss(local_tab_id),
             Some(1_234_567)
