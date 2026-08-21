@@ -62,6 +62,32 @@ pressing the corresponding key.
 
 Pay attention to the case of the text that you use and the state of the `SHIFT` modifier, as `key="A"` will match 
 
+### Shift-Enter for multiline prompts
+
+Some interactive prompt applications use Escape followed by Enter as a
+legacy encoding for Shift-Enter. You can bind that sequence if Shift-Enter
+otherwise submits the prompt instead of inserting a newline:
+
+```lua
+local wakterm = require 'wakterm'
+local act = wakterm.action
+
+config.keys = {
+  {
+    key = 'Enter',
+    mods = 'SHIFT',
+    action = act.SendString '\x1b\r',
+  },
+}
+```
+
+This binding applies to every program running in the terminal. Programs that
+treat Escape followed by Enter as Alt-Enter may perform a different action, so
+keep it as an opt-in binding. Applications that support the [Kitty keyboard
+protocol](key-encoding.md#kitty-keyboard-protocol) can distinguish Shift-Enter
+without this legacy encoding when
+[`enable_kitty_keyboard`](lua/config/enable_kitty_keyboard.md) is enabled.
+
 ### Physical vs Mapped Key Assignments
 
 {{since('20220319-142410-0fcdea07')}}
@@ -187,4 +213,3 @@ config.keys = {
 
 See the [`KeyAssignment` reference](lua/keyassignment/index.md) for information
 on available actions.
-
