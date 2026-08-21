@@ -1745,9 +1745,9 @@ fn schedule_agent_prompt_admission<SND>(
     request: mux::agent_admission::AgentPromptAdmissionRequest,
     send_response: SND,
 ) where
-    SND: FnOnce(anyhow::Result<mux::agent_admission::AgentAdmissionReceipt>) + 'static,
+    SND: FnOnce(anyhow::Result<mux::agent_admission::AgentAdmissionReceipt>) + Send + 'static,
 {
-    promise::spawn::spawn(async move {
+    spawn_into_main_thread(async move {
         send_response(admit_agent_prompt(request).await);
     })
     .detach();
@@ -3710,6 +3710,71 @@ mod test {
             other => panic!("expected ListAgentsResponse, got {:?}", other),
         };
         assert!(listed.agents.is_empty());
+    }
+
+    #[test]
+    fn agent_admission_from_connection_thread_returns_durable_receipt() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = SimpleExecutor::new();
+        let mux = test_mux();
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let request = mux::agent_admission::AgentPromptAdmissionRequest {
+            request_id: "connection-thread-admission".to_string(),
+            agent_id: "agent-alpha".to_string(),
+            incarnation_id: "incarnation-alpha".to_string(),
+            prompt: "keep this prompt at most once".to_string(),
+            paste: true,
+            return_final: false,
+            timeout_ms: 0,
+        };
+        let store = mux.agent_service().admission_store();
+        assert!(matches!(
+            store.claim(&request).unwrap(),
+            mux::agent_admission::OneWayAdmissionClaim::New
+        ));
+
+        let HandlerHarness {
+            mut handler,
+            responses,
+            render_batches: _,
+        } = HandlerHarness::new_unregistered();
+        let request_for_handler = request.clone();
+        std::thread::spawn(move || {
+            handler.process_one(DecodedPdu {
+                pdu: Pdu::AdmitAgentPrompt(AdmitAgentPrompt {
+                    request: request_for_handler,
+                }),
+                serial: 1,
+            });
+        })
+        .join()
+        .unwrap();
+
+        let response = loop {
+            if let Ok(decoded) = responses.try_recv() {
+                break decoded.pdu;
+            }
+            executor.tick().unwrap();
+        };
+        let receipt = match response {
+            Pdu::AdmitAgentPromptResponse(response) => response.receipt,
+            other => panic!("expected AdmitAgentPromptResponse, got {:?}", other),
+        };
+        assert_eq!(receipt.request_id, request.request_id);
+        assert_eq!(
+            receipt.status,
+            mux::agent_admission::AgentAdmissionStatus::Indeterminate
+        );
+        assert!(!receipt.definitive);
+
+        match store.claim(&request).unwrap() {
+            mux::agent_admission::OneWayAdmissionClaim::Existing(stored) => {
+                assert_eq!(stored, receipt);
+            }
+            _ => panic!("expected the durable admission receipt to remain at most once"),
+        }
     }
 
     #[test]
