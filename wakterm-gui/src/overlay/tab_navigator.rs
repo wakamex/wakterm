@@ -582,7 +582,7 @@ impl NavigatorState {
         changes.push(Change::Text("\r\n".to_string()));
         changes.push(Change::Text(truncate_right(
             &format!(
-                "enter activate   ctrl+s park   ctrl+x close   tab view   ctrl+r sort   ctrl+o {}   esc clear/exit",
+                "enter activate   ctrl+shift+s park   ctrl+x close   tab view   ctrl+r sort   ctrl+o {}   esc clear/exit",
                 if self.dense { "comfortable" } else { "dense" }
             ),
             width,
