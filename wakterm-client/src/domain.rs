@@ -843,7 +843,14 @@ pub struct ClientDomain {
     inner: Mutex<Option<Arc<ClientInner>>>,
     resync_in_progress: AtomicBool,
     resync_pending: AtomicBool,
+    status_refresh: Mutex<StatusRefreshState>,
     local_domain_id: DomainId,
+}
+
+#[derive(Default)]
+struct StatusRefreshState {
+    in_progress: bool,
+    pending: bool,
 }
 
 async fn update_remote_workspace(
@@ -1057,6 +1064,7 @@ impl ClientDomain {
             inner: Mutex::new(None),
             resync_in_progress: AtomicBool::new(false),
             resync_pending: AtomicBool::new(false),
+            status_refresh: Mutex::new(StatusRefreshState::default()),
             local_domain_id,
         }
     }
@@ -1153,6 +1161,87 @@ impl ClientDomain {
             Self::process_pane_list(inner, panes, None)?;
         }
         Ok(())
+    }
+
+    /// Refresh the cached agent and process-usage data used by read-only UI
+    /// surfaces without reconciling topology or client view state.
+    pub async fn refresh_cached_remote_status(&self) -> anyhow::Result<()> {
+        {
+            let mut refresh = self.status_refresh.lock().unwrap();
+            if refresh.in_progress {
+                refresh.pending = true;
+                return Ok(());
+            }
+            refresh.in_progress = true;
+        }
+
+        loop {
+            if let Some(inner) = self.inner() {
+                let panes = match inner.client.list_panes().await {
+                    Ok(panes) => panes,
+                    Err(err) => {
+                        let mut refresh = self.status_refresh.lock().unwrap();
+                        refresh.in_progress = false;
+                        refresh.pending = false;
+                        return Err(err);
+                    }
+                };
+                Self::process_remote_status_snapshot(
+                    inner.as_ref(),
+                    panes.agents,
+                    panes.tab_rss_bytes,
+                );
+            }
+
+            let mut refresh = self.status_refresh.lock().unwrap();
+            if refresh.pending {
+                refresh.pending = false;
+                continue;
+            }
+            refresh.in_progress = false;
+            return Ok(());
+        }
+    }
+
+    fn process_remote_status_snapshot(
+        inner: &ClientInner,
+        remote_agents: Vec<mux::agent::AgentSnapshot>,
+        remote_tab_rss_bytes: HashMap<TabId, u64>,
+    ) {
+        let mux = Mux::get();
+        let tab_mappings = inner.remote_to_local_tab.lock().unwrap().clone();
+        for (remote_tab_id, local_tab_id) in tab_mappings {
+            mux.set_mirrored_tab_rss(
+                local_tab_id,
+                remote_tab_rss_bytes.get(&remote_tab_id).copied(),
+            );
+        }
+
+        let mut translated_agents = Vec::with_capacity(remote_agents.len());
+        for mut agent in remote_agents {
+            let Some(local_pane_id) = inner.remote_to_local_pane_id(agent.pane_id) else {
+                continue;
+            };
+            let Some(local_tab_id) = inner.remote_to_local_tab_id(agent.tab_id) else {
+                continue;
+            };
+            let Some(local_window_id) = inner.remote_to_local_window(agent.window_id) else {
+                continue;
+            };
+            agent.pane_id = local_pane_id;
+            agent.tab_id = local_tab_id;
+            agent.window_id = local_window_id;
+            agent.domain_id = inner.local_domain_id;
+            translated_agents.push((local_pane_id, agent));
+        }
+
+        let pane_mappings = inner.remote_to_local_pane.lock().unwrap().clone();
+        for local_pane_id in pane_mappings.values() {
+            mux.set_mirrored_agent_snapshot(*local_pane_id, None);
+        }
+        for (local_pane_id, agent) in translated_agents {
+            mux.set_mirrored_agent_snapshot(local_pane_id, Some(agent));
+        }
     }
 
     /// Debounce bursts of resync requests. If a resync is already in
@@ -1521,11 +1610,6 @@ impl ClientDomain {
                     inner.record_remote_to_local_tab_mapping(remote_tab_id, tab.tab_id());
                 }
                 inner.record_remote_tab_window(remote_tab_id, remote_window_id);
-                mux.set_mirrored_tab_rss(
-                    tab.tab_id(),
-                    remote_tab_rss_bytes.get(&remote_tab_id).copied(),
-                );
-
                 inner.apply_remote_tab_title(remote_tab_id, tab_title, tab_badge);
 
                 log::debug!("domain: {} tree: {:#?}", inner.local_domain_id, tabroot);
@@ -1587,7 +1671,6 @@ impl ClientDomain {
                         metadata.is_some(),
                         metadata.as_ref().map(|m| m.launch_cmd.as_str())
                     );
-                    mux.set_mirrored_agent_snapshot(pane_id, None);
                     mux.set_mirrored_agent_metadata(pane_id, metadata.as_ref());
                 }
 
@@ -1683,22 +1766,7 @@ impl ClientDomain {
             }
         }
 
-        for mut agent in remote_agents {
-            let Some(local_pane_id) = inner.remote_to_local_pane_id(agent.pane_id) else {
-                continue;
-            };
-            let Some(local_tab_id) = inner.remote_to_local_tab_id(agent.tab_id) else {
-                continue;
-            };
-            let Some(local_window_id) = inner.remote_to_local_window(agent.window_id) else {
-                continue;
-            };
-            agent.pane_id = local_pane_id;
-            agent.tab_id = local_tab_id;
-            agent.window_id = local_window_id;
-            agent.domain_id = inner.local_domain_id;
-            mux.set_mirrored_agent_snapshot(local_pane_id, Some(agent));
-        }
+        Self::process_remote_status_snapshot(inner.as_ref(), remote_agents, remote_tab_rss_bytes);
 
         let remote_tab_sets = remote_tab_order_by_window.clone();
         let local_windows_to_invalidate = remote_tab_sets
@@ -2778,6 +2846,52 @@ mod test {
             mux.get_active_tab_for_window_for_client(view_id.as_ref(), local_window_id)
                 .map(|tab| tab.tab_id()),
             Some(local_tab_b)
+        );
+    }
+
+    #[test]
+    fn remote_status_refresh_does_not_reconcile_active_tab() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        ensure_test_executor();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let (_domain, inner, client_id, view_id) =
+            install_client_domain(&mux, "navigator-status-refresh");
+        let tab_a = leaf(1, 101, 1001, size(120, 40), true);
+        let tab_b = leaf(1, 102, 1002, size(120, 40), true);
+        apply_panes(
+            &mux,
+            inner.clone(),
+            client_id.clone(),
+            panes_response(vec![tab_a.clone(), tab_b.clone()], 101, 1001),
+        );
+
+        let local_window_id = inner.remote_to_local_window(1).unwrap();
+        let local_tab_b = inner.remote_to_local_tab_id(102).unwrap();
+        {
+            let _identity = mux.with_identity(Some(client_id));
+            mux.set_active_tab_for_current_identity(local_window_id, local_tab_b)
+                .unwrap();
+        }
+
+        let mut stale_status = panes_response(vec![tab_a, tab_b], 101, 1001);
+        stale_status.tab_rss_bytes.insert(102, 42_000_000);
+        ClientDomain::process_remote_status_snapshot(
+            inner.as_ref(),
+            stale_status.agents,
+            stale_status.tab_rss_bytes,
+        );
+
+        assert_eq!(
+            mux.get_active_tab_for_window_for_client(view_id.as_ref(), local_window_id)
+                .map(|tab| tab.tab_id()),
+            Some(local_tab_b)
+        );
+        assert_eq!(
+            mux.approximate_tab_process_rss(local_tab_b),
+            Some(42_000_000)
         );
     }
 

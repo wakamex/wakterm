@@ -446,9 +446,9 @@ fn process_unilateral(
 
                 client_domain.process_remote_tab_title_change(tab_id, title, badge);
                 // Tab title changes can reflect agent icon/badge state changes
-                // without a topology update. Resync to refresh mirrored pane
-                // metadata so the remote GUI sees updated harness icons.
-                client_domain.resync_coalesced().await
+                // without a topology update. Refresh only the mirrored status
+                // cache so a background update cannot alter local focus.
+                client_domain.refresh_cached_remote_status().await
             })
             .detach();
             return Ok(());
