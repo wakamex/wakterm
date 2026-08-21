@@ -2858,10 +2858,32 @@ impl Mux {
             cwd.clone()
         } else if let Some(snapshot) = self.mirrored_agent_snapshot_by_pane.read().get(&pane_id) {
             snapshot.metadata.declared_cwd.clone()
+        } else if let Some(candidate) = self.agent_adoption_candidates.read().get(&pane_id) {
+            candidate.declared_cwd.clone()
         } else {
             return None;
         };
         Self::cwd_leaf_for_tab_title(&cwd)
+    }
+
+    fn aggregate_agent_folder_title_for_tab(&self, tab: &Tab) -> Option<String> {
+        let mut seen = HashSet::new();
+        let mut titles = Vec::new();
+        for positioned in tab.iter_panes_ignoring_zoom() {
+            let Some(title) = self.agent_folder_title_for_pane(positioned.pane.pane_id()) else {
+                continue;
+            };
+            if seen.insert(title.clone()) {
+                titles.push(title);
+            }
+        }
+
+        match titles.len() {
+            0 => None,
+            1 => titles.pop(),
+            2 => Some(titles.join("+")),
+            count => Some(format!("{}+{}", titles[0], count - 1)),
+        }
     }
 
     pub fn display_tab_titles_for_window(&self, window_id: WindowId) -> HashMap<TabId, String> {
@@ -2882,10 +2904,9 @@ impl Mux {
                     )
                 })
                 .or_else(|| tab.get_active_pane());
-            let automatic = pane.as_ref().map(|pane| {
-                self.agent_folder_title_for_pane(pane.pane_id())
-                    .unwrap_or_else(|| pane.get_title())
-            });
+            let automatic = self
+                .aggregate_agent_folder_title_for_tab(tab)
+                .or_else(|| pane.as_ref().map(|pane| pane.get_title()));
             rows.push((tab.tab_id(), explicit, automatic.unwrap_or_default()));
         }
         drop(window);
@@ -7935,6 +7956,12 @@ mod test {
         let initial_agents = mux.list_agents();
         assert_eq!(initial_agents.len(), 1);
         assert!(matches!(initial_agents[0].origin, AgentOrigin::Detected));
+        assert_eq!(
+            mux.display_tab_titles_for_window(window_id)
+                .get(&tab.tab_id())
+                .map(String::as_str),
+            Some("auto-adopt-project")
+        );
         wait_for_main_thread_work(
             &executor,
             || mux.get_agent_metadata_for_pane(pane_id).is_some(),
@@ -8359,7 +8386,7 @@ mod test {
     }
 
     #[test]
-    fn agent_folder_titles_are_pane_local_within_a_tab() {
+    fn automatic_tab_title_aggregates_harness_projects_independent_of_active_pane() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
         config::use_test_configuration();
@@ -8401,7 +8428,6 @@ mod test {
         let mut second = sample_agent_metadata("reviewer");
         second.declared_cwd = "file:///code/backend".to_string();
         mux.set_mirrored_agent_metadata(first_pane.pane_id(), Some(&first));
-        mux.set_mirrored_agent_metadata(second_pane.pane_id(), Some(&second));
 
         assert_eq!(
             mux.agent_folder_title_for_pane(first_pane.pane_id())
@@ -8410,9 +8436,56 @@ mod test {
         );
         tab.set_active_idx_no_notify(second_index);
         assert_eq!(
+            mux.display_tab_titles_for_window(window_id)
+                .get(&tab.tab_id())
+                .map(String::as_str),
+            Some("frontend")
+        );
+
+        let mut same_project = second.clone();
+        same_project.declared_cwd = first.declared_cwd.clone();
+        mux.set_mirrored_agent_metadata(second_pane.pane_id(), Some(&same_project));
+        assert_eq!(
+            mux.display_tab_titles_for_window(window_id)
+                .get(&tab.tab_id())
+                .map(String::as_str),
+            Some("frontend")
+        );
+
+        mux.set_mirrored_agent_metadata(second_pane.pane_id(), Some(&second));
+        assert_eq!(
             mux.agent_folder_title_for_pane(second_pane.pane_id())
                 .as_deref(),
             Some("backend")
+        );
+        assert_eq!(
+            mux.display_tab_titles_for_window(window_id)
+                .get(&tab.tab_id())
+                .map(String::as_str),
+            Some("frontend+backend")
+        );
+
+        let third_pane = FakePane::new(247, size, domain.id);
+        tab.split_and_insert(
+            second_index,
+            SplitRequest {
+                direction: crate::tab::SplitDirection::Vertical,
+                target_is_second: true,
+                size: crate::tab::SplitSize::Percent(50),
+                top_level: false,
+            },
+            third_pane.clone(),
+        )
+        .unwrap();
+        mux.add_pane(&third_pane).unwrap();
+        let mut third = sample_agent_metadata("database");
+        third.declared_cwd = "file:///code/database".to_string();
+        mux.set_mirrored_agent_metadata(third_pane.pane_id(), Some(&third));
+        assert_eq!(
+            mux.display_tab_titles_for_window(window_id)
+                .get(&tab.tab_id())
+                .map(String::as_str),
+            Some("frontend+2")
         );
     }
 
