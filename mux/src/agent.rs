@@ -1434,8 +1434,8 @@ fn codex_session_owned_by_process(
     }
 
     Ok(expected_match
-        .or(preferred_match)
-        .or_else(|| selected.map(|(path, _)| path)))
+        .or_else(|| selected.map(|(path, _)| path))
+        .or(preferred_match))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -3179,6 +3179,62 @@ mod test {
             Some(expected.to_string_lossy().as_ref())
         );
         assert_eq!(observed.progress_summary.as_deref(), Some("expected"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn observe_codex_follows_new_continuation_after_restore_handshake() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let restored = temp.path().join("rollout-restored.jsonl");
+        let continuation = temp.path().join("rollout-continuation.jsonl");
+        fs::write(
+            &restored,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-restored\",\"cwd\":\"/tmp/process-owned\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"stale\"}]}}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &continuation,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-continuation\",\"cwd\":\"/tmp/process-owned\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"okay\"}]}}\n"
+            ),
+        )
+        .unwrap();
+        fs::File::open(&restored)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+        fs::File::open(&continuation)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(2))
+            .unwrap();
+        let _open_restored_session = fs::File::open(&restored).unwrap();
+        let _open_continuation_session = fs::File::open(&continuation).unwrap();
+        let process_id = std::process::id();
+        let process = LocalProcessInfo::with_root_pid(process_id).unwrap();
+
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        let observed = observe_codex(
+            "/tmp/process-owned",
+            Some(restored.to_string_lossy().as_ref()),
+            None,
+            Some(process_id),
+            Some(process.start_time),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
+
+        assert_eq!(
+            observed.session_path.as_deref(),
+            Some(continuation.to_string_lossy().as_ref())
+        );
+        assert_eq!(observed.progress_summary.as_deref(), Some("okay"));
     }
 
     #[test]
