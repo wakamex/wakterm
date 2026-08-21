@@ -571,7 +571,7 @@ impl crate::TermWindow {
             if entry.needs_attention && self.config.agent_tab_attention_pulse {
                 let cycle = Duration::from_secs(2).as_secs_f32();
                 let phase = ATTENTION_PULSE_START.elapsed().as_secs_f32() % cycle / cycle;
-                let opacity = 0.75 + 0.25 * (phase * std::f32::consts::TAU).cos();
+                let opacity = 0.5 + 0.5 * (phase * std::f32::consts::TAU).cos();
                 color.3 *= opacity;
                 self.update_next_frame_time(Some(Instant::now() + Duration::from_millis(33)));
             }
