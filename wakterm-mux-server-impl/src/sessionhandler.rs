@@ -1725,6 +1725,7 @@ impl SessionHandler {
             | Pdu::TabResized { .. }
             | Pdu::TabOrderChanged { .. }
             | Pdu::ParkedTabsChanged { .. }
+            | Pdu::AgentMetadataChanged { .. }
             | Pdu::GetImageCellResponse { .. }
             | Pdu::MovePaneToNewTabResponse { .. }
             | Pdu::TabAddedToWindow { .. }

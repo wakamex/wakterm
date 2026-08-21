@@ -62,6 +62,7 @@ enum NotificationKey {
     TabResized(mux::tab::TabId),
     TabOrder(mux::window::WindowId),
     ParkedTabs(mux::window::WindowId),
+    AgentMetadata(mux::pane::PaneId),
     TabTitle(mux::tab::TabId),
     WindowTitle(mux::window::WindowId),
 }
@@ -97,6 +98,9 @@ fn notification_key(notification: &MuxNotification) -> Option<NotificationKey> {
         }
         MuxNotification::ParkedTabsChanged { window_id, .. } => {
             Some(NotificationKey::ParkedTabs(*window_id))
+        }
+        MuxNotification::AgentMetadataChanged { pane_id, .. } => {
+            Some(NotificationKey::AgentMetadata(*pane_id))
         }
         MuxNotification::TabTitleChanged { tab_id, .. } => Some(NotificationKey::TabTitle(*tab_id)),
         MuxNotification::WindowTitleChanged { window_id, .. } => {
@@ -138,6 +142,7 @@ fn notification_kind(notification: &MuxNotification) -> &'static str {
         MuxNotification::TabResized { .. } => "tab_resized",
         MuxNotification::TabOrderChanged { .. } => "tab_order_changed",
         MuxNotification::ParkedTabsChanged { .. } => "parked_tabs_changed",
+        MuxNotification::AgentMetadataChanged { .. } => "agent_metadata_changed",
         MuxNotification::TabTitleChanged { .. } => "tab_title_changed",
         MuxNotification::WindowTitleChanged { .. } => "window_title_changed",
         MuxNotification::WorkspaceRenamed { .. } => "workspace_renamed",
@@ -431,6 +436,12 @@ where
                 .await?;
                 stream.flush().await.context("flushing PDU to client")?;
             }
+        }
+        MuxNotification::AgentMetadataChanged { pane_id, metadata } => {
+            Pdu::AgentMetadataChanged(codec::AgentMetadataChanged { pane_id, metadata })
+                .encode_async(stream, 0)
+                .await?;
+            stream.flush().await.context("flushing PDU to client")?;
         }
         MuxNotification::TabTitleChanged { tab_id, title: _ } => {
             let title = handler.tab_title_for_client(tab_id);

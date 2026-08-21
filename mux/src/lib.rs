@@ -119,6 +119,10 @@ pub enum MuxNotification {
         parked_tab_ids: Vec<TabId>,
         origin: Option<Arc<ClientId>>,
     },
+    AgentMetadataChanged {
+        pane_id: PaneId,
+        metadata: Option<AgentMetadata>,
+    },
     TabTitleChanged {
         tab_id: TabId,
         title: String,
@@ -1365,6 +1369,12 @@ impl Mux {
             AgentRefreshPolicy::Throttled,
             |_| {},
         );
+        self.notify(MuxNotification::AgentMetadataChanged {
+            pane_id,
+            metadata: self
+                .get_agent_metadata_for_pane(pane_id)
+                .map(|metadata| (*metadata).clone()),
+        });
         if let Some(tab_id) = tab_id {
             self.notify_tab_title_changed(tab_id);
         }
@@ -1408,6 +1418,10 @@ impl Mux {
         self.agent_input_generation_by_pane.write().remove(&pane_id);
         self.agent_attention_seen_at.write().remove(&pane_id);
         crate::session_persistence::request_session_save();
+        self.notify(MuxNotification::AgentMetadataChanged {
+            pane_id,
+            metadata: None,
+        });
         if let Some(tab_id) = tab_id {
             self.notify_tab_title_changed(tab_id);
         }
@@ -5916,7 +5930,7 @@ mod test {
     }
 
     #[test]
-    fn set_agent_metadata_notifies_tab_title_changed() {
+    fn agent_metadata_changes_notify_titles_and_exact_metadata() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
         let domain = Arc::new(FakeDomain::new());
@@ -5943,17 +5957,38 @@ mod test {
 
         let title_changes = std::sync::Arc::new(Mutex::new(0usize));
         let title_changes_for_sub = std::sync::Arc::clone(&title_changes);
+        let metadata_changes = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let metadata_changes_for_sub = std::sync::Arc::clone(&metadata_changes);
         mux.subscribe(move |notification| {
             if matches!(notification, MuxNotification::TabTitleChanged { tab_id: changed, .. } if changed == tab_id) {
                 *title_changes_for_sub.lock() += 1;
+            }
+            if let MuxNotification::AgentMetadataChanged {
+                pane_id: changed,
+                metadata,
+            } = notification
+            {
+                if changed == pane_id {
+                    metadata_changes_for_sub.lock().push(metadata.clone());
+                }
             }
             true
         });
 
         mux.set_agent_metadata(pane_id, sample_agent_metadata("alpha"))
             .unwrap();
+        mux.clear_agent_metadata(pane_id);
 
-        assert_eq!(*title_changes.lock(), 1);
+        assert_eq!(*title_changes.lock(), 2);
+        let metadata_changes = metadata_changes.lock();
+        assert_eq!(metadata_changes.len(), 2);
+        assert_eq!(
+            metadata_changes[0]
+                .as_ref()
+                .map(|metadata| metadata.name.as_str()),
+            Some("alpha")
+        );
+        assert!(metadata_changes[1].is_none());
     }
 
     #[test]

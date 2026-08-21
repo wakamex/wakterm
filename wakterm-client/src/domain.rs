@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use codec::{ListPanesResponse, SetParkedTabs, SetTabOrder, SpawnV2, SplitPane};
 use config::keyassignment::SpawnTabDomain;
 use config::{configuration, SshDomain, TlsDomainClient, UnixDomain};
-use mux::agent::AgentTabBadgeState;
+use mux::agent::{AgentMetadata, AgentTabBadgeState};
 use mux::client::ClientId;
 use mux::connui::{ConnectionUI, ConnectionUIParams};
 use mux::domain::{alloc_domain_id, Domain, DomainId, DomainState, SplitSource};
@@ -1213,6 +1213,26 @@ impl ClientDomain {
                 }
             }
         }
+    }
+
+    pub fn process_remote_agent_metadata_change(
+        &self,
+        remote_pane_id: PaneId,
+        metadata: Option<&AgentMetadata>,
+    ) -> bool {
+        let Some(inner) = self.inner() else {
+            return false;
+        };
+        let Some(local_pane_id) = inner.remote_to_local_pane_id(remote_pane_id) else {
+            return false;
+        };
+
+        let mux = Mux::get();
+        mux.set_mirrored_agent_metadata(local_pane_id, metadata);
+        if let Some((_domain_id, window_id, _tab_id)) = mux.resolve_pane_id(local_pane_id) {
+            mux.notify(MuxNotification::WindowInvalidated(window_id));
+        }
+        true
     }
 
     pub fn process_remote_tab_order(
@@ -2525,6 +2545,48 @@ mod test {
     ) {
         let _ = mux;
         ClientDomain::process_pane_list(inner, panes, None).unwrap();
+    }
+
+    #[test]
+    fn remote_agent_metadata_removal_clears_the_exact_mirrored_pane() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        ensure_test_executor();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+        let (domain, inner, client_id, _view_id) =
+            install_client_domain(&mux, "agent-metadata-change");
+
+        apply_panes(
+            &mux,
+            inner.clone(),
+            client_id,
+            panes_response(vec![leaf(1, 101, 1001, size(120, 40), true)], 101, 1001),
+        );
+        let local_pane_id = inner.remote_to_local_pane_id(1001).unwrap();
+        let metadata = AgentMetadata {
+            agent_id: "remote-claude".to_string(),
+            name: "wakterm_claude".to_string(),
+            launch_cmd: "claude".to_string(),
+            declared_cwd: "/code/wakterm".to_string(),
+            adopted_pid: None,
+            adopted_start_time: None,
+            created_at: "2026-08-21T00:00:00Z".parse().unwrap(),
+            repo_root: Some("/code/wakterm".to_string()),
+            worktree: None,
+            branch: Some("main".to_string()),
+            managed_checkout: false,
+            codex_app_server: None,
+        };
+
+        assert!(domain.process_remote_agent_metadata_change(1001, Some(&metadata)));
+        assert_eq!(
+            mux.agent_folder_title_for_pane(local_pane_id).as_deref(),
+            Some("wakterm")
+        );
+
+        assert!(domain.process_remote_agent_metadata_change(1001, None));
+        assert_eq!(mux.agent_folder_title_for_pane(local_pane_id), None);
     }
 
     #[test]

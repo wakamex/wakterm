@@ -470,7 +470,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 65;
+pub const CODEC_VERSION: usize = 66;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -570,6 +570,7 @@ pdu! {
     SetParkedTabs: 94,
     ParkedTabsChanged: 95,
     AcknowledgeAgentAttention: 96,
+    AgentMetadataChanged: 97,
 }
 
 impl Pdu {
@@ -1086,6 +1087,12 @@ pub struct NotifyAlert {
 pub struct TabAddedToWindow {
     pub tab_id: TabId,
     pub window_id: WindowId,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct AgentMetadataChanged {
+    pub pane_id: PaneId,
+    pub metadata: Option<AgentMetadata>,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
@@ -1776,6 +1783,42 @@ mod test {
                 parked_tab_ids: vec![2, 3],
             }),
             Pdu::AcknowledgeAgentAttention(AcknowledgeAgentAttention { pane_id: 9 }),
+        ] {
+            let mut encoded = Vec::new();
+            pdu.encode(&mut encoded, 42).unwrap();
+            assert_eq!(
+                Pdu::decode(encoded.as_slice()).unwrap(),
+                DecodedPdu { serial: 42, pdu }
+            );
+        }
+    }
+
+    #[test]
+    fn agent_metadata_change_pdus_round_trip() {
+        let metadata = AgentMetadata {
+            agent_id: "agent-claude".to_string(),
+            name: "wakterm_claude".to_string(),
+            launch_cmd: "claude".to_string(),
+            declared_cwd: "/code/wakterm".to_string(),
+            adopted_pid: None,
+            adopted_start_time: None,
+            created_at: "2026-08-21T00:00:00Z".parse().unwrap(),
+            repo_root: Some("/code/wakterm".to_string()),
+            worktree: None,
+            branch: Some("main".to_string()),
+            managed_checkout: false,
+            codex_app_server: None,
+        };
+
+        for pdu in [
+            Pdu::AgentMetadataChanged(AgentMetadataChanged {
+                pane_id: 9,
+                metadata: Some(metadata),
+            }),
+            Pdu::AgentMetadataChanged(AgentMetadataChanged {
+                pane_id: 9,
+                metadata: None,
+            }),
         ] {
             let mut encoded = Vec::new();
             pdu.encode(&mut encoded, 42).unwrap();

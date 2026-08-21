@@ -37,6 +37,10 @@ use wakterm_term::{
 
 const PROC_INFO_CACHE_TTL: Duration = Duration::from_millis(300);
 
+fn title_uses_foreground_process(title: &str) -> bool {
+    title.is_empty() || title == "wakterm"
+}
+
 #[derive(Debug)]
 enum ProcessState {
     Running {
@@ -473,9 +477,9 @@ impl Pane for LocalPane {
 
     fn get_title(&self) -> String {
         let title = self.terminal.lock().get_title().to_string();
-        // If the title is the default pane title, then try to spice
-        // things up a bit by returning the process basename instead
-        if title == "wakterm" {
+        // If there is no application-provided title, use the foreground
+        // process basename instead.
+        if title_uses_foreground_process(&title) {
             if let Some(proc_name) = self.get_foreground_process_name(CachePolicy::AllowStale) {
                 let proc_name = std::path::Path::new(&proc_name);
                 if let Some(name) = proc_name.file_name() {
@@ -1182,5 +1186,17 @@ impl Drop for LocalPane {
         if let ProcessState::Running { signaller, .. } = &mut *self.process.lock() {
             let _ = signaller.kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::title_uses_foreground_process;
+
+    #[test]
+    fn empty_and_default_titles_use_the_foreground_process() {
+        assert!(title_uses_foreground_process(""));
+        assert!(title_uses_foreground_process("wakterm"));
+        assert!(!title_uses_foreground_process("editor"));
     }
 }

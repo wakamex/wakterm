@@ -453,6 +453,30 @@ fn process_unilateral(
             .detach();
             return Ok(());
         }
+        Pdu::AgentMetadataChanged(AgentMetadataChanged { pane_id, metadata }) => {
+            let pane_id = *pane_id;
+            let metadata = metadata.clone();
+            promise::spawn::spawn_into_main_thread(async move {
+                let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
+                let client_domain = mux
+                    .get_domain(local_domain_id)
+                    .ok_or_else(|| anyhow!("no such domain {}", local_domain_id))?;
+                let client_domain =
+                    client_domain
+                        .downcast_ref::<ClientDomain>()
+                        .ok_or_else(|| {
+                            anyhow!("domain {} is not a ClientDomain instance", local_domain_id)
+                        })?;
+
+                if client_domain.process_remote_agent_metadata_change(pane_id, metadata.as_ref()) {
+                    Ok(())
+                } else {
+                    client_domain.resync_coalesced().await
+                }
+            })
+            .detach();
+            return Ok(());
+        }
         Pdu::TabAddedToWindow(_) => {
             log::trace!("resync due to {:?}", decoded.pdu);
             promise::spawn::spawn_into_main_thread(async move {
