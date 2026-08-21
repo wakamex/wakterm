@@ -458,6 +458,15 @@ fn derive_effective_turn_state(runtime: &AgentRuntimeSnapshot) -> AgentTurnState
         return AgentTurnState::WaitingOnAgent;
     }
 
+    if matches!(runtime.turn_state, AgentTurnState::WaitingOnUser)
+        && matches!(
+            runtime.turn_phase.as_deref(),
+            Some("aborted" | "interrupted" | "cancelled")
+        )
+    {
+        return AgentTurnState::WaitingOnUser;
+    }
+
     if let Some(completed_at) = runtime.last_turn_completed_at {
         if runtime
             .last_input_at
@@ -733,6 +742,29 @@ struct HarnessObservationDetails {
     observed_turn: Option<AgentObservedTurn>,
 }
 
+fn settle_codex_turn_interrupted_by_process_restart(
+    details: &mut HarnessObservationDetails,
+    session_modified_at: std::time::SystemTime,
+    process_started_at: Option<std::time::SystemTime>,
+) {
+    let Some(process_started_at) = process_started_at else {
+        return;
+    };
+    let Some(turn) = details.observed_turn.as_mut() else {
+        return;
+    };
+    if !matches!(turn.outcome, AgentObservedTurnOutcome::Running)
+        || session_modified_at >= process_started_at
+    {
+        return;
+    }
+
+    details.turn_state = AgentTurnState::WaitingOnUser;
+    details.turn_phase = Some("interrupted".to_string());
+    turn.outcome = AgentObservedTurnOutcome::Aborted;
+    turn.completed_at = Some(DateTime::<Utc>::from(process_started_at));
+}
+
 fn observe_claude(
     cwd: &str,
     preferred_session: Option<&str>,
@@ -831,8 +863,15 @@ fn observe_codex(
         preferred_session,
         expected_session_id,
     )? {
-        let modified_at = DateTime::<Utc>::from(fs::metadata(&process_session)?.modified()?);
-        let details = read_last_codex_observation(&process_session)?;
+        let modified = fs::metadata(&process_session)?.modified()?;
+        let modified_at = DateTime::<Utc>::from(modified);
+        let mut details = read_last_codex_observation(&process_session)?;
+        #[cfg(target_os = "linux")]
+        settle_codex_turn_interrupted_by_process_restart(
+            &mut details,
+            modified,
+            codex_process_started_at(process_id, process_start_time),
+        );
         return Ok(Some(HarnessObservation {
             session_path: Some(process_session.to_string_lossy().to_string()),
             progress_summary: details.progress_summary,
@@ -1349,6 +1388,38 @@ pub fn codex_session_id(path: &Path) -> anyhow::Result<Option<String>> {
 }
 
 #[cfg(target_os = "linux")]
+fn codex_process_started_at(
+    process_id: Option<u32>,
+    expected_start_time: Option<u64>,
+) -> Option<std::time::SystemTime> {
+    let (Some(process_id), Some(expected_start_time)) = (process_id, expected_start_time) else {
+        return None;
+    };
+    let stat = fs::read_to_string(format!("/proc/{process_id}/stat")).ok()?;
+    let (_, fields) = stat.rsplit_once(')')?;
+    let actual_start_time = fields.split_whitespace().nth(19)?.parse::<u64>().ok()?;
+    if actual_start_time != expected_start_time {
+        return None;
+    }
+
+    let uptime = fs::read_to_string("/proc/uptime")
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse::<f64>()
+        .ok()?;
+    let ticks_per_second = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if ticks_per_second <= 0 {
+        return None;
+    }
+    let booted_at =
+        std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs_f64(uptime))?;
+    booted_at.checked_add(std::time::Duration::from_secs_f64(
+        actual_start_time as f64 / ticks_per_second as f64,
+    ))
+}
+
+#[cfg(target_os = "linux")]
 fn codex_session_owned_by_process(
     root: &Path,
     cwd: &str,
@@ -1360,13 +1431,7 @@ fn codex_session_owned_by_process(
     let (Some(process_id), Some(process_start_time)) = (process_id, process_start_time) else {
         return Ok(None);
     };
-    fn read_process_start_time(pid: u32) -> Option<u64> {
-        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let (_, fields) = stat.rsplit_once(')')?;
-        fields.split_whitespace().nth(19)?.parse().ok()
-    }
-
-    if read_process_start_time(process_id) != Some(process_start_time) {
+    if codex_process_started_at(Some(process_id), Some(process_start_time)).is_none() {
         return Ok(None);
     }
 
@@ -2738,6 +2803,17 @@ mod test {
         runtime.terminal_progress = Progress::Indeterminate;
         assert_eq!(derive_runtime_status(&runtime), AgentStatus::Idle);
 
+        runtime.turn_phase = Some("interrupted".to_string());
+        runtime.last_turn_completed_at = Some(Utc::now() - Duration::minutes(5));
+        runtime.last_input_at = Some(Utc::now());
+        assert_eq!(
+            derive_effective_turn_state(&runtime),
+            AgentTurnState::WaitingOnUser
+        );
+        runtime.turn_phase = None;
+        runtime.last_turn_completed_at = None;
+        runtime.last_input_at = None;
+
         runtime.attention_reason = Some("approval-requested".to_string());
         assert_eq!(derive_runtime_status(&runtime), AgentStatus::Busy);
         runtime.attention_reason = None;
@@ -3235,6 +3311,57 @@ mod test {
             Some(continuation.to_string_lossy().as_ref())
         );
         assert_eq!(observed.progress_summary.as_deref(), Some("okay"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn observe_codex_settles_running_turn_left_behind_by_restart() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout-interrupted-by-restart.jsonl");
+        fs::write(
+            &session,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-restored\",\"cwd\":\"/tmp/process-owned\"}}\n",
+                "{\"ordinal\":1,\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\",\"collaboration_mode_kind\":\"default\"}}\n",
+                "{\"ordinal\":2,\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:00:01Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"previous answer\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-1\"}}}\n",
+                "{\"ordinal\":3,\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:00:02Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\",\"last_agent_message\":\"previous answer\"}}\n",
+                "{\"ordinal\":4,\"type\":\"event_msg\",\"timestamp\":\"2026-03-17T12:05:00Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-2\",\"collaboration_mode_kind\":\"default\"}}\n",
+                "{\"ordinal\":5,\"type\":\"response_item\",\"timestamp\":\"2026-03-17T12:05:01Z\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"interrupted request\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-2\"}}}\n"
+            ),
+        )
+        .unwrap();
+        fs::File::open(&session)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+        let _open_session = fs::File::open(&session).unwrap();
+        let process_id = std::process::id();
+        let process = LocalProcessInfo::with_root_pid(process_id).unwrap();
+
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        let observed = observe_codex(
+            "/tmp/process-owned",
+            None,
+            None,
+            Some(process_id),
+            Some(process.start_time),
+            Some("session-restored"),
+        )
+        .unwrap()
+        .unwrap();
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
+
+        assert_eq!(observed.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(observed.turn_phase.as_deref(), Some("interrupted"));
+        assert_eq!(
+            observed.last_turn_completed_at,
+            Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 2).unwrap())
+        );
+        let turn = observed.observed_turn.unwrap();
+        assert_eq!(turn.provider_turn_id, "turn-2");
+        assert_eq!(turn.outcome, AgentObservedTurnOutcome::Aborted);
+        assert!(turn.completed_at.is_some());
     }
 
     #[test]
