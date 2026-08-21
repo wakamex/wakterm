@@ -1,4 +1,4 @@
-# Agent Harness Lifecycle and Managed Backend Direction
+# Agent Harness Lifecycle and Supervised Backend Direction
 
 ## Status
 
@@ -9,9 +9,10 @@ started as an app-server TUI: the mux supervises one shared Codex app-server
 and each pane still renders the native Codex TUI.
 
 Reliable automatic restoration of adopted harnesses is the next lifecycle
-goal. Structured managed-agent backends are a later project. This document
-defines the intended boundaries now so that adoption and restoration metadata
-converge on the long-term design.
+goal. A structured supervisor that preserves the provider's native TUI is a
+later project. Wakterm-rendered agent presentation is not the normal product
+direction. This document defines the intended boundaries now so that adoption
+and restoration metadata converge on the long-term design.
 
 ## Lifecycle states
 
@@ -25,20 +26,19 @@ stronger guarantees than the previous one.
 | Adopted | Wakterm persistently associates an agent identity with the pane and confirmed harness | Yes |
 | Restorable | Wakterm has a verified recipe for starting the harness and resuming that exact provider session | Yes |
 | App-server TUI | The mux owns a structured provider connection while the pane renders the provider's native TUI | Yes |
-| Managed | Wakterm owns a structured backend connection and renders its own agent presentation | Yes |
+| Wakterm-rendered | Wakterm owns a headless backend connection and renders its own agent presentation | Yes, but not a normal launch target |
 
 These states are not aliases:
 
 - Detection does not authorize persistence.
 - Adoption does not prove that a session can be resumed.
-- Restoration of a native TUI does not make the session managed.
-- An app-server TUI is not managed mode because Wakterm does not render its
-  presentation or own its approval UI.
-- Managed mode is a separate way to start a session, not an automatic upgrade
-  of a running PTY.
+- Restoration of a native TUI does not make the session structurally supervised.
+- An app-server TUI is supervised without making Wakterm responsible for the
+  provider's presentation or approval UI.
+- A Wakterm-rendered backend is not a substitute for a provider's native TUI.
 
-`Restorable` and `Managed` describe lifecycle capabilities rather than public
-origins. `App-server TUI` is represented by the `CodexAppServerTui` transport.
+`Restorable` describes a lifecycle capability rather than a public origin.
+`App-server TUI` is represented by the `CodexAppServerTui` transport.
 
 ## Codex app-server TUI transport
 
@@ -54,7 +54,7 @@ current pane and returns to its shell when Codex exits. `--new-tab` explicitly
 creates a separate tab instead. Invocations outside Wakterm must use
 `--new-tab`, because there is no current Wakterm PTY to own the TUI.
 
-This transport is intentionally narrower than managed mode. It does not render
+This transport intentionally keeps the native provider UI. It does not render
 a Wakterm agent UI, does not adopt an existing PTY into the app-server, and
 does not change the observed-PTY path for manually launched Codex processes.
 The shared process has one executable, version, `CODEX_HOME`, authentication
@@ -144,15 +144,15 @@ Mid-turn recovery is provider-dependent and is not guaranteed by restoring a
 session. The first target is confident idle-session resume after a mux-server
 restart.
 
-## Managed agents
+## Native TUI product boundary
 
-A managed agent is not a native TUI with extra input injection. The mux server
-owns the backend process and structured protocol connection. Wakterm owns the
-pane presentation, approvals, status, transcript projection, and recovery
-state. GUI clients receive mirrored state from the mux and do not connect to
-the provider independently.
+Wakterm must preserve the provider's native TUI for interactive agent panes.
+The provider TUI owns input, rendering, questions, approvals, and other native
+interaction. Wakterm may add lifecycle supervision only when a structured
+connection can attach to the same exact provider session without taking over
+those responsibilities.
 
-PTY and managed modes remain separate:
+The supported paths are:
 
 ```text
 existing shell or TUI
@@ -161,36 +161,37 @@ existing shell or TUI
   -> optionally adopt
   -> restore as a native TUI
 
-Wakterm managed start
-  -> mux launches a backend
-  -> mux owns the structured session
-  -> Wakterm renders a managed pane
+Wakterm supervised start
+  -> mux owns a structured supervisor when the provider supports one
+  -> pane runs the provider's native TUI against the same exact session
+  -> provider TUI remains the interactive authority
 ```
 
-Do not automatically promote a detected or adopted PTY into managed mode. A
-live promotion would create ambiguous turn ownership, approval ownership, and
-transcript reconciliation. If migration is added later, it must be explicit,
-limited to a verified idle session, and switch transports only after the new
-backend resumes and validates the same provider session.
+An ACP agent normally expects the ACP client to render the conversation and
+approval UI. That topology does not qualify merely because its lifecycle
+events are structured. A provider protocol qualifies for a normal Wakterm
+launch only when the native TUI and mux supervisor can attach concurrently to
+the same session. Otherwise retain the observed and restorable PTY path and be
+honest about its weaker lifecycle evidence.
 
-The initial managed model should use one backend instance per managed pane.
-Sharing a provider process across panes can be considered later if evidence
-shows that the efficiency gain is worth the additional failure coupling.
+Do not automatically promote a detected or adopted PTY into a supervised
+transport. If attachment is added later, it must be explicit, limited to a
+verified session, and declare success only after the structured connection and
+native TUI confirm the same provider identity.
 
-## Managed backend protocol policy
+## Supervised backend protocol policy
 
-Wakterm should expose one internal managed-backend interface and normalized
-lifecycle model. Protocol implementations sit behind that boundary.
+Wakterm should expose one internal supervision interface and normalized
+lifecycle model only when at least one additional provider passes the required
+same-session native-TUI tests. Protocol implementations sit behind that
+boundary.
 
-The default selection policy is ACP-first with capability-gated native
-exceptions:
+The selection policy is native-TUI-first:
 
-1. Prefer direct Agent Client Protocol support when the provider implements it
-   natively.
-2. Prefer a maintained ACP adapter when it faithfully exposes Wakterm's
-   required behavior.
-3. Add or select a native provider backend when a measured capability,
-   reliability, recovery, or diagnostic gap justifies it.
+1. Preserve the provider's native TUI as the interactive surface.
+2. Prefer a structured provider protocol only when it can supervise the exact
+   session used by that TUI.
+3. Reject adapters that require Wakterm to render the agent interaction.
 4. Keep provider-specific information available behind typed extensions rather
    than forcing every feature into a lowest-common-denominator model.
 
@@ -206,33 +207,33 @@ and fail explicitly when a required capability is absent. Provider-specific
 ACP metadata must not become a silent protocol contract without versioned
 tests.
 
-The initial provider stance is:
+The provider stance is:
 
 | Provider | Starting preference | Reason |
 | --- | --- | --- |
-| Gemini | Direct ACP | Gemini CLI implements ACP itself |
-| OpenCode | Direct ACP | OpenCode implements ACP itself; use its HTTP API only for a demonstrated gap |
-| Claude | Maintained ACP adapter | A custom Wakterm bridge would still need to wrap the Claude Agent SDK and reproduce substantial translation logic |
-| Codex | Compare ACP with native app-server | ACP offers reuse, while app-server may be necessary for exact turn, steering, approval, subagent, or recovery behavior |
+| Gemini | Native TUI; investigate same-session supervision | Direct ACP makes the client the UI unless Gemini supports concurrent native-TUI attachment |
+| OpenCode | Native TUI; investigate same-session supervision | Direct ACP is not sufficient if it replaces the provider TUI |
+| Claude | Native observed and restorable PTY | Remote Control preserves the TUI but exposes no supported local observer; reverse-engineered `--sdk-url`, SDK, and ACP paths are headless, cloud-constrained, or infer state from a PTY |
+| Codex | Native app-server TUI | The mux and native TUI attach to the same exact app-server thread |
 
-This table is a starting hypothesis, not an implementation commitment. Before
-choosing the Codex transport, run the same lifecycle scenarios through both
-interfaces and attribute any difference to the protocol, adapter, provider, or
-Wakterm layer.
+This table is a starting policy, not evidence that every provider already
+supports structured supervision. Attribute each lifecycle fact to the
+protocol, adapter, provider, or Wakterm layer before changing a transport.
 
 Useful upstream references:
 
 - [Agent Client Protocol](https://agentclientprotocol.com/)
+- [Claude ACP adapter Rust evaluation](claude-acp-rust-evaluation.md)
 - [Gemini CLI ACP mode](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/acp-mode.md)
 - [OpenCode CLI ACP mode](https://opencode.ai/docs/cli/)
 - [Claude Agent ACP adapter](https://github.com/agentclientprotocol/claude-agent-acp)
 - [Codex ACP adapter](https://github.com/agentclientprotocol/codex-acp)
 - [Codex app-server](https://developers.openai.com/codex/app-server)
 
-## Managed runtime authority
+## Supervised runtime authority
 
-ACP or a native provider protocol is a transport, not Wakterm's persistence
-authority. A managed pane needs a durable Wakterm record containing at least:
+A provider protocol is a transport, not Wakterm's persistence authority. A
+supervised pane needs a durable Wakterm record containing at least:
 
 - stable Wakterm agent ID
 - provider and backend kind
@@ -270,27 +271,29 @@ Provider-specific resume behavior needs real harness smoke tests where a small
 fixture cannot establish correctness. Deterministic discovery, persistence,
 and reconciliation logic should remain covered by unit or integration tests.
 
-### Managed backends
+### Supervised native-TUI backends
 
-When managed work begins, one reusable fake backend should test the normalized
-state machine. Each real provider then needs a smaller compatibility suite
-covering:
+When supervision work begins, one reusable fake backend should test the
+normalized state machine. Each real provider then needs a smaller compatibility
+suite covering:
 
 - initialize and capability negotiation
+- native TUI and supervisor attachment to the same exact session
+- native ownership of input, rendering, questions, and approvals
 - new session and exact-session resume
 - streamed turns, commands, edits, and terminal activity
-- permission requests and user questions
+- observation of permission requests and user questions without taking ownership
 - cancellation and immediate subsequent input
-- backend death and restart
+- supervisor disconnection while the native TUI continues
+- supervisor death, restart, and same-session reattachment
 - session close and resource cleanup
 - mux restart and GUI reconnect
-- two GUI clients observing one mux-owned backend
+- two GUI clients observing one mux-owned supervisor
 
-For Codex, the transport comparison must additionally cover active-turn
-steering, subagent completion, nested or concurrent approvals, and provider
-upgrade compatibility. If ACP fails critical scenarios because of unstable
-extensions or adapter behavior, app-server should implement the same internal
-Wakterm backend interface instead.
+Codex app-server TUI additionally needs coverage for active-turn steering,
+subagent completion, nested or concurrent approvals, and provider upgrade
+compatibility. For another provider, a headless ACP mode is not a fallback when
+same-session native-TUI attachment fails.
 
 ## Implementation order
 
@@ -302,8 +305,9 @@ The current priority order is:
 4. Restore native harnesses by resuming the exact session.
 5. Make automatic layout restoration report partial and failed recovery
    honestly.
-6. Revisit managed backends only after PTY lifecycle behavior is dependable.
+6. Revisit structured supervision only when a provider can preserve its native
+   TUI and pass the same-session attachment gate.
 
-The managed architecture informs today's identity and persistence choices, but
-it must not expand the current restoration work into premature backend
-implementation.
+The supervised architecture informs today's identity and persistence choices,
+but it must not expand the current restoration work into premature backend
+implementation or a Wakterm-rendered agent UI.
