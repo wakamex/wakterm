@@ -1472,6 +1472,10 @@ impl TermWindow {
                     window.invalidate();
                     self.update_title_post_status();
                 }
+                MuxNotification::AgentMetadataChanged { .. } => {
+                    window.invalidate();
+                    self.update_title_post_status();
+                }
                 MuxNotification::WindowRemoved(_window_id) => {
                     // Handled by frontend
                 }
@@ -1708,6 +1712,15 @@ impl TermWindow {
                 // gives us an opportunity to attach it to the clipboard.
                 let mux = Mux::get();
                 return mux.get_window(mux_window_id).is_some();
+            }
+            MuxNotification::AgentMetadataChanged { pane_id, .. } => {
+                let mux = Mux::get();
+                if mux
+                    .resolve_pane_id(pane_id)
+                    .is_none_or(|(_, window_id, _)| window_id != mux_window_id)
+                {
+                    return true;
+                }
             }
             MuxNotification::TabAddedToWindow { window_id, .. }
             | MuxNotification::TabOrderChanged { window_id, .. }
