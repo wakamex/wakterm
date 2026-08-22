@@ -1,0 +1,8 @@
+read durable normalized Agent API events
+
+Usage: wakterm agent events [OPTIONS]
+
+Options:
+      --after <AFTER_SEQUENCE>  Return events strictly after this durable global sequence [default: 0]
+      --limit <LIMIT>           Maximum events to return [default: 100]
+  -h, --help                    Print help

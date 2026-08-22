@@ -319,6 +319,32 @@ config.colors = {
 }
 ```
 
+#### Agent icons and attention
+
+The fancy tab bar renders native harness icons (Claude, Codex, Gemini, OpenCode) beside the tab title for tabs whose active pane runs an agent harness.
+
+- [agent_tab_badge_mode](lua/config/agent_tab_badge_mode.md): controls whether indicators appear always (`"identity"`, default), on attention (`"attention"`), during active turn (`"turn"`), or never (`"off"`).
+- [agent_tab_attention_pulse](lua/config/agent_tab_attention_pulse.md): when true (default), the harness icon pulses with a smooth fade when an agent has completed a turn and is awaiting user review. Set to false for a static attention dot.
+- [agent_tab_badge](lua/config/agent_tab_badge.md): fallback text prefix used when no dedicated harness icon exists (default `"🤖 "`).
+
+#### Generated tab colors
+
+Wakterm can automatically assign distinct background colors to tabs in the tab bar without requiring custom Lua callbacks:
+
+- [tab_bar_color_mode](lua/config/tab_bar_color_mode.md): `"Off"` (default), `"Hash"` (hash tab identity to color), or `"Assign"` (persist distinct colors across sessions).
+- [tab_bar_color_palette](lua/config/tab_bar_color_palette.md): `"Dark"` (default), `"Light"`, or `"Mixed"`.
+- [tab_bar_color_intensity](lua/config/tab_bar_color_intensity.md): adjust dimming multipliers for active, hover, and inactive states.
+
+```lua
+config.tab_bar_color_mode = 'Assign'
+config.tab_bar_color_palette = 'Dark'
+config.tab_bar_color_intensity = {
+  active = 0.6,
+  hover = 0.5,
+  inactive = 0.4,
+}
+```
+
 In addition, the tab bar colors mentioned below also apply
 to the items displayed in the tab bar.
 

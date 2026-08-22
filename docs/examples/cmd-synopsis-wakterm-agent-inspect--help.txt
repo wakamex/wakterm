@@ -1,0 +1,9 @@
+inspect a single adopted or detected agent by name or id
+
+Usage: wakterm agent inspect <TARGET>
+
+Arguments:
+  <TARGET>  Agent name, stable id, or pane id
+
+Options:
+  -h, --help  Print help

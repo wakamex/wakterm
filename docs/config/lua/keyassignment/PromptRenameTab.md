@@ -1,24 +1,19 @@
 # `PromptRenameTab`
 
-{{since('nightly')}}
+Prompts for a new title for the current tab and applies it when you press Enter.
 
-Prompts for a new title for the current tab and applies it when you press
-<kbd>Enter</kbd>.
+The default shortcut is `Ctrl-Shift-<` (or `Cmd-<` on macOS).
 
-The input field is pre-populated with:
+The input field is pre-populated with the current explicit tab title, if one is set. If the tab uses an automatic title derived from the active agent or process, the prompt starts empty.
 
-* the current explicit tab title, if one is set
-* otherwise the current pane title
+Submitting a non-empty title sets an explicit tab title that is preserved across terminal escape sequences. Submitting an empty title clears any explicit title and returns the tab to automatic naming.
 
 ```lua
 config.keys = {
   {
-    key = 'E',
+    key = '<',
     mods = 'CTRL|SHIFT',
     action = wakterm.action.PromptRenameTab,
   },
 }
 ```
-
-This is a convenience wrapper around the common `PromptInputLine` +
-`window:active_tab():set_title(...)` pattern.

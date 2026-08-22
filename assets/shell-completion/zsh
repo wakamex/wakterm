@@ -14,9 +14,9 @@ _wakterm() {
     fi
 
     local context curcontext="$curcontext" state line
-    _arguments "${_arguments_options[@]}" \
+    _arguments "${_arguments_options[@]}" : \
 '(-n --skip-config)--config-file=[Specify the configuration file to use, overrides the normal configuration file resolution]:CONFIG_FILE:_files' \
-'*--config=[Override specific configuration values]:name=value: ' \
+'*--config=[Override specific configuration values]:name=value:_default' \
 '-n[Skip loading wakterm.lua]' \
 '--skip-config[Skip loading wakterm.lua]' \
 '-h[Print help]' \
@@ -33,12 +33,12 @@ _wakterm() {
         curcontext="${curcontext%:*:*}:wakterm-command-$line[1]:"
         case $line[1] in
             (start)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 '--cwd=[Specify the current working directory for the initially spawned program]:CWD:_files -/' \
-'--class=[Override the default windowing system class. The default is "org.wezfurlong.wakterm". Under X11 and Windows this changes the window class. Under Wayland this changes the app_id. This changes the class for all windows spawned by this instance of wakterm, including error, update and ssh authentication dialogs]:CLASS: ' \
-'--workspace=[Override the default workspace with the provided name. The default is "default"]:WORKSPACE: ' \
-'--position=[Override the position for the initial window launched by this process.]:POSITION: ' \
-'--domain=[Name of the multiplexer domain section from the configuration to which you'\''d like to connect. If omitted, the default domain will be used]:DOMAIN: ' \
+'--class=[Override the default windowing system class. The default is "org.wezfurlong.wakterm". Under X11 and Windows this changes the window class. Under Wayland this changes the app_id. This changes the class for all windows spawned by this instance of wakterm, including error, update and ssh authentication dialogs]:CLASS:_default' \
+'--workspace=[Override the default workspace with the provided name. The default is "default"]:WORKSPACE:_default' \
+'--position=[Override the position for the initial window launched by this process.]:POSITION:_default' \
+'--domain=[Name of the multiplexer domain section from the configuration to which you'\''d like to connect. If omitted, the default domain will be used]:DOMAIN:_default' \
 '--no-auto-connect[If true, do not connect to domains marked as connect_automatically in your wakterm configuration file]' \
 '--always-new-process[If enabled, don'\''t try to ask an existing wakterm GUI instance to start the command.  Instead, always start the GUI in this invocation of wakterm so that you can wait for the command to complete by waiting for this wakterm process to finish]' \
 '(--always-new-process)--new-tab[When spawning into an existing GUI instance, spawn a new tab into the active window rather than spawn a new window]' \
@@ -50,12 +50,12 @@ _arguments "${_arguments_options[@]}" \
 && ret=0
 ;;
 (blocking-start)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 '--cwd=[Specify the current working directory for the initially spawned program]:CWD:_files -/' \
-'--class=[Override the default windowing system class. The default is "org.wezfurlong.wakterm". Under X11 and Windows this changes the window class. Under Wayland this changes the app_id. This changes the class for all windows spawned by this instance of wakterm, including error, update and ssh authentication dialogs]:CLASS: ' \
-'--workspace=[Override the default workspace with the provided name. The default is "default"]:WORKSPACE: ' \
-'--position=[Override the position for the initial window launched by this process.]:POSITION: ' \
-'--domain=[Name of the multiplexer domain section from the configuration to which you'\''d like to connect. If omitted, the default domain will be used]:DOMAIN: ' \
+'--class=[Override the default windowing system class. The default is "org.wezfurlong.wakterm". Under X11 and Windows this changes the window class. Under Wayland this changes the app_id. This changes the class for all windows spawned by this instance of wakterm, including error, update and ssh authentication dialogs]:CLASS:_default' \
+'--workspace=[Override the default workspace with the provided name. The default is "default"]:WORKSPACE:_default' \
+'--position=[Override the position for the initial window launched by this process.]:POSITION:_default' \
+'--domain=[Name of the multiplexer domain section from the configuration to which you'\''d like to connect. If omitted, the default domain will be used]:DOMAIN:_default' \
 '--no-auto-connect[If true, do not connect to domains marked as connect_automatically in your wakterm configuration file]' \
 '--always-new-process[If enabled, don'\''t try to ask an existing wakterm GUI instance to start the command.  Instead, always start the GUI in this invocation of wakterm so that you can wait for the command to complete by waiting for this wakterm process to finish]' \
 '(--always-new-process)--new-tab[When spawning into an existing GUI instance, spawn a new tab into the active window rather than spawn a new window]' \
@@ -67,44 +67,44 @@ _arguments "${_arguments_options[@]}" \
 && ret=0
 ;;
 (ssh)
-_arguments "${_arguments_options[@]}" \
-'*-o+[Override specific SSH configuration options. \`wakterm ssh\` is able to parse some (but not all!) options from your \`~/.ssh/config\` and \`/etc/ssh/ssh_config\` files. This command line switch allows you to override or otherwise specify ssh_config style options]:name=value: ' \
-'*--ssh-option=[Override specific SSH configuration options. \`wakterm ssh\` is able to parse some (but not all!) options from your \`~/.ssh/config\` and \`/etc/ssh/ssh_config\` files. This command line switch allows you to override or otherwise specify ssh_config style options]:name=value: ' \
-'--class=[Override the default windowing system class. The default is "org.wezfurlong.wakterm". Under X11 and Windows this changes the window class. Under Wayland this changes the app_id. This changes the class for all windows spawned by this instance of wakterm, including error, update and ssh authentication dialogs]:CLASS: ' \
-'--position=[Override the position for the initial window launched by this process.]:POSITION: ' \
+_arguments "${_arguments_options[@]}" : \
+'*-o+[Override specific SSH configuration options. \`wakterm ssh\` is able to parse some (but not all!) options from your \`~/.ssh/config\` and \`/etc/ssh/ssh_config\` files. This command line switch allows you to override or otherwise specify ssh_config style options]:name=value:_default' \
+'*--ssh-option=[Override specific SSH configuration options. \`wakterm ssh\` is able to parse some (but not all!) options from your \`~/.ssh/config\` and \`/etc/ssh/ssh_config\` files. This command line switch allows you to override or otherwise specify ssh_config style options]:name=value:_default' \
+'--class=[Override the default windowing system class. The default is "org.wezfurlong.wakterm". Under X11 and Windows this changes the window class. Under Wayland this changes the app_id. This changes the class for all windows spawned by this instance of wakterm, including error, update and ssh authentication dialogs]:CLASS:_default' \
+'--position=[Override the position for the initial window launched by this process.]:POSITION:_default' \
 '-v[Enable verbose ssh protocol tracing. The trace information is printed to the stderr stream of the process]' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':user_at_host_and_port -- Specifies the remote system using the form\: `\[username@\]host\[\:port\]`. If `username@` is omitted, then your local $USER is used instead. If `\:port` is omitted, then the standard ssh port (22) is used instead:' \
+':user_at_host_and_port -- Specifies the remote system using the form\: `\[username@\]host\[\:port\]`. If `username@` is omitted, then your local $USER is used instead. If `\:port` is omitted, then the standard ssh port (22) is used instead:_default' \
 '*::prog -- Instead of executing your shell, run PROG. For example\: `wakterm ssh user@host -- bash -l` will spawn bash as if it were a login shell:_cmdambivalent' \
 && ret=0
 ;;
 (serial)
-_arguments "${_arguments_options[@]}" \
-'--baud=[Set the baud rate.  The default is 9600 baud]:BAUD: ' \
-'--class=[Override the default windowing system class. The default is "org.wezfurlong.wakterm". Under X11 and Windows this changes the window class. Under Wayland this changes the app_id. This changes the class for all windows spawned by this instance of wakterm, including error, update and ssh authentication dialogs]:CLASS: ' \
-'--position=[Override the position for the initial window launched by this process.]:POSITION: ' \
+_arguments "${_arguments_options[@]}" : \
+'--baud=[Set the baud rate.  The default is 9600 baud]:BAUD:_default' \
+'--class=[Override the default windowing system class. The default is "org.wezfurlong.wakterm". Under X11 and Windows this changes the window class. Under Wayland this changes the app_id. This changes the class for all windows spawned by this instance of wakterm, including error, update and ssh authentication dialogs]:CLASS:_default' \
+'--position=[Override the position for the initial window launched by this process.]:POSITION:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':port -- Specifies the serial device name. On Windows systems this can be a name like `COM0`. On posix systems this will be something like `/dev/ttyUSB0`:' \
+':port -- Specifies the serial device name. On Windows systems this can be a name like `COM0`. On posix systems this will be something like `/dev/ttyUSB0`:_default' \
 && ret=0
 ;;
 (connect)
-_arguments "${_arguments_options[@]}" \
-'--class=[Override the default windowing system class. The default is "org.wezfurlong.wakterm". Under X11 and Windows this changes the window class. Under Wayland this changes the app_id. This changes the class for all windows spawned by this instance of wakterm, including error, update and ssh authentication dialogs]:CLASS: ' \
-'--workspace=[Override the default workspace with the provided name. The default is "default"]:WORKSPACE: ' \
-'--position=[Override the position for the initial window launched by this process.]:POSITION: ' \
+_arguments "${_arguments_options[@]}" : \
+'--class=[Override the default windowing system class. The default is "org.wezfurlong.wakterm". Under X11 and Windows this changes the window class. Under Wayland this changes the app_id. This changes the class for all windows spawned by this instance of wakterm, including error, update and ssh authentication dialogs]:CLASS:_default' \
+'--workspace=[Override the default workspace with the provided name. The default is "default"]:WORKSPACE:_default' \
+'--position=[Override the position for the initial window launched by this process.]:POSITION:_default' \
 '--new-tab[When spawning into an existing GUI instance, spawn a new tab into the active window rather than spawn a new window]' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':domain_name -- Name of the multiplexer domain section from the configuration to which you'\''d like to connect:' \
+':domain_name -- Name of the multiplexer domain section from the configuration to which you'\''d like to connect:_default' \
 '*::prog -- Instead of executing your shell, run PROG. For example\: `wakterm start -- bash -l` will spawn bash as if it were a login shell:_cmdambivalent' \
 && ret=0
 ;;
 (ls-fonts)
-_arguments "${_arguments_options[@]}" \
-'(--list-system --codepoints)--text=[Explain which fonts are used to render the supplied text string]:TEXT: ' \
-'(--list-system)--codepoints=[Explain which fonts are used to render the specified unicode code point sequence. Code points are comma separated hex values]:CODEPOINTS: ' \
+_arguments "${_arguments_options[@]}" : \
+'(--list-system --codepoints)--text=[Explain which fonts are used to render the supplied text string]:TEXT:_default' \
+'(--list-system)--codepoints=[Explain which fonts are used to render the specified unicode code point sequence. Code points are comma separated hex values]:CODEPOINTS:_default' \
 '--list-system[Whether to list all fonts available to the system]' \
 '--rasterize-ascii[Show rasterized glyphs for the text in --text or --codepoints using ascii blocks]' \
 '-h[Print help]' \
@@ -112,16 +112,16 @@ _arguments "${_arguments_options[@]}" \
 && ret=0
 ;;
 (show-keys)
-_arguments "${_arguments_options[@]}" \
-'--key-table=[In lua mode, show only the named key table]:KEY_TABLE: ' \
+_arguments "${_arguments_options[@]}" : \
+'--key-table=[In lua mode, show only the named key table]:KEY_TABLE:_default' \
 '--lua[Show the keys as lua config statements]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
 ;;
 (cli)
-_arguments "${_arguments_options[@]}" \
-'--class=[When connecting to a gui instance, if you started the gui with \`--class SOMETHING\`, you should also pass that same value here in order for the client to find the correct gui instance]:CLASS: ' \
+_arguments "${_arguments_options[@]}" : \
+'--class=[When connecting to a gui instance, if you started the gui with \`--class SOMETHING\`, you should also pass that same value here in order for the client to find the correct gui instance]:CLASS:_default' \
 '--no-auto-start[Don'\''t automatically start the server]' \
 '--prefer-mux[Prefer connecting to a background mux server. The default is to prefer connecting to a running wakterm gui instance]' \
 '-h[Print help]' \
@@ -137,49 +137,498 @@ _arguments "${_arguments_options[@]}" \
         curcontext="${curcontext%:*:*}:wakterm-cli-command-$line[1]:"
         case $line[1] in
             (list)
-_arguments "${_arguments_options[@]}" \
-'--format=[Controls the output format. "table" and "json" are possible formats]:FORMAT: ' \
+_arguments "${_arguments_options[@]}" : \
+'--format=[Controls the output format. "table" and "json" are possible formats]:FORMAT:_default' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
 ;;
-(list-clients)
-_arguments "${_arguments_options[@]}" \
-'--format=[Controls the output format. "table" and "json" are possible formats]:FORMAT: ' \
+(agent)
+_arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
+":: :_wakterm__cli__agent_commands" \
+"*::: :->agent" \
+&& ret=0
+
+    case $state in
+    (agent)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-cli-agent-command-$line[1]:"
+        case $line[1] in
+            (start)
+_arguments "${_arguments_options[@]}" : \
+'--name=[Stable human-readable name for this agent. Defaults to codex/claude with a numeric suffix]:NAME:_default' \
+'--pane-id=[Specify the current pane or split target. Defaults to WAKTERM_PANE]:PANE_ID:_default' \
+'--workspace=[Workspace to use when creating a new window]:WORKSPACE:_default' \
+'(--percent)--cells=[Number of cells for the new split]:CELLS:_default' \
+'--percent=[Percentage for the new split]:PERCENT:_default' \
+'--repo=[Repository root or any path inside the target repository]:REPO:_files -/' \
+'--worktree=[Worktree mode\: \`none\`, \`auto\`, or an explicit path]:WORKTREE:_default' \
+'--branch=[Branch to create or checkout before launch]:BRANCH:_default' \
+'--cwd=[Override the launch cwd directly]:CWD:_files -/' \
+'--cmd=[Explicit command line to launch. Overrides the default command for the selected harness]:CMD:_default' \
+'(--split --new-window --workspace --horizontal --left --right --top --bottom --cells --percent)--here[Start the harness in the current pane instead of creating a new pane/tab/window]' \
+'--replace[Replace the current shell process when used with --here]' \
+'(--new-window --workspace)--split[Spawn into a split instead of creating a new tab]' \
+'(--split)--new-window[When not splitting, create a new window instead of a new tab]' \
+'(--left --right --top --bottom)--horizontal[Equivalent to \`--right\`]' \
+'(--right --top --bottom)--left[Split horizontally, with the new pane on the left]' \
+'(--left --top --bottom)--right[Split horizontally, with the new pane on the right]' \
+'(--left --right --bottom)--top[Split vertically, with the new pane on the top]' \
+'(--left --right --top)--bottom[Split vertically, with the new pane on the bottom]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::harness -- Built-in harness to launch. Preferred for claude/codex/gemini/opencode:(claude codex gemini opencode)' \
+&& ret=0
+;;
+(launch)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_wakterm__cli__agent__launch_commands" \
+"*::: :->launch" \
+&& ret=0
+
+    case $state in
+    (launch)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-cli-agent-launch-command-$line[1]:"
+        case $line[1] in
+            (codex)
+_arguments "${_arguments_options[@]}" : \
+'--cwd=[Working directory for the Codex thread. Defaults to the current Wakterm pane cwd]:CWD:_files -/' \
+'--resume=[Resume this exact Codex thread UUID. A failed resume never creates a replacement]:THREAD_ID:_default' \
+'--new-tab[Launch in a new tab instead of using the current Wakterm pane]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::codex_options -- Options passed to the native Codex TUI after `--`:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__cli__agent__launch__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-cli-agent-launch-help-command-$line[1]:"
+        case $line[1] in
+            (codex)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(adopt)
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the target pane. Defaults to WAKTERM_PANE]:PANE_ID:_default' \
+'--name=[Stable human-readable name for this agent]:NAME:_default' \
+'--cmd=[Launch command to use for restart and restore]:CMD:_default' \
+'--cwd=[Override the declared checkout/cwd for this agent]:CWD:_default' \
+'--repo-root=[]:REPO_ROOT:_default' \
+'--worktree=[]:WORKTREE:_default' \
+'--branch=[]:BRANCH:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(adopt-detected)
+_arguments "${_arguments_options[@]}" : \
+'--name=[Override the detected stable name before adoption]:NAME:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Detected agent name, synthetic id, or pane id:_default' \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+'--format=[Controls the output format. "table" and "json" are possible formats]:FORMAT:_default' \
+'--poll-ms=[Poll interval for follow/watch mode]:POLL_MS:_default' \
+'-v[Show pane ids, workspace, turn state, transport, progress, and command]' \
+'--verbose[Show pane ids, workspace, turn state, transport, progress, and command]' \
+'-f[Stream latest observer-backed harness message updates instead of printing a snapshot]' \
+'--follow[Stream latest observer-backed harness message updates instead of printing a snapshot]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+'--format=[Controls the output format. "table" streams tab-separated lines, while "json" streams JSON lines]:FORMAT:_default' \
+'--poll-ms=[Poll interval while streaming updates]:POLL_MS:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(inspect)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Agent name, stable id, or pane id:_default' \
+&& ret=0
+;;
+(output)
+_arguments "${_arguments_options[@]}" : \
+'--after=[Opaque cursor returned by the preceding output read]:CURSOR:_default' \
+'--limit=[Maximum normalized messages to return]:LIMIT:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Agent name, stable id, or pane id:_default' \
+&& ret=0
+;;
+(events)
+_arguments "${_arguments_options[@]}" : \
+'--after=[Return events strictly after this durable global sequence]:AFTER_SEQUENCE:_default' \
+'--limit=[Maximum events to return]:LIMIT:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(capabilities)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(catalog)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(admit)
+_arguments "${_arguments_options[@]}" : \
+'--incarnation=[Opaque process incarnation from \`agent catalog\`]:INCARNATION:_default' \
+'--request-id=[Durable idempotency key]:REQUEST_ID:_default' \
+'--final-timeout-ms=[Asynchronous return-final deadline; zero disables the deadline]:FINAL_TIMEOUT_MS:_default' \
+'--exact-agent-id[Treat TARGET as an opaque agent id and bypass current catalog lookup]' \
+'--no-paste[Send the text directly rather than as a bracketed paste]' \
+'--return-final[Preserve the existing return-final terminal request stream]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Current agent id or unique display name from `agent catalog`:_default' \
+'::text -- Prompt text; reads stdin when omitted:_default' \
+&& ret=0
+;;
+(send)
+_arguments "${_arguments_options[@]}" : \
+'--request-id=[Stable idempotency and correlation id. Generated when omitted]:REQUEST_ID:_default' \
+'--ack-timeout-ms=[Maximum time to wait for observer-backed acknowledgement]:ACK_TIMEOUT_MS:_default' \
+'--ack-poll-ms=[Poll interval while waiting for acknowledgement]:ACK_POLL_MS:_default' \
+'--final-timeout-ms=[Asynchronous final-response deadline. Zero disables the deadline]:FINAL_TIMEOUT_MS:_default' \
+'--no-paste[Send the text directly, rather than as a bracketed paste]' \
+'--no-submit[Do not press Enter after sending the text]' \
+'(--no-submit)--return-final[Durably return this prompt'\''s final response through the request event stream]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Agent name, stable id, or pane id:_default' \
+'::text -- The text to send. If omitted, reads from stdin:_default' \
+&& ret=0
+;;
+(request)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_wakterm__cli__agent__request_commands" \
+"*::: :->request" \
+&& ret=0
+
+    case $state in
+    (request)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-cli-agent-request-command-$line[1]:"
+        case $line[1] in
+            (get)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':request_id:_default' \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+'--after=[Resume after this durable terminal event sequence]:AFTER:_default' \
+'--poll-ms=[Internal observer poll interval for the persistent stream]:POLL_MS:_default' \
+'--once[Return after draining currently available events]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':request_id:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__cli__agent__request__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-cli-agent-request-help-command-$line[1]:"
+        case $line[1] in
+            (get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(interrupt)
+_arguments "${_arguments_options[@]}" : \
+'--ack-timeout-ms=[Maximum time to wait for observer-backed acknowledgement]:ACK_TIMEOUT_MS:_default' \
+'--ack-poll-ms=[Poll interval while waiting for acknowledgement]:ACK_POLL_MS:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Agent name, stable id, or pane id:_default' \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the target pane. Defaults to WAKTERM_PANE]:PANE_ID:_default' \
+'--name=[Stable human-readable name for this agent]:NAME:_default' \
+'--launch-cmd=[Launch command used to recreate this agent on restore]:LAUNCH_CMD:_default' \
+'--cwd=[Override the declared launch cwd]:CWD:_default' \
+'--repo-root=[]:REPO_ROOT:_default' \
+'--worktree=[]:WORKTREE:_default' \
+'--branch=[]:BRANCH:_default' \
+'(--unmanaged-checkout)--managed-checkout[Mark the checkout as being provisioned by wakterm]' \
+'(--managed-checkout)--unmanaged-checkout[Mark the checkout as not being provisioned by wakterm]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(clear)
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the target pane. Defaults to WAKTERM_PANE]:PANE_ID:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__cli__agent__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-cli-agent-help-command-$line[1]:"
+        case $line[1] in
+            (start)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(launch)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__cli__agent__help__launch_commands" \
+"*::: :->launch" \
+&& ret=0
+
+    case $state in
+    (launch)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-cli-agent-help-launch-command-$line[1]:"
+        case $line[1] in
+            (codex)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(adopt)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(adopt-detected)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(inspect)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(output)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(events)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(capabilities)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(catalog)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(admit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(send)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(request)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__cli__agent__help__request_commands" \
+"*::: :->request" \
+&& ret=0
+
+    case $state in
+    (request)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-cli-agent-help-request-command-$line[1]:"
+        case $line[1] in
+            (get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(interrupt)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(clear)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(list-clients)
+_arguments "${_arguments_options[@]}" : \
+'--format=[Controls the output format. "table" and "json" are possible formats]:FORMAT:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(save-layout)
+_arguments "${_arguments_options[@]}" : \
+'--stdout[Print to stdout instead of writing a file]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::file -- Output file (default\: ~/.config/wakterm/layout.json):_files' \
+&& ret=0
+;;
+(restore-layout)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'::file -- Input file (default\: ~/.config/wakterm/layout.json):_files' \
 && ret=0
 ;;
 (proxy)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
 ;;
 (tlscreds)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 '--pem[Output a PEM file encoded copy of the credentials]' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
 && ret=0
 ;;
 (move-pane-to-new-tab)
-_arguments "${_arguments_options[@]}" \
-'--pane-id=[Specify the pane that should be moved. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID: ' \
-'--window-id=[Specify the window into which the new tab will be created. If omitted, the window associated with the current pane is used]:WINDOW_ID: ' \
-'--workspace=[If creating a new window, override the default workspace name with the provided name.  The default name is "default"]:WORKSPACE: ' \
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the pane that should be moved. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID:_default' \
+'--window-id=[Specify the window into which the new tab will be created. If omitted, the window associated with the current pane is used]:WINDOW_ID:_default' \
+'--workspace=[If creating a new window, override the default workspace name with the provided name.  The default name is "default"]:WORKSPACE:_default' \
 '(--window-id)--new-window[Create tab in a new window, rather than the window currently containing the pane]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
 ;;
 (split-pane)
-_arguments "${_arguments_options[@]}" \
-'--pane-id=[Specify the pane that should be split. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID: ' \
-'--cells=[The number of cells that the new split should have. If omitted, 50% of the available space is used]:CELLS: ' \
-'(--cells)--percent=[Specify the number of cells that the new split should have, expressed as a percentage of the available space]:PERCENT: ' \
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the pane that should be split. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID:_default' \
+'--cells=[The number of cells that the new split should have. If omitted, 50% of the available space is used]:CELLS:_default' \
+'(--cells)--percent=[Specify the number of cells that the new split should have, expressed as a percentage of the available space]:PERCENT:_default' \
 '--cwd=[Specify the current working directory for the initially spawned program]:CWD:_files -/' \
-'(--cwd)--move-pane-id=[Instead of spawning a new command, move the specified pane into the newly created split]:MOVE_PANE_ID: ' \
+'(--cwd)--move-pane-id=[Instead of spawning a new command, move the specified pane into the newly created split]:MOVE_PANE_ID:_default' \
 '(--left --right --top --bottom)--horizontal[Equivalent to \`--right\`. If neither this nor any other direction is specified, the default is equivalent to \`--bottom\`]' \
 '(--right --top --bottom)--left[Split horizontally, with the new pane on the left]' \
 '(--left --top --bottom)--right[Split horizontally, with the new pane on the right]' \
@@ -192,12 +641,12 @@ _arguments "${_arguments_options[@]}" \
 && ret=0
 ;;
 (spawn)
-_arguments "${_arguments_options[@]}" \
-'--pane-id=[Specify the current pane. The default is to use the current pane based on the environment variable WAKTERM_PANE. The pane is used to determine the current domain and window]:PANE_ID: ' \
-'--domain-name=[]:DOMAIN_NAME: ' \
-'(--workspace --new-window)--window-id=[Specify the window into which to spawn a tab. If omitted, the window associated with the current pane is used. Cannot be used with \`--workspace\` or \`--new-window\`]:WINDOW_ID: ' \
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the current pane. The default is to use the current pane based on the environment variable WAKTERM_PANE. The pane is used to determine the current domain and window]:PANE_ID:_default' \
+'--domain-name=[]:DOMAIN_NAME:_default' \
+'(--workspace --new-window)--window-id=[Specify the window into which to spawn a tab. If omitted, the window associated with the current pane is used. Cannot be used with \`--workspace\` or \`--new-window\`]:WINDOW_ID:_default' \
 '--cwd=[Specify the current working directory for the initially spawned program]:CWD:_files -/' \
-'--workspace=[When creating a new window, override the default workspace name with the provided name.  The default name is "default". Requires \`--new-window\`]:WORKSPACE: ' \
+'--workspace=[When creating a new window, override the default workspace name with the provided name.  The default name is "default". Requires \`--new-window\`]:WORKSPACE:_default' \
 '--new-window[Spawn into a new window, rather than a new tab]' \
 '-h[Print help]' \
 '--help[Print help]' \
@@ -205,104 +654,104 @@ _arguments "${_arguments_options[@]}" \
 && ret=0
 ;;
 (send-text)
-_arguments "${_arguments_options[@]}" \
-'--pane-id=[Specify the target pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID: ' \
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the target pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID:_default' \
 '--no-paste[Send the text directly, rather than as a bracketed paste]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'::text -- The text to send. If omitted, will read the text from stdin:' \
+'::text -- The text to send. If omitted, will read the text from stdin:_default' \
 && ret=0
 ;;
 (get-text)
-_arguments "${_arguments_options[@]}" \
-'--pane-id=[Specify the target pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID: ' \
-'--start-line=[The starting line number. 0 is the first line of terminal screen. Negative numbers proceed backwards into the scrollback. The default value is unspecified is 0, the first line of the terminal screen]:START_LINE: ' \
-'--end-line=[The ending line number. 0 is the first line of terminal screen. Negative numbers proceed backwards into the scrollback. The default value if unspecified is the bottom of the the terminal screen]:END_LINE: ' \
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the target pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID:_default' \
+'--start-line=[The starting line number. 0 is the first line of terminal screen. Negative numbers proceed backwards into the scrollback. The default value is unspecified is 0, the first line of the terminal screen]:START_LINE:_default' \
+'--end-line=[The ending line number. 0 is the first line of terminal screen. Negative numbers proceed backwards into the scrollback. The default value if unspecified is the bottom of the the terminal screen]:END_LINE:_default' \
 '--escapes[Include escape sequences that color and style the text. If omitted, unattributed text will be returned]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
 ;;
 (activate-pane-direction)
-_arguments "${_arguments_options[@]}" \
-'--pane-id=[Specify the current pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID: ' \
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the current pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID:_default' \
 '-h[Print help]' \
 '--help[Print help]' \
 ':direction -- The direction to switch to:(Up Down Left Right Next Prev)' \
 && ret=0
 ;;
 (get-pane-direction)
-_arguments "${_arguments_options[@]}" \
-'--pane-id=[Specify the current pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID: ' \
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the current pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
 ':direction -- The direction to consider:(Up Down Left Right Next Prev)' \
 && ret=0
 ;;
 (kill-pane)
-_arguments "${_arguments_options[@]}" \
-'--pane-id=[Specify the target pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID: ' \
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the target pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID:_default' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
 ;;
 (activate-pane)
-_arguments "${_arguments_options[@]}" \
-'--pane-id=[Specify the target pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID: ' \
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the target pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID:_default' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
 ;;
 (adjust-pane-size)
-_arguments "${_arguments_options[@]}" \
-'--pane-id=[Specify the target pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID: ' \
-'--amount=[Specify the number of cells to resize by, defaults to 1]:AMOUNT: ' \
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the target pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID:_default' \
+'--amount=[Specify the number of cells to resize by, defaults to 1]:AMOUNT:_default' \
 '-h[Print help]' \
 '--help[Print help]' \
 ':direction -- Specify the direction to resize in:(Up Down Left Right Next Prev)' \
 && ret=0
 ;;
 (activate-tab)
-_arguments "${_arguments_options[@]}" \
-'(--tab-index --tab-relative --no-wrap --pane-id)--tab-id=[Specify the target tab by its id]:TAB_ID: ' \
-'--tab-index=[Specify the target tab by its index within the window that holds the current pane. Indices are 0-based, with 0 being the left-most tab. Negative numbers can be used to reference the right-most tab, so -1 is the right-most tab, -2 is the penultimate tab and so on]:TAB_INDEX: ' \
-'--tab-relative=[Specify the target tab by its relative offset. -1 selects the tab to the left. -2 two tabs to the left. 1 is one tab to the right and so on]:TAB_RELATIVE: ' \
-'--pane-id=[Specify the current pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID: ' \
+_arguments "${_arguments_options[@]}" : \
+'(--tab-index --tab-relative --no-wrap --pane-id)--tab-id=[Specify the target tab by its id]:TAB_ID:_default' \
+'--tab-index=[Specify the target tab by its index within the window that holds the current pane. Indices are 0-based, with 0 being the left-most tab. Negative numbers can be used to reference the right-most tab, so -1 is the right-most tab, -2 is the penultimate tab and so on]:TAB_INDEX:_default' \
+'--tab-relative=[Specify the target tab by its relative offset. -1 selects the tab to the left. -2 two tabs to the left. 1 is one tab to the right and so on]:TAB_RELATIVE:_default' \
+'--pane-id=[Specify the current pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID:_default' \
 '--no-wrap[When used with tab-relative, prevents wrapping around and will instead clamp to the left-most when moving left or right-most when moving right]' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
 && ret=0
 ;;
 (set-tab-title)
-_arguments "${_arguments_options[@]}" \
-'(--pane-id)--tab-id=[Specify the target tab by its id]:TAB_ID: ' \
-'--pane-id=[Specify the current pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID: ' \
+_arguments "${_arguments_options[@]}" : \
+'(--pane-id)--tab-id=[Specify the target tab by its id]:TAB_ID:_default' \
+'--pane-id=[Specify the current pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':title -- The new title for the tab:' \
+':title -- The new title for the tab:_default' \
 && ret=0
 ;;
 (set-window-title)
-_arguments "${_arguments_options[@]}" \
-'(--pane-id)--window-id=[Specify the target window by its id]:WINDOW_ID: ' \
-'--pane-id=[Specify the current pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID: ' \
+_arguments "${_arguments_options[@]}" : \
+'(--pane-id)--window-id=[Specify the target window by its id]:WINDOW_ID:_default' \
+'--pane-id=[Specify the current pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':title -- The new title for the window:' \
+':title -- The new title for the window:_default' \
 && ret=0
 ;;
 (rename-workspace)
-_arguments "${_arguments_options[@]}" \
-'--workspace=[Specify the workspace to rename]:WORKSPACE: ' \
-'--pane-id=[Specify the current pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID: ' \
+_arguments "${_arguments_options[@]}" : \
+'--workspace=[Specify the workspace to rename]:WORKSPACE:_default' \
+'--pane-id=[Specify the current pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID:_default' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
-':new_workspace -- The new name for the workspace:' \
+':new_workspace -- The new name for the workspace:_default' \
 && ret=0
 ;;
 (zoom-pane)
-_arguments "${_arguments_options[@]}" \
-'--pane-id=[Specify the target pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID: ' \
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the target pane. The default is to use the current pane based on the environment variable WAKTERM_PANE]:PANE_ID:_default' \
 '(--unzoom --toggle)--zoom[Zooms the pane if it wasn'\''t already zoomed]' \
 '(--zoom --toggle)--unzoom[Unzooms the pane if it was zoomed]' \
 '(--zoom --unzoom)--toggle[Toggles the zoom state of the pane]' \
@@ -311,7 +760,7 @@ _arguments "${_arguments_options[@]}" \
 && ret=0
 ;;
 (help)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 ":: :_wakterm__cli__help_commands" \
 "*::: :->help" \
 && ret=0
@@ -323,83 +772,649 @@ _arguments "${_arguments_options[@]}" \
         curcontext="${curcontext%:*:*}:wakterm-cli-help-command-$line[1]:"
         case $line[1] in
             (list)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(agent)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__cli__help__agent_commands" \
+"*::: :->agent" \
+&& ret=0
+
+    case $state in
+    (agent)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-cli-help-agent-command-$line[1]:"
+        case $line[1] in
+            (start)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(launch)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__cli__help__agent__launch_commands" \
+"*::: :->launch" \
+&& ret=0
+
+    case $state in
+    (launch)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-cli-help-agent-launch-command-$line[1]:"
+        case $line[1] in
+            (codex)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(adopt)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(adopt-detected)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(inspect)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(output)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(events)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(capabilities)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(catalog)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(admit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(send)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(request)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__cli__help__agent__request_commands" \
+"*::: :->request" \
+&& ret=0
+
+    case $state in
+    (request)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-cli-help-agent-request-command-$line[1]:"
+        case $line[1] in
+            (get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(interrupt)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(clear)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
 (list-clients)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(save-layout)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(restore-layout)
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (proxy)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (tlscreds)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (move-pane-to-new-tab)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (split-pane)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (spawn)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (send-text)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (get-text)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (activate-pane-direction)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (get-pane-direction)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (kill-pane)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (activate-pane)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (adjust-pane-size)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (activate-tab)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (set-tab-title)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (set-window-title)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (rename-workspace)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (zoom-pane)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (help)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(agent)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_wakterm__agent_commands" \
+"*::: :->agent" \
+&& ret=0
+
+    case $state in
+    (agent)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-agent-command-$line[1]:"
+        case $line[1] in
+            (start)
+_arguments "${_arguments_options[@]}" : \
+'--name=[Stable human-readable name for this agent. Defaults to codex/claude with a numeric suffix]:NAME:_default' \
+'--pane-id=[Specify the current pane or split target. Defaults to WAKTERM_PANE]:PANE_ID:_default' \
+'--workspace=[Workspace to use when creating a new window]:WORKSPACE:_default' \
+'(--percent)--cells=[Number of cells for the new split]:CELLS:_default' \
+'--percent=[Percentage for the new split]:PERCENT:_default' \
+'--repo=[Repository root or any path inside the target repository]:REPO:_files -/' \
+'--worktree=[Worktree mode\: \`none\`, \`auto\`, or an explicit path]:WORKTREE:_default' \
+'--branch=[Branch to create or checkout before launch]:BRANCH:_default' \
+'--cwd=[Override the launch cwd directly]:CWD:_files -/' \
+'--cmd=[Explicit command line to launch. Overrides the default command for the selected harness]:CMD:_default' \
+'(--split --new-window --workspace --horizontal --left --right --top --bottom --cells --percent)--here[Start the harness in the current pane instead of creating a new pane/tab/window]' \
+'--replace[Replace the current shell process when used with --here]' \
+'(--new-window --workspace)--split[Spawn into a split instead of creating a new tab]' \
+'(--split)--new-window[When not splitting, create a new window instead of a new tab]' \
+'(--left --right --top --bottom)--horizontal[Equivalent to \`--right\`]' \
+'(--right --top --bottom)--left[Split horizontally, with the new pane on the left]' \
+'(--left --top --bottom)--right[Split horizontally, with the new pane on the right]' \
+'(--left --right --bottom)--top[Split vertically, with the new pane on the top]' \
+'(--left --right --top)--bottom[Split vertically, with the new pane on the bottom]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::harness -- Built-in harness to launch. Preferred for claude/codex/gemini/opencode:(claude codex gemini opencode)' \
+&& ret=0
+;;
+(launch)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_wakterm__agent__launch_commands" \
+"*::: :->launch" \
+&& ret=0
+
+    case $state in
+    (launch)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-agent-launch-command-$line[1]:"
+        case $line[1] in
+            (codex)
+_arguments "${_arguments_options[@]}" : \
+'--cwd=[Working directory for the Codex thread. Defaults to the current Wakterm pane cwd]:CWD:_files -/' \
+'--resume=[Resume this exact Codex thread UUID. A failed resume never creates a replacement]:THREAD_ID:_default' \
+'--new-tab[Launch in a new tab instead of using the current Wakterm pane]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::codex_options -- Options passed to the native Codex TUI after `--`:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__agent__launch__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-agent-launch-help-command-$line[1]:"
+        case $line[1] in
+            (codex)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(adopt)
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the target pane. Defaults to WAKTERM_PANE]:PANE_ID:_default' \
+'--name=[Stable human-readable name for this agent]:NAME:_default' \
+'--cmd=[Launch command to use for restart and restore]:CMD:_default' \
+'--cwd=[Override the declared checkout/cwd for this agent]:CWD:_default' \
+'--repo-root=[]:REPO_ROOT:_default' \
+'--worktree=[]:WORKTREE:_default' \
+'--branch=[]:BRANCH:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(adopt-detected)
+_arguments "${_arguments_options[@]}" : \
+'--name=[Override the detected stable name before adoption]:NAME:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Detected agent name, synthetic id, or pane id:_default' \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+'--format=[Controls the output format. "table" and "json" are possible formats]:FORMAT:_default' \
+'--poll-ms=[Poll interval for follow/watch mode]:POLL_MS:_default' \
+'-v[Show pane ids, workspace, turn state, transport, progress, and command]' \
+'--verbose[Show pane ids, workspace, turn state, transport, progress, and command]' \
+'-f[Stream latest observer-backed harness message updates instead of printing a snapshot]' \
+'--follow[Stream latest observer-backed harness message updates instead of printing a snapshot]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+'--format=[Controls the output format. "table" streams tab-separated lines, while "json" streams JSON lines]:FORMAT:_default' \
+'--poll-ms=[Poll interval while streaming updates]:POLL_MS:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(inspect)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Agent name, stable id, or pane id:_default' \
+&& ret=0
+;;
+(output)
+_arguments "${_arguments_options[@]}" : \
+'--after=[Opaque cursor returned by the preceding output read]:CURSOR:_default' \
+'--limit=[Maximum normalized messages to return]:LIMIT:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Agent name, stable id, or pane id:_default' \
+&& ret=0
+;;
+(events)
+_arguments "${_arguments_options[@]}" : \
+'--after=[Return events strictly after this durable global sequence]:AFTER_SEQUENCE:_default' \
+'--limit=[Maximum events to return]:LIMIT:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(capabilities)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(catalog)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(admit)
+_arguments "${_arguments_options[@]}" : \
+'--incarnation=[Opaque process incarnation from \`agent catalog\`]:INCARNATION:_default' \
+'--request-id=[Durable idempotency key]:REQUEST_ID:_default' \
+'--final-timeout-ms=[Asynchronous return-final deadline; zero disables the deadline]:FINAL_TIMEOUT_MS:_default' \
+'--exact-agent-id[Treat TARGET as an opaque agent id and bypass current catalog lookup]' \
+'--no-paste[Send the text directly rather than as a bracketed paste]' \
+'--return-final[Preserve the existing return-final terminal request stream]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Current agent id or unique display name from `agent catalog`:_default' \
+'::text -- Prompt text; reads stdin when omitted:_default' \
+&& ret=0
+;;
+(send)
+_arguments "${_arguments_options[@]}" : \
+'--request-id=[Stable idempotency and correlation id. Generated when omitted]:REQUEST_ID:_default' \
+'--ack-timeout-ms=[Maximum time to wait for observer-backed acknowledgement]:ACK_TIMEOUT_MS:_default' \
+'--ack-poll-ms=[Poll interval while waiting for acknowledgement]:ACK_POLL_MS:_default' \
+'--final-timeout-ms=[Asynchronous final-response deadline. Zero disables the deadline]:FINAL_TIMEOUT_MS:_default' \
+'--no-paste[Send the text directly, rather than as a bracketed paste]' \
+'--no-submit[Do not press Enter after sending the text]' \
+'(--no-submit)--return-final[Durably return this prompt'\''s final response through the request event stream]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Agent name, stable id, or pane id:_default' \
+'::text -- The text to send. If omitted, reads from stdin:_default' \
+&& ret=0
+;;
+(request)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_wakterm__agent__request_commands" \
+"*::: :->request" \
+&& ret=0
+
+    case $state in
+    (request)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-agent-request-command-$line[1]:"
+        case $line[1] in
+            (get)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':request_id:_default' \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+'--after=[Resume after this durable terminal event sequence]:AFTER:_default' \
+'--poll-ms=[Internal observer poll interval for the persistent stream]:POLL_MS:_default' \
+'--once[Return after draining currently available events]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':request_id:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__agent__request__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-agent-request-help-command-$line[1]:"
+        case $line[1] in
+            (get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(interrupt)
+_arguments "${_arguments_options[@]}" : \
+'--ack-timeout-ms=[Maximum time to wait for observer-backed acknowledgement]:ACK_TIMEOUT_MS:_default' \
+'--ack-poll-ms=[Poll interval while waiting for acknowledgement]:ACK_POLL_MS:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Agent name, stable id, or pane id:_default' \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the target pane. Defaults to WAKTERM_PANE]:PANE_ID:_default' \
+'--name=[Stable human-readable name for this agent]:NAME:_default' \
+'--launch-cmd=[Launch command used to recreate this agent on restore]:LAUNCH_CMD:_default' \
+'--cwd=[Override the declared launch cwd]:CWD:_default' \
+'--repo-root=[]:REPO_ROOT:_default' \
+'--worktree=[]:WORKTREE:_default' \
+'--branch=[]:BRANCH:_default' \
+'(--unmanaged-checkout)--managed-checkout[Mark the checkout as being provisioned by wakterm]' \
+'(--managed-checkout)--unmanaged-checkout[Mark the checkout as not being provisioned by wakterm]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(clear)
+_arguments "${_arguments_options[@]}" : \
+'--pane-id=[Specify the target pane. Defaults to WAKTERM_PANE]:PANE_ID:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__agent__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-agent-help-command-$line[1]:"
+        case $line[1] in
+            (start)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(launch)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__agent__help__launch_commands" \
+"*::: :->launch" \
+&& ret=0
+
+    case $state in
+    (launch)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-agent-help-launch-command-$line[1]:"
+        case $line[1] in
+            (codex)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(adopt)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(adopt-detected)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(inspect)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(output)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(events)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(capabilities)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(catalog)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(admit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(send)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(request)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__agent__help__request_commands" \
+"*::: :->request" \
+&& ret=0
+
+    case $state in
+    (request)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-agent-help-request-command-$line[1]:"
+        case $line[1] in
+            (get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(interrupt)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(clear)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
         esac
@@ -411,15 +1426,15 @@ esac
 esac
 ;;
 (imgcat)
-_arguments "${_arguments_options[@]}" \
-'--width=[Specify the display width; defaults to "auto" which automatically selects an appropriate size.  You may also use an integer value \`N\` to specify the number of cells, or \`Npx\` to specify the number of pixels, or \`N%\` to size relative to the terminal width]:WIDTH: ' \
-'--height=[Specify the display height; defaults to "auto" which automatically selects an appropriate size.  You may also use an integer value \`N\` to specify the number of cells, or \`Npx\` to specify the number of pixels, or \`N%\` to size relative to the terminal height]:HEIGHT: ' \
-'--position=[Set the cursor position prior to displaying the image. The default is to use the current cursor position. Coordinates are expressed in cells with 0,0 being the top left cell position]:POSITION: ' \
+_arguments "${_arguments_options[@]}" : \
+'--width=[Specify the display width; defaults to "auto" which automatically selects an appropriate size.  You may also use an integer value \`N\` to specify the number of cells, or \`Npx\` to specify the number of pixels, or \`N%\` to size relative to the terminal width]:WIDTH:_default' \
+'--height=[Specify the display height; defaults to "auto" which automatically selects an appropriate size.  You may also use an integer value \`N\` to specify the number of cells, or \`Npx\` to specify the number of pixels, or \`N%\` to size relative to the terminal height]:HEIGHT:_default' \
+'--position=[Set the cursor position prior to displaying the image. The default is to use the current cursor position. Coordinates are expressed in cells with 0,0 being the top left cell position]:POSITION:_default' \
 '--tmux-passthru=[How to manage passing the escape through to tmux]:TMUX_PASSTHRU:(disable enable detect)' \
-'--max-pixels=[Set the maximum number of pixels per image frame. Images will be scaled down so that they do not exceed this size, unless \`--no-resample\` is also used. The default value matches the limit set by wakterm. Note that resampling the image here will reduce any animated images to a single frame]:MAX_PIXELS: ' \
+'--max-pixels=[Set the maximum number of pixels per image frame. Images will be scaled down so that they do not exceed this size, unless \`--no-resample\` is also used. The default value matches the limit set by wakterm. Note that resampling the image here will reduce any animated images to a single frame]:MAX_PIXELS:_default' \
 '--resample-format=[Specify the image format to use to encode resampled/resized images.  The default is to match the input format, but you can choose an alternative format]:RESAMPLE_FORMAT:(png jpeg input)' \
 '--resample-filter=[Specify the filtering technique used when resizing/resampling images.  The default is a reasonable middle ground of speed and quality]:RESAMPLE_FILTER:(nearest triangle catmull-rom gaussian lanczos3)' \
-'--resize=[Pre-process the image to resize it to the specified dimensions, expressed as eg\: 800x600 (width x height). The resize is independent of other parameters that control the image placement and dimensions in the terminal; this is provided as a convenience preprocessing step]:WIDTHxHEIGHT: ' \
+'--resize=[Pre-process the image to resize it to the specified dimensions, expressed as eg\: 800x600 (width x height). The resize is independent of other parameters that control the image placement and dimensions in the terminal; this is provided as a convenience preprocessing step]:WIDTHxHEIGHT:_default' \
 '--no-preserve-aspect-ratio[Do not respect the aspect ratio.  The default is to respect the aspect ratio]' \
 '--no-move-cursor[Do not move the cursor after displaying the image. Note that when used like this from the shell, there is a very high chance that shell prompt will overwrite the image; you may wish to also use \`--hold\` in that case]' \
 '--hold[Wait for enter/escape/ctrl-c/ctrl-d to be pressed after displaying the image]' \
@@ -431,7 +1446,7 @@ _arguments "${_arguments_options[@]}" \
 && ret=0
 ;;
 (set-working-directory)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 '--tmux-passthru=[How to manage passing the escape through to tmux]:TMUX_PASSTHRU:(disable enable detect)' \
 '-h[Print help]' \
 '--help[Print help]' \
@@ -440,15 +1455,16 @@ _arguments "${_arguments_options[@]}" \
 && ret=0
 ;;
 (record)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 '--cwd=[Start in the specified directory, instead of the default_cwd defined by your wakterm configuration]:CWD:_files' \
+'-o+[Save asciicast to the specified file, instead of using a random file name in the temp directory]:OUTFILE:_files' \
 '-h[Print help]' \
 '--help[Print help]' \
-'*::prog -- Start prog instead of the default_prog defined by your wakterm configuration:' \
+'*::prog -- Start prog instead of the default_prog defined by your wakterm configuration:_default' \
 && ret=0
 ;;
 (replay)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 '--explain[Explain what is being sent/received]' \
 '(--explain)--explain-only[Don'\''t replay, just show the explanation]' \
 '(--explain)--cat[Just emit raw escape sequences all at once, with no timing information]' \
@@ -458,14 +1474,14 @@ _arguments "${_arguments_options[@]}" \
 && ret=0
 ;;
 (shell-completion)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 '--shell=[Which shell to generate for]:SHELL:(bash elvish fish power-shell zsh fig)' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
 ;;
 (help)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 ":: :_wakterm__help_commands" \
 "*::: :->help" \
 && ret=0
@@ -477,35 +1493,35 @@ _arguments "${_arguments_options[@]}" \
         curcontext="${curcontext%:*:*}:wakterm-help-command-$line[1]:"
         case $line[1] in
             (start)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (blocking-start)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (ssh)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (serial)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (connect)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (ls-fonts)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (show-keys)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (cli)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 ":: :_wakterm__help__cli_commands" \
 "*::: :->cli" \
 && ret=0
@@ -517,79 +1533,335 @@ _arguments "${_arguments_options[@]}" \
         curcontext="${curcontext%:*:*}:wakterm-help-cli-command-$line[1]:"
         case $line[1] in
             (list)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(agent)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__help__cli__agent_commands" \
+"*::: :->agent" \
+&& ret=0
+
+    case $state in
+    (agent)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-help-cli-agent-command-$line[1]:"
+        case $line[1] in
+            (start)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(launch)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__help__cli__agent__launch_commands" \
+"*::: :->launch" \
+&& ret=0
+
+    case $state in
+    (launch)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-help-cli-agent-launch-command-$line[1]:"
+        case $line[1] in
+            (codex)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(adopt)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(adopt-detected)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(inspect)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(output)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(events)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(capabilities)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(catalog)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(admit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(send)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(request)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__help__cli__agent__request_commands" \
+"*::: :->request" \
+&& ret=0
+
+    case $state in
+    (request)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-help-cli-agent-request-command-$line[1]:"
+        case $line[1] in
+            (get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(interrupt)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(clear)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
 (list-clients)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(save-layout)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(restore-layout)
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (proxy)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (tlscreds)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (move-pane-to-new-tab)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (split-pane)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (spawn)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (send-text)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (get-text)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (activate-pane-direction)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (get-pane-direction)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (kill-pane)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (activate-pane)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (adjust-pane-size)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (activate-tab)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (set-tab-title)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (set-window-title)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (rename-workspace)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (zoom-pane)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(agent)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__help__agent_commands" \
+"*::: :->agent" \
+&& ret=0
+
+    case $state in
+    (agent)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-help-agent-command-$line[1]:"
+        case $line[1] in
+            (start)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(launch)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__help__agent__launch_commands" \
+"*::: :->launch" \
+&& ret=0
+
+    case $state in
+    (launch)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-help-agent-launch-command-$line[1]:"
+        case $line[1] in
+            (codex)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(adopt)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(adopt-detected)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(inspect)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(output)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(events)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(capabilities)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(catalog)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(admit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(send)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(request)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__help__agent__request_commands" \
+"*::: :->request" \
+&& ret=0
+
+    case $state in
+    (request)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-help-agent-request-command-$line[1]:"
+        case $line[1] in
+            (get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(interrupt)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(clear)
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
         esac
@@ -597,27 +1869,27 @@ _arguments "${_arguments_options[@]}" \
 esac
 ;;
 (imgcat)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (set-working-directory)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (record)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (replay)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (shell-completion)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (help)
-_arguments "${_arguments_options[@]}" \
+_arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
         esac
@@ -640,6 +1912,7 @@ _wakterm_commands() {
 'ls-fonts:Display information about fonts' \
 'show-keys:Show key assignments' \
 'cli:Interact with experimental mux server' \
+'agent:Start and interact with agents' \
 'imgcat:Output an image to the terminal' \
 'set-working-directory:Advise the terminal of the current working directory by emitting an OSC 7 escape sequence' \
 'record:Record a terminal session as an asciicast' \
@@ -649,88 +1922,349 @@ _wakterm_commands() {
     )
     _describe -t commands 'wakterm commands' commands "$@"
 }
-(( $+functions[_wakterm__cli__activate-pane_commands] )) ||
-_wakterm__cli__activate-pane_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli activate-pane commands' commands "$@"
+(( $+functions[_wakterm__agent_commands] )) ||
+_wakterm__agent_commands() {
+    local commands; commands=(
+'start:start an agent harness in the current pane, a split, a new tab, or a new window' \
+'launch:launch an agent through a mux-owned transport' \
+'adopt:adopt an existing pane as an agent' \
+'adopt-detected:promote a detected harness pane into persistent agent metadata' \
+'list:list adopted and detected agent panes' \
+'watch:stream latest observer-backed harness messages for adopted and detected agent panes' \
+'inspect:inspect a single adopted or detected agent by name or id' \
+'output:read experimental normalized agent output for shadow comparison' \
+'events:read durable normalized Agent API events' \
+'capabilities:print the versioned Wakterm Agent API capabilities' \
+'catalog:print the narrow Wakterm Agent API catalog' \
+'admit:atomically admit and submit an agent prompt' \
+'send:send a message to an agent pane' \
+'request:inspect and stream durable agent return requests' \
+'interrupt:interrupt a native harness turn' \
+'set:attach agent metadata to a pane' \
+'clear:remove agent metadata from a pane' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'wakterm agent commands' commands "$@"
 }
-(( $+functions[_wakterm__cli__help__activate-pane_commands] )) ||
-_wakterm__cli__help__activate-pane_commands() {
+(( $+functions[_wakterm__agent__admit_commands] )) ||
+_wakterm__agent__admit_commands() {
     local commands; commands=()
-    _describe -t commands 'wakterm cli help activate-pane commands' commands "$@"
+    _describe -t commands 'wakterm agent admit commands' commands "$@"
 }
-(( $+functions[_wakterm__help__cli__activate-pane_commands] )) ||
-_wakterm__help__cli__activate-pane_commands() {
+(( $+functions[_wakterm__agent__adopt_commands] )) ||
+_wakterm__agent__adopt_commands() {
     local commands; commands=()
-    _describe -t commands 'wakterm help cli activate-pane commands' commands "$@"
+    _describe -t commands 'wakterm agent adopt commands' commands "$@"
 }
-(( $+functions[_wakterm__cli__activate-pane-direction_commands] )) ||
-_wakterm__cli__activate-pane-direction_commands() {
+(( $+functions[_wakterm__agent__adopt-detected_commands] )) ||
+_wakterm__agent__adopt-detected_commands() {
     local commands; commands=()
-    _describe -t commands 'wakterm cli activate-pane-direction commands' commands "$@"
+    _describe -t commands 'wakterm agent adopt-detected commands' commands "$@"
 }
-(( $+functions[_wakterm__cli__help__activate-pane-direction_commands] )) ||
-_wakterm__cli__help__activate-pane-direction_commands() {
+(( $+functions[_wakterm__agent__capabilities_commands] )) ||
+_wakterm__agent__capabilities_commands() {
     local commands; commands=()
-    _describe -t commands 'wakterm cli help activate-pane-direction commands' commands "$@"
+    _describe -t commands 'wakterm agent capabilities commands' commands "$@"
 }
-(( $+functions[_wakterm__help__cli__activate-pane-direction_commands] )) ||
-_wakterm__help__cli__activate-pane-direction_commands() {
+(( $+functions[_wakterm__agent__catalog_commands] )) ||
+_wakterm__agent__catalog_commands() {
     local commands; commands=()
-    _describe -t commands 'wakterm help cli activate-pane-direction commands' commands "$@"
+    _describe -t commands 'wakterm agent catalog commands' commands "$@"
 }
-(( $+functions[_wakterm__cli__activate-tab_commands] )) ||
-_wakterm__cli__activate-tab_commands() {
+(( $+functions[_wakterm__agent__clear_commands] )) ||
+_wakterm__agent__clear_commands() {
     local commands; commands=()
-    _describe -t commands 'wakterm cli activate-tab commands' commands "$@"
+    _describe -t commands 'wakterm agent clear commands' commands "$@"
 }
-(( $+functions[_wakterm__cli__help__activate-tab_commands] )) ||
-_wakterm__cli__help__activate-tab_commands() {
+(( $+functions[_wakterm__agent__events_commands] )) ||
+_wakterm__agent__events_commands() {
     local commands; commands=()
-    _describe -t commands 'wakterm cli help activate-tab commands' commands "$@"
+    _describe -t commands 'wakterm agent events commands' commands "$@"
 }
-(( $+functions[_wakterm__help__cli__activate-tab_commands] )) ||
-_wakterm__help__cli__activate-tab_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli activate-tab commands' commands "$@"
+(( $+functions[_wakterm__agent__help_commands] )) ||
+_wakterm__agent__help_commands() {
+    local commands; commands=(
+'start:start an agent harness in the current pane, a split, a new tab, or a new window' \
+'launch:launch an agent through a mux-owned transport' \
+'adopt:adopt an existing pane as an agent' \
+'adopt-detected:promote a detected harness pane into persistent agent metadata' \
+'list:list adopted and detected agent panes' \
+'watch:stream latest observer-backed harness messages for adopted and detected agent panes' \
+'inspect:inspect a single adopted or detected agent by name or id' \
+'output:read experimental normalized agent output for shadow comparison' \
+'events:read durable normalized Agent API events' \
+'capabilities:print the versioned Wakterm Agent API capabilities' \
+'catalog:print the narrow Wakterm Agent API catalog' \
+'admit:atomically admit and submit an agent prompt' \
+'send:send a message to an agent pane' \
+'request:inspect and stream durable agent return requests' \
+'interrupt:interrupt a native harness turn' \
+'set:attach agent metadata to a pane' \
+'clear:remove agent metadata from a pane' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'wakterm agent help commands' commands "$@"
 }
-(( $+functions[_wakterm__cli__adjust-pane-size_commands] )) ||
-_wakterm__cli__adjust-pane-size_commands() {
+(( $+functions[_wakterm__agent__help__admit_commands] )) ||
+_wakterm__agent__help__admit_commands() {
     local commands; commands=()
-    _describe -t commands 'wakterm cli adjust-pane-size commands' commands "$@"
+    _describe -t commands 'wakterm agent help admit commands' commands "$@"
 }
-(( $+functions[_wakterm__cli__help__adjust-pane-size_commands] )) ||
-_wakterm__cli__help__adjust-pane-size_commands() {
+(( $+functions[_wakterm__agent__help__adopt_commands] )) ||
+_wakterm__agent__help__adopt_commands() {
     local commands; commands=()
-    _describe -t commands 'wakterm cli help adjust-pane-size commands' commands "$@"
+    _describe -t commands 'wakterm agent help adopt commands' commands "$@"
 }
-(( $+functions[_wakterm__help__cli__adjust-pane-size_commands] )) ||
-_wakterm__help__cli__adjust-pane-size_commands() {
+(( $+functions[_wakterm__agent__help__adopt-detected_commands] )) ||
+_wakterm__agent__help__adopt-detected_commands() {
     local commands; commands=()
-    _describe -t commands 'wakterm help cli adjust-pane-size commands' commands "$@"
+    _describe -t commands 'wakterm agent help adopt-detected commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__capabilities_commands] )) ||
+_wakterm__agent__help__capabilities_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help capabilities commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__catalog_commands] )) ||
+_wakterm__agent__help__catalog_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help catalog commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__clear_commands] )) ||
+_wakterm__agent__help__clear_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help clear commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__events_commands] )) ||
+_wakterm__agent__help__events_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help events commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__help_commands] )) ||
+_wakterm__agent__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help help commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__inspect_commands] )) ||
+_wakterm__agent__help__inspect_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help inspect commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__interrupt_commands] )) ||
+_wakterm__agent__help__interrupt_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help interrupt commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__launch_commands] )) ||
+_wakterm__agent__help__launch_commands() {
+    local commands; commands=(
+'codex:launch Codex through the mux-owned app-server' \
+    )
+    _describe -t commands 'wakterm agent help launch commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__launch__codex_commands] )) ||
+_wakterm__agent__help__launch__codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help launch codex commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__list_commands] )) ||
+_wakterm__agent__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help list commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__output_commands] )) ||
+_wakterm__agent__help__output_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help output commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__request_commands] )) ||
+_wakterm__agent__help__request_commands() {
+    local commands; commands=(
+'get:get one durable return request' \
+'watch:stream terminal return-request events' \
+'cancel:cancel a pending return request' \
+    )
+    _describe -t commands 'wakterm agent help request commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__request__cancel_commands] )) ||
+_wakterm__agent__help__request__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help request cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__request__get_commands] )) ||
+_wakterm__agent__help__request__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help request get commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__request__watch_commands] )) ||
+_wakterm__agent__help__request__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help request watch commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__send_commands] )) ||
+_wakterm__agent__help__send_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help send commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__set_commands] )) ||
+_wakterm__agent__help__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help set commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__start_commands] )) ||
+_wakterm__agent__help__start_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help start commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__watch_commands] )) ||
+_wakterm__agent__help__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help watch commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__inspect_commands] )) ||
+_wakterm__agent__inspect_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent inspect commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__interrupt_commands] )) ||
+_wakterm__agent__interrupt_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent interrupt commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__launch_commands] )) ||
+_wakterm__agent__launch_commands() {
+    local commands; commands=(
+'codex:launch Codex through the mux-owned app-server' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'wakterm agent launch commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__launch__codex_commands] )) ||
+_wakterm__agent__launch__codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent launch codex commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__launch__help_commands] )) ||
+_wakterm__agent__launch__help_commands() {
+    local commands; commands=(
+'codex:launch Codex through the mux-owned app-server' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'wakterm agent launch help commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__launch__help__codex_commands] )) ||
+_wakterm__agent__launch__help__codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent launch help codex commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__launch__help__help_commands] )) ||
+_wakterm__agent__launch__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent launch help help commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__list_commands] )) ||
+_wakterm__agent__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent list commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__output_commands] )) ||
+_wakterm__agent__output_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent output commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__request_commands] )) ||
+_wakterm__agent__request_commands() {
+    local commands; commands=(
+'get:get one durable return request' \
+'watch:stream terminal return-request events' \
+'cancel:cancel a pending return request' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'wakterm agent request commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__request__cancel_commands] )) ||
+_wakterm__agent__request__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent request cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__request__get_commands] )) ||
+_wakterm__agent__request__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent request get commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__request__help_commands] )) ||
+_wakterm__agent__request__help_commands() {
+    local commands; commands=(
+'get:get one durable return request' \
+'watch:stream terminal return-request events' \
+'cancel:cancel a pending return request' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'wakterm agent request help commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__request__help__cancel_commands] )) ||
+_wakterm__agent__request__help__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent request help cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__request__help__get_commands] )) ||
+_wakterm__agent__request__help__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent request help get commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__request__help__help_commands] )) ||
+_wakterm__agent__request__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent request help help commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__request__help__watch_commands] )) ||
+_wakterm__agent__request__help__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent request help watch commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__request__watch_commands] )) ||
+_wakterm__agent__request__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent request watch commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__send_commands] )) ||
+_wakterm__agent__send_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent send commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__set_commands] )) ||
+_wakterm__agent__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent set commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__start_commands] )) ||
+_wakterm__agent__start_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent start commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__watch_commands] )) ||
+_wakterm__agent__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent watch commands' commands "$@"
 }
 (( $+functions[_wakterm__blocking-start_commands] )) ||
 _wakterm__blocking-start_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm blocking-start commands' commands "$@"
 }
-(( $+functions[_wakterm__help__blocking-start_commands] )) ||
-_wakterm__help__blocking-start_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help blocking-start commands' commands "$@"
-}
 (( $+functions[_wakterm__cli_commands] )) ||
 _wakterm__cli_commands() {
     local commands; commands=(
 'list:list windows, tabs and panes' \
+'agent:' \
 'list-clients:list clients' \
+'save-layout:Save the current mux layout' \
+'restore-layout:Restore a saved mux layout' \
 'proxy:start rpc proxy pipe' \
 'tlscreds:obtain tls credentials' \
 'move-pane-to-new-tab:Move a pane into a new tab' \
-'split-pane:split the current pane.
-Outputs the pane-id for the newly created pane on success' \
-'spawn:Spawn a command into a new window or tab
-Outputs the pane-id for the newly created pane on success' \
+'split-pane:split the current pane. Outputs the pane-id for the newly created pane on success' \
+'spawn:Spawn a command into a new window or tab Outputs the pane-id for the newly created pane on success' \
 'send-text:Send text to a pane as though it were pasted. If bracketed paste mode is enabled in the pane, then the text will be sent as a bracketed paste' \
 'get-text:Retrieves the textual content of a pane and output it to stdout' \
 'activate-pane-direction:Activate an adjacent pane in the specified direction' \
@@ -747,85 +2281,374 @@ Outputs the pane-id for the newly created pane on success' \
     )
     _describe -t commands 'wakterm cli commands' commands "$@"
 }
-(( $+functions[_wakterm__help__cli_commands] )) ||
-_wakterm__help__cli_commands() {
+(( $+functions[_wakterm__cli__activate-pane_commands] )) ||
+_wakterm__cli__activate-pane_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli activate-pane commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__activate-pane-direction_commands] )) ||
+_wakterm__cli__activate-pane-direction_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli activate-pane-direction commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__activate-tab_commands] )) ||
+_wakterm__cli__activate-tab_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli activate-tab commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__adjust-pane-size_commands] )) ||
+_wakterm__cli__adjust-pane-size_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli adjust-pane-size commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent_commands] )) ||
+_wakterm__cli__agent_commands() {
     local commands; commands=(
-'list:list windows, tabs and panes' \
-'list-clients:list clients' \
-'proxy:start rpc proxy pipe' \
-'tlscreds:obtain tls credentials' \
-'move-pane-to-new-tab:Move a pane into a new tab' \
-'split-pane:split the current pane.
-Outputs the pane-id for the newly created pane on success' \
-'spawn:Spawn a command into a new window or tab
-Outputs the pane-id for the newly created pane on success' \
-'send-text:Send text to a pane as though it were pasted. If bracketed paste mode is enabled in the pane, then the text will be sent as a bracketed paste' \
-'get-text:Retrieves the textual content of a pane and output it to stdout' \
-'activate-pane-direction:Activate an adjacent pane in the specified direction' \
-'get-pane-direction:Determine the adjacent pane in the specified direction' \
-'kill-pane:Kill a pane' \
-'activate-pane:Activate (focus) a pane' \
-'adjust-pane-size:Adjust the size of a pane directionally' \
-'activate-tab:Activate a tab' \
-'set-tab-title:Change the title of a tab' \
-'set-window-title:Change the title of a window' \
-'rename-workspace:Rename a workspace' \
-'zoom-pane:Zoom, unzoom, or toggle zoom state' \
+'start:start an agent harness in the current pane, a split, a new tab, or a new window' \
+'launch:launch an agent through a mux-owned transport' \
+'adopt:adopt an existing pane as an agent' \
+'adopt-detected:promote a detected harness pane into persistent agent metadata' \
+'list:list adopted and detected agent panes' \
+'watch:stream latest observer-backed harness messages for adopted and detected agent panes' \
+'inspect:inspect a single adopted or detected agent by name or id' \
+'output:read experimental normalized agent output for shadow comparison' \
+'events:read durable normalized Agent API events' \
+'capabilities:print the versioned Wakterm Agent API capabilities' \
+'catalog:print the narrow Wakterm Agent API catalog' \
+'admit:atomically admit and submit an agent prompt' \
+'send:send a message to an agent pane' \
+'request:inspect and stream durable agent return requests' \
+'interrupt:interrupt a native harness turn' \
+'set:attach agent metadata to a pane' \
+'clear:remove agent metadata from a pane' \
+'help:Print this message or the help of the given subcommand(s)' \
     )
-    _describe -t commands 'wakterm help cli commands' commands "$@"
+    _describe -t commands 'wakterm cli agent commands' commands "$@"
 }
-(( $+functions[_wakterm__connect_commands] )) ||
-_wakterm__connect_commands() {
+(( $+functions[_wakterm__cli__agent__admit_commands] )) ||
+_wakterm__cli__agent__admit_commands() {
     local commands; commands=()
-    _describe -t commands 'wakterm connect commands' commands "$@"
+    _describe -t commands 'wakterm cli agent admit commands' commands "$@"
 }
-(( $+functions[_wakterm__help__connect_commands] )) ||
-_wakterm__help__connect_commands() {
+(( $+functions[_wakterm__cli__agent__adopt_commands] )) ||
+_wakterm__cli__agent__adopt_commands() {
     local commands; commands=()
-    _describe -t commands 'wakterm help connect commands' commands "$@"
+    _describe -t commands 'wakterm cli agent adopt commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__adopt-detected_commands] )) ||
+_wakterm__cli__agent__adopt-detected_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent adopt-detected commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__capabilities_commands] )) ||
+_wakterm__cli__agent__capabilities_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent capabilities commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__catalog_commands] )) ||
+_wakterm__cli__agent__catalog_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent catalog commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__clear_commands] )) ||
+_wakterm__cli__agent__clear_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent clear commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__events_commands] )) ||
+_wakterm__cli__agent__events_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent events commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help_commands] )) ||
+_wakterm__cli__agent__help_commands() {
+    local commands; commands=(
+'start:start an agent harness in the current pane, a split, a new tab, or a new window' \
+'launch:launch an agent through a mux-owned transport' \
+'adopt:adopt an existing pane as an agent' \
+'adopt-detected:promote a detected harness pane into persistent agent metadata' \
+'list:list adopted and detected agent panes' \
+'watch:stream latest observer-backed harness messages for adopted and detected agent panes' \
+'inspect:inspect a single adopted or detected agent by name or id' \
+'output:read experimental normalized agent output for shadow comparison' \
+'events:read durable normalized Agent API events' \
+'capabilities:print the versioned Wakterm Agent API capabilities' \
+'catalog:print the narrow Wakterm Agent API catalog' \
+'admit:atomically admit and submit an agent prompt' \
+'send:send a message to an agent pane' \
+'request:inspect and stream durable agent return requests' \
+'interrupt:interrupt a native harness turn' \
+'set:attach agent metadata to a pane' \
+'clear:remove agent metadata from a pane' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'wakterm cli agent help commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__admit_commands] )) ||
+_wakterm__cli__agent__help__admit_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help admit commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__adopt_commands] )) ||
+_wakterm__cli__agent__help__adopt_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help adopt commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__adopt-detected_commands] )) ||
+_wakterm__cli__agent__help__adopt-detected_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help adopt-detected commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__capabilities_commands] )) ||
+_wakterm__cli__agent__help__capabilities_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help capabilities commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__catalog_commands] )) ||
+_wakterm__cli__agent__help__catalog_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help catalog commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__clear_commands] )) ||
+_wakterm__cli__agent__help__clear_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help clear commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__events_commands] )) ||
+_wakterm__cli__agent__help__events_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help events commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__help_commands] )) ||
+_wakterm__cli__agent__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help help commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__inspect_commands] )) ||
+_wakterm__cli__agent__help__inspect_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help inspect commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__interrupt_commands] )) ||
+_wakterm__cli__agent__help__interrupt_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help interrupt commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__launch_commands] )) ||
+_wakterm__cli__agent__help__launch_commands() {
+    local commands; commands=(
+'codex:launch Codex through the mux-owned app-server' \
+    )
+    _describe -t commands 'wakterm cli agent help launch commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__launch__codex_commands] )) ||
+_wakterm__cli__agent__help__launch__codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help launch codex commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__list_commands] )) ||
+_wakterm__cli__agent__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help list commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__output_commands] )) ||
+_wakterm__cli__agent__help__output_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help output commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__request_commands] )) ||
+_wakterm__cli__agent__help__request_commands() {
+    local commands; commands=(
+'get:get one durable return request' \
+'watch:stream terminal return-request events' \
+'cancel:cancel a pending return request' \
+    )
+    _describe -t commands 'wakterm cli agent help request commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__request__cancel_commands] )) ||
+_wakterm__cli__agent__help__request__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help request cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__request__get_commands] )) ||
+_wakterm__cli__agent__help__request__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help request get commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__request__watch_commands] )) ||
+_wakterm__cli__agent__help__request__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help request watch commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__send_commands] )) ||
+_wakterm__cli__agent__help__send_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help send commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__set_commands] )) ||
+_wakterm__cli__agent__help__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help set commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__start_commands] )) ||
+_wakterm__cli__agent__help__start_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help start commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__watch_commands] )) ||
+_wakterm__cli__agent__help__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help watch commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__inspect_commands] )) ||
+_wakterm__cli__agent__inspect_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent inspect commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__interrupt_commands] )) ||
+_wakterm__cli__agent__interrupt_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent interrupt commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__launch_commands] )) ||
+_wakterm__cli__agent__launch_commands() {
+    local commands; commands=(
+'codex:launch Codex through the mux-owned app-server' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'wakterm cli agent launch commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__launch__codex_commands] )) ||
+_wakterm__cli__agent__launch__codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent launch codex commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__launch__help_commands] )) ||
+_wakterm__cli__agent__launch__help_commands() {
+    local commands; commands=(
+'codex:launch Codex through the mux-owned app-server' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'wakterm cli agent launch help commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__launch__help__codex_commands] )) ||
+_wakterm__cli__agent__launch__help__codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent launch help codex commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__launch__help__help_commands] )) ||
+_wakterm__cli__agent__launch__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent launch help help commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__list_commands] )) ||
+_wakterm__cli__agent__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent list commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__output_commands] )) ||
+_wakterm__cli__agent__output_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent output commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__request_commands] )) ||
+_wakterm__cli__agent__request_commands() {
+    local commands; commands=(
+'get:get one durable return request' \
+'watch:stream terminal return-request events' \
+'cancel:cancel a pending return request' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'wakterm cli agent request commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__request__cancel_commands] )) ||
+_wakterm__cli__agent__request__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent request cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__request__get_commands] )) ||
+_wakterm__cli__agent__request__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent request get commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__request__help_commands] )) ||
+_wakterm__cli__agent__request__help_commands() {
+    local commands; commands=(
+'get:get one durable return request' \
+'watch:stream terminal return-request events' \
+'cancel:cancel a pending return request' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'wakterm cli agent request help commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__request__help__cancel_commands] )) ||
+_wakterm__cli__agent__request__help__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent request help cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__request__help__get_commands] )) ||
+_wakterm__cli__agent__request__help__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent request help get commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__request__help__help_commands] )) ||
+_wakterm__cli__agent__request__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent request help help commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__request__help__watch_commands] )) ||
+_wakterm__cli__agent__request__help__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent request help watch commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__request__watch_commands] )) ||
+_wakterm__cli__agent__request__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent request watch commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__send_commands] )) ||
+_wakterm__cli__agent__send_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent send commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__set_commands] )) ||
+_wakterm__cli__agent__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent set commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__start_commands] )) ||
+_wakterm__cli__agent__start_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent start commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__watch_commands] )) ||
+_wakterm__cli__agent__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent watch commands' commands "$@"
 }
 (( $+functions[_wakterm__cli__get-pane-direction_commands] )) ||
 _wakterm__cli__get-pane-direction_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli get-pane-direction commands' commands "$@"
 }
-(( $+functions[_wakterm__cli__help__get-pane-direction_commands] )) ||
-_wakterm__cli__help__get-pane-direction_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli help get-pane-direction commands' commands "$@"
-}
-(( $+functions[_wakterm__help__cli__get-pane-direction_commands] )) ||
-_wakterm__help__cli__get-pane-direction_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli get-pane-direction commands' commands "$@"
-}
 (( $+functions[_wakterm__cli__get-text_commands] )) ||
 _wakterm__cli__get-text_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli get-text commands' commands "$@"
 }
-(( $+functions[_wakterm__cli__help__get-text_commands] )) ||
-_wakterm__cli__help__get-text_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli help get-text commands' commands "$@"
-}
-(( $+functions[_wakterm__help__cli__get-text_commands] )) ||
-_wakterm__help__cli__get-text_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli get-text commands' commands "$@"
-}
 (( $+functions[_wakterm__cli__help_commands] )) ||
 _wakterm__cli__help_commands() {
     local commands; commands=(
 'list:list windows, tabs and panes' \
+'agent:' \
 'list-clients:list clients' \
+'save-layout:Save the current mux layout' \
+'restore-layout:Restore a saved mux layout' \
 'proxy:start rpc proxy pipe' \
 'tlscreds:obtain tls credentials' \
 'move-pane-to-new-tab:Move a pane into a new tab' \
-'split-pane:split the current pane.
-Outputs the pane-id for the newly created pane on success' \
-'spawn:Spawn a command into a new window or tab
-Outputs the pane-id for the newly created pane on success' \
+'split-pane:split the current pane. Outputs the pane-id for the newly created pane on success' \
+'spawn:Spawn a command into a new window or tab Outputs the pane-id for the newly created pane on success' \
 'send-text:Send text to a pane as though it were pasted. If bracketed paste mode is enabled in the pane, then the text will be sent as a bracketed paste' \
 'get-text:Retrieves the textual content of a pane and output it to stdout' \
 'activate-pane-direction:Activate an adjacent pane in the specified direction' \
@@ -842,10 +2665,329 @@ Outputs the pane-id for the newly created pane on success' \
     )
     _describe -t commands 'wakterm cli help commands' commands "$@"
 }
+(( $+functions[_wakterm__cli__help__activate-pane_commands] )) ||
+_wakterm__cli__help__activate-pane_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help activate-pane commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__activate-pane-direction_commands] )) ||
+_wakterm__cli__help__activate-pane-direction_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help activate-pane-direction commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__activate-tab_commands] )) ||
+_wakterm__cli__help__activate-tab_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help activate-tab commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__adjust-pane-size_commands] )) ||
+_wakterm__cli__help__adjust-pane-size_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help adjust-pane-size commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent_commands] )) ||
+_wakterm__cli__help__agent_commands() {
+    local commands; commands=(
+'start:start an agent harness in the current pane, a split, a new tab, or a new window' \
+'launch:launch an agent through a mux-owned transport' \
+'adopt:adopt an existing pane as an agent' \
+'adopt-detected:promote a detected harness pane into persistent agent metadata' \
+'list:list adopted and detected agent panes' \
+'watch:stream latest observer-backed harness messages for adopted and detected agent panes' \
+'inspect:inspect a single adopted or detected agent by name or id' \
+'output:read experimental normalized agent output for shadow comparison' \
+'events:read durable normalized Agent API events' \
+'capabilities:print the versioned Wakterm Agent API capabilities' \
+'catalog:print the narrow Wakterm Agent API catalog' \
+'admit:atomically admit and submit an agent prompt' \
+'send:send a message to an agent pane' \
+'request:inspect and stream durable agent return requests' \
+'interrupt:interrupt a native harness turn' \
+'set:attach agent metadata to a pane' \
+'clear:remove agent metadata from a pane' \
+    )
+    _describe -t commands 'wakterm cli help agent commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__admit_commands] )) ||
+_wakterm__cli__help__agent__admit_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent admit commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__adopt_commands] )) ||
+_wakterm__cli__help__agent__adopt_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent adopt commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__adopt-detected_commands] )) ||
+_wakterm__cli__help__agent__adopt-detected_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent adopt-detected commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__capabilities_commands] )) ||
+_wakterm__cli__help__agent__capabilities_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent capabilities commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__catalog_commands] )) ||
+_wakterm__cli__help__agent__catalog_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent catalog commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__clear_commands] )) ||
+_wakterm__cli__help__agent__clear_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent clear commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__events_commands] )) ||
+_wakterm__cli__help__agent__events_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent events commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__inspect_commands] )) ||
+_wakterm__cli__help__agent__inspect_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent inspect commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__interrupt_commands] )) ||
+_wakterm__cli__help__agent__interrupt_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent interrupt commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__launch_commands] )) ||
+_wakterm__cli__help__agent__launch_commands() {
+    local commands; commands=(
+'codex:launch Codex through the mux-owned app-server' \
+    )
+    _describe -t commands 'wakterm cli help agent launch commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__launch__codex_commands] )) ||
+_wakterm__cli__help__agent__launch__codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent launch codex commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__list_commands] )) ||
+_wakterm__cli__help__agent__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent list commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__output_commands] )) ||
+_wakterm__cli__help__agent__output_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent output commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__request_commands] )) ||
+_wakterm__cli__help__agent__request_commands() {
+    local commands; commands=(
+'get:get one durable return request' \
+'watch:stream terminal return-request events' \
+'cancel:cancel a pending return request' \
+    )
+    _describe -t commands 'wakterm cli help agent request commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__request__cancel_commands] )) ||
+_wakterm__cli__help__agent__request__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent request cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__request__get_commands] )) ||
+_wakterm__cli__help__agent__request__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent request get commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__request__watch_commands] )) ||
+_wakterm__cli__help__agent__request__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent request watch commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__send_commands] )) ||
+_wakterm__cli__help__agent__send_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent send commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__set_commands] )) ||
+_wakterm__cli__help__agent__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent set commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__start_commands] )) ||
+_wakterm__cli__help__agent__start_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent start commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__watch_commands] )) ||
+_wakterm__cli__help__agent__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent watch commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__get-pane-direction_commands] )) ||
+_wakterm__cli__help__get-pane-direction_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help get-pane-direction commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__get-text_commands] )) ||
+_wakterm__cli__help__get-text_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help get-text commands' commands "$@"
+}
 (( $+functions[_wakterm__cli__help__help_commands] )) ||
 _wakterm__cli__help__help_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli help help commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__kill-pane_commands] )) ||
+_wakterm__cli__help__kill-pane_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help kill-pane commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__list_commands] )) ||
+_wakterm__cli__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help list commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__list-clients_commands] )) ||
+_wakterm__cli__help__list-clients_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help list-clients commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__move-pane-to-new-tab_commands] )) ||
+_wakterm__cli__help__move-pane-to-new-tab_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help move-pane-to-new-tab commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__proxy_commands] )) ||
+_wakterm__cli__help__proxy_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help proxy commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__rename-workspace_commands] )) ||
+_wakterm__cli__help__rename-workspace_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help rename-workspace commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__restore-layout_commands] )) ||
+_wakterm__cli__help__restore-layout_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help restore-layout commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__save-layout_commands] )) ||
+_wakterm__cli__help__save-layout_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help save-layout commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__send-text_commands] )) ||
+_wakterm__cli__help__send-text_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help send-text commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__set-tab-title_commands] )) ||
+_wakterm__cli__help__set-tab-title_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help set-tab-title commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__set-window-title_commands] )) ||
+_wakterm__cli__help__set-window-title_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help set-window-title commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__spawn_commands] )) ||
+_wakterm__cli__help__spawn_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help spawn commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__split-pane_commands] )) ||
+_wakterm__cli__help__split-pane_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help split-pane commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__tlscreds_commands] )) ||
+_wakterm__cli__help__tlscreds_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help tlscreds commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__zoom-pane_commands] )) ||
+_wakterm__cli__help__zoom-pane_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help zoom-pane commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__kill-pane_commands] )) ||
+_wakterm__cli__kill-pane_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli kill-pane commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__list_commands] )) ||
+_wakterm__cli__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli list commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__list-clients_commands] )) ||
+_wakterm__cli__list-clients_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli list-clients commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__move-pane-to-new-tab_commands] )) ||
+_wakterm__cli__move-pane-to-new-tab_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli move-pane-to-new-tab commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__proxy_commands] )) ||
+_wakterm__cli__proxy_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli proxy commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__rename-workspace_commands] )) ||
+_wakterm__cli__rename-workspace_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli rename-workspace commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__restore-layout_commands] )) ||
+_wakterm__cli__restore-layout_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli restore-layout commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__save-layout_commands] )) ||
+_wakterm__cli__save-layout_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli save-layout commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__send-text_commands] )) ||
+_wakterm__cli__send-text_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli send-text commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__set-tab-title_commands] )) ||
+_wakterm__cli__set-tab-title_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli set-tab-title commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__set-window-title_commands] )) ||
+_wakterm__cli__set-window-title_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli set-window-title commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__spawn_commands] )) ||
+_wakterm__cli__spawn_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli spawn commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__split-pane_commands] )) ||
+_wakterm__cli__split-pane_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli split-pane commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__tlscreds_commands] )) ||
+_wakterm__cli__tlscreds_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli tlscreds commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__zoom-pane_commands] )) ||
+_wakterm__cli__zoom-pane_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli zoom-pane commands' commands "$@"
+}
+(( $+functions[_wakterm__connect_commands] )) ||
+_wakterm__connect_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm connect commands' commands "$@"
 }
 (( $+functions[_wakterm__help_commands] )) ||
 _wakterm__help_commands() {
@@ -858,6 +3000,7 @@ _wakterm__help_commands() {
 'ls-fonts:Display information about fonts' \
 'show-keys:Show key assignments' \
 'cli:Interact with experimental mux server' \
+'agent:Start and interact with agents' \
 'imgcat:Output an image to the terminal' \
 'set-working-directory:Advise the terminal of the current working directory by emitting an OSC 7 escape sequence' \
 'record:Record a terminal session as an asciicast' \
@@ -866,6 +3009,417 @@ _wakterm__help_commands() {
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'wakterm help commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent_commands] )) ||
+_wakterm__help__agent_commands() {
+    local commands; commands=(
+'start:start an agent harness in the current pane, a split, a new tab, or a new window' \
+'launch:launch an agent through a mux-owned transport' \
+'adopt:adopt an existing pane as an agent' \
+'adopt-detected:promote a detected harness pane into persistent agent metadata' \
+'list:list adopted and detected agent panes' \
+'watch:stream latest observer-backed harness messages for adopted and detected agent panes' \
+'inspect:inspect a single adopted or detected agent by name or id' \
+'output:read experimental normalized agent output for shadow comparison' \
+'events:read durable normalized Agent API events' \
+'capabilities:print the versioned Wakterm Agent API capabilities' \
+'catalog:print the narrow Wakterm Agent API catalog' \
+'admit:atomically admit and submit an agent prompt' \
+'send:send a message to an agent pane' \
+'request:inspect and stream durable agent return requests' \
+'interrupt:interrupt a native harness turn' \
+'set:attach agent metadata to a pane' \
+'clear:remove agent metadata from a pane' \
+    )
+    _describe -t commands 'wakterm help agent commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__admit_commands] )) ||
+_wakterm__help__agent__admit_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent admit commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__adopt_commands] )) ||
+_wakterm__help__agent__adopt_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent adopt commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__adopt-detected_commands] )) ||
+_wakterm__help__agent__adopt-detected_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent adopt-detected commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__capabilities_commands] )) ||
+_wakterm__help__agent__capabilities_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent capabilities commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__catalog_commands] )) ||
+_wakterm__help__agent__catalog_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent catalog commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__clear_commands] )) ||
+_wakterm__help__agent__clear_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent clear commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__events_commands] )) ||
+_wakterm__help__agent__events_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent events commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__inspect_commands] )) ||
+_wakterm__help__agent__inspect_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent inspect commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__interrupt_commands] )) ||
+_wakterm__help__agent__interrupt_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent interrupt commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__launch_commands] )) ||
+_wakterm__help__agent__launch_commands() {
+    local commands; commands=(
+'codex:launch Codex through the mux-owned app-server' \
+    )
+    _describe -t commands 'wakterm help agent launch commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__launch__codex_commands] )) ||
+_wakterm__help__agent__launch__codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent launch codex commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__list_commands] )) ||
+_wakterm__help__agent__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent list commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__output_commands] )) ||
+_wakterm__help__agent__output_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent output commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__request_commands] )) ||
+_wakterm__help__agent__request_commands() {
+    local commands; commands=(
+'get:get one durable return request' \
+'watch:stream terminal return-request events' \
+'cancel:cancel a pending return request' \
+    )
+    _describe -t commands 'wakterm help agent request commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__request__cancel_commands] )) ||
+_wakterm__help__agent__request__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent request cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__request__get_commands] )) ||
+_wakterm__help__agent__request__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent request get commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__request__watch_commands] )) ||
+_wakterm__help__agent__request__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent request watch commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__send_commands] )) ||
+_wakterm__help__agent__send_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent send commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__set_commands] )) ||
+_wakterm__help__agent__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent set commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__start_commands] )) ||
+_wakterm__help__agent__start_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent start commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__watch_commands] )) ||
+_wakterm__help__agent__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent watch commands' commands "$@"
+}
+(( $+functions[_wakterm__help__blocking-start_commands] )) ||
+_wakterm__help__blocking-start_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help blocking-start commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli_commands] )) ||
+_wakterm__help__cli_commands() {
+    local commands; commands=(
+'list:list windows, tabs and panes' \
+'agent:' \
+'list-clients:list clients' \
+'save-layout:Save the current mux layout' \
+'restore-layout:Restore a saved mux layout' \
+'proxy:start rpc proxy pipe' \
+'tlscreds:obtain tls credentials' \
+'move-pane-to-new-tab:Move a pane into a new tab' \
+'split-pane:split the current pane. Outputs the pane-id for the newly created pane on success' \
+'spawn:Spawn a command into a new window or tab Outputs the pane-id for the newly created pane on success' \
+'send-text:Send text to a pane as though it were pasted. If bracketed paste mode is enabled in the pane, then the text will be sent as a bracketed paste' \
+'get-text:Retrieves the textual content of a pane and output it to stdout' \
+'activate-pane-direction:Activate an adjacent pane in the specified direction' \
+'get-pane-direction:Determine the adjacent pane in the specified direction' \
+'kill-pane:Kill a pane' \
+'activate-pane:Activate (focus) a pane' \
+'adjust-pane-size:Adjust the size of a pane directionally' \
+'activate-tab:Activate a tab' \
+'set-tab-title:Change the title of a tab' \
+'set-window-title:Change the title of a window' \
+'rename-workspace:Rename a workspace' \
+'zoom-pane:Zoom, unzoom, or toggle zoom state' \
+    )
+    _describe -t commands 'wakterm help cli commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__activate-pane_commands] )) ||
+_wakterm__help__cli__activate-pane_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli activate-pane commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__activate-pane-direction_commands] )) ||
+_wakterm__help__cli__activate-pane-direction_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli activate-pane-direction commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__activate-tab_commands] )) ||
+_wakterm__help__cli__activate-tab_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli activate-tab commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__adjust-pane-size_commands] )) ||
+_wakterm__help__cli__adjust-pane-size_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli adjust-pane-size commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent_commands] )) ||
+_wakterm__help__cli__agent_commands() {
+    local commands; commands=(
+'start:start an agent harness in the current pane, a split, a new tab, or a new window' \
+'launch:launch an agent through a mux-owned transport' \
+'adopt:adopt an existing pane as an agent' \
+'adopt-detected:promote a detected harness pane into persistent agent metadata' \
+'list:list adopted and detected agent panes' \
+'watch:stream latest observer-backed harness messages for adopted and detected agent panes' \
+'inspect:inspect a single adopted or detected agent by name or id' \
+'output:read experimental normalized agent output for shadow comparison' \
+'events:read durable normalized Agent API events' \
+'capabilities:print the versioned Wakterm Agent API capabilities' \
+'catalog:print the narrow Wakterm Agent API catalog' \
+'admit:atomically admit and submit an agent prompt' \
+'send:send a message to an agent pane' \
+'request:inspect and stream durable agent return requests' \
+'interrupt:interrupt a native harness turn' \
+'set:attach agent metadata to a pane' \
+'clear:remove agent metadata from a pane' \
+    )
+    _describe -t commands 'wakterm help cli agent commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__admit_commands] )) ||
+_wakterm__help__cli__agent__admit_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent admit commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__adopt_commands] )) ||
+_wakterm__help__cli__agent__adopt_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent adopt commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__adopt-detected_commands] )) ||
+_wakterm__help__cli__agent__adopt-detected_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent adopt-detected commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__capabilities_commands] )) ||
+_wakterm__help__cli__agent__capabilities_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent capabilities commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__catalog_commands] )) ||
+_wakterm__help__cli__agent__catalog_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent catalog commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__clear_commands] )) ||
+_wakterm__help__cli__agent__clear_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent clear commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__events_commands] )) ||
+_wakterm__help__cli__agent__events_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent events commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__inspect_commands] )) ||
+_wakterm__help__cli__agent__inspect_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent inspect commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__interrupt_commands] )) ||
+_wakterm__help__cli__agent__interrupt_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent interrupt commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__launch_commands] )) ||
+_wakterm__help__cli__agent__launch_commands() {
+    local commands; commands=(
+'codex:launch Codex through the mux-owned app-server' \
+    )
+    _describe -t commands 'wakterm help cli agent launch commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__launch__codex_commands] )) ||
+_wakterm__help__cli__agent__launch__codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent launch codex commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__list_commands] )) ||
+_wakterm__help__cli__agent__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent list commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__output_commands] )) ||
+_wakterm__help__cli__agent__output_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent output commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__request_commands] )) ||
+_wakterm__help__cli__agent__request_commands() {
+    local commands; commands=(
+'get:get one durable return request' \
+'watch:stream terminal return-request events' \
+'cancel:cancel a pending return request' \
+    )
+    _describe -t commands 'wakterm help cli agent request commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__request__cancel_commands] )) ||
+_wakterm__help__cli__agent__request__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent request cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__request__get_commands] )) ||
+_wakterm__help__cli__agent__request__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent request get commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__request__watch_commands] )) ||
+_wakterm__help__cli__agent__request__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent request watch commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__send_commands] )) ||
+_wakterm__help__cli__agent__send_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent send commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__set_commands] )) ||
+_wakterm__help__cli__agent__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent set commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__start_commands] )) ||
+_wakterm__help__cli__agent__start_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent start commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__watch_commands] )) ||
+_wakterm__help__cli__agent__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent watch commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__get-pane-direction_commands] )) ||
+_wakterm__help__cli__get-pane-direction_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli get-pane-direction commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__get-text_commands] )) ||
+_wakterm__help__cli__get-text_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli get-text commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__kill-pane_commands] )) ||
+_wakterm__help__cli__kill-pane_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli kill-pane commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__list_commands] )) ||
+_wakterm__help__cli__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli list commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__list-clients_commands] )) ||
+_wakterm__help__cli__list-clients_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli list-clients commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__move-pane-to-new-tab_commands] )) ||
+_wakterm__help__cli__move-pane-to-new-tab_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli move-pane-to-new-tab commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__proxy_commands] )) ||
+_wakterm__help__cli__proxy_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli proxy commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__rename-workspace_commands] )) ||
+_wakterm__help__cli__rename-workspace_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli rename-workspace commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__restore-layout_commands] )) ||
+_wakterm__help__cli__restore-layout_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli restore-layout commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__save-layout_commands] )) ||
+_wakterm__help__cli__save-layout_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli save-layout commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__send-text_commands] )) ||
+_wakterm__help__cli__send-text_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli send-text commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__set-tab-title_commands] )) ||
+_wakterm__help__cli__set-tab-title_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli set-tab-title commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__set-window-title_commands] )) ||
+_wakterm__help__cli__set-window-title_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli set-window-title commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__spawn_commands] )) ||
+_wakterm__help__cli__spawn_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli spawn commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__split-pane_commands] )) ||
+_wakterm__help__cli__split-pane_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli split-pane commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__tlscreds_commands] )) ||
+_wakterm__help__cli__tlscreds_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli tlscreds commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__zoom-pane_commands] )) ||
+_wakterm__help__cli__zoom-pane_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli zoom-pane commands' commands "$@"
+}
+(( $+functions[_wakterm__help__connect_commands] )) ||
+_wakterm__help__connect_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help connect commands' commands "$@"
 }
 (( $+functions[_wakterm__help__help_commands] )) ||
 _wakterm__help__help_commands() {
@@ -877,295 +3431,100 @@ _wakterm__help__imgcat_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help imgcat commands' commands "$@"
 }
-(( $+functions[_wakterm__imgcat_commands] )) ||
-_wakterm__imgcat_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm imgcat commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__help__kill-pane_commands] )) ||
-_wakterm__cli__help__kill-pane_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli help kill-pane commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__kill-pane_commands] )) ||
-_wakterm__cli__kill-pane_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli kill-pane commands' commands "$@"
-}
-(( $+functions[_wakterm__help__cli__kill-pane_commands] )) ||
-_wakterm__help__cli__kill-pane_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli kill-pane commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__help__list_commands] )) ||
-_wakterm__cli__help__list_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli help list commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__list_commands] )) ||
-_wakterm__cli__list_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli list commands' commands "$@"
-}
-(( $+functions[_wakterm__help__cli__list_commands] )) ||
-_wakterm__help__cli__list_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli list commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__help__list-clients_commands] )) ||
-_wakterm__cli__help__list-clients_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli help list-clients commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__list-clients_commands] )) ||
-_wakterm__cli__list-clients_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli list-clients commands' commands "$@"
-}
-(( $+functions[_wakterm__help__cli__list-clients_commands] )) ||
-_wakterm__help__cli__list-clients_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli list-clients commands' commands "$@"
-}
 (( $+functions[_wakterm__help__ls-fonts_commands] )) ||
 _wakterm__help__ls-fonts_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help ls-fonts commands' commands "$@"
-}
-(( $+functions[_wakterm__ls-fonts_commands] )) ||
-_wakterm__ls-fonts_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm ls-fonts commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__help__move-pane-to-new-tab_commands] )) ||
-_wakterm__cli__help__move-pane-to-new-tab_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli help move-pane-to-new-tab commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__move-pane-to-new-tab_commands] )) ||
-_wakterm__cli__move-pane-to-new-tab_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli move-pane-to-new-tab commands' commands "$@"
-}
-(( $+functions[_wakterm__help__cli__move-pane-to-new-tab_commands] )) ||
-_wakterm__help__cli__move-pane-to-new-tab_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli move-pane-to-new-tab commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__help__proxy_commands] )) ||
-_wakterm__cli__help__proxy_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli help proxy commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__proxy_commands] )) ||
-_wakterm__cli__proxy_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli proxy commands' commands "$@"
-}
-(( $+functions[_wakterm__help__cli__proxy_commands] )) ||
-_wakterm__help__cli__proxy_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli proxy commands' commands "$@"
 }
 (( $+functions[_wakterm__help__record_commands] )) ||
 _wakterm__help__record_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help record commands' commands "$@"
 }
-(( $+functions[_wakterm__record_commands] )) ||
-_wakterm__record_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm record commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__help__rename-workspace_commands] )) ||
-_wakterm__cli__help__rename-workspace_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli help rename-workspace commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__rename-workspace_commands] )) ||
-_wakterm__cli__rename-workspace_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli rename-workspace commands' commands "$@"
-}
-(( $+functions[_wakterm__help__cli__rename-workspace_commands] )) ||
-_wakterm__help__cli__rename-workspace_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli rename-workspace commands' commands "$@"
-}
 (( $+functions[_wakterm__help__replay_commands] )) ||
 _wakterm__help__replay_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help replay commands' commands "$@"
-}
-(( $+functions[_wakterm__replay_commands] )) ||
-_wakterm__replay_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm replay commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__help__send-text_commands] )) ||
-_wakterm__cli__help__send-text_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli help send-text commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__send-text_commands] )) ||
-_wakterm__cli__send-text_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli send-text commands' commands "$@"
-}
-(( $+functions[_wakterm__help__cli__send-text_commands] )) ||
-_wakterm__help__cli__send-text_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli send-text commands' commands "$@"
 }
 (( $+functions[_wakterm__help__serial_commands] )) ||
 _wakterm__help__serial_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help serial commands' commands "$@"
 }
-(( $+functions[_wakterm__serial_commands] )) ||
-_wakterm__serial_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm serial commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__help__set-tab-title_commands] )) ||
-_wakterm__cli__help__set-tab-title_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli help set-tab-title commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__set-tab-title_commands] )) ||
-_wakterm__cli__set-tab-title_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli set-tab-title commands' commands "$@"
-}
-(( $+functions[_wakterm__help__cli__set-tab-title_commands] )) ||
-_wakterm__help__cli__set-tab-title_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli set-tab-title commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__help__set-window-title_commands] )) ||
-_wakterm__cli__help__set-window-title_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli help set-window-title commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__set-window-title_commands] )) ||
-_wakterm__cli__set-window-title_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli set-window-title commands' commands "$@"
-}
-(( $+functions[_wakterm__help__cli__set-window-title_commands] )) ||
-_wakterm__help__cli__set-window-title_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli set-window-title commands' commands "$@"
-}
 (( $+functions[_wakterm__help__set-working-directory_commands] )) ||
 _wakterm__help__set-working-directory_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help set-working-directory commands' commands "$@"
-}
-(( $+functions[_wakterm__set-working-directory_commands] )) ||
-_wakterm__set-working-directory_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm set-working-directory commands' commands "$@"
 }
 (( $+functions[_wakterm__help__shell-completion_commands] )) ||
 _wakterm__help__shell-completion_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help shell-completion commands' commands "$@"
 }
-(( $+functions[_wakterm__shell-completion_commands] )) ||
-_wakterm__shell-completion_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm shell-completion commands' commands "$@"
-}
 (( $+functions[_wakterm__help__show-keys_commands] )) ||
 _wakterm__help__show-keys_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help show-keys commands' commands "$@"
-}
-(( $+functions[_wakterm__show-keys_commands] )) ||
-_wakterm__show-keys_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm show-keys commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__help__spawn_commands] )) ||
-_wakterm__cli__help__spawn_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli help spawn commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__spawn_commands] )) ||
-_wakterm__cli__spawn_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli spawn commands' commands "$@"
-}
-(( $+functions[_wakterm__help__cli__spawn_commands] )) ||
-_wakterm__help__cli__spawn_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli spawn commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__help__split-pane_commands] )) ||
-_wakterm__cli__help__split-pane_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli help split-pane commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__split-pane_commands] )) ||
-_wakterm__cli__split-pane_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli split-pane commands' commands "$@"
-}
-(( $+functions[_wakterm__help__cli__split-pane_commands] )) ||
-_wakterm__help__cli__split-pane_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli split-pane commands' commands "$@"
 }
 (( $+functions[_wakterm__help__ssh_commands] )) ||
 _wakterm__help__ssh_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help ssh commands' commands "$@"
 }
-(( $+functions[_wakterm__ssh_commands] )) ||
-_wakterm__ssh_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm ssh commands' commands "$@"
-}
 (( $+functions[_wakterm__help__start_commands] )) ||
 _wakterm__help__start_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help start commands' commands "$@"
 }
+(( $+functions[_wakterm__imgcat_commands] )) ||
+_wakterm__imgcat_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm imgcat commands' commands "$@"
+}
+(( $+functions[_wakterm__ls-fonts_commands] )) ||
+_wakterm__ls-fonts_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm ls-fonts commands' commands "$@"
+}
+(( $+functions[_wakterm__record_commands] )) ||
+_wakterm__record_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm record commands' commands "$@"
+}
+(( $+functions[_wakterm__replay_commands] )) ||
+_wakterm__replay_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm replay commands' commands "$@"
+}
+(( $+functions[_wakterm__serial_commands] )) ||
+_wakterm__serial_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm serial commands' commands "$@"
+}
+(( $+functions[_wakterm__set-working-directory_commands] )) ||
+_wakterm__set-working-directory_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm set-working-directory commands' commands "$@"
+}
+(( $+functions[_wakterm__shell-completion_commands] )) ||
+_wakterm__shell-completion_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm shell-completion commands' commands "$@"
+}
+(( $+functions[_wakterm__show-keys_commands] )) ||
+_wakterm__show-keys_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm show-keys commands' commands "$@"
+}
+(( $+functions[_wakterm__ssh_commands] )) ||
+_wakterm__ssh_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm ssh commands' commands "$@"
+}
 (( $+functions[_wakterm__start_commands] )) ||
 _wakterm__start_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm start commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__help__tlscreds_commands] )) ||
-_wakterm__cli__help__tlscreds_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli help tlscreds commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__tlscreds_commands] )) ||
-_wakterm__cli__tlscreds_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli tlscreds commands' commands "$@"
-}
-(( $+functions[_wakterm__help__cli__tlscreds_commands] )) ||
-_wakterm__help__cli__tlscreds_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli tlscreds commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__help__zoom-pane_commands] )) ||
-_wakterm__cli__help__zoom-pane_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli help zoom-pane commands' commands "$@"
-}
-(( $+functions[_wakterm__cli__zoom-pane_commands] )) ||
-_wakterm__cli__zoom-pane_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm cli zoom-pane commands' commands "$@"
-}
-(( $+functions[_wakterm__help__cli__zoom-pane_commands] )) ||
-_wakterm__help__cli__zoom-pane_commands() {
-    local commands; commands=()
-    _describe -t commands 'wakterm help cli zoom-pane commands' commands "$@"
 }
 
 if [ "$funcstack[1]" = "_wakterm" ]; then

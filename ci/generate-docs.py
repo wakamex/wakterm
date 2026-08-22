@@ -231,6 +231,9 @@ TOC = [
         children=[
             Page("Features", "features.md"),
             Page("Agent Harness Lifecycle", "agent-lifecycle.md"),
+            Page("Agent Prompt Submission", "agent-send.md"),
+            Page("Agent API v1 Contract", "agent-api/v1/README.md"),
+            Page("Experimental Agent Output", "agent-output.md"),
             Page("Scrollback", "scrollback.md"),
             Page("Quick Select Mode", "quickselect.md"),
             Page("Copy Mode", "copymode.md"),
@@ -365,6 +368,7 @@ TOC = [
         "CLI Reference",
         "cli/general.md",
         children=[
+            Page("wakterm agent", "cli/agent.md"),
             Gen("wakterm cli", "cli/cli"),
             Page("wakterm connect", "cli/connect.md"),
             Page("wakterm imgcat", "cli/imgcat.md"),

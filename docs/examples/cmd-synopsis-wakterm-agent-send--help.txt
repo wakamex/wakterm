@@ -1,0 +1,25 @@
+send a message to an agent pane
+
+Usage: wakterm agent send [OPTIONS] <TARGET> [TEXT]
+
+Arguments:
+  <TARGET>  Agent name, stable id, or pane id
+  [TEXT]    The text to send. If omitted, reads from stdin
+
+Options:
+      --no-paste
+          Send the text directly, rather than as a bracketed paste
+      --no-submit
+          Do not press Enter after sending the text
+      --return-final
+          Durably return this prompt's final response through the request event stream
+      --request-id <REQUEST_ID>
+          Stable idempotency and correlation id. Generated when omitted
+      --ack-timeout-ms <ACK_TIMEOUT_MS>
+          Maximum time to wait for observer-backed acknowledgement [default: 2000]
+      --ack-poll-ms <ACK_POLL_MS>
+          Poll interval while waiting for acknowledgement [default: 50]
+      --final-timeout-ms <FINAL_TIMEOUT_MS>
+          Asynchronous final-response deadline. Zero disables the deadline [default: 0]
+  -h, --help
+          Print help

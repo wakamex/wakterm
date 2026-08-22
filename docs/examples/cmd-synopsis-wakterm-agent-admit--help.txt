@@ -1,0 +1,23 @@
+atomically admit and submit an agent prompt
+
+Usage: wakterm agent admit [OPTIONS] --incarnation <INCARNATION> --request-id <REQUEST_ID> <TARGET> [TEXT]
+
+Arguments:
+  <TARGET>  Current agent id or unique display name from `agent catalog`
+  [TEXT]    Prompt text; reads stdin when omitted
+
+Options:
+      --exact-agent-id
+          Treat TARGET as an opaque agent id and bypass current catalog lookup
+      --incarnation <INCARNATION>
+          Opaque process incarnation from `agent catalog`
+      --request-id <REQUEST_ID>
+          Durable idempotency key
+      --no-paste
+          Send the text directly rather than as a bracketed paste
+      --return-final
+          Preserve the existing return-final terminal request stream
+      --final-timeout-ms <FINAL_TIMEOUT_MS>
+          Asynchronous return-final deadline; zero disables the deadline [default: 0]
+  -h, --help
+          Print help

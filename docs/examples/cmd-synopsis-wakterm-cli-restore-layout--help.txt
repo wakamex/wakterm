@@ -1,0 +1,9 @@
+Restore a saved mux layout
+
+Usage: wakterm cli restore-layout [FILE]
+
+Arguments:
+  [FILE]  Input file (default: ~/.config/wakterm/layout.json)
+
+Options:
+  -h, --help  Print help

@@ -1,0 +1,14 @@
+interrupt a native harness turn
+
+Usage: wakterm agent interrupt [OPTIONS] <TARGET>
+
+Arguments:
+  <TARGET>  Agent name, stable id, or pane id
+
+Options:
+      --ack-timeout-ms <ACK_TIMEOUT_MS>
+          Maximum time to wait for observer-backed acknowledgement [default: 2000]
+      --ack-poll-ms <ACK_POLL_MS>
+          Poll interval while waiting for acknowledgement [default: 50]
+  -h, --help
+          Print help

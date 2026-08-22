@@ -1,0 +1,10 @@
+promote a detected harness pane into persistent agent metadata
+
+Usage: wakterm agent adopt-detected [OPTIONS] <TARGET>
+
+Arguments:
+  <TARGET>  Detected agent name, synthetic id, or pane id
+
+Options:
+      --name <NAME>  Override the detected stable name before adoption
+  -h, --help         Print help

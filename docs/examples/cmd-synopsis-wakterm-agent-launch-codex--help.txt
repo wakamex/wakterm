@@ -1,0 +1,12 @@
+launch Codex through the mux-owned app-server
+
+Usage: wakterm agent launch codex [OPTIONS] [-- <CODEX_OPTIONS>...]
+
+Arguments:
+  [CODEX_OPTIONS]...  Options passed to the native Codex TUI after `--`
+
+Options:
+      --cwd <CWD>           Working directory for the Codex thread. Defaults to the current Wakterm pane cwd
+      --resume <THREAD_ID>  Resume this exact Codex thread UUID. A failed resume never creates a replacement
+      --new-tab             Launch in a new tab instead of using the current Wakterm pane
+  -h, --help                Print help

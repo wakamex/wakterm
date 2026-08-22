@@ -1,0 +1,28 @@
+start an agent harness in the current pane, a split, a new tab, or a new window
+
+Usage: wakterm agent start [OPTIONS] [HARNESS]
+
+Arguments:
+  [HARNESS]  Built-in harness to launch. Preferred for claude/codex/gemini/opencode [possible values: claude, codex, gemini, opencode]
+
+Options:
+      --here                   Start the harness in the current pane instead of creating a new pane/tab/window
+      --replace                Replace the current shell process when used with --here
+      --name <NAME>            Stable human-readable name for this agent. Defaults to codex/claude with a numeric suffix
+      --split                  Spawn into a split instead of creating a new tab
+      --pane-id <PANE_ID>      Specify the current pane or split target. Defaults to WAKTERM_PANE
+      --new-window             When not splitting, create a new window instead of a new tab
+      --workspace <WORKSPACE>  Workspace to use when creating a new window
+      --horizontal             Equivalent to `--right`
+      --left                   Split horizontally, with the new pane on the left
+      --right                  Split horizontally, with the new pane on the right
+      --top                    Split vertically, with the new pane on the top
+      --bottom                 Split vertically, with the new pane on the bottom
+      --cells <CELLS>          Number of cells for the new split
+      --percent <PERCENT>      Percentage for the new split
+      --repo <REPO>            Repository root or any path inside the target repository
+      --worktree <WORKTREE>    Worktree mode: `none`, `auto`, or an explicit path [default: none]
+      --branch <BRANCH>        Branch to create or checkout before launch
+      --cwd <CWD>              Override the launch cwd directly
+      --cmd <CMD>              Explicit command line to launch. Overrides the default command for the selected harness
+  -h, --help                   Print help

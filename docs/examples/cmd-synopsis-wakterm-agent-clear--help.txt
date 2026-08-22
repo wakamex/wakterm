@@ -1,0 +1,7 @@
+remove agent metadata from a pane
+
+Usage: wakterm agent clear [OPTIONS]
+
+Options:
+      --pane-id <PANE_ID>  Specify the target pane. Defaults to WAKTERM_PANE
+  -h, --help               Print help

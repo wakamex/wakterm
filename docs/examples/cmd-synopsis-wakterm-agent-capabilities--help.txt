@@ -1,0 +1,6 @@
+print the versioned Wakterm Agent API capabilities
+
+Usage: wakterm agent capabilities
+
+Options:
+  -h, --help  Print help

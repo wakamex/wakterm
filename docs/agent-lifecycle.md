@@ -2,17 +2,11 @@
 
 ## Status
 
-Wakterm supports agent harnesses as terminal processes running in PTY panes. It
-can detect supported harnesses, observe provider session state, and adopt
-confirmed sessions into its persistent agent registry. Codex can also be
-started as an app-server TUI: the mux supervises one shared Codex app-server
-and each pane still renders the native Codex TUI.
+Wakterm supports agent harnesses as terminal processes running in PTY panes. It detects supported harnesses (Claude, Codex, Gemini, OpenCode), observes provider session state, and automatically adopts confirmed sessions into its persistent agent registry.
 
-Reliable automatic restoration of adopted harnesses is the next lifecycle
-goal. A structured supervisor that preserves the provider's native TUI is a
-later project. Wakterm-rendered agent presentation is not the normal product
-direction. This document defines the intended boundaries now so that adoption
-and restoration metadata converge on the long-term design.
+Idle Codex sessions are restored automatically across multiplexer restart and system reboot in their declared working directory, resuming the exact confirmed provider session. Codex can also be started as a supervised app-server TUI: the multiplexer supervises one shared Codex app-server while each pane renders the native Codex TUI.
+
+Agent API v1 provides versioned capability negotiation, catalog queries, authoritative prompt admission, durable event streams, and return request tracking. Structured supervisor backends that preserve the provider native TUI remain the long-term direction. Wakterm-rendered agent presentation is not the normal product direction. This document defines the lifecycle boundaries and guarantees.
 
 ## Lifecycle states
 
