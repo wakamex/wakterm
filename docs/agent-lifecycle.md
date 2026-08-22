@@ -72,6 +72,11 @@ Confirmed adoption requires a provider session reference discovered by the
 observer. Depending on the provider, that reference may currently be a session
 file, a database plus session ID, or another provider-owned record.
 
+On Linux, Agy confirmation matches the exact process incarnation to its open
+per-conversation presence lock, then observes that conversation's persistent
+transcript. Wakterm does not select an Agy conversation by modification time or
+working directory alone.
+
 Process IDs are incarnation identifiers only. When a PID is recorded, its
 start time must also match so PID reuse cannot attach stale metadata to an
 unrelated process. Neither value is a durable session identity.
@@ -211,6 +216,7 @@ The provider stance is:
 
 | Provider | Starting preference | Reason |
 | --- | --- | --- |
+| Agy | Native observed PTY; investigate structured supervision | The interactive TUI exposes exact conversation presence and a persistent transcript; stream JSON and state callbacks apply to managed launches rather than attachment to an existing TUI |
 | Gemini | Native TUI; investigate same-session supervision | Direct ACP makes the client the UI unless Gemini supports concurrent native-TUI attachment |
 | OpenCode | Native TUI; investigate same-session supervision | Direct ACP is not sufficient if it replaces the provider TUI |
 | Claude | Native observed and restorable PTY | Remote Control preserves the TUI but exposes no supported local observer; reverse-engineered `--sdk-url`, SDK, and ACP paths are headless, cloud-constrained, or infer state from a PTY |
@@ -222,6 +228,10 @@ protocol, adapter, provider, or Wakterm layer before changing a transport.
 
 Useful upstream references:
 
+- [Agy title generation](https://antigravity.google/docs/cli/title)
+- [Agy hooks](https://antigravity.google/docs/hooks)
+- [Agy headless and stream JSON mode](https://antigravity.google/docs/cli/headless/)
+- [Agy exact conversation resume](https://antigravity.google/docs/cli/commands/resume)
 - [Agent Client Protocol](https://agentclientprotocol.com/)
 - [Claude ACP adapter Rust evaluation](claude-acp-rust-evaluation.md)
 - [Gemini CLI ACP mode](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/acp-mode.md)

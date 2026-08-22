@@ -595,7 +595,13 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_codex_session(
     };
 
     let observed = match observing_harness {
-        AgentHarness::Agy => Ok(None),
+        AgentHarness::Agy => observe_agy(
+            cwd,
+            runtime.session_path.as_deref(),
+            runtime.observer_started_at,
+            metadata.adopted_pid,
+            metadata.adopted_start_time,
+        ),
         AgentHarness::Claude => observe_claude(
             cwd,
             runtime.session_path.as_deref(),
@@ -712,7 +718,9 @@ pub fn pending_observer_detail(
 
     let updated_after = runtime.observer_started_at;
     match runtime.harness {
-        AgentHarness::Agy => None,
+        AgentHarness::Agy => describe_pending_agy_observer(cwd, updated_after)
+            .ok()
+            .flatten(),
         AgentHarness::Claude => describe_pending_claude_observer(cwd, updated_after)
             .ok()
             .flatten(),
@@ -750,6 +758,253 @@ struct HarnessObservationDetails {
     turn_state: AgentTurnState,
     last_turn_completed_at: Option<DateTime<Utc>>,
     observed_turn: Option<AgentObservedTurn>,
+}
+
+fn observe_agy(
+    _cwd: &str,
+    preferred_session: Option<&str>,
+    _updated_after: Option<DateTime<Utc>>,
+    process_id: Option<u32>,
+    process_start_time: Option<u64>,
+) -> anyhow::Result<Option<HarnessObservation>> {
+    let Some(root) = agy_root() else {
+        return Ok(None);
+    };
+    let Some(transcript) =
+        agy_session_owned_by_process(&root, process_id, process_start_time, preferred_session)?
+    else {
+        return Ok(None);
+    };
+    let modified_at = DateTime::<Utc>::from(fs::metadata(&transcript)?.modified()?);
+    let details = read_last_agy_observation(&transcript)?;
+    Ok(Some(HarnessObservation {
+        session_path: Some(transcript.to_string_lossy().to_string()),
+        progress_summary: details.progress_summary,
+        harness_mode: details.harness_mode,
+        turn_phase: details.turn_phase,
+        updated_at: details.updated_at.or(Some(modified_at)),
+        turn_state: details.turn_state,
+        last_turn_completed_at: details.last_turn_completed_at,
+        observed_turn: details.observed_turn,
+    }))
+}
+
+#[cfg(target_os = "linux")]
+fn agy_session_owned_by_process(
+    root: &Path,
+    process_id: Option<u32>,
+    process_start_time: Option<u64>,
+    preferred_session: Option<&str>,
+) -> anyhow::Result<Option<PathBuf>> {
+    let (Some(process_id), Some(process_start_time)) = (process_id, process_start_time) else {
+        return Ok(None);
+    };
+    if linux_process_started_at(Some(process_id), Some(process_start_time)).is_none() {
+        return Ok(None);
+    }
+
+    let presence_root = root.join("presence");
+    let canonical_presence_root = presence_root
+        .canonicalize()
+        .unwrap_or_else(|_| presence_root.clone());
+    let canonical_preferred = preferred_session
+        .map(Path::new)
+        .map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+    let mut candidates = Vec::new();
+
+    let Ok(entries) = fs::read_dir(format!("/proc/{process_id}/fd")) else {
+        return Ok(None);
+    };
+    for entry in entries.flatten() {
+        let Ok(path) = fs::read_link(entry.path()) else {
+            continue;
+        };
+        let canonical_path = path.canonicalize().unwrap_or(path);
+        if canonical_path.parent() != Some(canonical_presence_root.as_path())
+            || canonical_path.extension().and_then(|ext| ext.to_str()) != Some("lock")
+        {
+            continue;
+        }
+        let Some(conversation_id) = canonical_path.file_stem().and_then(|name| name.to_str())
+        else {
+            continue;
+        };
+        if !is_uuid(conversation_id) {
+            continue;
+        }
+        let transcript = root
+            .join("brain")
+            .join(conversation_id)
+            .join(".system_generated")
+            .join("logs")
+            .join("transcript.jsonl");
+        if !transcript.is_file() {
+            continue;
+        }
+        let canonical_transcript = transcript.canonicalize().unwrap_or(transcript);
+        if canonical_preferred.as_ref() == Some(&canonical_transcript) {
+            return Ok(Some(canonical_transcript));
+        }
+        candidates.push(canonical_transcript);
+    }
+
+    candidates.sort_unstable();
+    candidates.dedup();
+    Ok((candidates.len() == 1).then(|| candidates.remove(0)))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn agy_session_owned_by_process(
+    _root: &Path,
+    _process_id: Option<u32>,
+    _process_start_time: Option<u64>,
+    _preferred_session: Option<&str>,
+) -> anyhow::Result<Option<PathBuf>> {
+    Ok(None)
+}
+
+fn read_last_agy_observation(path: &Path) -> anyhow::Result<HarnessObservationDetails> {
+    let conversation_id = path
+        .ancestors()
+        .nth(3)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or("agy");
+    let mut latest_record = None;
+    let mut latest_cursor = None;
+    let mut latest_at = None;
+    let mut user_record = None;
+
+    visit_lines_reverse(path, |line| {
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            return Ok(false);
+        };
+        let step_index = record.get("step_index").and_then(Value::as_u64);
+        let record_at = record
+            .get("created_at")
+            .and_then(Value::as_str)
+            .and_then(parse_rfc3339_timestamp);
+        if latest_record.is_none()
+            && record.get("type").and_then(Value::as_str) != Some("SYSTEM_MESSAGE")
+        {
+            latest_cursor = step_index;
+            latest_at = record_at;
+            latest_record = Some(record.clone());
+        }
+        if record.get("type").and_then(Value::as_str) == Some("USER_INPUT") {
+            user_record = Some(record);
+            return Ok(true);
+        }
+        Ok(false)
+    })?;
+
+    let Some(latest) = latest_record else {
+        return Ok(HarnessObservationDetails {
+            progress_summary: None,
+            harness_mode: None,
+            turn_phase: None,
+            updated_at: None,
+            turn_state: AgentTurnState::Unknown,
+            last_turn_completed_at: None,
+            observed_turn: None,
+        });
+    };
+    let Some(user) = user_record else {
+        return Ok(HarnessObservationDetails {
+            progress_summary: None,
+            harness_mode: None,
+            turn_phase: None,
+            updated_at: latest_at,
+            turn_state: AgentTurnState::Unknown,
+            last_turn_completed_at: None,
+            observed_turn: None,
+        });
+    };
+
+    let user_cursor = user.get("step_index").and_then(Value::as_u64);
+    let user_at = user
+        .get("created_at")
+        .and_then(Value::as_str)
+        .and_then(parse_rfc3339_timestamp);
+    let user_message = user
+        .get("content")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty());
+    let status = latest.get("status").and_then(Value::as_str);
+    let final_message = (latest.get("type").and_then(Value::as_str) == Some("PLANNER_RESPONSE")
+        && status == Some("DONE")
+        && latest
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .map(Vec::is_empty)
+            .unwrap_or(true))
+    .then(|| latest.get("content").and_then(Value::as_str))
+    .flatten()
+    .map(str::trim)
+    .filter(|message| !message.is_empty())
+    .map(str::to_string);
+    let aborted = matches!(
+        status,
+        Some("ERROR" | "CANCELED" | "CANCELLED" | "INTERRUPTED" | "HALTED" | "INVALID")
+    );
+    let (outcome, turn_state, completed_at, turn_phase) = if final_message.is_some() {
+        (
+            AgentObservedTurnOutcome::Completed,
+            AgentTurnState::WaitingOnUser,
+            latest_at,
+            Some("final_answer".to_string()),
+        )
+    } else if aborted {
+        (
+            AgentObservedTurnOutcome::Aborted,
+            AgentTurnState::WaitingOnUser,
+            latest_at,
+            Some("aborted".to_string()),
+        )
+    } else {
+        (
+            AgentObservedTurnOutcome::Running,
+            AgentTurnState::WaitingOnAgent,
+            None,
+            Some("working".to_string()),
+        )
+    };
+    let provider_turn_id = format!(
+        "{conversation_id}:{}",
+        user_cursor
+            .map(|cursor| cursor.to_string())
+            .unwrap_or_else(|| "current".to_string())
+    );
+    let progress_summary = final_message.as_deref().map(truncate_summary);
+
+    Ok(HarnessObservationDetails {
+        progress_summary,
+        harness_mode: None,
+        turn_phase,
+        updated_at: latest_at,
+        turn_state,
+        last_turn_completed_at: completed_at,
+        observed_turn: Some(AgentObservedTurn {
+            provider_turn_id,
+            outcome,
+            started_at: user_at,
+            completed_at,
+            started_cursor: user_cursor,
+            latest_cursor,
+            primary_user_message_sha256: user_message.map(message_sha256),
+            user_message_count: 1,
+            final_message,
+        }),
+    })
+}
+
+fn is_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
 }
 
 fn settle_codex_turn_interrupted_by_process_restart(
@@ -880,7 +1135,7 @@ fn observe_codex(
         settle_codex_turn_interrupted_by_process_restart(
             &mut details,
             modified,
-            codex_process_started_at(process_id, process_start_time),
+            linux_process_started_at(process_id, process_start_time),
         );
         return Ok(Some(HarnessObservation {
             session_path: Some(process_session.to_string_lossy().to_string()),
@@ -1133,6 +1388,20 @@ fn describe_pending_claude_observer(
     }))
 }
 
+fn describe_pending_agy_observer(
+    _cwd: &str,
+    _updated_after: Option<DateTime<Utc>>,
+) -> anyhow::Result<Option<String>> {
+    let Some(root) = agy_root() else {
+        return Ok(None);
+    };
+    Ok(Some(if root.join("presence").is_dir() {
+        "agy process has not exposed a matching conversation transcript yet".to_string()
+    } else {
+        "agy conversation storage has not appeared yet".to_string()
+    }))
+}
+
 fn describe_pending_codex_observer(
     cwd: &str,
     updated_after: Option<DateTime<Utc>>,
@@ -1262,6 +1531,12 @@ fn claude_sessions_root() -> Option<PathBuf> {
         .or_else(|| home_dir().map(|home| home.join(".claude").join("projects")))
 }
 
+fn agy_root() -> Option<PathBuf> {
+    std::env::var_os("WAKETERM_AGENT_AGY_DIR")
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|home| home.join(".gemini").join("antigravity-cli")))
+}
+
 fn codex_sessions_root() -> Option<PathBuf> {
     std::env::var_os("WAKTERM_AGENT_CODEX_DIR")
         .map(PathBuf::from)
@@ -1307,7 +1582,7 @@ pub fn codex_resume_command(launch_cmd: &str, session_id: &str) -> anyhow::Resul
 
 pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> Vec<PathBuf> {
     let paths = match harness {
-        AgentHarness::Agy => None,
+        AgentHarness::Agy => agy_root().map(|root| vec![root.join("presence"), root.join("brain")]),
         AgentHarness::Claude => claude_sessions_root().map(|root| {
             let project = root.join(cwd.replace('/', "-"));
             if project.is_dir() {
@@ -1399,7 +1674,7 @@ pub fn codex_session_id(path: &Path) -> anyhow::Result<Option<String>> {
 }
 
 #[cfg(target_os = "linux")]
-fn codex_process_started_at(
+fn linux_process_started_at(
     process_id: Option<u32>,
     expected_start_time: Option<u64>,
 ) -> Option<std::time::SystemTime> {
@@ -1442,7 +1717,7 @@ fn codex_session_owned_by_process(
     let (Some(process_id), Some(process_start_time)) = (process_id, process_start_time) else {
         return Ok(None);
     };
-    if codex_process_started_at(Some(process_id), Some(process_start_time)).is_none() {
+    if linux_process_started_at(Some(process_id), Some(process_start_time)).is_none() {
         return Ok(None);
     }
 
@@ -2638,6 +2913,7 @@ mod test {
     use super::*;
     use chrono::{Datelike, TimeZone};
     use std::collections::HashMap;
+    use std::io::Write;
     use std::path::PathBuf;
     use std::sync::Mutex;
     use tempfile::TempDir;
@@ -2743,6 +3019,219 @@ mod test {
             infer_harness("python agent.py", None),
             AgentHarness::Unknown
         );
+    }
+
+    fn write_agy_transcript(root: &Path, conversation_id: &str, records: &[Value]) -> PathBuf {
+        let transcript = root
+            .join("brain")
+            .join(conversation_id)
+            .join(".system_generated")
+            .join("logs")
+            .join("transcript.jsonl");
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        let body = records
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&transcript, format!("{body}\n")).unwrap();
+        transcript
+    }
+
+    #[test]
+    fn observes_agy_running_and_completed_turns_from_transcript() {
+        let temp = TempDir::new().unwrap();
+        let transcript = write_agy_transcript(
+            temp.path(),
+            "conversation-1",
+            &[
+                serde_json::json!({
+                    "step_index": 10,
+                    "type": "USER_INPUT",
+                    "status": "DONE",
+                    "source": "USER_EXPLICIT",
+                    "created_at": "2026-08-22T16:00:00Z",
+                    "content": "Fix the lifecycle"
+                }),
+                serde_json::json!({
+                    "step_index": 11,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "source": "MODEL",
+                    "created_at": "2026-08-22T16:00:01Z",
+                    "tool_calls": [{"name": "ViewFile"}]
+                }),
+                serde_json::json!({
+                    "step_index": 12,
+                    "type": "GENERIC",
+                    "status": "RUNNING",
+                    "source": "MODEL",
+                    "created_at": "2026-08-22T16:00:02Z",
+                    "content": "tool output"
+                }),
+            ],
+        );
+
+        let running = read_last_agy_observation(&transcript).unwrap();
+        assert_eq!(running.turn_state, AgentTurnState::WaitingOnAgent);
+        assert_eq!(running.turn_phase.as_deref(), Some("working"));
+        let turn = running.observed_turn.unwrap();
+        assert_eq!(turn.provider_turn_id, "conversation-1:10");
+        assert_eq!(turn.outcome, AgentObservedTurnOutcome::Running);
+        assert_eq!(turn.started_cursor, Some(10));
+        assert_eq!(turn.latest_cursor, Some(12));
+        let expected_user_hash = message_sha256("Fix the lifecycle");
+        assert_eq!(
+            turn.primary_user_message_sha256.as_deref(),
+            Some(expected_user_hash.as_str())
+        );
+
+        let mut transcript_file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .unwrap();
+        writeln!(
+            transcript_file,
+            "{}",
+            serde_json::json!({
+                "step_index": 13,
+                "type": "PLANNER_RESPONSE",
+                "status": "DONE",
+                "source": "MODEL",
+                "created_at": "2026-08-22T16:00:03Z",
+                "content": "Lifecycle fixed.",
+                "tool_calls": []
+            })
+        )
+        .unwrap();
+
+        let completed = read_last_agy_observation(&transcript).unwrap();
+        assert_eq!(completed.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(completed.turn_phase.as_deref(), Some("final_answer"));
+        assert_eq!(
+            completed.progress_summary.as_deref(),
+            Some("Lifecycle fixed.")
+        );
+        let turn = completed.observed_turn.unwrap();
+        assert_eq!(turn.outcome, AgentObservedTurnOutcome::Completed);
+        assert_eq!(turn.latest_cursor, Some(13));
+        assert_eq!(turn.final_message.as_deref(), Some("Lifecycle fixed."));
+        assert_eq!(
+            turn.completed_at,
+            Some(Utc.with_ymd_and_hms(2026, 8, 22, 16, 0, 3).unwrap())
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn observes_agy_session_owned_by_exact_process_incarnation() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let conversation_id = "b572d5a0-c9e0-4770-933a-083af5c453b4";
+        let transcript = write_agy_transcript(
+            temp.path(),
+            conversation_id,
+            &[
+                serde_json::json!({
+                    "step_index": 0,
+                    "type": "USER_INPUT",
+                    "status": "DONE",
+                    "source": "USER_EXPLICIT",
+                    "created_at": "2026-08-22T16:00:00Z",
+                    "content": "Inspect this"
+                }),
+                serde_json::json!({
+                    "step_index": 1,
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "source": "MODEL",
+                    "created_at": "2026-08-22T16:00:01Z",
+                    "content": "Done",
+                    "tool_calls": []
+                }),
+            ],
+        );
+        let presence_dir = temp.path().join("presence");
+        std::fs::create_dir_all(&presence_dir).unwrap();
+        let _presence_lock =
+            std::fs::File::create(presence_dir.join(format!("{conversation_id}.lock"))).unwrap();
+        let _malformed_transcript = write_agy_transcript(temp.path(), "not-a-uuid", &[]);
+        let _malformed_lock = std::fs::File::create(presence_dir.join("not-a-uuid.lock")).unwrap();
+        let process = LocalProcessInfo::with_root_pid(std::process::id()).unwrap();
+
+        let observed = agy_session_owned_by_process(
+            temp.path(),
+            Some(process.pid),
+            Some(process.start_time),
+            None,
+        )
+        .unwrap();
+        assert_eq!(observed.as_deref(), Some(transcript.as_path()));
+        assert!(agy_session_owned_by_process(
+            temp.path(),
+            Some(process.pid),
+            Some(process.start_time + 1),
+            None,
+        )
+        .unwrap()
+        .is_none());
+
+        let second_conversation_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let _second_transcript = write_agy_transcript(temp.path(), second_conversation_id, &[]);
+        let second_lock =
+            std::fs::File::create(presence_dir.join(format!("{second_conversation_id}.lock")))
+                .unwrap();
+        assert!(agy_session_owned_by_process(
+            temp.path(),
+            Some(process.pid),
+            Some(process.start_time),
+            None,
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(
+            agy_session_owned_by_process(
+                temp.path(),
+                Some(process.pid),
+                Some(process.start_time),
+                transcript.to_str(),
+            )
+            .unwrap()
+            .as_deref(),
+            Some(transcript.as_path())
+        );
+        drop(second_lock);
+        std::fs::remove_file(presence_dir.join(format!("{second_conversation_id}.lock"))).unwrap();
+
+        set_env_path("WAKETERM_AGENT_AGY_DIR", temp.path());
+        let metadata = AgentMetadata {
+            agent_id: "agy-observer".to_string(),
+            name: "agy-observer".to_string(),
+            launch_cmd: "agy --dangerously-skip-permissions".to_string(),
+            declared_cwd: "/code/wakterm".to_string(),
+            adopted_pid: Some(process.pid),
+            adopted_start_time: Some(process.start_time),
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+            codex_app_server: None,
+        };
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.foreground_process_name = Some("/home/test/.local/bin/agy".to_string());
+        refresh_runtime_from_harness(&mut runtime, &metadata);
+        remove_env_var("WAKETERM_AGENT_AGY_DIR");
+
+        let transcript_string = transcript.to_string_lossy().to_string();
+        assert_eq!(runtime.harness, AgentHarness::Agy);
+        assert_eq!(runtime.transport, AgentTransport::ObservedPty);
+        assert_eq!(
+            runtime.session_path.as_deref(),
+            Some(transcript_string.as_str())
+        );
+        assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(runtime.progress_summary.as_deref(), Some("Done"));
     }
 
     #[test]

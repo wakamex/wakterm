@@ -14,8 +14,8 @@ See [CHANGELOG-FORK.md](CHANGELOG-FORK.md) for the detailed fork fix history.
 - Fixed upstream OOM where stuck SynchronizedOutput caused unbounded memory growth ([details](docs/mux-server-memory.md))
 
 **Agent harnesses**
-- Claude, Codex, Gemini, and OpenCode are first-class citizens
-- Start them directly with `wakterm agent start claude|codex|gemini|opencode`
+- Agy, Claude, Codex, Gemini, and OpenCode are first-class citizens
+- Start them directly with `wakterm agent start agy|claude|codex|gemini|opencode`
 - Launch Codex through the mux-owned app-server with `wakterm agent launch codex`
 - Watch live progress across running harnesses with `wakterm agent watch` or `wakterm agent list -f`
 - Run experimental normalized Codex shadow reads with opaque cursors using `wakterm agent output`

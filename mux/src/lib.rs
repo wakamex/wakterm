@@ -7916,6 +7916,7 @@ mod test {
         };
         let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
         let cases = [
+            (155, "agy", "/usr/bin/agy", crate::agent::AgentHarness::Agy),
             (
                 156,
                 "claude",

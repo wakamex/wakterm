@@ -11,7 +11,7 @@ hide:
 
 * Runs on Linux, macOS, and Windows
 * [Multiplex terminal panes, tabs and windows on local and remote hosts, with native mouse and scrollback](multiplexing.md)
-* Claude, Codex, Gemini, and OpenCode work as first-class [agent harness panes](agent-lifecycle.md)
+* Agy, Claude, Codex, Gemini, and OpenCode work as first-class [agent harness panes](agent-lifecycle.md)
 * <a href="https://github.com/tonsky/FiraCode#fira-code-monospaced-font-with-programming-ligatures">Ligatures</a>, Color Emoji and font fallback, with true color and [dynamic color schemes](config/appearance.md).
 * [Hyperlinks](hyperlinks.md)
 * [A full list of features can be found here](features.md)
