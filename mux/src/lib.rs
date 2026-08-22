@@ -2573,6 +2573,16 @@ impl Mux {
     }
 
     pub fn record_agent_output(&self, pane_id: PaneId) {
+        if let (Some(metadata), Some(pane)) = (
+            self.get_agent_metadata_for_pane(pane_id),
+            self.get_pane(pane_id),
+        ) {
+            let process = pane.get_foreground_process_info(CachePolicy::AllowStale);
+            if !adopted_agent_matches_process_info(metadata.as_ref(), process.as_ref()) {
+                self.clear_agent_metadata(pane_id);
+            }
+        }
+
         if self.get_agent_metadata_for_pane(pane_id).is_none() {
             if self
                 .mirrored_agent_harness_by_pane
@@ -6002,6 +6012,99 @@ mod test {
 
         assert!(mux.list_agents().is_empty());
         assert!(mux.get_agent_metadata_for_pane(pane_id).is_none());
+    }
+
+    #[test]
+    fn pane_output_replaces_stale_agent_folder_title_after_harness_restart() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let personal_pane = FakePane::new(42, size, domain.id);
+        let transcribe_pane = FakePane::new_detected(
+            43,
+            size,
+            domain.id,
+            "codex",
+            "/code/transcribe",
+            "/usr/bin/codex",
+            &["codex"],
+        );
+        let replaced_pane_id = transcribe_pane.pane_id();
+        tab.assign_pane(&personal_pane);
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: crate::tab::SplitDirection::Horizontal,
+                target_is_second: true,
+                size: crate::tab::SplitSize::Percent(50),
+                top_level: false,
+            },
+            transcribe_pane.clone(),
+        )
+        .unwrap();
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_pane(&transcribe_pane).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let mut personal = sample_agent_metadata("personal_codex");
+        personal.declared_cwd = "/code/personal".to_string();
+        mux.set_mirrored_agent_metadata(personal_pane.pane_id(), Some(&personal));
+        let mut transcribe = sample_agent_metadata("transcribe_codex");
+        transcribe.declared_cwd = "/code/transcribe".to_string();
+        mux.set_agent_metadata(replaced_pane_id, transcribe)
+            .unwrap();
+
+        assert_eq!(
+            mux.effective_tab_titles_for_window(window_id)
+                .get(&tab.tab_id())
+                .map(String::as_str),
+            Some("personal+transcribe")
+        );
+
+        let (mut replacement, _) = FakePane::new_detected_counted(
+            replaced_pane_id,
+            size,
+            domain.id,
+            "codex",
+            "/code/personal",
+            "/usr/bin/codex",
+            &["codex"],
+        );
+        let process = Arc::get_mut(&mut replacement)
+            .expect("replacement pane is uniquely owned")
+            .foreground_process_info
+            .as_mut()
+            .expect("replacement process info");
+        process.pid = 2;
+        process.start_time = 2;
+        mux.panes
+            .write()
+            .insert(replaced_pane_id, replacement as Arc<dyn Pane>);
+
+        mux.record_agent_output(replaced_pane_id);
+
+        assert!(mux.get_agent_metadata_for_pane(replaced_pane_id).is_none());
+        assert!(mux.detected_agent_panes.read().contains(&replaced_pane_id));
+        assert_eq!(
+            mux.effective_tab_titles_for_window(window_id)
+                .get(&tab.tab_id())
+                .map(String::as_str),
+            Some("personal")
+        );
     }
 
     #[test]
