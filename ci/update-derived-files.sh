@@ -25,6 +25,14 @@ if [ -z "${STRIP_BIN:-}" ]; then
   fi
 fi
 
+if [ -z "${NARROW_BIN:-}" ]; then
+  NARROW_BIN="$(dirname "$WAKTERM_BIN")/examples/narrow"
+fi
+if [ ! -x "$NARROW_BIN" ]; then
+  echo "Error: narrow helper $NARROW_BIN not found. Build it with 'cargo build --example narrow' or set NARROW_BIN." >&2
+  exit 1
+fi
+
 gui_bin="$(dirname "$WAKTERM_BIN")/wakterm-gui"
 if [ ! -x "$gui_bin" ]; then
   echo "Error: companion GUI binary $gui_bin not found. wakterm show-keys requires wakterm-gui in the same directory as wakterm." >&2
@@ -35,21 +43,25 @@ trim_file() {
   perl -pe 's/[ \t]+$//' | perl -0777 -pe 's/^\n+|\n\K\n+$//g'
 }
 
+active_tmp=""
 cleanup_tmp() {
-  rm -f docs/examples/*.tmp.* assets/shell-completion/*.tmp.*
+  if [ -n "$active_tmp" ]; then
+    rm -f -- "$active_tmp"
+  fi
 }
 trap cleanup_tmp EXIT
 
 generate_file() {
   local target="$1"
   shift
-  local tmp
-  tmp=$(mktemp "${target}.tmp.XXXXXX")
-  if "$@" > "$tmp"; then
-    mv -f "$tmp" "$target"
+  active_tmp=$(mktemp "${target}.tmp.XXXXXX")
+  if "$@" > "$active_tmp"; then
+    mv -f "$active_tmp" "$target"
+    active_tmp=""
   else
     local status=$?
-    rm -f "$tmp"
+    rm -f -- "$active_tmp"
+    active_tmp=""
     return "$status"
   fi
 }
@@ -67,7 +79,7 @@ render_key_table() {
 }
 
 render_synopsis() {
-  cargo run --example narrow "$WAKTERM_BIN" "$@" | "$STRIP_BIN" | trim_file
+  "$NARROW_BIN" "$WAKTERM_BIN" "$@" | "$STRIP_BIN" | trim_file
 }
 
 for shell in bash zsh fish ; do
@@ -79,60 +91,90 @@ for mode in copy_mode search_mode ; do
   generate_file "$fname" render_key_table "$mode"
 done
 
-generate_file docs/examples/cmd-synopsis-wakterm--help.txt render_synopsis --help
+synopsis_commands=(
+  ""
+  "start"
+  "ssh"
+  "serial"
+  "connect"
+  "ls-fonts"
+  "show-keys"
+  "agent"
+  "imgcat"
+  "set-working-directory"
+  "record"
+  "replay"
+  "cli activate-pane"
+  "cli activate-pane-direction"
+  "cli adjust-pane-size"
+  "cli activate-tab"
+  "cli get-pane-direction"
+  "cli get-text"
+  "cli kill-pane"
+  "cli list"
+  "cli list-clients"
+  "cli move-pane-to-new-tab"
+  "cli rename-workspace"
+  "cli restore-layout"
+  "cli save-layout"
+  "cli send-text"
+  "cli set-tab-title"
+  "cli set-window-title"
+  "cli spawn"
+  "cli split-pane"
+  "cli zoom-pane"
+  "agent start"
+  "agent launch"
+  "agent launch codex"
+  "agent adopt"
+  "agent adopt-detected"
+  "agent list"
+  "agent watch"
+  "agent inspect"
+  "agent output"
+  "agent events"
+  "agent capabilities"
+  "agent catalog"
+  "agent admit"
+  "agent send"
+  "agent request"
+  "agent request get"
+  "agent request watch"
+  "agent request cancel"
+  "agent interrupt"
+  "agent set"
+  "agent clear"
+)
 
-for cmd in start ssh serial connect ls-fonts show-keys agent imgcat set-working-directory record replay ; do
-  generate_file "docs/examples/cmd-synopsis-wakterm-${cmd}--help.txt" render_synopsis "$cmd" --help
+generated_synopses=()
+for command_path in "${synopsis_commands[@]}"; do
+  command_suffix=${command_path// /-}
+  target="docs/examples/cmd-synopsis-wakterm${command_suffix:+-${command_suffix}}--help.txt"
+  command_args=()
+  if [ -n "$command_path" ]; then
+    read -r -a command_args <<< "$command_path"
+  fi
+  generate_file "$target" render_synopsis "${command_args[@]}" --help
+  generated_synopses+=("$target")
 done
 
-for cmd in \
-    activate-pane \
-    activate-pane-direction \
-    adjust-pane-size \
-    activate-tab \
-    get-pane-direction \
-    get-text \
-    kill-pane \
-    list \
-    list-clients \
-    move-pane-to-new-tab \
-    rename-workspace \
-    restore-layout \
-    save-layout \
-    send-text \
-    set-tab-title \
-    set-window-title \
-    spawn \
-    split-pane \
-    zoom-pane \
-    ; do
-  generate_file "docs/examples/cmd-synopsis-wakterm-cli-${cmd}--help.txt" render_synopsis cli "$cmd" --help
-done
+was_generated() {
+  local expected="$1"
+  local generated
+  for generated in "${generated_synopses[@]}"; do
+    if [ "$generated" = "$expected" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
-for cmd in \
-    start \
-    launch \
-    adopt \
-    adopt-detected \
-    list \
-    watch \
-    inspect \
-    output \
-    events \
-    capabilities \
-    catalog \
-    admit \
-    send \
-    request \
-    interrupt \
-    set \
-    clear \
-    ; do
-  generate_file "docs/examples/cmd-synopsis-wakterm-agent-${cmd}--help.txt" render_synopsis agent "$cmd" --help
-done
-
-generate_file "docs/examples/cmd-synopsis-wakterm-agent-launch-codex--help.txt" render_synopsis agent launch codex --help
-
-for sub in get watch cancel ; do
-  generate_file "docs/examples/cmd-synopsis-wakterm-agent-request-${sub}--help.txt" render_synopsis agent request "$sub" --help
-done
+while IFS= read -r synopsis; do
+  if ! was_generated "docs/examples/$synopsis"; then
+    echo "Error: documentation includes a synopsis that is not in synopsis_commands: $synopsis" >&2
+    exit 1
+  fi
+done < <(
+  find docs -type f \( -name '*.md' -o -name '*.markdown' \) -exec \
+    grep -hoE 'cmd-synopsis-[^" ]+\.txt' {} + | sort -u
+)
