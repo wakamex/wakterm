@@ -259,6 +259,7 @@ pub fn harness_icon_stack_glyph(mask: u8) -> Option<char> {
     }
 }
 
+// Epsilon-1 simplification of the traced Antigravity mark: 35 points.
 pub const HARNESS_ICON_AGY_POLY: &[Poly] = &[Poly {
     path: &[
         PolyCommand::MoveTo(
@@ -266,18 +267,39 @@ pub const HARNESS_ICON_AGY_POLY: &[Poly] = &[Poly {
             BlockCoord::SquareFrac(5, 120),
         ),
         PolyCommand::LineTo(
+            BlockCoord::SquareFrac(65, 120),
+            BlockCoord::SquareFrac(5, 120),
+        ),
+        PolyCommand::LineTo(
             BlockCoord::SquareFrac(71, 120),
             BlockCoord::SquareFrac(7, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(76, 120),
+            BlockCoord::SquareFrac(11, 120),
         ),
         PolyCommand::LineTo(
             BlockCoord::SquareFrac(82, 120),
             BlockCoord::SquareFrac(19, 120),
         ),
         PolyCommand::LineTo(
+            BlockCoord::SquareFrac(86, 120),
+            BlockCoord::SquareFrac(28, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(100, 120),
+            BlockCoord::SquareFrac(74, 120),
+        ),
+        PolyCommand::LineTo(
             BlockCoord::SquareFrac(106, 120),
             BlockCoord::SquareFrac(89, 120),
         ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(111, 120),
+            BlockCoord::SquareFrac(98, 120),
+        ),
         PolyCommand::LineTo(BlockCoord::SquareOne, BlockCoord::SquareFrac(109, 120)),
+        PolyCommand::LineTo(BlockCoord::SquareOne, BlockCoord::SquareFrac(113, 120)),
         PolyCommand::LineTo(
             BlockCoord::SquareFrac(118, 120),
             BlockCoord::SquareFrac(115, 120),
@@ -287,8 +309,20 @@ pub const HARNESS_ICON_AGY_POLY: &[Poly] = &[Poly {
             BlockCoord::SquareFrac(115, 120),
         ),
         PolyCommand::LineTo(
+            BlockCoord::SquareFrac(108, 120),
+            BlockCoord::SquareFrac(113, 120),
+        ),
+        PolyCommand::LineTo(
             BlockCoord::SquareFrac(102, 120),
             BlockCoord::SquareFrac(108, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(97, 120),
+            BlockCoord::SquareFrac(103, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(91, 120),
+            BlockCoord::SquareFrac(94, 120),
         ),
         PolyCommand::LineTo(
             BlockCoord::SquareFrac(77, 120),
@@ -300,6 +334,10 @@ pub const HARNESS_ICON_AGY_POLY: &[Poly] = &[Poly {
         ),
         PolyCommand::LineTo(
             BlockCoord::SquareFrac(62, 120),
+            BlockCoord::SquareFrac(65, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(55, 120),
             BlockCoord::SquareFrac(65, 120),
         ),
         PolyCommand::LineTo(
@@ -315,6 +353,10 @@ pub const HARNESS_ICON_AGY_POLY: &[Poly] = &[Poly {
             BlockCoord::SquareFrac(102, 120),
         ),
         PolyCommand::LineTo(
+            BlockCoord::SquareFrac(19, 120),
+            BlockCoord::SquareFrac(107, 120),
+        ),
+        PolyCommand::LineTo(
             BlockCoord::SquareFrac(13, 120),
             BlockCoord::SquareFrac(112, 120),
         ),
@@ -322,8 +364,16 @@ pub const HARNESS_ICON_AGY_POLY: &[Poly] = &[Poly {
             BlockCoord::SquareFrac(8, 120),
             BlockCoord::SquareFrac(115, 120),
         ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(2, 120),
+            BlockCoord::SquareFrac(115, 120),
+        ),
         PolyCommand::LineTo(BlockCoord::SquareZero, BlockCoord::SquareFrac(114, 120)),
         PolyCommand::LineTo(BlockCoord::SquareZero, BlockCoord::SquareFrac(110, 120)),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(8, 120),
+            BlockCoord::SquareFrac(100, 120),
+        ),
         PolyCommand::LineTo(
             BlockCoord::SquareFrac(17, 120),
             BlockCoord::SquareFrac(83, 120),
@@ -331,6 +381,10 @@ pub const HARNESS_ICON_AGY_POLY: &[Poly] = &[Poly {
         PolyCommand::LineTo(
             BlockCoord::SquareFrac(36, 120),
             BlockCoord::SquareFrac(25, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(41, 120),
+            BlockCoord::SquareFrac(16, 120),
         ),
         PolyCommand::LineTo(
             BlockCoord::SquareFrac(47, 120),

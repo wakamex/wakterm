@@ -7,6 +7,7 @@ pane is an agent pane.
 
 Initial targets:
 
+- Agy
 - Claude
 - Codex
 - Gemini
@@ -21,12 +22,12 @@ There are now two realistic implementation paths:
 - cached hardcoded vector sprites
 - packaged image assets (PNG or build-time-rasterized SVG)
 
-For the current product shape, where we only need four fixed icons, the
+For the current product shape, where we only need five fixed icons, the
 recommended first implementation is:
 
 - fancy tab bar only
 - active-pane harness only
-- hardcoded vector icon definitions for the four supported harnesses
+- hardcoded vector icon definitions for the five supported harnesses
 - rasterize each icon once into the existing atlas as a cached sprite
 - render the cached sprite beside the tab title
 
@@ -106,6 +107,7 @@ Where `TabHarnessIcon` is a small GUI enum, for example:
 
 ```rust
 enum TabHarnessIcon {
+    Agy,
     Claude,
     Codex,
     Gemini,
@@ -167,7 +169,7 @@ The implementation is runtime-hardcoded, but the authoring process is:
 1. start from an official asset when possible
 2. if needed, trace or flatten it into a monochrome polygon-like SVG
 3. simplify candidate outlines and render a review sheet
-4. choose the lowest-complexity version that still reads at tiny tab size
+4. choose the highest-fidelity version whose point count is already modest
 5. hand-convert the chosen shape into `PolyCommand` data in
    `wakterm-gui/src/customglyph.rs`
 6. build and inspect the real fancy tab bar before shipping
@@ -188,6 +190,14 @@ not the final asset.
 
 Simplification is optional. If the original or traced source already reads best
 at tab size, ship that instead of forcing a lower-complexity version.
+
+Treat point count as a sufficiency budget, not an objective to minimize. Compare
+the absolute point count, number of subpaths, and shape type before accepting a
+more aggressive simplification. Curved marks need enough closely spaced points
+to avoid visible facets. Once a candidate is already comparable in complexity
+to the existing icons, prefer the smoother result unless removing more points
+has a concrete rendering or maintenance benefit. Review candidates at the
+actual small render sizes as well as on the large review sheet.
 
 Example usage:
 
@@ -387,7 +397,7 @@ Use the existing GUI image/sprite atlas infrastructure.
 
 ## Done When
 
-- Tabs with active Claude/Codex/Gemini/OpenCode panes show a small icon beside
+- Tabs with active Agy/Claude/Codex/Gemini/OpenCode panes show a small icon beside
   the title in the fancy tab bar.
 - Switching panes in a split tab updates the icon correctly.
 - Reconnect/attach restores icons correctly.
