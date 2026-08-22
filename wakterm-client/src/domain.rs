@@ -2513,6 +2513,13 @@ mod test {
                     _ => "tab".to_string(),
                 })
                 .collect(),
+            effective_tab_titles: tabs
+                .iter()
+                .map(|node| match node {
+                    PaneNode::Leaf(entry) => format!("tab-{}", entry.tab_id),
+                    _ => "tab".to_string(),
+                })
+                .collect(),
             tab_badges: tabs.iter().map(|_| AgentTabBadgeState::default()).collect(),
             agents: vec![],
             tab_rss_bytes: HashMap::new(),
@@ -2538,6 +2545,13 @@ mod test {
     fn panes_response_without_view_state(tabs: Vec<PaneNode>) -> ListPanesResponse {
         ListPanesResponse {
             tab_titles: tabs
+                .iter()
+                .map(|node| match node {
+                    PaneNode::Leaf(entry) => format!("tab-{}", entry.tab_id),
+                    _ => "tab".to_string(),
+                })
+                .collect(),
+            effective_tab_titles: tabs
                 .iter()
                 .map(|node| match node {
                     PaneNode::Leaf(entry) => format!("tab-{}", entry.tab_id),

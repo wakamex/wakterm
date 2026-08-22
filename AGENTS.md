@@ -25,10 +25,12 @@ When diagnosing flicker or stale state, identify the mutation, ID-translation, n
 ## Agent lifecycle and recovery
 
 A tab may contain zero, one, or multiple agent panes. Never model a tab as an
-agent identity or assume that its active pane is the tab's only agent. Keep
-watching, routing, lifecycle, and recovery keyed by exact pane and provider
-identity. Tab titles and badges are presentation only and may follow the active
-pane; never use them as agent identity.
+agent identity or assume that its active pane is the tab's only agent. Tab
+titles and badges are presentation metadata. An effective title may resolve a
+human-facing route label to a current candidate, but watching, delivery,
+lifecycle, and recovery must use exact pane and provider identity. Effective
+titles are recomputed from current state and do not imply that a tab or pane
+survived recreation.
 
 Follow the lifecycle and protocol boundaries in [docs/agent-lifecycle.md](docs/agent-lifecycle.md). Detection, confirmed adoption, restorability, and managed mode are distinct guarantees. Do not persist weak process or title detection as session identity, and do not treat a PID as a recovery handle.
 

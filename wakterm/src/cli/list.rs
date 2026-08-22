@@ -28,7 +28,13 @@ impl ListCommand {
         let mut output_items = vec![];
         let panes = client.list_panes().await?;
 
-        for (tabroot, tab_title) in panes.tabs.into_iter().zip(panes.tab_titles.iter()) {
+        for (idx, tabroot) in panes.tabs.into_iter().enumerate() {
+            let tab_title = panes.tab_titles.get(idx).map(String::as_str).unwrap_or("");
+            let effective_title = panes
+                .effective_tab_titles
+                .get(idx)
+                .map(String::as_str)
+                .unwrap_or(tab_title);
             let mut cursor = tabroot.into_tree().cursor();
 
             loop {
@@ -41,6 +47,7 @@ impl ListCommand {
                     output_items.push(CliListResultItem::from(
                         entry.clone(),
                         tab_title,
+                        effective_title,
                         window_title,
                     ));
                 }
@@ -88,7 +95,7 @@ impl From<&CliListResultItem> for CliListTableRow {
             workspace: item.workspace.to_string(),
             size: format!("{}x{}", item.size.cols, item.size.rows),
             pane: truncate_for_table(&item.title, MAX_PANE_COLUMN_WIDTH),
-            tab: truncate_for_table(&item.tab_title, MAX_TAB_COLUMN_WIDTH),
+            tab: truncate_for_table(&item.effective_title, MAX_TAB_COLUMN_WIDTH),
             cwd: item.cwd.to_string(),
         }
     }
@@ -245,6 +252,7 @@ struct CliListResultItem {
     /// Number of rows from the top of the tab area to the top of this pane
     top_row: usize,
     tab_title: String,
+    effective_title: String,
     window_title: String,
     is_active: bool,
     is_zoomed: bool,
@@ -252,7 +260,12 @@ struct CliListResultItem {
 }
 
 impl CliListResultItem {
-    fn from(pane: mux::tab::PaneEntry, tab_title: &str, window_title: &str) -> CliListResultItem {
+    fn from(
+        pane: mux::tab::PaneEntry,
+        tab_title: &str,
+        effective_title: &str,
+        window_title: &str,
+    ) -> CliListResultItem {
         let mux::tab::PaneEntry {
             window_id,
             tab_id,
@@ -303,6 +316,7 @@ impl CliListResultItem {
             left_col,
             top_row,
             tab_title: tab_title.to_string(),
+            effective_title: effective_title.to_string(),
             window_title: window_title.to_string(),
             is_active: is_active_pane,
             is_zoomed: is_zoomed_pane,
@@ -314,6 +328,7 @@ impl CliListResultItem {
 #[cfg(test)]
 mod test {
     use super::*;
+    use termwiz::surface::{CursorShape, CursorVisibility};
 
     #[test]
     fn truncate_for_table_keeps_requested_display_width() {
@@ -360,5 +375,40 @@ mod test {
         assert_eq!(first_cwd, second_cwd);
         assert!(lines[0].contains("PANE"));
         assert!(lines[0].contains("TAB"));
+    }
+
+    #[test]
+    fn json_exposes_raw_and_effective_titles() {
+        let item = CliListResultItem {
+            window_id: 1,
+            tab_id: 2,
+            pane_id: 3,
+            workspace: "default".to_string(),
+            size: CliListResultPtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 800,
+                pixel_height: 480,
+                dpi: 96,
+            },
+            title: "codex".to_string(),
+            cwd: "file://fedora/code/panetone".to_string(),
+            cursor_x: 0,
+            cursor_y: 0,
+            cursor_shape: CursorShape::Default,
+            cursor_visibility: CursorVisibility::Visible,
+            left_col: 0,
+            top_row: 0,
+            tab_title: String::new(),
+            effective_title: "panetone".to_string(),
+            window_title: String::new(),
+            is_active: true,
+            is_zoomed: false,
+            tty_name: None,
+        };
+
+        let value = serde_json::to_value(item).unwrap();
+        assert_eq!(value["tab_title"], "");
+        assert_eq!(value["effective_title"], "panetone");
     }
 }

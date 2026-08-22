@@ -200,6 +200,7 @@ mod test {
         ListPanesResponse {
             tabs,
             tab_titles: vec![],
+            effective_tab_titles: vec![],
             tab_badges: vec![],
             agents: vec![],
             tab_rss_bytes: HashMap::new(),

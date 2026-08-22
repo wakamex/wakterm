@@ -470,7 +470,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 66;
+pub const CODEC_VERSION: usize = 67;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -865,6 +865,7 @@ pub struct ReadAgentEventsResponse {
 pub struct ListPanesResponse {
     pub tabs: Vec<PaneNode>,
     pub tab_titles: Vec<String>,
+    pub effective_tab_titles: Vec<String>,
     pub tab_badges: Vec<AgentTabBadgeState>,
     pub agents: Vec<AgentSnapshot>,
     pub tab_rss_bytes: HashMap<TabId, u64>,
@@ -1582,6 +1583,7 @@ mod test {
         ListPanesResponse {
             tabs,
             tab_titles: vec![],
+            effective_tab_titles: vec![],
             tab_badges: vec![],
             agents: vec![],
             tab_rss_bytes: HashMap::new(),

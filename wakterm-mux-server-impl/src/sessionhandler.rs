@@ -881,11 +881,14 @@ impl SessionHandler {
                                 mux.client_window_view_state_for_current_identity();
                             let mut tabs = vec![];
                             let mut tab_titles = vec![];
+                            let mut effective_tab_titles = vec![];
                             let mut tab_badges = vec![];
                             let mut tab_rss_bytes = HashMap::new();
                             let mut parked_tab_ids = vec![];
                             let mut window_titles = HashMap::new();
                             for window_id in mux.iter_windows().into_iter() {
+                                let effective_titles =
+                                    mux.effective_tab_titles_for_window(window_id);
                                 let window = mux.get_window(window_id).unwrap();
                                 parked_tab_ids.extend(window.parked_tab_ids());
                                 window_titles.insert(window_id, window.get_title().to_string());
@@ -918,6 +921,12 @@ impl SessionHandler {
                                     mux.annotate_pane_tree_with_agent_metadata(&mut tree);
                                     tabs.push(tree);
                                     tab_titles.push(mux.raw_tab_title(tab.tab_id()));
+                                    effective_tab_titles.push(
+                                        effective_titles
+                                            .get(&tab.tab_id())
+                                            .cloned()
+                                            .unwrap_or_default(),
+                                    );
                                     tab_badges.push(
                                         mux.tab_badge_state_for_current_identity(tab.tab_id()),
                                     );
@@ -927,6 +936,7 @@ impl SessionHandler {
                             Ok(Pdu::ListPanesResponse(ListPanesResponse {
                                 tabs,
                                 tab_titles,
+                                effective_tab_titles,
                                 tab_badges,
                                 agents: mux.list_agents_cached(),
                                 tab_rss_bytes,
@@ -3443,6 +3453,10 @@ mod test {
         }
 
         assert!(response.tab_titles.iter().any(|title| title == "scrape"));
+        assert!(response
+            .effective_tab_titles
+            .iter()
+            .any(|title| title == "scrape"));
         assert!(response
             .tab_badges
             .iter()

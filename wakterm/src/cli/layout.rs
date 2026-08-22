@@ -147,6 +147,7 @@ impl SavedLayout {
         let ListPanesResponse {
             tabs,
             tab_titles,
+            effective_tab_titles: _,
             tab_badges: _,
             agents: _,
             tab_rss_bytes: _,
@@ -625,6 +626,7 @@ mod test {
         let response = ListPanesResponse {
             tabs: vec![tab0, tab1, tab2],
             tab_titles: vec!["one".into(), "two".into(), "three".into()],
+            effective_tab_titles: vec!["one".into(), "two".into(), "three".into()],
             tab_badges: vec![Default::default(), Default::default(), Default::default()],
             agents: vec![],
             tab_rss_bytes: std::collections::HashMap::new(),
@@ -716,6 +718,7 @@ mod test {
         let response = ListPanesResponse {
             tabs: vec![tab0],
             tab_titles: vec!["scrape".into()],
+            effective_tab_titles: vec!["🤖 scrape".into()],
             tab_badges: vec![mux::agent::AgentTabBadgeState {
                 waiting_on_user: true,
                 needs_attention: true,

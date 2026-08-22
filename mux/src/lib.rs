@@ -2886,7 +2886,7 @@ impl Mux {
         }
     }
 
-    pub fn display_tab_titles_for_window(&self, window_id: WindowId) -> HashMap<TabId, String> {
+    pub fn effective_tab_titles_for_window(&self, window_id: WindowId) -> HashMap<TabId, String> {
         let Some(window) = self.get_window(window_id) else {
             return HashMap::new();
         };
@@ -2917,7 +2917,7 @@ impl Mux {
             .collect::<HashSet<_>>();
         let mut result = HashMap::with_capacity(rows.len());
         for (tab_id, explicit, automatic) in rows {
-            let mut title = if !explicit.is_empty() {
+            let title = if !explicit.is_empty() {
                 explicit
             } else if automatic.is_empty() || !used.contains(&automatic) {
                 used.insert(automatic.clone());
@@ -2932,16 +2932,24 @@ impl Mux {
                     ordinal += 1;
                 }
             };
-            if self.should_badge_tab_for_agents(tab_id, view_id.as_deref())
-                && !self.tab_has_known_harness(tab_id)
-            {
-                if let Some(badge) = Self::agent_tab_badge_text() {
-                    title = format!("{badge}{title}");
-                }
-            }
             result.insert(tab_id, title);
         }
         result
+    }
+
+    pub fn display_tab_titles_for_window(&self, window_id: WindowId) -> HashMap<TabId, String> {
+        let view_id = self.active_view_id();
+        let mut titles = self.effective_tab_titles_for_window(window_id);
+        for (tab_id, title) in &mut titles {
+            if self.should_badge_tab_for_agents(*tab_id, view_id.as_deref())
+                && !self.tab_has_known_harness(*tab_id)
+            {
+                if let Some(badge) = Self::agent_tab_badge_text() {
+                    title.insert_str(0, &badge);
+                }
+            }
+        }
+        titles
     }
 
     pub fn approximate_tab_process_rss(&self, tab_id: TabId) -> Option<u64> {
@@ -7973,7 +7981,7 @@ mod test {
         assert_eq!(initial_agents.len(), 1);
         assert!(matches!(initial_agents[0].origin, AgentOrigin::Detected));
         assert_eq!(
-            mux.display_tab_titles_for_window(window_id)
+            mux.effective_tab_titles_for_window(window_id)
                 .get(&tab.tab_id())
                 .map(String::as_str),
             Some("auto-adopt-project")
@@ -8452,7 +8460,7 @@ mod test {
         );
         tab.set_active_idx_no_notify(second_index);
         assert_eq!(
-            mux.display_tab_titles_for_window(window_id)
+            mux.effective_tab_titles_for_window(window_id)
                 .get(&tab.tab_id())
                 .map(String::as_str),
             Some("frontend")
@@ -8462,7 +8470,7 @@ mod test {
         same_project.declared_cwd = first.declared_cwd.clone();
         mux.set_mirrored_agent_metadata(second_pane.pane_id(), Some(&same_project));
         assert_eq!(
-            mux.display_tab_titles_for_window(window_id)
+            mux.effective_tab_titles_for_window(window_id)
                 .get(&tab.tab_id())
                 .map(String::as_str),
             Some("frontend")
@@ -8475,7 +8483,7 @@ mod test {
             Some("backend")
         );
         assert_eq!(
-            mux.display_tab_titles_for_window(window_id)
+            mux.effective_tab_titles_for_window(window_id)
                 .get(&tab.tab_id())
                 .map(String::as_str),
             Some("frontend+backend")
@@ -8537,7 +8545,7 @@ mod test {
             tab_ids.push(tab.tab_id());
         }
 
-        let titles = mux.display_tab_titles_for_window(window_id);
+        let titles = mux.effective_tab_titles_for_window(window_id);
         assert_eq!(titles.get(&tab_ids[0]).map(String::as_str), Some("wakterm"));
         assert_eq!(
             titles.get(&tab_ids[1]).map(String::as_str),
@@ -8549,7 +8557,7 @@ mod test {
         );
 
         mux.get_tab(tab_ids[2]).unwrap().set_title("wakterm2");
-        let titles = mux.display_tab_titles_for_window(window_id);
+        let titles = mux.effective_tab_titles_for_window(window_id);
         assert_eq!(titles.get(&tab_ids[0]).map(String::as_str), Some("wakterm"));
         assert_eq!(
             titles.get(&tab_ids[1]).map(String::as_str),
@@ -8649,6 +8657,18 @@ mod test {
         // Unknown harness → text badge is used as fallback
         let _config = TestConfigGuard::new("turn", "🤖 ");
         assert_eq!(mux.effective_tab_title(tab.tab_id()), "🤖 scrape");
+        assert_eq!(
+            mux.effective_tab_titles_for_window(window_id)
+                .get(&tab.tab_id())
+                .map(String::as_str),
+            Some("scrape")
+        );
+        assert_eq!(
+            mux.display_tab_titles_for_window(window_id)
+                .get(&tab.tab_id())
+                .map(String::as_str),
+            Some("🤖 scrape")
+        );
         // No harness icon available
         assert!(mux
             .visible_harness_icons_for_tab(tab.tab_id(), None)

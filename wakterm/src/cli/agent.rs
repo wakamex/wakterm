@@ -3066,6 +3066,7 @@ mod test {
         ListPanesResponse {
             tabs: panes,
             tab_titles: vec!["tab".to_string()],
+            effective_tab_titles: vec!["tab".to_string()],
             tab_badges: vec![Default::default()],
             agents: vec![],
             tab_rss_bytes: HashMap::new(),
@@ -4841,6 +4842,7 @@ mod test {
                 Ok(ListPanesResponse {
                     tabs: vec![leaf(10, 20, 30)],
                     tab_titles: vec!["".into()],
+                    effective_tab_titles: vec!["agent".into()],
                     tab_badges: vec![Default::default()],
                     agents: vec![],
                     tab_rss_bytes: HashMap::new(),
@@ -4955,6 +4957,7 @@ mod test {
                 Ok(ListPanesResponse {
                     tabs: vec![leaf(10, 20, 30)],
                     tab_titles: vec!["existing".into()],
+                    effective_tab_titles: vec!["existing".into()],
                     tab_badges: vec![Default::default()],
                     agents: vec![],
                     tab_rss_bytes: HashMap::new(),
@@ -5034,6 +5037,7 @@ mod test {
                 Ok(ListPanesResponse {
                     tabs: vec![leaf(10, 20, 30)],
                     tab_titles: vec!["existing".into()],
+                    effective_tab_titles: vec!["existing".into()],
                     tab_badges: vec![Default::default()],
                     agents: vec![],
                     tab_rss_bytes: HashMap::new(),
