@@ -1,7 +1,7 @@
 //! Save and restore mux session state (tab layouts, CWDs, titles).
 //!
-//! On shutdown (or periodically), saves the current tab layout to a JSON
-//! file. On startup, checks for the file and offers to restore.
+//! On shutdown (or periodically), saves the current tab layout to a durable
+//! JSON file. On startup, checks for the file and restores it.
 //!
 //! This is similar to tmux-resurrect: it saves the structure but not
 //! terminal content. Processes must be relaunched.
@@ -163,7 +163,20 @@ fn run_auto_save(rx: Receiver<()>) {
 }
 
 fn session_path() -> PathBuf {
+    config::DATA_DIR.join("session.json")
+}
+
+fn legacy_session_path() -> PathBuf {
     config::RUNTIME_DIR.join("session.json")
+}
+
+fn session_path_for_load() -> PathBuf {
+    let path = session_path();
+    if path.exists() {
+        path
+    } else {
+        legacy_session_path()
+    }
 }
 
 fn build_saved_session(mux: &Mux) -> SavedSession {
@@ -300,6 +313,10 @@ pub fn save_session() -> anyhow::Result<PathBuf> {
     let session = build_saved_session(&mux);
 
     let path = session_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating session directory {}", parent.display()))?;
+    }
     let json = serde_json::to_string_pretty(&session).context("serializing session")?;
 
     std::fs::write(&path, &json)
@@ -318,7 +335,7 @@ pub fn save_session() -> anyhow::Result<PathBuf> {
 
 /// Load a saved session from disk (if it exists).
 pub fn load_session() -> anyhow::Result<Option<SavedSession>> {
-    let path = session_path();
+    let path = session_path_for_load();
     if !path.exists() {
         return Ok(None);
     }
@@ -351,10 +368,11 @@ pub fn load_session() -> anyhow::Result<Option<SavedSession>> {
 
 /// Remove the saved session file (after successful restore or on clean exit).
 pub fn clear_session() -> anyhow::Result<()> {
-    let path = session_path();
-    if path.exists() {
-        std::fs::remove_file(&path)
-            .with_context(|| format!("removing session file {}", path.display()))?;
+    for path in [session_path(), legacy_session_path()] {
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("removing session file {}", path.display()))?;
+        }
     }
     Ok(())
 }
@@ -734,6 +752,15 @@ mod test {
     use url::Url;
     use wakterm_term::color::ColorPalette;
     use wakterm_term::{KeyCode, KeyModifiers, MouseEvent, StableRowIndex, TerminalSize};
+
+    #[test]
+    fn automatic_session_uses_durable_data_directory() {
+        assert_eq!(session_path(), config::DATA_DIR.join("session.json"));
+        assert_eq!(
+            legacy_session_path(),
+            config::RUNTIME_DIR.join("session.json")
+        );
+    }
 
     #[test]
     fn auto_save_debounce_tracks_the_latest_dirty_event() {
