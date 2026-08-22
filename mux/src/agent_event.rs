@@ -688,6 +688,7 @@ fn project_provider_events(
     cursor: Option<ProviderCursor>,
 ) -> anyhow::Result<ProjectedEvents> {
     match harness {
+        AgentHarness::Agy => bail!("agy harness has no provider event projection"),
         AgentHarness::Codex => project_codex(Path::new(session_path), cursor),
         AgentHarness::Claude => project_claude(Path::new(session_path), cursor),
         AgentHarness::Gemini => project_gemini(Path::new(session_path), cursor),

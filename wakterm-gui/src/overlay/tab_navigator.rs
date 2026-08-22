@@ -625,6 +625,7 @@ impl NavigatorState {
     fn icon_gutter(icons: &[TabHarnessIcon]) -> String {
         let mask = icons.iter().fold(0, |mask, icon| {
             mask | match icon {
+                TabHarnessIcon::Agy => 16,
                 TabHarnessIcon::Claude => 1,
                 TabHarnessIcon::Codex => 2,
                 TabHarnessIcon::Gemini => 4,

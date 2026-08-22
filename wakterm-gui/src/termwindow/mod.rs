@@ -3,7 +3,8 @@ use super::renderstate::*;
 use super::utilsprites::RenderMetrics;
 use crate::colorease::ColorEase;
 use crate::customglyph::{
-    HARNESS_ICON_CLAUDE, HARNESS_ICON_CODEX, HARNESS_ICON_GEMINI, HARNESS_ICON_OPENCODE,
+    HARNESS_ICON_AGY, HARNESS_ICON_CLAUDE, HARNESS_ICON_CODEX, HARNESS_ICON_GEMINI,
+    HARNESS_ICON_OPENCODE,
 };
 use crate::frontend::{front_end, try_front_end};
 use crate::inputmap::InputMap;
@@ -214,6 +215,7 @@ pub struct PaneState {
 /// Data used when synchronously formatting pane and window titles
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TabHarnessIcon {
+    Agy,
     Claude,
     Codex,
     Gemini,
@@ -223,6 +225,7 @@ pub enum TabHarnessIcon {
 impl TabHarnessIcon {
     pub fn from_agent_harness(harness: AgentHarness) -> Option<Self> {
         match harness {
+            AgentHarness::Agy => Some(Self::Agy),
             AgentHarness::Claude => Some(Self::Claude),
             AgentHarness::Codex => Some(Self::Codex),
             AgentHarness::Gemini => Some(Self::Gemini),
@@ -233,6 +236,7 @@ impl TabHarnessIcon {
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Agy => "agy",
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Gemini => "gemini",
@@ -242,6 +246,7 @@ impl TabHarnessIcon {
 
     pub fn as_glyph(self) -> char {
         match self {
+            Self::Agy => HARNESS_ICON_AGY,
             Self::Claude => HARNESS_ICON_CLAUDE,
             Self::Codex => HARNESS_ICON_CODEX,
             Self::Gemini => HARNESS_ICON_GEMINI,

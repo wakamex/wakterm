@@ -1479,6 +1479,7 @@ impl Mux {
 
     fn harness_slug(harness: &crate::agent::AgentHarness) -> &'static str {
         match harness {
+            crate::agent::AgentHarness::Agy => "agy",
             crate::agent::AgentHarness::Claude => "claude",
             crate::agent::AgentHarness::Codex => "codex",
             crate::agent::AgentHarness::Gemini => "gemini",
@@ -6111,6 +6112,52 @@ mod test {
             crate::agent::AgentHarness::Opencode
         );
         assert_eq!(agents[0].metadata.declared_cwd, "/home/mihai");
+        assert_eq!(agents[0].detection_source.as_deref(), Some("proc+title"));
+    }
+
+    #[test]
+    fn detects_agy_from_process_and_title() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new_detected_with_url(
+            41,
+            size,
+            domain.id,
+            "agy",
+            "file://fedora/code/wakterm",
+            "agy",
+            &["agy", "--dangerously-skip-permissions"],
+        );
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let agents = mux.list_agents();
+        assert_eq!(agents.len(), 1);
+        assert!(matches!(agents[0].origin, AgentOrigin::Detected));
+        assert_eq!(agents[0].pane_id, pane_id);
+        assert_eq!(agents[0].runtime.harness, AgentHarness::Agy);
+        assert_eq!(agents[0].metadata.declared_cwd, "/code/wakterm");
+        assert_eq!(
+            agents[0].metadata.launch_cmd,
+            "agy --dangerously-skip-permissions"
+        );
         assert_eq!(agents[0].detection_source.as_deref(), Some("proc+title"));
     }
 

@@ -247,16 +247,100 @@ pub const HARNESS_ICON_CLAUDE: char = '\u{e000}';
 pub const HARNESS_ICON_CODEX: char = '\u{e001}';
 pub const HARNESS_ICON_GEMINI: char = '\u{e002}';
 pub const HARNESS_ICON_OPENCODE: char = '\u{e003}';
+pub const HARNESS_ICON_AGY: char = '\u{e004}';
 pub const HARNESS_ICON_STACK_BASE: u32 = 0xe010;
 
 pub fn harness_icon_stack_glyph(mask: u8) -> Option<char> {
-    let mask = mask & 0x0f;
+    let mask = mask & 0x1f;
     if mask == 0 {
         None
     } else {
         char::from_u32(HARNESS_ICON_STACK_BASE + mask as u32)
     }
 }
+
+pub const HARNESS_ICON_AGY_POLY: &[Poly] = &[Poly {
+    path: &[
+        PolyCommand::MoveTo(
+            BlockCoord::SquareFrac(55, 120),
+            BlockCoord::SquareFrac(5, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(71, 120),
+            BlockCoord::SquareFrac(7, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(82, 120),
+            BlockCoord::SquareFrac(19, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(106, 120),
+            BlockCoord::SquareFrac(89, 120),
+        ),
+        PolyCommand::LineTo(BlockCoord::SquareOne, BlockCoord::SquareFrac(109, 120)),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(118, 120),
+            BlockCoord::SquareFrac(115, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(113, 120),
+            BlockCoord::SquareFrac(115, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(102, 120),
+            BlockCoord::SquareFrac(108, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(77, 120),
+            BlockCoord::SquareFrac(73, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(70, 120),
+            BlockCoord::SquareFrac(67, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(62, 120),
+            BlockCoord::SquareFrac(65, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(49, 120),
+            BlockCoord::SquareFrac(68, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(43, 120),
+            BlockCoord::SquareFrac(73, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(24, 120),
+            BlockCoord::SquareFrac(102, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(13, 120),
+            BlockCoord::SquareFrac(112, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(8, 120),
+            BlockCoord::SquareFrac(115, 120),
+        ),
+        PolyCommand::LineTo(BlockCoord::SquareZero, BlockCoord::SquareFrac(114, 120)),
+        PolyCommand::LineTo(BlockCoord::SquareZero, BlockCoord::SquareFrac(110, 120)),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(17, 120),
+            BlockCoord::SquareFrac(83, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(36, 120),
+            BlockCoord::SquareFrac(25, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(47, 120),
+            BlockCoord::SquareFrac(8, 120),
+        ),
+        PolyCommand::Close,
+    ],
+    intensity: BlockAlpha::Full,
+    style: PolyStyle::Fill,
+}];
 
 pub const HARNESS_ICON_CLAUDE_POLY: &[Poly] = &[Poly {
     path: &[
@@ -1655,9 +1739,10 @@ impl BlockKey {
     pub fn from_char(c: char) -> Option<Self> {
         let c = c as u32;
         Some(match c {
-            x if (HARNESS_ICON_STACK_BASE + 1..=HARNESS_ICON_STACK_BASE + 15).contains(&x) => {
+            x if (HARNESS_ICON_STACK_BASE + 1..=HARNESS_ICON_STACK_BASE + 31).contains(&x) => {
                 Self::HarnessIconStack((c - HARNESS_ICON_STACK_BASE) as u8)
             }
+            x if x == HARNESS_ICON_AGY as u32 => Self::Poly(HARNESS_ICON_AGY_POLY),
             x if x == HARNESS_ICON_CLAUDE as u32 => Self::Poly(HARNESS_ICON_CLAUDE_POLY),
             x if x == HARNESS_ICON_CODEX as u32 => Self::Poly(HARNESS_ICON_CODEX_POLY),
             x if x == HARNESS_ICON_GEMINI as u32 => Self::Poly(HARNESS_ICON_GEMINI_POLY),
@@ -6180,6 +6265,7 @@ impl GlyphCache {
                     (2, HARNESS_ICON_CODEX_POLY),
                     (4, HARNESS_ICON_GEMINI_POLY),
                     (8, HARNESS_ICON_OPENCODE_POLY),
+                    (16, HARNESS_ICON_AGY_POLY),
                 ];
                 let mut icon_index = 0;
                 for (bit, polys) in icon_polys {
@@ -7080,7 +7166,11 @@ mod test {
     #[test]
     fn harness_icon_stack_glyphs_round_trip_every_combination() {
         assert_eq!(harness_icon_stack_glyph(0), None);
-        for mask in 1..=15 {
+        assert_eq!(
+            BlockKey::from_char(HARNESS_ICON_AGY),
+            Some(BlockKey::Poly(HARNESS_ICON_AGY_POLY))
+        );
+        for mask in 1..=31 {
             let glyph = harness_icon_stack_glyph(mask).unwrap();
             assert_eq!(
                 BlockKey::from_char(glyph),

@@ -48,6 +48,7 @@ pub struct CodexAppServerSession {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AgentHarness {
     Unknown,
+    Agy,
     Claude,
     Codex,
     Gemini,
@@ -248,6 +249,12 @@ pub fn infer_harness(launch_cmd: &str, foreground_process_name: Option<&str>) ->
         candidates.push(name.to_ascii_lowercase());
     }
     for candidate in &candidates {
+        if candidate
+            .split_whitespace()
+            .any(|part| Path::new(part).file_name().and_then(|name| name.to_str()) == Some("agy"))
+        {
+            return AgentHarness::Agy;
+        }
         if candidate.contains("claude") {
             return AgentHarness::Claude;
         }
@@ -269,6 +276,7 @@ pub fn infer_harness(launch_cmd: &str, foreground_process_name: Option<&str>) ->
 
 pub fn default_launch_cmd_for_harness(harness: &AgentHarness) -> Option<&'static str> {
     match harness {
+        AgentHarness::Agy => Some("agy"),
         AgentHarness::Claude => Some("claude"),
         AgentHarness::Codex => Some("codex"),
         AgentHarness::Gemini => Some("gemini"),
@@ -587,6 +595,7 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_codex_session(
     };
 
     let observed = match observing_harness {
+        AgentHarness::Agy => Ok(None),
         AgentHarness::Claude => observe_claude(
             cwd,
             runtime.session_path.as_deref(),
@@ -703,6 +712,7 @@ pub fn pending_observer_detail(
 
     let updated_after = runtime.observer_started_at;
     match runtime.harness {
+        AgentHarness::Agy => None,
         AgentHarness::Claude => describe_pending_claude_observer(cwd, updated_after)
             .ok()
             .flatten(),
@@ -1297,6 +1307,7 @@ pub fn codex_resume_command(launch_cmd: &str, session_id: &str) -> anyhow::Resul
 
 pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> Vec<PathBuf> {
     let paths = match harness {
+        AgentHarness::Agy => None,
         AgentHarness::Claude => claude_sessions_root().map(|root| {
             let project = root.join(cwd.replace('/', "-"));
             if project.is_dir() {
@@ -2701,6 +2712,12 @@ mod test {
 
     #[test]
     fn infers_harness_from_launch_command_or_foreground_process() {
+        assert_eq!(infer_harness("agy", None), AgentHarness::Agy);
+        assert_eq!(
+            infer_harness("agy --dangerously-skip-permissions", None),
+            AgentHarness::Agy
+        );
+        assert_eq!(infer_harness("strategy", None), AgentHarness::Unknown);
         assert_eq!(
             infer_harness("codex --model gpt-5", None),
             AgentHarness::Codex

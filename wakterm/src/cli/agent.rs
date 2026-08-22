@@ -170,6 +170,7 @@ struct PaneContext {
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 enum AgentStartHarness {
+    Agy,
     Claude,
     Codex,
     Gemini,
@@ -179,6 +180,7 @@ enum AgentStartHarness {
 impl AgentStartHarness {
     fn as_agent_harness(self) -> AgentHarness {
         match self {
+            Self::Agy => AgentHarness::Agy,
             Self::Claude => AgentHarness::Claude,
             Self::Codex => AgentHarness::Codex,
             Self::Gemini => AgentHarness::Gemini,
@@ -188,6 +190,7 @@ impl AgentStartHarness {
 
     fn default_command(self) -> &'static str {
         match self {
+            Self::Agy => "agy",
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Gemini => "gemini",
@@ -198,7 +201,7 @@ impl AgentStartHarness {
 
 #[derive(Debug, Parser, Clone)]
 pub struct SpawnAgentCommand {
-    /// Built-in harness to launch. Preferred for claude/codex/gemini/opencode.
+    /// Built-in harness to launch. Preferred for agy/claude/codex/gemini/opencode.
     #[arg(value_enum, value_name = "HARNESS", required_unless_present = "cmd")]
     harness: Option<AgentStartHarness>,
 
@@ -295,7 +298,7 @@ impl SpawnAgentCommand {
         let harness = infer_harness(launch_cmd, None);
         anyhow::ensure!(
             !matches!(harness, AgentHarness::Unknown),
-            "agent start requires a recognized harness (currently: claude, codex, gemini, opencode); if you are using a wrapper command, specify the harness positionally and pass the wrapper via --cmd"
+            "agent start requires a recognized harness (currently: agy, claude, codex, gemini, opencode); if you are using a wrapper command, specify the harness positionally and pass the wrapper via --cmd"
         );
         Ok(harness)
     }
@@ -881,13 +884,14 @@ fn resolve_spawn_agent_name(
     }
 
     let base_name = match harness {
+        AgentHarness::Agy => "agy",
         AgentHarness::Codex => "codex",
         AgentHarness::Claude => "claude",
         AgentHarness::Gemini => "gemini",
         AgentHarness::Opencode => "opencode",
         AgentHarness::Unknown => {
             bail!(
-                "agent start requires a recognized harness (currently: claude, codex, gemini, opencode)"
+                "agent start requires a recognized harness (currently: agy, claude, codex, gemini, opencode)"
             )
         }
     };
@@ -2671,6 +2675,7 @@ fn turn_state_label(state: &AgentTurnState) -> String {
 fn harness_label(harness: &AgentHarness) -> String {
     match harness {
         AgentHarness::Unknown => "unknown",
+        AgentHarness::Agy => "agy",
         AgentHarness::Claude => "claude",
         AgentHarness::Codex => "codex",
         AgentHarness::Gemini => "gemini",
@@ -4710,6 +4715,10 @@ mod test {
     #[test]
     fn spawn_without_name_uses_next_numeric_suffix() {
         let agents = vec![sample_agent(41, "codex"), sample_agent(42, "codex2")];
+        assert_eq!(
+            resolve_spawn_agent_name(AgentHarness::Agy, None, &agents).unwrap(),
+            "agy"
+        );
         assert_eq!(
             resolve_spawn_agent_name(AgentHarness::Codex, None, &agents).unwrap(),
             "codex3"

@@ -470,7 +470,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 67;
+pub const CODEC_VERSION: usize = 68;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,

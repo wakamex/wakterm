@@ -710,6 +710,7 @@ fn harness_icon_gap(metrics: &RenderMetrics) -> f32 {
 
 fn harness_icon_poly(icon: TabHarnessIcon) -> &'static [Poly] {
     match icon {
+        TabHarnessIcon::Agy => HARNESS_ICON_AGY_POLY,
         TabHarnessIcon::Claude => HARNESS_ICON_CLAUDE_POLY,
         TabHarnessIcon::Codex => HARNESS_ICON_CODEX_POLY,
         TabHarnessIcon::Gemini => HARNESS_ICON_GEMINI_POLY,
