@@ -521,7 +521,6 @@ impl AgentArtifactWatcherState {
     fn matching_panes(&mut self, event_paths: &[PathBuf]) -> Vec<PaneId> {
         let mut matched = HashSet::new();
         for event_path in event_paths {
-            let event_path = normalize_agent_artifact_path(event_path);
             for (artifact_path, panes) in &self.panes_by_artifact_path {
                 if event_path.starts_with(artifact_path) || artifact_path.starts_with(&event_path) {
                     matched.extend(panes.iter().copied());
