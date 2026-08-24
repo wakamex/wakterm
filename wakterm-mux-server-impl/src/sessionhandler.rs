@@ -3402,6 +3402,23 @@ mod test {
     }
 
     #[test]
+    #[ignore]
+    fn bench_agent_infra_list_panes_cached_snapshot() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = SimpleExecutor::new();
+        let mux = test_mux();
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+        let _layout = build_test_layout(&mux);
+        let (_client, _view, mut handler) = register_test_client(&mux, "bench-list");
+        let started = std::time::Instant::now();
+        for _ in 0..20_000 {
+            std::hint::black_box(handler.request(&executor, Pdu::ListPanes(ListPanes {})));
+        }
+        eprintln!("BENCH_LIST_NS={}", started.elapsed().as_nanos());
+    }
+
+    #[test]
     fn list_panes_decorates_titles_for_tabs_waiting_on_user() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();

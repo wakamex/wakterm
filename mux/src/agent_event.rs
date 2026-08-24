@@ -2747,4 +2747,20 @@ mod tests {
             Some("catalog_snapshot")
         );
     }
+
+    #[test]
+    #[ignore]
+    fn bench_agent_infra_idle_event_reads() {
+        let temp = TempDir::new().unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        store.start_runtime_epoch().unwrap();
+        for _ in 0..100 {
+            store.read_page(0, 100).unwrap();
+        }
+        let started = std::time::Instant::now();
+        for _ in 0..20_000 {
+            std::hint::black_box(store.read_page(0, 100).unwrap());
+        }
+        eprintln!("BENCH_EVENT_READ_NS={}", started.elapsed().as_nanos());
+    }
 }

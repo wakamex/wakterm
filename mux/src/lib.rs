@@ -5574,6 +5574,69 @@ mod test {
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
+    #[ignore]
+    fn bench_agent_infra_repeated_process_lookups() {
+        let pid = std::process::id();
+        let started = Instant::now();
+        for _ in 0..200 {
+            std::hint::black_box(
+                procinfo::LocalProcessInfo::with_root_pid_cached(pid, Duration::from_secs(3600))
+                    .unwrap(),
+            );
+        }
+        eprintln!("BENCH_PROC_NS={}", started.elapsed().as_nanos());
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_agent_infra_duplicate_artifact_bursts() {
+        let path = PathBuf::from("/tmp/wakterm-artifact-burst/session.jsonl");
+        let started = Instant::now();
+        let mut retained = 0usize;
+        for _ in 0..100 {
+            let pending = Arc::new(Mutex::new(PendingAgentArtifactEvents::default()));
+            let (tx, rx) = mpsc::sync_channel::<()>(1);
+            for _ in 0..10_000 {
+                pending.lock().record(vec![path.clone()]);
+                let _ = tx.try_send(());
+            }
+            rx.recv().unwrap();
+            let (paths, refresh_all) = pending.lock().take();
+            assert!(!refresh_all);
+            retained += paths.len();
+        }
+        eprintln!(
+            "BENCH_BURST_NS={} RETAINED={}",
+            started.elapsed().as_nanos(),
+            retained
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_agent_infra_confirmed_artifact_routing() {
+        let root = Path::new("/tmp/wakterm-artifact-routing");
+        let pane_ids = (0..24).map(|_| alloc_pane_id()).collect::<Vec<_>>();
+        let mut watcher = artifact_watcher_for_routing_test(root, &pane_ids);
+        for (index, pane_id) in pane_ids.iter().enumerate() {
+            let session = root.join(format!("session-{index}.jsonl"));
+            watcher.set_confirmed_artifact(*pane_id, &AgentHarness::Codex, session.to_str());
+        }
+        let event = vec![root.join("session-7.jsonl")];
+        let started = Instant::now();
+        let mut candidates = 0usize;
+        for _ in 0..100_000 {
+            watcher.last_hint_at_by_pane.clear();
+            candidates += watcher.matching_panes(&event).len();
+        }
+        eprintln!(
+            "BENCH_ROUTE_NS={} CANDIDATES={}",
+            started.elapsed().as_nanos(),
+            candidates
+        );
+    }
+
+    #[test]
     fn artifact_event_burst_coalesces_duplicate_paths() {
         let path = PathBuf::from("/tmp/wakterm-artifact-burst/session.jsonl");
         let mut pending = PendingAgentArtifactEvents::default();
