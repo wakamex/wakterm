@@ -7,7 +7,7 @@ tags:
 
 Text prefix shown in tab titles for agent panes that do not have a dedicated harness icon.
 
-When a harness-specific icon (Claude, Codex, Gemini, OpenCode) is available, the native icon is rendered instead and this text badge is suppressed.
+When a harness-specific icon (Agy, Claude, Codex, Gemini, OpenCode) is available, the native icon is rendered instead and this text badge is suppressed.
 
 Example:
 

@@ -321,7 +321,7 @@ config.colors = {
 
 #### Agent icons and attention
 
-The fancy tab bar renders native harness icons (Claude, Codex, Gemini, OpenCode) beside the tab title for tabs whose active pane runs an agent harness.
+The fancy tab bar renders native harness icons (Agy, Claude, Codex, Gemini, OpenCode) beside the tab title for tabs whose active pane runs an agent harness.
 
 - [agent_tab_badge_mode](lua/config/agent_tab_badge_mode.md): controls whether indicators appear always (`"identity"`, default), on attention (`"attention"`), during active turn (`"turn"`), or never (`"off"`).
 - [agent_tab_attention_pulse](lua/config/agent_tab_attention_pulse.md): when true (default), the harness icon pulses with a smooth fade when an agent has completed a turn and is awaiting user review. Set to false for a static attention dot.

@@ -18,7 +18,7 @@ Separate clients only share panes, tabs, and windows when they attach to the sam
 - Resize origin tracking suppresses client self-echoes without timing heuristics, avoiding resize loops and flicker during window adjustments.
 - Reconnecting clients reconcile remote tab order to prevent order drift.
 - Parked tabs (`ParkCurrentTab` / `Ctrl-Shift-S` on Linux/Windows, `Cmd-Shift-S` on macOS) stay alive in the multiplexer without cluttering the visible tab strip.
-- Agent harness panes (Claude, Codex, Gemini, OpenCode) live inside the multiplexer model with automatic adoption and background session tracking.
+- Agent harness panes (Agy, Claude, Codex, Gemini, OpenCode) live inside the multiplexer model with automatic adoption and background session tracking.
 
 ## Systemd background service and reboot persistence
 

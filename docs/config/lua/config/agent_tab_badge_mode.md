@@ -20,6 +20,6 @@ Example:
 config.agent_tab_badge_mode = 'identity'
 ```
 
-When set to `"identity"` and a supported harness (Claude, Codex, Gemini, OpenCode) is active, the tab bar displays that harness's native icon. If no harness icon is available, the text badge from [agent_tab_badge](agent_tab_badge.md) is used.
+When set to `"identity"` and a supported harness (Agy, Claude, Codex, Gemini, OpenCode) is active, the tab bar displays that harness's native icon. If no harness icon is available, the text badge from [agent_tab_badge](agent_tab_badge.md) is used.
 
 See also: [agent_tab_attention_pulse](agent_tab_attention_pulse.md), [agent_tab_badge](agent_tab_badge.md).

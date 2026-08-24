@@ -89,6 +89,9 @@ done
 for mode in copy_mode search_mode ; do
   fname="docs/examples/default-$(echo $mode | tr _ -)-key-table.markdown"
   generate_file "$fname" render_key_table "$mode"
+  if hash gelatyx 2>/dev/null; then
+    gelatyx --language lua --language-config ci/stylua.toml "$fname" >/dev/null 2>&1 || true
+  fi
 done
 
 synopsis_commands=(

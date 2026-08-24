@@ -22,6 +22,10 @@ Parked rows display approximate process RSS when available.
 
 ```lua
 config.keys = {
-  { key = 'e', mods = 'CTRL|SHIFT', action = wakterm.action.ShowTabNavigator },
+  {
+    key = 'e',
+    mods = 'CTRL|SHIFT',
+    action = wakterm.action.ShowTabNavigator,
+  },
 }
 ```

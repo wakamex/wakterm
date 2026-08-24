@@ -2,12 +2,14 @@
 
 All changes relative to upstream wakterm/wakterm main at 05343b387.
 
-## Changes from 2026-03-20 through 2026-08-22 (commits 711022567 through f8d9ae61a)
+## Changes from 2026-03-20 through 2026-08-23 (commits 711022567 through 8b4429a98)
 
 ### Agent Harnesses and Agent API
 
 - Top-level `wakterm agent` CLI command for starting, adopting, observing, and controlling agent harnesses ([a4716fd](https://github.com/wakamex/wakterm/commit/a4716fdbe), [ae2019f](https://github.com/wakamex/wakterm/commit/ae2019f0d)).
-- Automatic adoption: promote detected harness processes (Claude, Codex, Gemini, OpenCode) with confirmed backing sessions to persistent agent metadata automatically ([7c6b731](https://github.com/wakamex/wakterm/commit/7c6b731bc), [a4d1fdb](https://github.com/wakamex/wakterm/commit/a4d1fdb03)).
+- Automatic adoption: promote detected harness processes (Agy, Claude, Codex, Gemini, OpenCode) with confirmed backing sessions to persistent agent metadata automatically ([7c6b731](https://github.com/wakamex/wakterm/commit/7c6b731bc), [a4d1fdb](https://github.com/wakamex/wakterm/commit/a4d1fdb03), [8b4429a](https://github.com/wakamex/wakterm/commit/8b4429a98)).
+- Add Agy agent detection, tab bar harness icon, and observer-backed session adoption ([6ec0b15](https://github.com/wakamex/wakterm/commit/6ec0b1503), [4b344f0](https://github.com/wakamex/wakterm/commit/4b344f0a8), [8b4429a](https://github.com/wakamex/wakterm/commit/8b4429a98)).
+- Refresh agent identity and observer binding when an agent harness restarts inside an existing pane ([39d5c4a](https://github.com/wakamex/wakterm/commit/39d5c4a2c)).
 - Exact Codex session restoration: restore idle Codex sessions across multiplexer restart and system reboot in declared working directory, resuming exact provider threads and settling interrupted turns ([2053ce0](https://github.com/wakamex/wakterm/commit/2053ce025), [820d911](https://github.com/wakamex/wakterm/commit/820d911dd), [734be6b](https://github.com/wakamex/wakterm/commit/734be6ba5), [ca10d85](https://github.com/wakamex/wakterm/commit/ca10d85a0)).
 - Mux-supervised Codex app-server TUI (`wakterm agent launch codex`): multiplexer manages shared app-server over private Unix socket while the pane runs native Codex TUI ([ae2019f](https://github.com/wakamex/wakterm/commit/ae2019f0d), [5e8bca8](https://github.com/wakamex/wakterm/commit/5e8bca8f9)).
 - Versioned Agent API v1:
@@ -17,7 +19,7 @@ All changes relative to upstream wakterm/wakterm main at 05343b387.
   - Durable normalized event stream (`wakterm agent events`) with strictly increasing sequence numbers ([af748ff](https://github.com/wakamex/wakterm/commit/af748ffc5))
   - Asynchronous return requests (`wakterm agent send --return-final` and `wakterm agent request get|watch|cancel`) ([1ac7932](https://github.com/wakamex/wakterm/commit/1ac79325d))
 - Experimental shadow output page (`wakterm agent output`) for normalized assistant message comparisons ([d403026](https://github.com/wakamex/wakterm/commit/d403026a8)).
-- Native harness tab icons for Claude, Codex, Gemini, and OpenCode in the fancy tab bar ([5f1927b](https://github.com/wakamex/wakterm/commit/5f1927b23), [66afcca](https://github.com/wakamex/wakterm/commit/66afccadc)).
+- Native harness tab icons for Agy, Claude, Codex, Gemini, and OpenCode in the fancy tab bar ([5f1927b](https://github.com/wakamex/wakterm/commit/5f1927b23), [66afcca](https://github.com/wakamex/wakterm/commit/66afccadc), [4b344f0](https://github.com/wakamex/wakterm/commit/4b344f0a8)).
 - Agent attention pulse (`agent_tab_attention_pulse`): smooth icon fade when an agent completes a turn and awaits review, with shared review acknowledgement across clients ([419db5a](https://github.com/wakamex/wakterm/commit/419db5a22), [5c25cc4](https://github.com/wakamex/wakterm/commit/5c25cc434), [0f6aefb](https://github.com/wakamex/wakterm/commit/0f6aefb95)).
 - `ActivateNextTabNeedingAttention`: shortcut action to jump directly to the next tab with an unreviewed completed turn ([419db5a](https://github.com/wakamex/wakterm/commit/419db5a22)).
 - Automatic tab naming: unnamed tabs derive titles from the active agent leaf directory, with numeric suffixes to resolve collisions ([4f7242c](https://github.com/wakamex/wakterm/commit/4f7242c26), [f8d9ae6](https://github.com/wakamex/wakterm/commit/f8d9ae61a)).

@@ -2,7 +2,7 @@
 
 ## Status
 
-Wakterm supports agent harnesses as terminal processes running in PTY panes. It detects supported harnesses (Claude, Codex, Gemini, OpenCode), observes provider session state, and automatically adopts confirmed sessions into its persistent agent registry.
+Wakterm supports agent harnesses as terminal processes running in PTY panes. It detects supported harnesses (Agy, Claude, Codex, Gemini, OpenCode), observes provider session state, and automatically adopts confirmed sessions into its persistent agent registry.
 
 Idle Codex sessions are restored automatically across multiplexer restart and system reboot in their declared working directory, resuming the exact confirmed provider session. Codex can also be started as a supervised app-server TUI: the multiplexer supervises one shared Codex app-server while each pane renders the native Codex TUI.
 
