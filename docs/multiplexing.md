@@ -13,7 +13,7 @@ Separate clients only share panes, tabs, and windows when they attach to the sam
 ### Key multiplexer capabilities
 
 - Local layouts can be saved and restored with `wakterm cli save-layout` and `wakterm cli restore-layout`.
-- Automatic session persistence restores split trees, working directories, tab titles, active-tab selection, and confirmed agent sessions across server restarts and reboot.
+- Automatic session persistence restores split trees, working directories, tab titles, active-tab selection, and restorable Codex sessions across server restarts and reboot.
 - Multi-client synchronization uses authoritative server state for windows, tabs, panes, tab ordering, and parked state.
 - Resize origin tracking suppresses client self-echoes without timing heuristics, avoiding resize loops and flicker during window adjustments.
 - Reconnecting clients reconcile remote tab order to prevent order drift.

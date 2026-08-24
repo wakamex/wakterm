@@ -4,7 +4,7 @@
 
 Wakterm supports agent harnesses as terminal processes running in PTY panes. It detects supported harnesses (Agy, Claude, Codex, Gemini, OpenCode), observes provider session state, and automatically adopts confirmed sessions into its persistent agent registry.
 
-Idle Codex sessions are restored automatically across multiplexer restart and system reboot in their declared working directory, resuming the exact confirmed provider session. Codex can also be started as a supervised app-server TUI: the multiplexer supervises one shared Codex app-server while each pane renders the native Codex TUI.
+Restorable Codex sessions are restored automatically across multiplexer restart and system reboot in their declared working directory, resuming the exact confirmed provider session. If a restart interrupts an active turn, Wakterm restores the session but does not guarantee that the in-flight turn continues. Codex can also be started as a supervised app-server TUI: the multiplexer supervises one shared Codex app-server while each pane renders the native Codex TUI.
 
 Agent API v1 provides versioned capability negotiation, catalog queries, authoritative prompt admission, durable event streams, and return request tracking. Structured supervisor backends that preserve the provider native TUI remain the long-term direction. Wakterm-rendered agent presentation is not the normal product direction. This document defines the lifecycle boundaries and guarantees.
 
