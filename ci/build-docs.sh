@@ -38,9 +38,9 @@ python3 ci/subst-release-info.py || exit 1
 python3 ci/generate-docs.py || exit 1
 
 # Adjust path to pick up pip-installed binaries
-PATH="$HOME/.local/bin;$PATH"
+PATH="$HOME/.local/bin:$PATH"
 
-if hash black 2>/dev/null ; then
+if hash black 2>/dev/null && black --version >/dev/null 2>&1 ; then
   black ci/generate-docs.py ci/subst-release-info.py
 fi
 

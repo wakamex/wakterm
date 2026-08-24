@@ -73,9 +73,25 @@ render_shell_completion() {
 
 render_key_table() {
   local mode="$1"
-  echo '```lua'
-  "$WAKTERM_BIN" -n show-keys --lua --key-table "$mode" || return $?
-  echo '```'
+  local fmt_tmp
+  fmt_tmp=$(mktemp "${TMPDIR:-/tmp}/key_table.XXXXXX.md")
+  {
+    echo '```lua'
+    "$WAKTERM_BIN" -n show-keys --lua --key-table "$mode" || {
+      local status=$?
+      rm -f -- "$fmt_tmp"
+      return "$status"
+    }
+    echo '```'
+  } > "$fmt_tmp"
+  if hash gelatyx 2>/dev/null; then
+    if ! gelatyx --language lua --language-config ci/stylua.toml "$fmt_tmp" >/dev/null; then
+      rm -f -- "$fmt_tmp"
+      return 1
+    fi
+  fi
+  cat "$fmt_tmp"
+  rm -f -- "$fmt_tmp"
 }
 
 render_synopsis() {
@@ -89,9 +105,6 @@ done
 for mode in copy_mode search_mode ; do
   fname="docs/examples/default-$(echo $mode | tr _ -)-key-table.markdown"
   generate_file "$fname" render_key_table "$mode"
-  if hash gelatyx 2>/dev/null; then
-    gelatyx --language lua --language-config ci/stylua.toml "$fname" >/dev/null 2>&1 || true
-  fi
 done
 
 synopsis_commands=(
