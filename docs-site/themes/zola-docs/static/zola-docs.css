@@ -73,7 +73,7 @@ a:hover { text-decoration-thickness: 0.12em; }
 .sidebar li + li { margin-top: 0.25rem; }
 .sidebar a { display: block; overflow-wrap: anywhere; }
 .sidebar a[aria-current="page"] { color: var(--docs-text); font-weight: 700; text-decoration-thickness: 0.12em; }
-.content { max-width: var(--docs-content-max-width); padding: clamp(1.25rem, 4vw, 3.5rem); }
+.content { width: 100%; padding: clamp(1.25rem, 4vw, 3.5rem); }
 .content article { min-width: 0; }
 .content > article > h1 { font-size: clamp(2rem, 4vw, 3rem); }
 .breadcrumbs ol { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0 0 1rem; padding: 0; color: var(--docs-muted); list-style: none; }

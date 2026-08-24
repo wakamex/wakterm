@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{% if section.title %}{{ section.title }}{% else %}{{ section.path }}{% endif %} - {{ config.title }}{% endblock title %}
 {% block body %}
-<main id="main-content" class="content" style="--docs-content-max-width: {{ config.extra.zola_docs.content_max_width }}">
+<main id="main-content" class="content" style="max-width: {{ config.extra.zola_docs.content_max_width }}">
   <article>
     {% block section_header %}{% endblock section_header %}
     {% block section_before_content %}{% endblock section_before_content %}

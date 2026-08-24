@@ -15,7 +15,7 @@
 {% endblock head %}
 {% block body %}
 {% set first_heading = page.toc | first %}
-<main id="main-content" class="content" style="--docs-content-max-width: {{ config.extra.zola_docs.content_max_width }}">
+<main id="main-content" class="content" style="max-width: {{ config.extra.zola_docs.content_max_width }}">
   <article>
     {% set breadcrumbs_enabled = page.extra.breadcrumbs_enabled | default(value=config.extra.zola_docs.breadcrumbs) %}
     {% if breadcrumbs_enabled and page.extra.breadcrumbs %}
