@@ -829,15 +829,13 @@ impl SessionHandler {
                                 page,
                             }))
                         }
-                        Ok(mux::agent_service::PreparedAgentOutput::Codex(source)) => {
-                            promise::spawn::spawn_into_new_thread(move || {
-                                source.read_page(cursor.as_deref(), limit as usize)
-                            })
+                        Ok(mux::agent_service::PreparedAgentOutput::Codex(source)) => Mux::get()
+                            .agent_service()
+                            .read_output_async(source, cursor, limit as usize)
                             .await
                             .map(|page| {
                                 Pdu::ReadAgentOutputResponse(ReadAgentOutputResponse { page })
-                            })
-                        }
+                            }),
                         Err(err) => Err(err),
                     };
                     send_response(result);

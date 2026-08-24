@@ -2509,10 +2509,15 @@ fn codex_assistant_output_text(record: &Value) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
+#[cfg(test)]
 pub(crate) fn codex_complete_tail_offset(path: &Path) -> anyhow::Result<u64> {
+    let mut file = fs::File::open(path)?;
+    codex_complete_tail_offset_from_file(&mut file)
+}
+
+pub(crate) fn codex_complete_tail_offset_from_file(file: &mut fs::File) -> anyhow::Result<u64> {
     const CHUNK_SIZE: usize = 64 * 1024;
 
-    let mut file = fs::File::open(path)?;
     let len = file.seek(SeekFrom::End(0))?;
     if len == 0 {
         return Ok(0);
@@ -2532,18 +2537,27 @@ pub(crate) fn codex_complete_tail_offset(path: &Path) -> anyhow::Result<u64> {
     Ok(0)
 }
 
+#[cfg(test)]
 pub(crate) fn read_codex_output_messages(
     path: &Path,
     offset: u64,
     limit: usize,
 ) -> anyhow::Result<(Vec<CodexOutputMessage>, u64, bool)> {
-    let complete_tail = codex_complete_tail_offset(path)?;
+    let mut file = fs::File::open(path)?;
+    read_codex_output_messages_from_file(&mut file, offset, limit)
+}
+
+pub(crate) fn read_codex_output_messages_from_file(
+    file: &mut fs::File,
+    offset: u64,
+    limit: usize,
+) -> anyhow::Result<(Vec<CodexOutputMessage>, u64, bool)> {
+    let complete_tail = codex_complete_tail_offset_from_file(file)?;
     anyhow::ensure!(
         offset <= complete_tail,
         "cursor offset {offset} is past the complete Codex session tail {complete_tail}"
     );
 
-    let mut file = fs::File::open(path)?;
     file.seek(SeekFrom::Start(offset))?;
     let mut reader = BufReader::new(file.take(complete_tail - offset));
     let mut messages = Vec::new();

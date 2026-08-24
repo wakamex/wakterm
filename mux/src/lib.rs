@@ -35,7 +35,7 @@ use std::io::{Read, Write};
 use std::os::raw::c_int;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -203,6 +203,7 @@ pub struct Mux {
     agent_request_store: AgentRequestStore,
     agent_admission_store: agent_admission::AgentAdmissionStore,
     agent_event_store: AgentEventStore,
+    agent_output_reader: agent_service::AgentOutputReader,
     agent_input_generation_by_pane: RwLock<HashMap<PaneId, u64>>,
     agent_attention_seen_at: RwLock<HashMap<PaneId, DateTime<Utc>>>,
     windows: RwLock<HashMap<WindowId, Window>>,
@@ -218,6 +219,7 @@ pub struct Mux {
     num_panes_by_workspace: RwLock<HashMap<String, usize>>,
     main_thread_id: std::thread::ThreadId,
     agent_observer_tx: Sender<AgentObserverCommand>,
+    agent_observer_timer_tx: Sender<PaneId>,
     codex_app_server: codex_app_server::CodexAppServer,
     agent: Option<AgentProxy>,
 }
@@ -893,6 +895,78 @@ fn spawn_agent_observer_worker(event_store: AgentEventStore) -> Sender<AgentObse
     tx
 }
 
+fn spawn_agent_observer_timer(mux_instance_id: usize) -> Sender<PaneId> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut deadlines = HashMap::<PaneId, Instant>::new();
+        loop {
+            let received = match deadlines.values().min().copied() {
+                Some(deadline) => {
+                    rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                }
+                None => match rx.recv() {
+                    Ok(pane_id) => {
+                        deadlines.insert(pane_id, Instant::now() + AGENT_HARNESS_REFRESH_THROTTLE);
+                        continue;
+                    }
+                    Err(_) => break,
+                },
+            };
+            match received {
+                Ok(pane_id) => {
+                    deadlines.insert(pane_id, Instant::now() + AGENT_HARNESS_REFRESH_THROTTLE);
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+
+            let now = Instant::now();
+            let due = deadlines
+                .iter()
+                .filter_map(|(pane_id, deadline)| (*deadline <= now).then_some(*pane_id))
+                .collect::<Vec<_>>();
+            for pane_id in &due {
+                deadlines.remove(pane_id);
+            }
+            if due.is_empty() {
+                continue;
+            }
+            promise::spawn::spawn_into_main_thread(async move {
+                let Some(mux) = Mux::try_get() else {
+                    return;
+                };
+                if mux.instance_id != mux_instance_id {
+                    return;
+                }
+                for pane_id in due {
+                    let should_refresh = {
+                        let mut states = mux.agent_observer_state_by_pane.write();
+                        let Some(state) = states.get_mut(&pane_id) else {
+                            continue;
+                        };
+                        if !state.trailing_refresh_scheduled {
+                            continue;
+                        }
+                        state.trailing_refresh_scheduled = false;
+                        true
+                    };
+                    if should_refresh {
+                        mux.refresh_agent_runtime_for_pane_with_update_inner(
+                            pane_id,
+                            false,
+                            AgentRefreshPolicy::Throttled,
+                            false,
+                            |_| {},
+                        );
+                    }
+                }
+            })
+            .detach();
+        }
+    });
+    tx
+}
+
 fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: AgentEventStore) {
     let mut event_writer = None;
     while let Ok(command) = rx.recv() {
@@ -1063,8 +1137,10 @@ impl Mux {
         };
         let agent_event_store = AgentEventStore::new(agent_state_path.clone());
         let agent_observer_tx = spawn_agent_observer_worker(agent_event_store.clone());
+        let agent_output_reader = agent_service::AgentOutputReader::new();
 
         let instance_id = MUX_INSTANCE_ID.fetch_add(1, Ordering::Relaxed);
+        let agent_observer_timer_tx = spawn_agent_observer_timer(instance_id);
         Self {
             instance_id,
             tabs: RwLock::new(HashMap::new()),
@@ -1089,6 +1165,7 @@ impl Mux {
             agent_request_store: AgentRequestStore::new(agent_state_path.clone()),
             agent_admission_store: agent_admission::AgentAdmissionStore::new(agent_state_path),
             agent_event_store,
+            agent_output_reader,
             agent_input_generation_by_pane: RwLock::new(HashMap::new()),
             agent_attention_seen_at: RwLock::new(HashMap::new()),
             windows: RwLock::new(HashMap::new()),
@@ -1104,6 +1181,7 @@ impl Mux {
             num_panes_by_workspace: RwLock::new(HashMap::new()),
             main_thread_id: std::thread::current().id(),
             agent_observer_tx,
+            agent_observer_timer_tx,
             codex_app_server: codex_app_server::CodexAppServer::new(instance_id),
             agent,
         }
@@ -2642,34 +2720,11 @@ impl Mux {
         if !should_schedule {
             return;
         }
-        let mux_instance_id = self.instance_id;
-
-        thread::spawn(move || {
-            thread::sleep(AGENT_HARNESS_REFRESH_THROTTLE);
-            promise::spawn::spawn_into_main_thread(async move {
-                let Some(mux) = Mux::try_get() else {
-                    return;
-                };
-                if mux.instance_id != mux_instance_id {
-                    return;
-                }
-                {
-                    let mut states = mux.agent_observer_state_by_pane.write();
-                    let Some(state) = states.get_mut(&pane_id) else {
-                        return;
-                    };
-                    state.trailing_refresh_scheduled = false;
-                }
-                mux.refresh_agent_runtime_for_pane_with_update_inner(
-                    pane_id,
-                    false,
-                    AgentRefreshPolicy::Throttled,
-                    false,
-                    |_| {},
-                );
-            })
-            .detach();
-        });
+        if self.agent_observer_timer_tx.send(pane_id).is_err() {
+            if let Some(state) = self.agent_observer_state_by_pane.write().get_mut(&pane_id) {
+                state.trailing_refresh_scheduled = false;
+            }
+        }
     }
 
     fn title_fingerprint(runtime: &AgentRuntimeSnapshot) -> AgentTitleFingerprint {
@@ -7186,6 +7241,35 @@ mod test {
         assert_eq!(state.inflight_generation, Some(1));
         assert!(state.pending_request.is_none());
         assert!(state.trailing_refresh_scheduled);
+    }
+
+    #[test]
+    fn shared_timer_dispatches_trailing_refresh() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let pane_id = 10_000;
+        mux.agent_observer_state_by_pane.write().insert(
+            pane_id,
+            AgentObserverState {
+                trailing_refresh_scheduled: true,
+                ..AgentObserverState::default()
+            },
+        );
+        mux.agent_observer_timer_tx.send(pane_id).unwrap();
+
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_observer_state_by_pane
+                    .read()
+                    .get(&pane_id)
+                    .is_some_and(|state| !state.trailing_refresh_scheduled)
+            },
+            "shared trailing refresh timer",
+        );
     }
 
     #[test]

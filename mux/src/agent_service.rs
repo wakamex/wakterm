@@ -1,6 +1,6 @@
 use crate::agent::{
-    codex_complete_tail_offset, read_codex_output_messages, AgentHarness, AgentOrigin,
-    AgentSnapshot,
+    codex_complete_tail_offset_from_file, read_codex_output_messages_from_file, AgentHarness,
+    AgentOrigin, AgentSnapshot,
 };
 use crate::agent_admission::{
     AgentAdmissionCandidate, AgentAdmissionCapture, AgentAdmissionReceipt, AgentAdmissionStore,
@@ -14,14 +14,17 @@ use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Sender};
+use std::{fs, thread};
 
 pub const AGENT_OUTPUT_SCHEMA: &str = "wakterm.agent-output-shadow.experimental.v1";
 const CURSOR_VERSION: u8 = 1;
 const CURSOR_CHECKPOINT_BYTES: u64 = 64 * 1024;
 const SOURCE_PREFIX_BYTES: u64 = 64 * 1024;
+const MAX_OPEN_CODEX_OUTPUT_FILES: usize = 32;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -96,11 +99,148 @@ pub enum PreparedAgentOutput {
     Codex(CodexOutputSource),
 }
 
+#[derive(Clone)]
 pub struct CodexOutputSource {
     agent_id: String,
     process_id: u32,
     process_start_time: u64,
     session_path: PathBuf,
+}
+
+#[derive(Clone)]
+pub(crate) struct AgentOutputReader {
+    tx: Sender<AgentOutputReaderCommand>,
+}
+
+struct AgentOutputReaderCommand {
+    source: CodexOutputSource,
+    cursor: Option<String>,
+    limit: usize,
+    completion: promise::Promise<AgentOutputPage>,
+}
+
+struct CachedCodexOutputFile {
+    file: fs::File,
+    last_used: u64,
+}
+
+#[derive(Default)]
+struct CodexOutputFileCache {
+    files: HashMap<PathBuf, CachedCodexOutputFile>,
+    use_sequence: u64,
+}
+
+impl CodexOutputFileCache {
+    fn read_page(
+        &mut self,
+        source: &CodexOutputSource,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<AgentOutputPage> {
+        let result = match self.file(&source.session_path) {
+            Ok(file) => read_codex_page_from_file(
+                &source.agent_id,
+                source.process_id,
+                source.process_start_time,
+                &source.session_path,
+                file,
+                cursor,
+                limit,
+            ),
+            Err(err) => {
+                return Ok(page(
+                    &source.agent_id,
+                    AgentOutputStatus::ObserverUnavailable,
+                    None,
+                    false,
+                    None,
+                    &format!("the confirmed Codex session cannot be identified: {err:#}"),
+                ));
+            }
+        };
+        if result.is_err() {
+            self.files.remove(&source.session_path);
+        }
+        result
+    }
+
+    fn file(&mut self, path: &Path) -> anyhow::Result<&mut fs::File> {
+        let path_metadata = fs::metadata(path)?;
+        let reusable = self
+            .files
+            .get(path)
+            .and_then(|cached| cached.file.metadata().ok())
+            .is_some_and(|cached_metadata| same_file(&cached_metadata, &path_metadata));
+        if !reusable {
+            self.files.remove(path);
+            if self.files.len() >= MAX_OPEN_CODEX_OUTPUT_FILES {
+                if let Some(oldest) = self
+                    .files
+                    .iter()
+                    .min_by_key(|(_, cached)| cached.last_used)
+                    .map(|(path, _)| path.clone())
+                {
+                    self.files.remove(&oldest);
+                }
+            }
+            self.files.insert(
+                path.to_path_buf(),
+                CachedCodexOutputFile {
+                    file: fs::File::open(path)?,
+                    last_used: 0,
+                },
+            );
+        }
+        self.use_sequence = self.use_sequence.wrapping_add(1);
+        let cached = self
+            .files
+            .get_mut(path)
+            .expect("Codex output file was inserted");
+        cached.last_used = self.use_sequence;
+        Ok(&mut cached.file)
+    }
+}
+
+impl AgentOutputReader {
+    pub(crate) fn new() -> Self {
+        let (tx, rx) = mpsc::channel::<AgentOutputReaderCommand>();
+        thread::spawn(move || {
+            let mut files = CodexOutputFileCache::default();
+            while let Ok(mut command) = rx.recv() {
+                command.completion.result(files.read_page(
+                    &command.source,
+                    command.cursor.as_deref(),
+                    command.limit,
+                ));
+            }
+        });
+        Self { tx }
+    }
+
+    fn read_page(
+        &self,
+        source: CodexOutputSource,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> promise::Future<AgentOutputPage> {
+        let mut completion = promise::Promise::new();
+        let future = completion
+            .get_future()
+            .expect("new agent output reader promise has a future");
+        let command = AgentOutputReaderCommand {
+            source,
+            cursor,
+            limit,
+            completion,
+        };
+        if let Err(err) = self.tx.send(command) {
+            let mut command = err.0;
+            command
+                .completion
+                .err(anyhow::anyhow!("agent output reader stopped"));
+        }
+        future
+    }
 }
 
 impl CodexOutputSource {
@@ -230,6 +370,17 @@ impl<'a> AgentService<'a> {
             session_path: PathBuf::from(session_path),
         }))
     }
+
+    pub fn read_output_async(
+        &self,
+        source: CodexOutputSource,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> promise::Future<AgentOutputPage> {
+        self.mux
+            .agent_output_reader
+            .read_page(source, cursor, limit)
+    }
 }
 
 fn read_codex_page(
@@ -240,7 +391,28 @@ fn read_codex_page(
     cursor: Option<&str>,
     limit: usize,
 ) -> anyhow::Result<AgentOutputPage> {
-    let source_identity = match codex_source_identity(session_path) {
+    let mut file = fs::File::open(session_path)?;
+    read_codex_page_from_file(
+        agent_id,
+        process_id,
+        process_start_time,
+        session_path,
+        &mut file,
+        cursor,
+        limit,
+    )
+}
+
+fn read_codex_page_from_file(
+    agent_id: &str,
+    process_id: u32,
+    process_start_time: u64,
+    session_path: &Path,
+    file: &mut fs::File,
+    cursor: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<AgentOutputPage> {
+    let source_identity = match codex_source_identity(file) {
         Ok(identity) => identity,
         Err(err) => {
             return Ok(page(
@@ -260,7 +432,7 @@ fn read_codex_page(
         session_path,
         &source_identity,
     );
-    let complete_tail = match codex_complete_tail_offset(session_path) {
+    let complete_tail = match codex_complete_tail_offset_from_file(file) {
         Ok(offset) => offset,
         Err(err) => {
             return Ok(page(
@@ -301,7 +473,7 @@ fn read_codex_page(
                 ));
             }
             if decoded.session_id != session_id {
-                let reset = cursor_for(agent_id, &session_id, session_path, complete_tail)?;
+                let reset = cursor_for(agent_id, &session_id, file, complete_tail)?;
                 return Ok(page(
                     agent_id,
                     AgentOutputStatus::SessionChanged,
@@ -312,7 +484,7 @@ fn read_codex_page(
                 ));
             }
             if decoded.offset > complete_tail {
-                let reset = cursor_for(agent_id, &session_id, session_path, complete_tail)?;
+                let reset = cursor_for(agent_id, &session_id, file, complete_tail)?;
                 return Ok(page(
                     agent_id,
                     AgentOutputStatus::CursorInvalid,
@@ -322,9 +494,9 @@ fn read_codex_page(
                     "the cursor is past the current complete Codex session tail",
                 ));
             }
-            let checkpoint = codex_checkpoint(session_path, decoded.offset)?;
+            let checkpoint = codex_checkpoint(file, decoded.offset)?;
             if decoded.checkpoint_sha256 != checkpoint {
-                let reset = cursor_for(agent_id, &session_id, session_path, complete_tail)?;
+                let reset = cursor_for(agent_id, &session_id, file, complete_tail)?;
                 return Ok(page(
                     agent_id,
                     AgentOutputStatus::CursorInvalid,
@@ -339,9 +511,9 @@ fn read_codex_page(
     };
 
     let (messages, next_offset, has_more) =
-        read_codex_output_messages(session_path, offset, limit.clamp(1, 1000))?;
-    let current_source_identity = codex_source_identity(session_path)?;
-    if current_source_identity != source_identity {
+        read_codex_output_messages_from_file(file, offset, limit.clamp(1, 1000))?;
+    let current_source_identity = codex_source_identity(file)?;
+    if current_source_identity != source_identity || !file_matches_path(file, session_path)? {
         return Ok(page(
             agent_id,
             AgentOutputStatus::ObserverUnavailable,
@@ -373,12 +545,7 @@ fn read_codex_page(
         session_id: Some(session_id.clone()),
         baseline,
         events,
-        next_cursor: Some(cursor_for(
-            agent_id,
-            &session_id,
-            session_path,
-            next_offset,
-        )?),
+        next_cursor: Some(cursor_for(agent_id, &session_id, file, next_offset)?),
         has_more,
         detail: None,
     })
@@ -408,7 +575,7 @@ fn page(
 fn cursor_for(
     agent_id: &str,
     session_id: &str,
-    session_path: &Path,
+    file: &mut fs::File,
     offset: u64,
 ) -> anyhow::Result<String> {
     AgentOutputCursor {
@@ -416,7 +583,7 @@ fn cursor_for(
         agent_id: agent_id.to_string(),
         session_id: session_id.to_string(),
         offset,
-        checkpoint_sha256: codex_checkpoint(session_path, offset)?,
+        checkpoint_sha256: codex_checkpoint(file, offset)?,
     }
     .encode()
 }
@@ -446,8 +613,31 @@ fn output_event_id(
     ))
 }
 
-fn codex_source_identity(path: &Path) -> anyhow::Result<String> {
-    let file = fs::File::open(path)?;
+fn file_matches_path(file: &fs::File, path: &Path) -> anyhow::Result<bool> {
+    Ok(same_file(&file.metadata()?, &fs::metadata(path)?))
+}
+
+fn same_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        left.dev() == right.dev() && left.ino() == right.ino()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        left.creation_time() == right.creation_time()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        left.created()
+            .ok()
+            .zip(right.created().ok())
+            .is_some_and(|(left, right)| left == right)
+    }
+}
+
+fn codex_source_identity(file: &mut fs::File) -> anyhow::Result<String> {
     let metadata = file.metadata()?;
     let mut identity = Sha256::new();
 
@@ -470,6 +660,7 @@ fn codex_source_identity(path: &Path) -> anyhow::Result<String> {
     }
 
     let mut first_record = Vec::new();
+    file.seek(SeekFrom::Start(0))?;
     BufReader::new(file.take(SOURCE_PREFIX_BYTES)).read_until(b'\n', &mut first_record)?;
     anyhow::ensure!(
         first_record.last() == Some(&b'\n'),
@@ -479,9 +670,8 @@ fn codex_source_identity(path: &Path) -> anyhow::Result<String> {
     Ok(format!("{:x}", identity.finalize()))
 }
 
-fn codex_checkpoint(path: &Path, offset: u64) -> anyhow::Result<String> {
+fn codex_checkpoint(file: &mut fs::File, offset: u64) -> anyhow::Result<String> {
     let start = offset.saturating_sub(CURSOR_CHECKPOINT_BYTES);
-    let mut file = fs::File::open(path)?;
     anyhow::ensure!(
         file.metadata()?.len() >= offset,
         "Codex session is shorter than cursor offset {offset}"
@@ -506,6 +696,74 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
+
+    #[test]
+    fn persistent_output_reader_serializes_concurrent_clients() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout.jsonl");
+        fs::write(&session, "{}\n").unwrap();
+        let reader = AgentOutputReader::new();
+        let source = CodexOutputSource {
+            agent_id: "agent-1".to_string(),
+            process_id: 10,
+            process_start_time: 20,
+            session_path: session,
+        };
+        let threads = (0..8)
+            .map(|_| {
+                let reader = reader.clone();
+                let source = source.clone();
+                thread::spawn(move || {
+                    for _ in 0..25 {
+                        assert_eq!(
+                            promise::spawn::block_on(reader.read_page(source.clone(), None, 100))
+                                .unwrap()
+                                .status,
+                            AgentOutputStatus::Ok
+                        );
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn cached_output_file_follows_appends_and_reopens_replacements() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout.jsonl");
+        let replacement = temp.path().join("replacement.jsonl");
+        fs::write(&session, "{\"type\":\"session_meta\"}\n").unwrap();
+        let source = CodexOutputSource {
+            agent_id: "agent-1".to_string(),
+            process_id: 10,
+            process_start_time: 20,
+            session_path: session.clone(),
+        };
+        let mut files = CodexOutputFileCache::default();
+        let baseline = files.read_page(&source, None, 100).unwrap();
+        let cursor = baseline.next_cursor.unwrap();
+
+        let message = "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}}\n";
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&session)
+            .unwrap()
+            .write_all(message.as_bytes())
+            .unwrap();
+        let appended = files.read_page(&source, Some(&cursor), 100).unwrap();
+        assert_eq!(appended.status, AgentOutputStatus::Ok);
+        assert_eq!(appended.events[0].text, "done");
+
+        fs::write(&replacement, "{\"session\":\"replacement\"}\n").unwrap();
+        fs::remove_file(&session).unwrap();
+        fs::rename(&replacement, &session).unwrap();
+        let changed = files.read_page(&source, Some(&cursor), 100).unwrap();
+        assert_eq!(changed.status, AgentOutputStatus::SessionChanged);
+        assert!(changed.next_cursor.is_some());
+    }
 
     #[test]
     fn cursor_round_trips_without_exposing_provider_state() {
