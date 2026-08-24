@@ -1613,6 +1613,25 @@ pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> V
         .collect()
 }
 
+pub(crate) fn agent_observer_artifact_paths(
+    harness: &AgentHarness,
+    session_path: &str,
+) -> Vec<PathBuf> {
+    match harness {
+        AgentHarness::Opencode => parse_opencode_session_path(session_path)
+            .map(|(path, _)| {
+                let path = path.to_string_lossy();
+                ["", "-wal", "-shm", "-journal"]
+                    .iter()
+                    .map(|suffix| PathBuf::from(format!("{path}{suffix}")))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AgentHarness::Unknown => vec![],
+        _ => vec![PathBuf::from(session_path)],
+    }
+}
+
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|home| !home.is_empty())

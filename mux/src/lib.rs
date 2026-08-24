@@ -1,7 +1,7 @@
 use crate::agent::{
-    adopted_agent_matches_process_info, agent_observer_watch_roots, codex_session_id,
-    default_launch_cmd_for_harness, derive_runtime_status, detect_harness_process,
-    finalize_runtime_snapshot, infer_harness, prime_runtime_for_new_agent,
+    adopted_agent_matches_process_info, agent_observer_artifact_paths, agent_observer_watch_roots,
+    codex_session_id, default_launch_cmd_for_harness, derive_runtime_status,
+    detect_harness_process, finalize_runtime_snapshot, infer_harness, prime_runtime_for_new_agent,
     refresh_runtime_from_harness_with_expected_codex_session, AgentHarness, AgentMetadata,
     AgentOrigin, AgentRuntimeSnapshot, AgentSnapshot, AgentTabBadgeState,
 };
@@ -304,7 +304,18 @@ struct AgentArtifactWatcherState {
     watcher: Option<RecommendedWatcher>,
     roots_by_pane: HashMap<PaneId, Vec<PathBuf>>,
     panes_by_root: HashMap<PathBuf, HashSet<PaneId>>,
+    artifact_paths_by_pane: HashMap<PaneId, Vec<PathBuf>>,
+    panes_by_artifact_path: HashMap<PathBuf, HashSet<PaneId>>,
     last_hint_at_by_pane: HashMap<PaneId, Instant>,
+}
+
+fn normalize_agent_artifact_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| {
+        path.parent()
+            .and_then(|parent| std::fs::canonicalize(parent).ok())
+            .and_then(|parent| path.file_name().map(|name| parent.join(name)))
+            .unwrap_or_else(|| path.to_path_buf())
+    })
 }
 
 impl AgentArtifactWatcherState {
@@ -356,11 +367,19 @@ impl AgentArtifactWatcherState {
             watcher,
             roots_by_pane: HashMap::new(),
             panes_by_root: HashMap::new(),
+            artifact_paths_by_pane: HashMap::new(),
+            panes_by_artifact_path: HashMap::new(),
             last_hint_at_by_pane: HashMap::new(),
         }
     }
 
-    fn watch_pane(&mut self, pane_id: PaneId, harness: &AgentHarness, cwd: &str) {
+    fn watch_pane(
+        &mut self,
+        pane_id: PaneId,
+        harness: &AgentHarness,
+        cwd: &str,
+        session_path: Option<&str>,
+    ) {
         let roots = agent_observer_watch_roots(harness, cwd)
             .into_iter()
             .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
@@ -394,9 +413,50 @@ impl AgentArtifactWatcherState {
         if !watched_roots.is_empty() {
             self.roots_by_pane.insert(pane_id, watched_roots);
         }
+        self.set_confirmed_artifact(pane_id, harness, session_path);
+    }
+
+    fn set_confirmed_artifact(
+        &mut self,
+        pane_id: PaneId,
+        harness: &AgentHarness,
+        session_path: Option<&str>,
+    ) {
+        self.remove_confirmed_artifact(pane_id);
+        let Some(session_path) = session_path else {
+            return;
+        };
+        let paths = agent_observer_artifact_paths(harness, session_path)
+            .into_iter()
+            .map(|path| normalize_agent_artifact_path(&path))
+            .collect::<Vec<_>>();
+        for path in &paths {
+            self.panes_by_artifact_path
+                .entry(path.clone())
+                .or_default()
+                .insert(pane_id);
+        }
+        if !paths.is_empty() {
+            self.artifact_paths_by_pane.insert(pane_id, paths);
+        }
+    }
+
+    fn remove_confirmed_artifact(&mut self, pane_id: PaneId) {
+        let Some(paths) = self.artifact_paths_by_pane.remove(&pane_id) else {
+            return;
+        };
+        for path in paths {
+            if let Some(panes) = self.panes_by_artifact_path.get_mut(&path) {
+                panes.remove(&pane_id);
+                if panes.is_empty() {
+                    self.panes_by_artifact_path.remove(&path);
+                }
+            }
+        }
     }
 
     fn unwatch_pane(&mut self, pane_id: PaneId) {
+        self.remove_confirmed_artifact(pane_id);
         let Some(roots) = self.roots_by_pane.remove(&pane_id) else {
             self.last_hint_at_by_pane.remove(&pane_id);
             return;
@@ -414,9 +474,20 @@ impl AgentArtifactWatcherState {
         let now = Instant::now();
         let mut matched = HashSet::new();
         for event_path in event_paths {
-            for (root, panes) in &self.panes_by_root {
-                if event_path.starts_with(root) || root.starts_with(event_path) {
+            let event_path = normalize_agent_artifact_path(event_path);
+            for (artifact_path, panes) in &self.panes_by_artifact_path {
+                if event_path.starts_with(artifact_path) || artifact_path.starts_with(&event_path) {
                     matched.extend(panes.iter().copied());
+                }
+            }
+            for (root, panes) in &self.panes_by_root {
+                if event_path.starts_with(root) || root.starts_with(&event_path) {
+                    matched.extend(
+                        panes
+                            .iter()
+                            .filter(|pane_id| !self.artifact_paths_by_pane.contains_key(pane_id))
+                            .copied(),
+                    );
                 }
             }
         }
@@ -1359,13 +1430,17 @@ impl Mux {
         runtime.harness = infer_harness(&metadata.launch_cmd, foreground_process_name.as_deref());
         let observer_harness = runtime.harness.clone();
         let observer_cwd = metadata.declared_cwd.clone();
+        let observer_session_path = runtime.session_path.clone();
         self.agent_runtime_by_pane.write().insert(pane_id, runtime);
         metadata_by_pane.insert(pane_id, Arc::new(metadata));
         drop(metadata_by_pane);
         drop(names);
-        self.agent_artifact_watcher
-            .lock()
-            .watch_pane(pane_id, &observer_harness, &observer_cwd);
+        self.agent_artifact_watcher.lock().watch_pane(
+            pane_id,
+            &observer_harness,
+            &observer_cwd,
+            observer_session_path.as_deref(),
+        );
         crate::session_persistence::request_session_save();
         Ok(())
     }
@@ -1814,6 +1889,7 @@ impl Mux {
             pane_id,
             &candidate.harness,
             &candidate.declared_cwd,
+            runtime.session_path.as_deref(),
         );
         let observer_metadata = self.observer_metadata_for_candidate(&candidate);
         self.schedule_agent_observer_refresh(
@@ -2448,8 +2524,33 @@ impl Mux {
         if !adopted && before_title != after_title {
             self.notify_tab_title_changed(tab_id);
         }
-        if session_identity_changed && self.get_agent_metadata_for_pane(update.pane_id).is_some() {
-            crate::session_persistence::request_session_save();
+        if session_identity_changed {
+            if let (Some(metadata), Some(runtime)) = (
+                self.get_agent_metadata_for_pane(update.pane_id),
+                self.agent_runtime_by_pane
+                    .read()
+                    .get(&update.pane_id)
+                    .cloned(),
+            ) {
+                self.agent_artifact_watcher.lock().watch_pane(
+                    update.pane_id,
+                    &runtime.harness,
+                    &metadata.declared_cwd,
+                    runtime.session_path.as_deref(),
+                );
+                crate::session_persistence::request_session_save();
+            } else if let Some(runtime) = self
+                .agent_runtime_by_pane
+                .read()
+                .get(&update.pane_id)
+                .cloned()
+            {
+                self.agent_artifact_watcher.lock().set_confirmed_artifact(
+                    update.pane_id,
+                    &runtime.harness,
+                    runtime.session_path.as_deref(),
+                );
+            }
         }
     }
 
@@ -5345,6 +5446,87 @@ mod test {
     use wakterm_term::{KeyCode, KeyModifiers, Line, MouseEvent, StableRowIndex};
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn artifact_watcher_for_routing_test(
+        root: &Path,
+        pane_ids: &[PaneId],
+    ) -> AgentArtifactWatcherState {
+        AgentArtifactWatcherState {
+            watcher: None,
+            roots_by_pane: pane_ids
+                .iter()
+                .map(|pane_id| (*pane_id, vec![root.to_path_buf()]))
+                .collect(),
+            panes_by_root: HashMap::from([(
+                root.to_path_buf(),
+                pane_ids.iter().copied().collect(),
+            )]),
+            artifact_paths_by_pane: HashMap::new(),
+            panes_by_artifact_path: HashMap::new(),
+            last_hint_at_by_pane: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn confirmed_artifact_path_routes_one_of_many_panes() {
+        let root = Path::new("/tmp/wakterm-artifact-routing");
+        let pane_ids = (0..24).map(|_| alloc_pane_id()).collect::<Vec<_>>();
+        let mut watcher = artifact_watcher_for_routing_test(root, &pane_ids);
+        for (index, pane_id) in pane_ids.iter().enumerate() {
+            let session = root.join(format!("session-{index}.jsonl"));
+            watcher.set_confirmed_artifact(*pane_id, &AgentHarness::Codex, session.to_str());
+        }
+
+        assert_eq!(
+            watcher.matching_panes(&[root.join("session-7.jsonl")]),
+            vec![pane_ids[7]],
+        );
+    }
+
+    #[test]
+    fn unconfirmed_artifacts_use_broad_discovery_routing() {
+        let root = Path::new("/tmp/wakterm-artifact-discovery-routing");
+        let confirmed = alloc_pane_id();
+        let unconfirmed = alloc_pane_id();
+        let mut watcher = artifact_watcher_for_routing_test(root, &[confirmed, unconfirmed]);
+        watcher.set_confirmed_artifact(
+            confirmed,
+            &AgentHarness::Claude,
+            root.join("confirmed.jsonl").to_str(),
+        );
+
+        assert_eq!(
+            watcher.matching_panes(&[root.join("new-session.jsonl")]),
+            vec![unconfirmed],
+        );
+    }
+
+    #[test]
+    fn shared_database_artifact_routes_every_confirmed_session() {
+        let root = Path::new("/tmp/wakterm-artifact-shared-routing");
+        let db_path = root.join("opencode.db");
+        let pane_a = alloc_pane_id();
+        let pane_b = alloc_pane_id();
+        let mut watcher = artifact_watcher_for_routing_test(root, &[pane_a, pane_b]);
+        for (pane_id, session_id) in [(pane_a, "session-a"), (pane_b, "session-b")] {
+            watcher.set_confirmed_artifact(
+                pane_id,
+                &AgentHarness::Opencode,
+                Some(
+                    format!(
+                        "opencode://session?db={}&id={session_id}",
+                        db_path.display()
+                    )
+                    .as_str(),
+                ),
+            );
+        }
+
+        assert_eq!(
+            watcher.matching_panes(&[PathBuf::from(format!("{}-wal", db_path.display()))]),
+            vec![pane_a, pane_b]
+        );
+    }
 
     #[test]
     fn tab_resource_status_reuses_one_sample_until_invalidated() {
