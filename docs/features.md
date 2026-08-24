@@ -13,6 +13,8 @@ wakterm keeps the core WezTerm terminal foundation, with extra focus on multiple
 - Automatic agent detection and cached session adoption
 - Exact-session Codex restoration across mux restarts and system reboot
 - Supervised Codex app-server TUI via `wakterm agent launch codex`
+- [Measured idle overhead](headless-mux-benchmark.md): 34.44 MiB PSS to restore and hold 20 workspace tabs and 7 shell splits, with 0.0016% of one core
+- [Shared Codex app-server benchmark](codex-app-server-benchmark.md): 46.4% less PSS and 89.2% less idle CPU across 20 Codex TUIs
 - Versioned [Agent API v1](agent-api/v1/index.md) with capability negotiation, catalog, authoritative prompt admission, and durable event streams
 - [Parked tabs and dedicated tab navigator](reference/lua/keyassignment/ShowTabNavigator.md) (`Ctrl-Shift-E` / `Cmd-E` and `Ctrl-Shift-S` / `Cmd-Shift-S`)
 - Agent attention indicators with subtle icon pulse and shared turn review acknowledgement across clients

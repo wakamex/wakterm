@@ -1,36 +1,54 @@
 # Codex app-server topology benchmark
 
-Measured on 2026-08-18 on the Fedora development host.
+Wakterm runs one mux-owned Codex app-server and connects each native Codex TUI
+to it. `scripts/bench_codex_topology.py` compares that topology with one
+app-server per TUI.
 
-- Codex: `codex-cli 0.148.0-alpha.20+upstream.21cfd369ef`
-- Wakterm: `0.1.0`, shared-app-server working tree based on `088c606a5`
-- Provider processes used the installed optimized Codex build. Wakterm release
-  artifacts were built with `cargo build --release -p wakterm
-  -p wakterm-mux-server-impl`; mux RSS is not included in the provider totals.
-- Commands: `codex app-server --listen unix://PATH` and `codex resume
-  --remote unix://PATH --no-alt-screen -a never -s read-only THREAD_ID`
-- Each thread had a separate temporary working directory.
-- Process counts and RSS include each process tree rooted at the app-server or
-  TUI process. App-server and TUI measurements are separate.
-- Each case settled for 8 seconds and sampled CPU counters for 5 seconds.
-- Setup time ends when every TUI process is alive. TUI spawn check time uses a
-  150 ms health-check floor, so it is useful only as a same-run comparison.
+The benchmark creates 20 isolated project directories and 20 durable named
+Codex threads. It starts 20 native TUI clients but sends no prompts, so the
+result has no model traffic or API latency. Every topology uses one isolated
+Codex home, matching the shared state directory used by normal parallel Codex
+sessions.
 
-| Panes | Topology | App-server startup ms | Setup ms | TUI spawn check ms | App-server processes | App-server RSS MiB | TUI processes | TUI RSS MiB | Idle CPU % |
-| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | per pane | 121.9 | 1416.7 | 153.6 | 1 | 321.8 | 1 | 188.2 | 10.79 |
-| 1 | shared | 119.0 | 1417.4 | 153.9 | 1 | 335.6 | 1 | 193.3 | 11.19 |
-| 5 | per pane | 125.0 | 7217.5 | 154.0 | 5 | 1638.5 | 5 | 1061.5 | 12.80 |
-| 5 | shared | 118.9 | 6618.1 | 154.3 | 1 | 692.1 | 5 | 1062.0 | 43.16 |
-| 10 | per pane | 116.1 | 14357.4 | 153.9 | 10 | 3166.4 | 10 | 1822.4 | 15.18 |
-| 10 | shared | 118.8 | 13294.7 | 154.1 | 1 | 1049.0 | 10 | 2214.2 | 0.40 |
+Measured on 2026-08-24:
 
-The comparable result is process count and RSS. At ten panes, sharing removed
-nine app-server processes and reduced measured app-server RSS by 2117.4 MiB.
-Total measured RSS was 4988.8 MiB per pane and 3263.2 MiB shared, a reduction
-of 1725.6 MiB in this run. Setup was 1062.7 ms faster. The one-pane results are
-effectively equal, as expected.
+- AMD Ryzen 9 3950X, 32 logical CPUs, 31 GiB RAM
+- Fedora 44, Linux 7.1.9
+- Codex `0.148.0-alpha.20+upstream.21cfd369ef`
+- 10-second settle, 65-second sample, median of three runs
 
-Idle CPU was noisy and non-monotonic even after the settle interval. It is raw
-data, not evidence of an idle CPU improvement. A longer repeated benchmark is
-the trigger for making a CPU claim.
+| Total for 20 idle TUIs | Per-pane servers | Shared server | Reduction |
+| --- | ---: | ---: | ---: |
+| PSS | 865.90 MiB | 464.04 MiB | 46.4% |
+| Private memory | 782.19 MiB | 415.95 MiB | 46.8% |
+| Processes | 40 | 21 | 47.5% |
+| Threads | 1,765 | 944 | 46.5% |
+| File descriptors | 1,550 | 858 | 44.6% |
+| One-core CPU | 2.65% | 0.29% | 89.2% |
+| Read syscalls | 92,826 | 9,797 | 89.4% |
+| Write syscalls | 46,797 | 4,689 | 90.0% |
+| Voluntary context switches | 82,305 | 8,168 | 90.1% |
+
+The app-server portion alone fell from 482.0 MiB to 60.6 MiB PSS. The 20 TUI
+clients remain separate processes in both cases. Sharing removes 19 redundant
+provider servers and their idle database, watcher, runtime, and IPC work; it
+does not combine the terminal frontends.
+
+Run it with:
+
+```sh
+uv run --script scripts/bench_codex_topology.py \
+  --harnesses 20 --runs 3 \
+  --settle-seconds 10 --sample-seconds 65 --sample-interval 5 \
+  --output codex-topology-20.json
+```
+
+The script alternates topology order across repeated runs. It measures each
+process forest through `/proc` and `smaps_rollup`, keeps app-server and TUI
+totals separate, and emits every raw run as JSON.
+
+This provider-level saving currently applies to Codex because Wakterm has a
+shared Codex app-server integration. Agy, Claude, Gemini, and OpenCode still
+run as independent PTY harnesses. They benefit from the small mux overhead and
+idle event infrastructure measured in the [headless mux benchmark](headless-mux-benchmark.md),
+but Wakterm does not claim provider-process consolidation for them.
