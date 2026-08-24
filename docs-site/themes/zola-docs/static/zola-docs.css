@@ -78,7 +78,7 @@ a:hover { text-decoration-thickness: 0.12em; }
 .content > article > h1 { font-size: clamp(2rem, 4vw, 3rem); }
 .breadcrumbs ol { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0 0 1rem; padding: 0; color: var(--docs-muted); list-style: none; }
 .breadcrumbs li:not(:last-child)::after { content: "/"; margin-left: 0.35rem; }
-.prose { max-width: 76ch; font-size: 1.03rem; }
+.prose { font-size: 1.03rem; }
 .prose > h1:first-child { display: none; }
 .prose h2 { margin-top: 2.4em; }
 .prose img,
