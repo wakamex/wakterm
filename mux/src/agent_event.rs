@@ -1,16 +1,17 @@
 use crate::agent::{read_gemini_conversation, AgentHarness, AgentMetadata, AgentRuntimeSnapshot};
 use crate::agent_admission::incarnation_id;
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail, Context};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
+use std::{fs, thread};
 
 pub const AGENT_EVENT_SCHEMA: &str = "wakterm.agent-events.v1";
 pub const DEFAULT_EVENT_RETENTION: usize = 100_000;
@@ -164,11 +165,73 @@ pub struct AgentEventStore {
     retention_limit: usize,
     latest_sequence: Arc<AtomicU64>,
     live: Arc<AtomicBool>,
+    reader: AgentEventReader,
 }
 
 pub(crate) struct AgentEventWriter {
     store: AgentEventStore,
     conn: Connection,
+}
+
+#[derive(Clone)]
+struct AgentEventReader {
+    tx: Sender<AgentEventReaderCommand>,
+}
+
+struct AgentEventReaderCommand {
+    after_sequence: u64,
+    limit: usize,
+    completion: promise::Promise<AgentEventPage>,
+}
+
+impl AgentEventReader {
+    fn spawn(path: PathBuf, latest_sequence: Arc<AtomicU64>, live: Arc<AtomicBool>) -> Self {
+        let (tx, rx) = mpsc::channel::<AgentEventReaderCommand>();
+        thread::spawn(move || {
+            let mut conn = None;
+            while let Ok(mut command) = rx.recv() {
+                let result = (|| {
+                    if conn.is_none() {
+                        conn =
+                            Some(connect_reader(&path).with_context(|| {
+                                format!("opening agent event reader {:?}", path)
+                            })?);
+                    }
+                    read_page_from_connection(
+                        conn.as_ref().expect("reader connection was initialized"),
+                        &latest_sequence,
+                        command.after_sequence,
+                        command.limit,
+                    )
+                })();
+                live.store(result.is_ok(), Ordering::Release);
+                if result.is_err() {
+                    conn = None;
+                }
+                command.completion.result(result);
+            }
+        });
+        Self { tx }
+    }
+
+    fn read_page(&self, after_sequence: u64, limit: usize) -> promise::Future<AgentEventPage> {
+        let mut completion = promise::Promise::new();
+        let future = completion
+            .get_future()
+            .expect("new agent event reader promise has a future");
+        let command = AgentEventReaderCommand {
+            after_sequence,
+            limit,
+            completion,
+        };
+        if let Err(err) = self.tx.send(command) {
+            let mut command = err.0;
+            command
+                .completion
+                .err(anyhow!("agent event reader stopped"));
+        }
+        future
+    }
 }
 
 impl AgentEventStore {
@@ -177,11 +240,18 @@ impl AgentEventStore {
     }
 
     pub fn with_retention_limit(path: PathBuf, retention_limit: usize) -> Self {
+        let latest_sequence = Arc::new(AtomicU64::new(0));
+        let live = Arc::new(AtomicBool::new(false));
         Self {
+            reader: AgentEventReader::spawn(
+                path.clone(),
+                Arc::clone(&latest_sequence),
+                Arc::clone(&live),
+            ),
             path,
             retention_limit: retention_limit.max(1),
-            latest_sequence: Arc::new(AtomicU64::new(0)),
-            live: Arc::new(AtomicBool::new(false)),
+            latest_sequence,
+            live,
         }
     }
 
@@ -246,29 +316,7 @@ impl AgentEventStore {
     }
 
     fn connect(&self) -> anyhow::Result<Connection> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let conn = Connection::open(&self.path)?;
-        conn.busy_timeout(std::time::Duration::from_secs(2))?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "FULL")?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS agent_event_v1 (
-                 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                 event_key TEXT NOT NULL UNIQUE,
-                 record_json TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS agent_event_projection_v1 (
-                 agent_id TEXT PRIMARY KEY,
-                 record_json TEXT NOT NULL
-             );
-             CREATE TABLE IF NOT EXISTS agent_event_meta_v1 (
-                 key TEXT PRIMARY KEY,
-                 value INTEGER NOT NULL
-             );",
-        )?;
-        Ok(conn)
+        connect_event_store(&self.path)
     }
 
     pub(crate) fn writer(&self) -> anyhow::Result<AgentEventWriter> {
@@ -475,62 +523,104 @@ impl AgentEventStore {
     }
 
     pub fn read_page(&self, after_sequence: u64, limit: usize) -> anyhow::Result<AgentEventPage> {
-        let result = self.read_page_inner(after_sequence, limit);
-        self.live.store(result.is_ok(), Ordering::Release);
-        result
+        promise::spawn::block_on(self.read_page_async(after_sequence, limit))
     }
 
-    fn read_page_inner(&self, after_sequence: u64, limit: usize) -> anyhow::Result<AgentEventPage> {
-        let conn = self.connect()?;
-        let latest = latest_sequence(&conn)?;
-        let pruned_through = meta_value(&conn, "pruned_through_sequence")?.unwrap_or(0);
-        let oldest = conn
-            .query_row("SELECT MIN(sequence) FROM agent_event_v1", [], |row| {
-                row.get::<_, Option<u64>>(0)
-            })?
-            .unwrap_or_else(|| latest.saturating_add(1));
-        self.latest_sequence.store(latest, Ordering::Release);
-        if after_sequence < pruned_through {
-            return Ok(AgentEventPage {
-                schema: AGENT_EVENT_SCHEMA.to_string(),
-                status: AgentEventStatus::CursorTooOld,
-                requested_after_sequence: after_sequence,
-                oldest_available_sequence: oldest,
-                latest_sequence: latest,
-                next_after_sequence: None,
-                events: Vec::new(),
-                recovery: Some(AgentEventRecovery {
-                    kind: "catalog_snapshot".to_string(),
-                    catalog_as_of_sequence: latest,
-                }),
-            });
-        }
-        let mut stmt = conn.prepare(
-            "SELECT record_json FROM agent_event_v1
-             WHERE sequence > ?1 ORDER BY sequence LIMIT ?2",
-        )?;
-        let events = stmt
-            .query_map(
-                params![after_sequence, limit.clamp(1, 1000) as u64],
-                |row| row.get::<_, String>(0),
-            )?
-            .map(|json| Ok(serde_json::from_str::<AgentEvent>(&json?)?))
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        let next = events
-            .last()
-            .map(|event| event.sequence)
-            .unwrap_or(after_sequence);
-        Ok(AgentEventPage {
+    pub fn read_page_async(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> promise::Future<AgentEventPage> {
+        self.reader.read_page(after_sequence, limit)
+    }
+}
+
+fn connect_reader(path: &Path) -> anyhow::Result<Connection> {
+    let conn = connect_event_store(path)?;
+    conn.pragma_update(None, "query_only", true)?;
+    Ok(conn)
+}
+
+fn connect_event_store(path: &Path) -> anyhow::Result<Connection> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let conn = Connection::open(path)?;
+    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "synchronous", "FULL")?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS agent_event_v1 (
+             sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+             event_key TEXT NOT NULL UNIQUE,
+             record_json TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS agent_event_projection_v1 (
+             agent_id TEXT PRIMARY KEY,
+             record_json TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS agent_event_meta_v1 (
+             key TEXT PRIMARY KEY,
+             value INTEGER NOT NULL
+         );",
+    )?;
+    Ok(conn)
+}
+
+fn read_page_from_connection(
+    conn: &Connection,
+    latest_sequence_cache: &AtomicU64,
+    after_sequence: u64,
+    limit: usize,
+) -> anyhow::Result<AgentEventPage> {
+    let latest = latest_sequence(conn)?;
+    let pruned_through = meta_value(conn, "pruned_through_sequence")?.unwrap_or(0);
+    let oldest = conn
+        .query_row("SELECT MIN(sequence) FROM agent_event_v1", [], |row| {
+            row.get::<_, Option<u64>>(0)
+        })?
+        .unwrap_or_else(|| latest.saturating_add(1));
+    latest_sequence_cache.store(latest, Ordering::Release);
+    if after_sequence < pruned_through {
+        return Ok(AgentEventPage {
             schema: AGENT_EVENT_SCHEMA.to_string(),
-            status: AgentEventStatus::Ok,
+            status: AgentEventStatus::CursorTooOld,
             requested_after_sequence: after_sequence,
             oldest_available_sequence: oldest,
             latest_sequence: latest,
-            next_after_sequence: Some(next),
-            events,
-            recovery: None,
-        })
+            next_after_sequence: None,
+            events: Vec::new(),
+            recovery: Some(AgentEventRecovery {
+                kind: "catalog_snapshot".to_string(),
+                catalog_as_of_sequence: latest,
+            }),
+        });
     }
+    let mut stmt = conn.prepare(
+        "SELECT record_json FROM agent_event_v1
+         WHERE sequence > ?1 ORDER BY sequence LIMIT ?2",
+    )?;
+    let events = stmt
+        .query_map(
+            params![after_sequence, limit.clamp(1, 1000) as u64],
+            |row| row.get::<_, String>(0),
+        )?
+        .map(|json| Ok(serde_json::from_str::<AgentEvent>(&json?)?))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let next = events
+        .last()
+        .map(|event| event.sequence)
+        .unwrap_or(after_sequence);
+    Ok(AgentEventPage {
+        schema: AGENT_EVENT_SCHEMA.to_string(),
+        status: AgentEventStatus::Ok,
+        requested_after_sequence: after_sequence,
+        oldest_available_sequence: oldest,
+        latest_sequence: latest,
+        next_after_sequence: Some(next),
+        events,
+        recovery: None,
+    })
 }
 
 impl AgentEventWriter {
@@ -1903,6 +1993,68 @@ mod tests {
         writer.observe_agent(&metadata, &runtime).unwrap();
         assert_eq!(writer.conn.total_changes(), changes_after_first_observation);
         assert!(wal.exists());
+    }
+
+    #[test]
+    fn persistent_reader_observes_later_writer_commits() {
+        let temp = TempDir::new().unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        store.start_runtime_epoch().unwrap();
+        let metadata = metadata("unknown");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Unknown,
+            "/tmp/unused-session".to_string(),
+        );
+        let mut writer = store.writer().unwrap();
+        writer.observe_agent(&metadata, &runtime).unwrap();
+        let first = store.read_page(0, 100).unwrap();
+        let after = first.next_after_sequence.unwrap();
+
+        writer
+            .record_unavailable(&metadata, Utc::now(), "test_unavailable")
+            .unwrap();
+        let second = store.read_page(after, 100).unwrap();
+
+        assert_eq!(second.events.len(), 1);
+        assert_eq!(second.events[0].lifecycle.as_deref(), Some("unavailable"));
+        assert_eq!(second.events[0].reason.as_deref(), Some("test_unavailable"));
+    }
+
+    #[test]
+    fn persistent_reader_serializes_concurrent_clients() {
+        let temp = TempDir::new().unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        store.start_runtime_epoch().unwrap();
+        let threads = (0..8)
+            .map(|_| {
+                let store = store.clone();
+                thread::spawn(move || {
+                    for _ in 0..25 {
+                        assert_eq!(
+                            store.read_page(0, 100).unwrap().status,
+                            AgentEventStatus::Ok
+                        );
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn persistent_reader_initializes_a_missing_store() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("events.sqlite3");
+        let store = AgentEventStore::new(path.clone());
+
+        assert_eq!(
+            store.read_page(0, 100).unwrap().status,
+            AgentEventStatus::Ok
+        );
+        assert!(path.exists());
     }
 
     #[test]

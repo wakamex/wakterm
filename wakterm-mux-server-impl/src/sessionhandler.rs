@@ -850,11 +850,10 @@ impl SessionHandler {
             }) => {
                 spawn_into_main_thread(async move {
                     let store = Mux::get().agent_service().event_store();
-                    let result = promise::spawn::spawn_into_new_thread(move || {
-                        store.read_page(after_sequence, limit as usize)
-                    })
-                    .await
-                    .map(|page| Pdu::ReadAgentEventsResponse(ReadAgentEventsResponse { page }));
+                    let result = store
+                        .read_page_async(after_sequence, limit as usize)
+                        .await
+                        .map(|page| Pdu::ReadAgentEventsResponse(ReadAgentEventsResponse { page }));
                     send_response(result);
                 })
                 .detach();
