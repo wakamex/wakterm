@@ -91,8 +91,12 @@ def pick_latest_stable_release(release_info):
 
 
 def load_release_info():
-    with open("/tmp/wakterm.releases.json") as f:
-        release_info = json.load(f)
+    releases_path = pathlib.Path("/tmp/wakterm.releases.json")
+    if releases_path.exists():
+        with releases_path.open() as f:
+            release_info = json.load(f)
+    else:
+        release_info = []
 
     nightly_path = pathlib.Path("/tmp/wakterm.nightly.json")
     if nightly_path.exists():
@@ -108,7 +112,7 @@ def load_release_info():
     build_subst(subst, "stable", categorize(latest))
     build_subst(subst, "nightly", categorize(nightly))
 
-    with open(f"docs/releases.json", "w") as output:
+    with open("docs/releases.json", "w") as output:
         json.dump(subst, output)
 
 

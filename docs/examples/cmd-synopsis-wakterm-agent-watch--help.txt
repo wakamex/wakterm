@@ -1,0 +1,8 @@
+stream latest observer-backed harness messages for adopted and detected agent panes
+
+Usage: wakterm agent watch [OPTIONS]
+
+Options:
+      --format <FORMAT>    Controls the output format. "table" streams tab-separated lines, while "json" streams JSON lines [default: table]
+      --poll-ms <POLL_MS>  Poll interval while streaming updates [default: 500]
+  -h, --help               Print help

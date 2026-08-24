@@ -1,0 +1,10 @@
+list adopted and detected agent panes
+
+Usage: wakterm agent list [OPTIONS]
+
+Options:
+      --format <FORMAT>    Controls the output format. "table" and "json" are possible formats [default: table]
+  -v, --verbose            Show pane ids, workspace, turn state, transport, progress, and command
+  -f, --follow             Stream latest observer-backed harness message updates instead of printing a snapshot
+      --poll-ms <POLL_MS>  Poll interval for follow/watch mode [default: 500]
+  -h, --help               Print help

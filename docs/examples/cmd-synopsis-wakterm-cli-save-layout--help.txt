@@ -1,0 +1,10 @@
+Save the current mux layout
+
+Usage: wakterm cli save-layout [OPTIONS] [FILE]
+
+Arguments:
+  [FILE]  Output file (default: ~/.config/wakterm/layout.json)
+
+Options:
+      --stdout  Print to stdout instead of writing a file
+  -h, --help    Print help

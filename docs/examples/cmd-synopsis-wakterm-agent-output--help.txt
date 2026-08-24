@@ -1,0 +1,11 @@
+read experimental normalized agent output for shadow comparison
+
+Usage: wakterm agent output [OPTIONS] <TARGET>
+
+Arguments:
+  <TARGET>  Agent name, stable id, or pane id
+
+Options:
+      --after <CURSOR>  Opaque cursor returned by the preceding output read
+      --limit <LIMIT>   Maximum normalized messages to return [default: 100]
+  -h, --help            Print help

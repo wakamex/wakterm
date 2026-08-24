@@ -1,0 +1,9 @@
+get one durable return request
+
+Usage: wakterm agent request get <REQUEST_ID>
+
+Arguments:
+  <REQUEST_ID>
+
+Options:
+  -h, --help  Print help

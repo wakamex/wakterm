@@ -1,0 +1,9 @@
+cancel a pending return request
+
+Usage: wakterm agent request cancel <REQUEST_ID>
+
+Arguments:
+  <REQUEST_ID>
+
+Options:
+  -h, --help  Print help

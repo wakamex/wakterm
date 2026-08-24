@@ -1,0 +1,13 @@
+adopt an existing pane as an agent
+
+Usage: wakterm agent adopt [OPTIONS] --name <NAME> --cmd <CMD>
+
+Options:
+      --pane-id <PANE_ID>      Specify the target pane. Defaults to WAKTERM_PANE
+      --name <NAME>            Stable human-readable name for this agent
+      --cmd <CMD>              Launch command to use for restart and restore
+      --cwd <CWD>              Override the declared checkout/cwd for this agent
+      --repo-root <REPO_ROOT>
+      --worktree <WORKTREE>
+      --branch <BRANCH>
+  -h, --help                   Print help

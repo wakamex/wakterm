@@ -1,0 +1,6 @@
+print the narrow Wakterm Agent API catalog
+
+Usage: wakterm agent catalog
+
+Options:
+  -h, --help  Print help

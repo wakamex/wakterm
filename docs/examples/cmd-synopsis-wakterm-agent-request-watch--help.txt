@@ -1,0 +1,9 @@
+stream terminal return-request events
+
+Usage: wakterm agent request watch [OPTIONS]
+
+Options:
+      --after <AFTER>      Resume after this durable terminal event sequence [default: 0]
+      --once               Return after draining currently available events
+      --poll-ms <POLL_MS>  Internal observer poll interval for the persistent stream [default: 250]
+  -h, --help               Print help

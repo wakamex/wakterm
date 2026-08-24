@@ -1,36 +1,31 @@
 # `wakterm cli list`
 
-*Run `wakterm cli list --help` to see more help*
-
 Lists the set of windows, tabs and panes that are being managed.
 
 The default output is tabular:
 
 ```
 $ wakterm cli list
-WINID TABID PANEID WORKSPACE  SIZE PANE                         TAB  CWD
-    0     0      0 default   80x24 wakterm cli list -- wez@foo:~ main file://foo/home/wez/
+WORKSPACE TAB  PANE                         SIZE WINID TABID PANEID CWD
+default   main wakterm cli list -- wak@foo:~ 80x24     0     0      0 file://foo/home/wak/
 ```
 
-Each row describes a pane.  The meaning of the fields are:
+Each row describes a pane. The meaning of the fields are:
 
-* `WINID` - the window id of the window that contains the pane
-* `TABID` - the tab id of the tab that contains the pane
-* `PANEID` - the pane id
-* `WORKSPACE` - the workspace that the pane is associated with
-* `SIZE` - the dimensions of the pane, measured in terminal cell columns x rows
-* `PANE` - the pane title
-* `TAB` - the tab title
-* `CWD` - the current working directory associated with the pane
+- WORKSPACE - the workspace that the pane is associated with
+- TAB - the tab title
+- PANE - the pane title
+- SIZE - the dimensions of the pane, measured in terminal cell columns x rows
+- WINID - the window id of the window that contains the pane
+- TABID - the tab id of the tab that contains the pane
+- PANEID - the pane id
+- CWD - the current working directory associated with the pane
 
-Long `PANE` and `TAB` values are truncated in the default table output to keep
-the later columns aligned. Use `--format json` for the full values.
-
-{{since('20220624-141144-bd1b7c5d')}}
+Long PANE and TAB values are truncated in the default table output to keep the later columns aligned. Use `--format json` for full values.
 
 You may request JSON output:
 
-```
+```json
 $ wakterm cli list --format json
 [
   {
@@ -40,10 +35,24 @@ $ wakterm cli list --format json
     "workspace": "default",
     "size": {
       "rows": 24,
-      "cols": 80
+      "cols": 80,
+      "pixel_width": 0,
+      "pixel_height": 0,
+      "dpi": 0
     },
-    "title": "wakterm cli list --format json -- wez@foo:~",
-    "cwd": "file://foo/home/wez/"
+    "title": "zsh",
+    "tab_title": "",
+    "effective_title": "wakterm",
+    "window_title": "wakterm",
+    "cwd": "file:///code/wakterm",
+    "cursor_x": 0,
+    "cursor_y": 0,
+    "cursor_visibility": "Visible",
+    "left_col": 0,
+    "top_row": 0,
+    "is_active": true,
+    "is_zoomed": false,
+    "tty_name": "/dev/pts/1"
   }
 ]
 ```

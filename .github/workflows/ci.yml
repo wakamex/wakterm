@@ -10,6 +10,7 @@ on:
       - "**/Cargo.toml"
       - ".cargo/config.toml"
       - ".github/workflows/ci.yml"
+      - "Makefile"
       - "assets/fonts/**/*"
       - "assets/icon/*"
       - "assets/macos/**/*"
@@ -21,6 +22,8 @@ on:
       - "assets/wakterm.desktop"
       - "assets/windows/**/*"
       - "get-deps"
+      - "ci/update-derived-files.sh"
+      - "docs/examples/**/*"
       - "termwiz/data/wakterm.terminfo"
   push:
     branches:
@@ -31,6 +34,7 @@ on:
       - "**/Cargo.toml"
       - ".cargo/config.toml"
       - ".github/workflows/ci.yml"
+      - "Makefile"
       - "assets/fonts/**/*"
       - "assets/icon/*"
       - "assets/macos/**/*"
@@ -42,6 +46,8 @@ on:
       - "assets/wakterm.desktop"
       - "assets/windows/**/*"
       - "get-deps"
+      - "ci/update-derived-files.sh"
+      - "docs/examples/**/*"
       - "termwiz/data/wakterm.terminfo"
   workflow_dispatch:
 
@@ -97,6 +103,14 @@ jobs:
           crate: cargo-nextest
           cache-key: ci-${{ matrix.nextest_key }}
 
+      - name: Install gelatyx
+        if: matrix.id == 'ubuntu'
+        uses: baptiste0928/cargo-install@v3
+        with:
+          crate: gelatyx
+          version: "0.3.0"
+          cache-key: gelatyx-${{ matrix.id }}
+
       - name: Install Linux system deps
         if: matrix.id == 'ubuntu'
         run: |
@@ -113,6 +127,10 @@ jobs:
             -p wakterm-mux-server \
             -p strip-ansi-escapes
           cargo nextest run --all --no-fail-fast
+
+      - name: Check derived files
+        if: matrix.id == 'ubuntu'
+        run: make check-derived DERIVED_PROFILE=release
 
       - name: Build and test
         if: matrix.id == 'windows'

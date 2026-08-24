@@ -3,6 +3,5 @@ list windows, tabs and panes
 Usage: wakterm cli list [OPTIONS]
 
 Options:
-      --format <FORMAT>  Controls the output format. "table" and "json" are
-                         possible formats [default: table]
+      --format <FORMAT>  Controls the output format. "table" and "json" are possible formats [default: table]
   -h, --help             Print help

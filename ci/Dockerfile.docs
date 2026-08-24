@@ -1,2 +1,11 @@
-FROM squidfunk/mkdocs-material
-RUN pip install mkdocs-macros-plugin mkdocs-include-markdown-plugin mkdocs-exclude
+FROM docker.io/squidfunk/mkdocs-material:9.7.7@sha256:51b87149d227691486b5f08993d28c65ca7e4990010664b697265b8e6fcd5287
+
+RUN pip install \
+    bracex==3.0.1 \
+    hjson==3.1.0 \
+    mkdocs-exclude==1.0.2 \
+    mkdocs-include-markdown-plugin==7.3.0 \
+    mkdocs-macros-plugin==1.5.0 \
+    super-collections==0.6.2 \
+    termcolor==3.3.0 \
+    wcmatch==11.0.1

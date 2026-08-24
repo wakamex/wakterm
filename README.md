@@ -39,7 +39,7 @@ See [CHANGELOG-FORK.md](CHANGELOG-FORK.md) for the detailed fork fix history.
 | Ctrl+Shift+E (Cmd+E) | Tab navigator |
 | Ctrl+Shift+< (Cmd+<) | Rename current tab |
 
-Full hotkey reference: [HOTKEYS.md](HOTKEYS.md)
+Full hotkey reference: [Default Key Assignments](docs/config/default-keys.md)
 
 ---
 

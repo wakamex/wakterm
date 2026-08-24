@@ -19,10 +19,7 @@ return {
       {
         key = 'Escape',
         mods = 'NONE',
-        action = act.Multiple {
-          { CopyMode = 'ScrollToBottom' },
-          { CopyMode = 'Close' },
-        },
+        action = act.Multiple { 'ScrollToBottom', { CopyMode = 'Close' } },
       },
       {
         key = 'Space',
@@ -134,10 +131,7 @@ return {
       {
         key = 'c',
         mods = 'CTRL',
-        action = act.Multiple {
-          { CopyMode = 'ScrollToBottom' },
-          { CopyMode = 'Close' },
-        },
+        action = act.Multiple { 'ScrollToBottom', { CopyMode = 'Close' } },
       },
       {
         key = 'd',
@@ -164,10 +158,7 @@ return {
       {
         key = 'g',
         mods = 'CTRL',
-        action = act.Multiple {
-          { CopyMode = 'ScrollToBottom' },
-          { CopyMode = 'Close' },
-        },
+        action = act.Multiple { 'ScrollToBottom', { CopyMode = 'Close' } },
       },
       { key = 'h', mods = 'NONE', action = act.CopyMode 'MoveLeft' },
       { key = 'j', mods = 'NONE', action = act.CopyMode 'MoveDown' },
@@ -186,10 +177,7 @@ return {
       {
         key = 'q',
         mods = 'NONE',
-        action = act.Multiple {
-          { CopyMode = 'ScrollToBottom' },
-          { CopyMode = 'Close' },
-        },
+        action = act.Multiple { 'ScrollToBottom', { CopyMode = 'Close' } },
       },
       {
         key = 't',
@@ -217,8 +205,7 @@ return {
         mods = 'NONE',
         action = act.Multiple {
           { CopyTo = 'ClipboardAndPrimarySelection' },
-          { CopyMode = 'ScrollToBottom' },
-          { CopyMode = 'Close' },
+          { Multiple = { 'ScrollToBottom', { CopyMode = 'Close' } } },
         },
       },
       { key = 'PageUp', mods = 'NONE', action = act.CopyMode 'PageUp' },
