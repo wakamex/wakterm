@@ -274,6 +274,18 @@ def navigation_metadata(
     navigation: list[dict],
     stage_map: dict[str, PurePosixPath],
 ) -> tuple[dict[str, dict], list[dict]]:
+    for index, root in enumerate(navigation):
+        identifier = re.sub(r"[^a-z0-9]+", "-", root["title"].lower()).strip("-")
+        root["navigation_id"] = identifier or f"group-{index + 1}"
+
+    def node_path(node: dict) -> str | None:
+        if node.get("source") in stage_map:
+            return theme_path(route_for(stage_map[node["source"]]))
+        for descendant, _ancestors in flatten_navigation(node["children"]):
+            if descendant.get("source") in stage_map:
+                return theme_path(route_for(stage_map[descendant["source"]]))
+        return None
+
     flattened = [entry for entry in flatten_navigation(navigation) if entry[0].get("source") in stage_map]
     metadata: dict[str, dict] = {}
     for index, (node, ancestors) in enumerate(flattened):
@@ -287,7 +299,14 @@ def navigation_metadata(
                         "path": theme_path(route_for(stage_map[ancestor["source"]])),
                     }
                 )
-        entry = {"title": node["title"], "breadcrumbs": crumbs}
+        root = ancestors[0] if ancestors else node
+        branch = ancestors[1] if len(ancestors) > 1 else node
+        entry = {
+            "title": node["title"],
+            "breadcrumbs": crumbs,
+            "navigation_group": root["navigation_id"],
+            "navigation_branch": node_path(branch),
+        }
         if index:
             previous = flattened[index - 1][0]
             entry["previous"] = {
@@ -313,15 +332,18 @@ def navigation_metadata(
             return None
         if rendered_children:
             rendered["children"] = rendered_children
+        if node.get("sidebar_children") is False:
+            rendered["sidebar_children"] = False
         return rendered
 
     theme_navigation = []
     for root in navigation:
         items = [item for item in (render_node(child) for child in root["children"]) if item]
         if items:
-            group = {"title": root["title"], "items": items}
-            if root.get("source") in stage_map:
-                group["path"] = theme_path(route_for(stage_map[root["source"]]))
+            group = {"id": root["navigation_id"], "title": root["title"], "items": items}
+            group_path = node_path(root)
+            if group_path is not None:
+                group["path"] = group_path
             theme_navigation.append(group)
     return metadata, theme_navigation
 
@@ -348,6 +370,9 @@ def front_matter(
     lines.append(f"source_path = {toml_value('docs/' + source_relative)}")
     if metadata.get("hide_toc"):
         lines.append("toc = false")
+    for key in ("navigation_group", "navigation_branch"):
+        if navigation.get(key):
+            lines.append(f"{key} = {toml_value(navigation[key])}")
     if navigation.get("breadcrumbs"):
         crumbs = ", ".join(
             "{ title = " + toml_value(item["title"]) + ", path = " + toml_value(item["path"]) + " }"

@@ -99,6 +99,16 @@
   <div class="shell">
     {% block sidebar %}
     {% set navigation = load_data(path=config.extra.zola_docs.navigation_path) %}
+    {% set navigation_group = "" %}
+    {% set navigation_branch = "" %}
+    {% if page is defined %}
+      {% set navigation_group = page.extra.navigation_group | default(value="") %}
+      {% set navigation_branch = page.extra.navigation_branch | default(value="") %}
+    {% elif section is defined %}
+      {% set navigation_group = section.extra.navigation_group | default(value="") %}
+      {% set navigation_branch = section.extra.navigation_branch | default(value="") %}
+    {% endif %}
+    {% set navigation_scoped = navigation_group != "" %}
     <aside class="sidebar">
       <details>
         <summary>{{ config.extra.zola_docs.navigation_label }}</summary>
@@ -106,12 +116,15 @@
           {% for group in navigation %}
           <section>
             <h2>{% if group.path is defined %}<a href="{{ get_url(path=group.path) | safe }}">{{ group.title }}</a>{% else %}{{ group.title }}{% endif %}</h2>
+            {% set group_id = group.id | default(value="") %}
+            {% if not navigation_scoped or group_id == navigation_group %}
             <ul>
               {% for item in group.items %}
-              {% if item.path is defined %}{% set item_url = get_url(path=item.path) %}{% set item_current_path = "/" ~ item.path %}{% else %}{% set item_url = item.url %}{% set item_current_path = item.url %}{% endif %}
+              {% if item.path is defined %}{% set item_url = get_url(path=item.path) %}{% set item_current_path = "/" ~ item.path %}{% set item_branch = item.path %}{% else %}{% set item_url = item.url %}{% set item_current_path = item.url %}{% set item_branch = item.url %}{% endif %}
               <li>
-                <a href="{{ item_url | safe }}"{% if current_path == item_current_path %} aria-current="page"{% endif %}>{{ item.title }}</a>
-                {% if item.children %}
+                <a href="{{ item_url | safe }}"{% if current_path == item_current_path %} aria-current="page"{% elif navigation_scoped and navigation_branch == item_branch %} aria-current="location"{% endif %}>{{ item.title }}</a>
+                {% set sidebar_children = item.sidebar_children | default(value=true) %}
+                {% if item.children and sidebar_children and (not navigation_scoped or navigation_branch == item_branch) %}
                 <ul>
                   {% for child in item.children %}
                   {% if child.path is defined %}{% set child_url = get_url(path=child.path) %}{% set child_current_path = "/" ~ child.path %}{% else %}{% set child_url = child.url %}{% set child_current_path = child.url %}{% endif %}
@@ -132,6 +145,7 @@
               </li>
               {% endfor %}
             </ul>
+            {% endif %}
           </section>
           {% endfor %}
         </nav>

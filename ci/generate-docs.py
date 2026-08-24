@@ -10,10 +10,11 @@ from urllib.parse import urlparse
 
 
 class Page(object):
-    def __init__(self, title, filename, children=None):
+    def __init__(self, title, filename, children=None, sidebar_children=True):
         self.title = title
         self.filename = filename
         self.children = children or []
+        self.sidebar_children = sidebar_children
 
     def render(self, output, depth=0):
         indent = "  " * depth
@@ -52,7 +53,12 @@ class Gen(object):
             children.append(Page(title, filename))
 
         index_filename = f"{self.dirname}/index.md"
-        index_page = Page(self.title, index_filename, children=children)
+        index_page = Page(
+            self.title,
+            index_filename,
+            children=children,
+            sidebar_children=False,
+        )
         self.generated_page = index_page
         index_page.render(output, depth)
         with open(f"{self.dirname}/index.md", "w") as idx:
@@ -410,11 +416,14 @@ TOC = [
 def navigation_node(node):
     if hasattr(node, "generated_page"):
         node = node.generated_page
-    return {
+    rendered = {
         "title": node.title,
         "source": node.filename,
         "children": [navigation_node(child) for child in node.children],
     }
+    if not node.sidebar_children:
+        rendered["sidebar_children"] = False
+    return rendered
 
 
 os.chdir("docs")
