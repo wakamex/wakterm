@@ -225,6 +225,7 @@ pub struct Mux {
 const BUFSIZE: usize = 1024 * 1024;
 const AGENT_HARNESS_REFRESH_THROTTLE: Duration = Duration::from_millis(250);
 const AGENT_ARTIFACT_HINT_DEBOUNCE: Duration = Duration::from_millis(25);
+const AGENT_ARTIFACT_DIRTY_PATH_LIMIT: usize = 1024;
 const AGENT_DETECTED_FULL_SCAN_THROTTLE: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -300,6 +301,34 @@ enum CodexRestoreOutcome {
     Failed,
 }
 
+#[derive(Default)]
+struct PendingAgentArtifactEvents {
+    paths: HashSet<PathBuf>,
+    refresh_all: bool,
+}
+
+impl PendingAgentArtifactEvents {
+    fn record(&mut self, paths: Vec<PathBuf>) {
+        if self.refresh_all {
+            return;
+        }
+        for path in paths {
+            if self.paths.len() >= AGENT_ARTIFACT_DIRTY_PATH_LIMIT && !self.paths.contains(&path) {
+                self.paths.clear();
+                self.refresh_all = true;
+                return;
+            }
+            self.paths.insert(path);
+        }
+    }
+
+    fn take(&mut self) -> (Vec<PathBuf>, bool) {
+        let paths = std::mem::take(&mut self.paths).into_iter().collect();
+        let refresh_all = std::mem::take(&mut self.refresh_all);
+        (paths, refresh_all)
+    }
+}
+
 struct AgentArtifactWatcherState {
     watcher: Option<RecommendedWatcher>,
     roots_by_pane: HashMap<PaneId, Vec<PathBuf>>,
@@ -320,31 +349,35 @@ fn normalize_agent_artifact_path(path: &Path) -> PathBuf {
 
 impl AgentArtifactWatcherState {
     fn new() -> Self {
-        let (event_tx, event_rx) = mpsc::channel::<Vec<PathBuf>>();
+        let pending_events = Arc::new(Mutex::new(PendingAgentArtifactEvents::default()));
+        let worker_pending_events = Arc::clone(&pending_events);
+        let (event_tx, event_rx) = mpsc::sync_channel::<()>(1);
         thread::spawn(move || {
-            while let Ok(mut paths) = event_rx.recv() {
+            while event_rx.recv().is_ok() {
                 thread::sleep(AGENT_ARTIFACT_HINT_DEBOUNCE);
-                while let Ok(mut more_paths) = event_rx.try_recv() {
-                    paths.append(&mut more_paths);
+                while event_rx.try_recv().is_ok() {}
+                let (paths, refresh_all) = worker_pending_events.lock().take();
+                if paths.is_empty() && !refresh_all {
+                    continue;
                 }
-                paths.sort();
-                paths.dedup();
                 promise::spawn::spawn_into_main_thread(async move {
                     if let Some(mux) = Mux::try_get() {
-                        mux.handle_agent_artifact_event(paths);
+                        mux.handle_agent_artifact_batch(paths, refresh_all);
                     }
                 })
                 .detach();
             }
         });
 
+        let callback_pending_events = Arc::clone(&pending_events);
         let watcher =
             notify::recommended_watcher(
                 move |result: notify::Result<notify::Event>| match result {
                     Ok(event) => match event.kind {
                         EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
                             if !event.paths.is_empty() {
-                                let _ = event_tx.send(event.paths);
+                                callback_pending_events.lock().record(event.paths);
+                                let _ = event_tx.try_send(());
                             }
                         }
                         _ => {}
@@ -463,15 +496,27 @@ impl AgentArtifactWatcherState {
         };
 
         for root in roots {
-            if let Some(panes) = self.panes_by_root.get_mut(&root) {
-                panes.remove(&pane_id);
+            let remove_root = self
+                .panes_by_root
+                .get_mut(&root)
+                .map(|panes| {
+                    panes.remove(&pane_id);
+                    panes.is_empty()
+                })
+                .unwrap_or(false);
+            if remove_root {
+                self.panes_by_root.remove(&root);
+                if let Some(watcher) = self.watcher.as_mut() {
+                    if let Err(err) = watcher.unwatch(&root) {
+                        log::debug!("unable to unwatch agent artifact root {:?}: {err}", root);
+                    }
+                }
             }
         }
         self.last_hint_at_by_pane.remove(&pane_id);
     }
 
     fn matching_panes(&mut self, event_paths: &[PathBuf]) -> Vec<PaneId> {
-        let now = Instant::now();
         let mut matched = HashSet::new();
         for event_path in event_paths {
             let event_path = normalize_agent_artifact_path(event_path);
@@ -492,6 +537,21 @@ impl AgentArtifactWatcherState {
             }
         }
 
+        self.debounce_matching_panes(matched)
+    }
+
+    fn all_watched_panes(&mut self) -> Vec<PaneId> {
+        let matched = self
+            .roots_by_pane
+            .keys()
+            .chain(self.artifact_paths_by_pane.keys())
+            .copied()
+            .collect();
+        self.debounce_matching_panes(matched)
+    }
+
+    fn debounce_matching_panes(&mut self, matched: HashSet<PaneId>) -> Vec<PaneId> {
+        let now = Instant::now();
         let mut panes = matched
             .into_iter()
             .filter(|pane_id| {
@@ -2089,8 +2149,20 @@ impl Mux {
         CodexRestoreOutcome::Completed
     }
 
+    #[cfg(test)]
     fn handle_agent_artifact_event(&self, paths: Vec<PathBuf>) {
-        let pane_ids = self.agent_artifact_watcher.lock().matching_panes(&paths);
+        self.handle_agent_artifact_batch(paths, false);
+    }
+
+    fn handle_agent_artifact_batch(&self, paths: Vec<PathBuf>, refresh_all: bool) {
+        let pane_ids = {
+            let mut watcher = self.agent_artifact_watcher.lock();
+            if refresh_all {
+                watcher.all_watched_panes()
+            } else {
+                watcher.matching_panes(&paths)
+            }
+        };
         for pane_id in pane_ids {
             if self.get_agent_metadata_for_pane(pane_id).is_some() {
                 self.refresh_agent_runtime_for_pane_with_update(
@@ -5447,6 +5519,40 @@ mod test {
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[test]
+    fn artifact_event_burst_coalesces_duplicate_paths() {
+        let path = PathBuf::from("/tmp/wakterm-artifact-burst/session.jsonl");
+        let mut pending = PendingAgentArtifactEvents::default();
+        for _ in 0..10_000 {
+            pending.record(vec![path.clone()]);
+        }
+
+        assert_eq!(pending.paths.len(), 1);
+        assert!(!pending.refresh_all);
+        let (paths, refresh_all) = pending.take();
+        assert_eq!(paths, vec![path]);
+        assert!(!refresh_all);
+        assert!(pending.paths.is_empty());
+    }
+
+    #[test]
+    fn artifact_event_distinct_path_overflow_is_bounded_and_refreshes_all() {
+        let mut pending = PendingAgentArtifactEvents::default();
+        pending.record(
+            (0..=AGENT_ARTIFACT_DIRTY_PATH_LIMIT)
+                .map(|index| PathBuf::from(format!("/tmp/wakterm-artifact-burst/{index}")))
+                .collect(),
+        );
+
+        assert!(pending.paths.is_empty());
+        assert!(pending.refresh_all);
+        pending.record(vec![PathBuf::from("/tmp/ignored-after-overflow")]);
+        assert!(pending.paths.is_empty());
+        let (paths, refresh_all) = pending.take();
+        assert!(paths.is_empty());
+        assert!(refresh_all);
+    }
+
     fn artifact_watcher_for_routing_test(
         root: &Path,
         pane_ids: &[PaneId],
@@ -5499,6 +5605,34 @@ mod test {
             watcher.matching_panes(&[root.join("new-session.jsonl")]),
             vec![unconfirmed],
         );
+    }
+
+    #[test]
+    fn final_pane_removes_shared_artifact_watch() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let pane_a = alloc_pane_id();
+        let pane_b = alloc_pane_id();
+        let mut watcher = AgentArtifactWatcherState::new();
+        let Some(os_watcher) = watcher.watcher.as_mut() else {
+            return;
+        };
+        os_watcher.watch(&root, RecursiveMode::Recursive).unwrap();
+        watcher.roots_by_pane.insert(pane_a, vec![root.clone()]);
+        watcher.roots_by_pane.insert(pane_b, vec![root.clone()]);
+        watcher
+            .panes_by_root
+            .insert(root.clone(), HashSet::from([pane_a, pane_b]));
+
+        watcher.unwatch_pane(pane_a);
+        assert_eq!(
+            watcher.panes_by_root.get(&root),
+            Some(&HashSet::from([pane_b]))
+        );
+
+        watcher.unwatch_pane(pane_b);
+        assert!(!watcher.panes_by_root.contains_key(&root));
+        assert!(watcher.roots_by_pane.is_empty());
     }
 
     #[test]
