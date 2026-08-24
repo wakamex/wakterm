@@ -27,6 +27,108 @@
     });
   }
 
+  var navigationButton = document.querySelector("[data-navigation-open]");
+  var sidebar = document.querySelector(".sidebar");
+  var sidebarDetails = sidebar && sidebar.querySelector(":scope > details");
+  var navigation = sidebarDetails && sidebarDetails.querySelector(":scope > nav");
+  if (navigationButton && sidebar && navigation) {
+    var mobile = matchMedia("(max-width: 52rem)");
+    var dialog = document.createElement("dialog");
+    var dialogHeader = document.createElement("div");
+    var dialogTitle = document.createElement("strong");
+    var closeButton = document.createElement("button");
+    var groupState = [];
+    dialog.id = "mobile-navigation-dialog";
+    dialog.className = "navigation-dialog";
+    dialog.setAttribute("aria-label", navigation.getAttribute("aria-label") || "Navigation");
+    dialogHeader.className = "navigation-dialog-header";
+    dialogTitle.textContent = navigation.getAttribute("aria-label") || "Navigation";
+    closeButton.className = "navigation-dialog-close";
+    closeButton.type = "button";
+    closeButton.textContent = "Close";
+    dialogHeader.append(dialogTitle, closeButton);
+    dialog.append(dialogHeader);
+    document.body.append(dialog);
+
+    function enhanceGroups() {
+      navigation.querySelectorAll(":scope > section").forEach(function (section) {
+        var heading = section.querySelector(":scope > h2");
+        var list = section.querySelector(":scope > ul");
+        if (!heading || !list) return;
+        var group = document.createElement("details");
+        var summary = document.createElement("summary");
+        var headingLink = heading.querySelector("a");
+        var rootItem;
+        group.className = "mobile-navigation-group";
+        group.open = Boolean(section.querySelector('[aria-current="page"]'));
+        summary.textContent = heading.textContent;
+        if (headingLink) {
+          rootItem = document.createElement("li");
+          rootItem.className = "mobile-navigation-root";
+          rootItem.append(headingLink.cloneNode(true));
+          list.prepend(rootItem);
+        }
+        group.append(summary, list);
+        heading.replaceWith(group);
+        groupState.push({ section: section, heading: heading, list: list, group: group, rootItem: rootItem });
+      });
+    }
+
+    function restoreGroups() {
+      groupState.forEach(function (entry) {
+        if (entry.rootItem) entry.rootItem.remove();
+        entry.group.replaceWith(entry.heading);
+        entry.heading.after(entry.list);
+      });
+      groupState = [];
+    }
+
+    function closeNavigation() {
+      if (dialog.open) dialog.close();
+    }
+
+    function updateNavigation() {
+      if (mobile.matches) {
+        delete sidebar.dataset.navigationDesktop;
+        sidebarDetails.open = false;
+        if (!dialog.contains(navigation)) {
+          dialog.append(navigation);
+          enhanceGroups();
+        }
+        sidebar.dataset.navigationEnhanced = "true";
+        navigationButton.hidden = false;
+      } else {
+        closeNavigation();
+        if (!sidebarDetails.contains(navigation)) {
+          restoreGroups();
+          sidebarDetails.append(navigation);
+        }
+        delete sidebar.dataset.navigationEnhanced;
+        sidebar.dataset.navigationDesktop = "true";
+        sidebarDetails.open = true;
+        navigationButton.hidden = true;
+      }
+    }
+
+    navigationButton.addEventListener("click", function () {
+      dialog.showModal();
+      navigationButton.setAttribute("aria-expanded", "true");
+      var current = dialog.querySelector('[aria-current="page"]');
+      (current || closeButton).focus();
+      if (current) current.scrollIntoView({ block: "center" });
+    });
+    closeButton.addEventListener("click", closeNavigation);
+    dialog.addEventListener("click", function (event) {
+      if (event.target === dialog) closeNavigation();
+    });
+    dialog.addEventListener("close", function () {
+      navigationButton.setAttribute("aria-expanded", "false");
+      navigationButton.focus();
+    });
+    mobile.addEventListener("change", updateNavigation);
+    updateNavigation();
+  }
+
   document.querySelectorAll("[data-version-manifest]").forEach(function (link) {
     link.addEventListener("click", async function (event) {
       event.preventDefault();

@@ -33,6 +33,7 @@
     {% block header_brand %}
     <a class="site-name" href="{{ get_url(path=config.extra.zola_docs.home_url) | safe }}">{{ config.extra.zola_docs.site_name }}</a>
     {% endblock header_brand %}
+    <button class="navigation-toggle" type="button" aria-controls="mobile-navigation-dialog" aria-expanded="false" data-navigation-open hidden>Menu</button>
     {% if config.extra.zola_docs.appearance_selector %}
     <button class="appearance-toggle" type="button" aria-label="{{ config.extra.zola_docs.appearance_label }}" data-appearance-toggle>
       <span aria-hidden="true" data-appearance-icon>Auto</span>
@@ -98,7 +99,7 @@
     {% block sidebar %}
     {% set navigation = load_data(path=config.extra.zola_docs.navigation_path) %}
     <aside class="sidebar">
-      <details open>
+      <details>
         <summary>{{ config.extra.zola_docs.navigation_label }}</summary>
         <nav aria-label="{{ config.extra.zola_docs.navigation_label }}">
           {% for group in navigation %}
@@ -142,9 +143,7 @@
   {% if config.extra.zola_docs.search_enabled %}
   <script src="{{ get_url(path='zola-docs-search.js', cachebust=true) | safe }}"></script>
   {% endif %}
-  {% if config.extra.zola_docs.copy_code or config.extra.zola_docs.appearance_selector or config.extra.zola_docs.versions_enabled %}
   <script src="{{ get_url(path='zola-docs.js', cachebust=true) | safe }}"></script>
-  {% endif %}
   {% block scripts %}{% endblock scripts %}
 </body>
 </html>
