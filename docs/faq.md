@@ -104,7 +104,7 @@ return {
 }
 ```
 
-See also [Troubleshooting Fonts](config/fonts.md#troubleshooting-fonts).
+See also [Troubleshooting Fonts](guides/configuration/fonts.md#troubleshooting-fonts).
 
 ### Some (but not all) Emoji don't render properly
 
@@ -123,13 +123,13 @@ issue.
 
 ### Multiple characters being rendered/combined as one character?
 
-`wakterm` supports [advanced font shaping](config/font-shaping.md), which,
+`wakterm` supports [advanced font shaping](guides/configuration/font-shaping.md), which,
 amongst other things, allows for multiple characters/glyphs to be combined into
 one [ligature](https://en.wikipedia.org/wiki/Ligature_(writing)). You may be
 experiencing this if, e.g., `!=` becomes rendered as `≠` in `wakterm`.
 
 If you are seeing this kind of "font combining" and wish to disable it, then
-this is documented in [advanced font shaping options](config/font-shaping.md)
+this is documented in [advanced font shaping options](guides/configuration/font-shaping.md)
 page.
 
 ## How to troubleshoot keys that don't work or produce weird characters!?
@@ -142,7 +142,7 @@ reflect this; there is more information on that above.
 
 If the key in question is produced in combination with Alt/Option then [this
 section of the docs describes how wakterm processes
-Alt/Option](config/keys.md), as well as options that influence that behavior.
+Alt/Option](guides/configuration/keys.md), as well as options that influence that behavior.
 
 The next thing to verify is what byte sequences are being produced when you
 press keys.  I generally suggest running `xxd`, pressing the relevant key, then
@@ -392,10 +392,10 @@ $ sudo launchctl config user path <my path setting>
 
 See also:
 
- * [set_environment_variables](config/lua/config/set_environment_variables.md)
- * [SpawnCommand](config/lua/SpawnCommand.md)
- * [wakterm.config_file](config/lua/wakterm/config_file.md)
- * [wakterm.shell_quote_arg](config/lua/wakterm/shell_quote_arg.md)
+ * [set_environment_variables](reference/config/set_environment_variables.md)
+ * [SpawnCommand](reference/lua/SpawnCommand.md)
+ * [wakterm.config_file](reference/lua/wakterm/config_file.md)
+ * [wakterm.shell_quote_arg](reference/lua/wakterm/shell_quote_arg.md)
  * [how to set the PATH for Finder-launched applications](https://apple.stackexchange.com/q/51677/166425)
  * [what does launchctl config user path do?](https://stackoverflow.com/q/51636338/149111)
 

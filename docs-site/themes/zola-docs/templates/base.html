@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="{{ config.default_language }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="{% block description %}{{ config.description }}{% endblock description %}">
+  {% if config.extra.zola_docs.appearance_selector %}
+  <script>
+    (function () {
+      var choice;
+      try { choice = localStorage.getItem("zola-docs-theme"); } catch (_error) {}
+      if (choice !== "light" && choice !== "dark") choice = "auto";
+      var dark = choice === "dark" || (choice === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.dataset.themeChoice = choice;
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+    })();
+  </script>
+  {% endif %}
+  <link rel="stylesheet" href="{{ get_url(path='zola-docs.css', cachebust=true) | safe }}">
+  {% for stylesheet in config.extra.zola_docs.extra_styles %}
+  <link rel="stylesheet" href="{{ get_url(path=stylesheet, cachebust=true) | safe }}">
+  {% endfor %}
+  {% if config.extra.zola_docs.favicon %}
+  <link rel="icon" href="{{ get_url(path=config.extra.zola_docs.favicon) | safe }}">
+  {% endif %}
+  {% block head %}{% endblock head %}
+  <title>{% block title %}{{ config.title }}{% endblock title %}</title>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  {% block header %}
+  <header class="site-header">
+    {% block header_brand %}
+    <a class="site-name" href="{{ get_url(path=config.extra.zola_docs.home_url) | safe }}">{{ config.extra.zola_docs.site_name }}</a>
+    {% endblock header_brand %}
+    {% if config.extra.zola_docs.appearance_selector %}
+    <button class="appearance-toggle" type="button" aria-label="{{ config.extra.zola_docs.appearance_label }}" data-appearance-toggle>
+      <span aria-hidden="true" data-appearance-icon>Auto</span>
+    </button>
+    {% endif %}
+    {% if config.extra.zola_docs.versions_enabled %}
+    {% set versions = load_data(path=config.extra.zola_docs.versions_path) %}
+    <nav class="version-switcher" aria-label="{{ config.extra.zola_docs.version_label }}">
+      <details>
+        <summary>
+          <span class="visually-hidden">{{ config.extra.zola_docs.version_label }}:</span>
+          {% for version in versions %}{% if version.id == config.extra.zola_docs.current_version %}{{ version.label }}{% endif %}{% endfor %}
+        </summary>
+        <ul>
+          {% for version in versions %}
+          <li>
+            {% if version.path is defined %}
+            {% set version_url = get_url(path=version.path) %}
+            {% else %}
+            {% set version_url = version.url %}
+            {% endif %}
+            <a href="{{ version_url | safe }}"{% if version.id == config.extra.zola_docs.current_version %} aria-current="page"{% endif %}{% if config.extra.zola_docs.version_preserve_path and version.manifest is defined %} data-version-root="{{ version_url | safe }}" data-version-manifest="{{ version.manifest | safe }}" data-current-path="{{ current_path }}"{% endif %}>{{ version.label }}</a>
+          </li>
+          {% endfor %}
+        </ul>
+      </details>
+    </nav>
+    {% endif %}
+    {% if config.extra.zola_docs.search_enabled %}
+    <form
+      class="search"
+      role="search"
+      data-search-form
+      data-search-index="{{ get_url(path=config.extra.zola_docs.search_index) | safe }}"
+      data-search-limit="{{ config.extra.zola_docs.search_results_limit }}"
+    >
+      <label for="site-search">{{ config.extra.zola_docs.search_label }}</label>
+      <div class="search-row">
+        <input
+          id="site-search"
+          type="search"
+          minlength="2"
+          autocomplete="off"
+          placeholder="{{ config.extra.zola_docs.search_placeholder }}"
+          aria-controls="search-results"
+          aria-expanded="false"
+          data-search-input
+        >
+        <button type="submit">Search</button>
+      </div>
+      <div id="search-results" class="search-panel" role="region" aria-live="polite" hidden data-search-panel>
+        <p data-search-status></p>
+        <ol data-search-results></ol>
+      </div>
+    </form>
+    {% endif %}
+  </header>
+  {% endblock header %}
+  {% if config.extra.zola_docs.version_banner %}
+  <aside class="version-banner" aria-label="Version notice">{{ config.extra.zola_docs.version_banner }}</aside>
+  {% endif %}
+  <div class="shell">
+    {% block sidebar %}
+    {% set navigation = load_data(path=config.extra.zola_docs.navigation_path) %}
+    <aside class="sidebar">
+      <details open>
+        <summary>{{ config.extra.zola_docs.navigation_label }}</summary>
+        <nav aria-label="{{ config.extra.zola_docs.navigation_label }}">
+          {% for group in navigation %}
+          <section>
+            <h2>{% if group.path is defined %}<a href="{{ get_url(path=group.path) | safe }}">{{ group.title }}</a>{% else %}{{ group.title }}{% endif %}</h2>
+            <ul>
+              {% for item in group.items %}
+              {% if item.path is defined %}{% set item_url = get_url(path=item.path) %}{% set item_current_path = "/" ~ item.path %}{% else %}{% set item_url = item.url %}{% set item_current_path = item.url %}{% endif %}
+              <li>
+                <a href="{{ item_url | safe }}"{% if current_path == item_current_path %} aria-current="page"{% endif %}>{{ item.title }}</a>
+                {% if item.children %}
+                <ul>
+                  {% for child in item.children %}
+                  {% if child.path is defined %}{% set child_url = get_url(path=child.path) %}{% set child_current_path = "/" ~ child.path %}{% else %}{% set child_url = child.url %}{% set child_current_path = child.url %}{% endif %}
+                  <li>
+                    <a href="{{ child_url | safe }}"{% if current_path == child_current_path %} aria-current="page"{% endif %}>{{ child.title }}</a>
+                    {% if child.children %}
+                    <ul>
+                      {% for grandchild in child.children %}
+                      {% if grandchild.path is defined %}{% set grandchild_url = get_url(path=grandchild.path) %}{% set grandchild_current_path = "/" ~ grandchild.path %}{% else %}{% set grandchild_url = grandchild.url %}{% set grandchild_current_path = grandchild.url %}{% endif %}
+                      <li><a href="{{ grandchild_url | safe }}"{% if current_path == grandchild_current_path %} aria-current="page"{% endif %}>{{ grandchild.title }}</a></li>
+                      {% endfor %}
+                    </ul>
+                    {% endif %}
+                  </li>
+                  {% endfor %}
+                </ul>
+                {% endif %}
+              </li>
+              {% endfor %}
+            </ul>
+          </section>
+          {% endfor %}
+        </nav>
+      </details>
+    </aside>
+    {% endblock sidebar %}
+    {% block body %}{% endblock body %}
+  </div>
+  {% block footer %}{% endblock footer %}
+  {% if config.extra.zola_docs.search_enabled %}
+  <script src="{{ get_url(path='zola-docs-search.js', cachebust=true) | safe }}"></script>
+  {% endif %}
+  {% if config.extra.zola_docs.copy_code or config.extra.zola_docs.appearance_selector or config.extra.zola_docs.versions_enabled %}
+  <script src="{{ get_url(path='zola-docs.js', cachebust=true) | safe }}"></script>
+  {% endif %}
+  {% block scripts %}{% endblock scripts %}
+</body>
+</html>

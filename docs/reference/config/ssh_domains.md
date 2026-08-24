@@ -1,0 +1,21 @@
+---
+tags:
+  - ssh
+  - multiplexing
+---
+# `ssh_domains`
+
+Configures SSH multiplexing domains.  [Read more about SSH Domains](
+../../../multiplexing.md#ssh-domains).
+
+This option accepts a list of [SshDomain](../lua/SshDomain.md) objects.
+
+If you don't set `ssh_domains` in your config, wakterm will default
+to configuring it as if you had:
+
+```lua
+config.ssh_domains = wakterm.default_ssh_domains()
+```
+
+See also [wakterm.default_ssh_domains()](../lua/wakterm/default_ssh_domains.md).
+

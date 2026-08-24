@@ -1,0 +1,47 @@
+name = "zola-docs"
+description = "A small, responsive documentation theme for Zola"
+tags = ["documentation", "search", "responsive", "accessible"]
+license = "MIT"
+homepage = ""
+min_version = "0.23.0"
+demo = ""
+
+[extra.zola_docs]
+site_name = "Documentation"
+home_url = "/"
+navigation_path = "data/navigation.json"
+navigation_label = "Documentation"
+search_enabled = true
+search_label = "Search documentation"
+search_placeholder = "Search"
+search_index = "search_index.en.json"
+search_results_limit = 10
+copy_code = true
+page_navigation = true
+breadcrumbs = true
+toc = true
+edit_url = ""
+edit_branch = "main"
+edit_label = "Edit this page"
+last_updated = true
+last_updated_label = "Last updated"
+previous_label = "Previous"
+next_label = "Next"
+appearance_selector = true
+appearance_label = "Appearance"
+metadata = true
+social_image = ""
+mermaid = false
+mermaid_url = "https://cdn.jsdelivr.net/npm/mermaid@11.12.0/+esm"
+versions_enabled = false
+versions_path = "data/versions.json"
+version_label = "Documentation version"
+current_version = ""
+version_banner = ""
+version_preserve_path = true
+favicon = ""
+extra_styles = []
+
+[author]
+name = "Zola Docs theme contributors"
+homepage = ""

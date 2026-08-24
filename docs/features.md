@@ -13,8 +13,8 @@ wakterm keeps the core WezTerm terminal foundation, with extra focus on multiple
 - Automatic agent detection and cached session adoption
 - Exact-session Codex restoration across mux restarts and system reboot
 - Supervised Codex app-server TUI via `wakterm agent launch codex`
-- Versioned [Agent API v1](agent-api/v1/README.md) with capability negotiation, catalog, authoritative prompt admission, and durable event streams
-- [Parked tabs and dedicated tab navigator](config/lua/keyassignment/ShowTabNavigator.md) (`Ctrl-Shift-E` / `Cmd-E` and `Ctrl-Shift-S` / `Cmd-Shift-S`)
+- Versioned [Agent API v1](agent-api/v1/index.md) with capability negotiation, catalog, authoritative prompt admission, and durable event streams
+- [Parked tabs and dedicated tab navigator](reference/lua/keyassignment/ShowTabNavigator.md) (`Ctrl-Shift-E` / `Cmd-E` and `Ctrl-Shift-S` / `Cmd-Shift-S`)
 - Agent attention indicators with subtle icon pulse and shared turn review acknowledgement across clients
 - Automatic tab naming from active agent directories with collision disambiguation
 - Native harness icons and generated per-tab background colors in the tab bar
@@ -35,8 +35,8 @@ wakterm keeps the core WezTerm terminal foundation, with extra focus on multiple
 - Connect to a remote multiplexer using SSH or TLS over TCP/IP
 - [Searchable Scrollback](scrollback.md) with keyboard navigation and search mode
 - Hyperlinks, shell integration, and dynamic status areas
-- Ligatures, Color Emoji, font fallback, and true color with [dynamic color schemes](config/appearance.md)
-- Configuration via a [configuration file](config/files.md) with hot reloading
+- Ligatures, Color Emoji, font fallback, and true color with [dynamic color schemes](guides/configuration/appearance.md)
+- Configuration via a [configuration file](guides/configuration/files.md) with hot reloading
 - iTerm2-compatible image protocol support and built-in [imgcat command](imgcat.md)
 - Kitty graphics support
 - Sixel graphics support

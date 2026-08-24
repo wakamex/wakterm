@@ -8,8 +8,8 @@ wakterm supports integrating with the shell through the following means:
 
 These sequences enable some improved user experiences, such as being able
 to spawn new panes, tabs and windows with the same current working directory
-as the current pane, [jumping through the scrollback to the start of an earlier command](config/lua/keyassignment/ScrollToPrompt.md),
-or [conveniently selecting the complete output from a command](config/lua/keyassignment/SelectTextAtMouseCursor.md).
+as the current pane, [jumping through the scrollback to the start of an earlier command](reference/lua/keyassignment/ScrollToPrompt.md),
+or [conveniently selecting the complete output from a command](reference/lua/keyassignment/SelectTextAtMouseCursor.md).
 
 In order for these features to be enabled, you will need to configure your
 shell program to emit the escape sequences at the appropriate place.
@@ -58,14 +58,14 @@ used to set your own user vars.
 Setting a user var will generate events in the window that contains
 the corresponding pane:
 
-* [user-var-changed](config/lua/window-events/user-var-changed.md), which
+* [user-var-changed](reference/lua/window-events/user-var-changed.md), which
   allows you to directly take action when a var is set/changed.
-* [update-status](config/lua/window-events/update-status.md) which allows you to update left/right status items
+* [update-status](reference/lua/window-events/update-status.md) which allows you to update left/right status items
 * the title and tab bar area will then update and trigger any associated events as part of that update
 
 You can access the complete set of user vars in a given pane by calling
-[pane:get_user_vars()](config/lua/pane/get_user_vars.md), or by accessing
-the `user_vars` field in a [PaneInformation](config/lua/PaneInformation.md)
+[pane:get_user_vars()](reference/lua/pane/get_user_vars.md), or by accessing
+the `user_vars` field in a [PaneInformation](reference/lua/PaneInformation.md)
 struct.
 
 You may wish to use this information to adjust what is shown in your tab titles

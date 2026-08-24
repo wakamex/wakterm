@@ -38,8 +38,8 @@ table.insert(config.hyperlink_rules, {
 return config
 ```
 
-See also [hyperlink_rules](config/lua/config/hyperlink_rules.md) and
-[default_hyperlink_rules](config/lua/wakterm/default_hyperlink_rules.md).
+See also [hyperlink_rules](reference/config/hyperlink_rules.md) and
+[default_hyperlink_rules](reference/lua/wakterm/default_hyperlink_rules.md).
 
 
 ### Explicit Hyperlinks

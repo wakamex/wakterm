@@ -43,7 +43,7 @@ both:
 * `SSH:host` for plain ad-hoc SSH
 * `SSHMUX:host` for a reconnectable multiplexed remote session
 
-The [ssh_backend](config/lua/config/ssh_backend.md) configuration can
+The [ssh_backend](reference/config/ssh_backend.md) configuration can
 be used to specify which ssh library is used.
 
 wakterm is now able to parse `~/.ssh/config` and `/etc/ssh/ssh_config`

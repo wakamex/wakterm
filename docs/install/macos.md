@@ -20,7 +20,7 @@ with support for both Apple Silicon and Intel hardware.
 PATH="$PATH:/Applications/wakterm.app/Contents/MacOS"
 export PATH
 ```
-5. Configuration instructions can be [found here](../config/files.md)
+5. Configuration instructions can be [found here](../guides/configuration/files.md)
 
 ## Homebrew
 

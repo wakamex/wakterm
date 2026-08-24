@@ -1,0 +1,50 @@
+# `ActivatePaneDirection`
+
+`ActivatePaneDirection` activate an adjacent pane in the specified direction.
+In cases where there are multiple adjacent panes in the intended direction,
+wakterm will choose the pane that has the largest edge intersection.
+
+If the active pane is [zoomed](TogglePaneZoomState.md), behavior is determined
+by the [`unzoom_on_switch_pane`](../../config/unzoom_on_switch_pane.md) flag.
+
+```lua
+local wakterm = require 'wakterm'
+local act = wakterm.action
+local config = {}
+
+config.keys = {
+  {
+    key = 'LeftArrow',
+    mods = 'CTRL|SHIFT',
+    action = act.ActivatePaneDirection 'Left',
+  },
+  {
+    key = 'RightArrow',
+    mods = 'CTRL|SHIFT',
+    action = act.ActivatePaneDirection 'Right',
+  },
+  {
+    key = 'UpArrow',
+    mods = 'CTRL|SHIFT',
+    action = act.ActivatePaneDirection 'Up',
+  },
+  {
+    key = 'DownArrow',
+    mods = 'CTRL|SHIFT',
+    action = act.ActivatePaneDirection 'Down',
+  },
+}
+return config
+```
+
+You may now use `"Next"` and `"Prev"` as directions.  These cycle
+through the panes according to their position in the pane tree.
+
+`"Next"` moves to the next highest pane index, wrapping around to 0
+if the active pane is already the highest pane index.
+
+`"Prev"` moves to the next lowest pane index, wrapping around to
+the highest of the active pane is already the lowest pane index.
+
+Ambiguous moves are now resolved by selecting the most recently activated pane
+in a given direction, instead of based on the edge intersection.

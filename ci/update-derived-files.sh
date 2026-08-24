@@ -110,7 +110,7 @@ for shell in bash zsh fish ; do
 done
 
 for mode in copy_mode search_mode ; do
-  fname="docs/examples/default-$(echo $mode | tr _ -)-key-table.markdown"
+  fname="docs/generated/key-tables/default-$(echo $mode | tr _ -)-key-table.markdown"
   generate_file "$fname" render_key_table "$mode"
 done
 
@@ -122,7 +122,6 @@ synopsis_commands=(
   "connect"
   "ls-fonts"
   "show-keys"
-  "agent"
   "imgcat"
   "set-working-directory"
   "record"
@@ -147,14 +146,12 @@ synopsis_commands=(
   "cli split-pane"
   "cli zoom-pane"
   "agent start"
-  "agent launch"
   "agent launch codex"
   "agent adopt"
   "agent adopt-detected"
   "agent list"
   "agent watch"
   "agent inspect"
-  "agent output"
   "agent events"
   "agent capabilities"
   "agent catalog"
@@ -172,7 +169,7 @@ synopsis_commands=(
 generated_synopses=()
 for command_path in "${synopsis_commands[@]}"; do
   command_suffix=${command_path// /-}
-  target="docs/examples/cmd-synopsis-wakterm${command_suffix:+-${command_suffix}}--help.txt"
+  target="docs/generated/cli-help/cmd-synopsis-wakterm${command_suffix:+-${command_suffix}}--help.txt"
   command_args=()
   if [ -n "$command_path" ]; then
     read -r -a command_args <<< "$command_path"
@@ -193,7 +190,7 @@ was_generated() {
 }
 
 while IFS= read -r synopsis; do
-  if ! was_generated "docs/examples/$synopsis"; then
+  if ! was_generated "docs/generated/cli-help/$synopsis"; then
     echo "Error: documentation includes a synopsis that is not in synopsis_commands: $synopsis" >&2
     exit 1
   fi

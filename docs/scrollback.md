@@ -7,7 +7,7 @@ down.
 
 This section describes working with the scrollback and discusses some
 configuration options; be sure to read the [configuration
-docs](config/files.md) to learn how to change your settings!
+docs](guides/configuration/files.md) to learn how to change your settings!
 
 ### Controlling the scrollback size
 
@@ -28,7 +28,7 @@ By default, `CTRL-SHIFT-K` and `CMD-K` will trigger the `ClearScrollback`
 action and discard the contents of the scrollback buffer.  There is no way
 to undo discarding the scrollback.
 
-See the [ClearScrollback](config/lua/keyassignment/ClearScrollback.md) docs for information
+See the [ClearScrollback](reference/lua/keyassignment/ClearScrollback.md) docs for information
 on rebinding this key.
 
 ### Enable/Disable scrollbar
@@ -44,14 +44,14 @@ file:
 config.enable_scroll_bar = true
 ```
 
-You may [change the color of the scrollbar](config/appearance.md#defining-your-own-colors) if you wish!
+You may [change the color of the scrollbar](guides/configuration/appearance.md#defining-your-own-colors) if you wish!
 
 ### Scrolling without a scrollbar
 
 By default, `SHIFT-PageUp` and `SHIFT-PageDown` will adjust the viewport scrollback position
 by one full screen for each press.
 
-See the [ScrollByPage](config/lua/keyassignment/ScrollByPage.md) docs for more information
+See the [ScrollByPage](reference/lua/keyassignment/ScrollByPage.md) docs for more information
 on this key binding assignment.
 
 ### Searching the scrollback
@@ -81,10 +81,10 @@ When the search overlay is active the behavior of wakterm changes:
 
 #### Configurable search mode key assignments
 
-The key assignments for search mode are specified by the `search_mode` [Key Table](config/key-tables.md).
+The key assignments for search mode are specified by the `search_mode` [Key Table](guides/configuration/key-tables.md).
 
 You may use
-[wakterm.gui.default_key_tables](config/lua/wakterm.gui/default_key_tables.md)
+[wakterm.gui.default_key_tables](reference/lua/wakterm.gui/default_key_tables.md)
 to obtain the defaults and extend them. In earlier versions of wakterm there
 wasn't a way to override portions of the key table, only to replace the entire
 table.
@@ -95,7 +95,7 @@ may be more recent than your version of wakterm) is shown below.
 You can see the configuration in your version of wakterm by running
 `wakterm show-keys --lua --key-table search_mode`.
 
-{% include "examples/default-search-mode-key-table.markdown" %}
+{% include "generated/key-tables/default-search-mode-key-table.markdown" %}
 
 (Those assignments reference `CopyMode` because search mode is a facet of [Copy Mode](copymode.md)).
 
@@ -130,5 +130,5 @@ With that in your config you can now:
 
 without needing to reach for your mouse.
 
-See [the Search action docs](config/lua/keyassignment/Search.md) for more information on
+See [the Search action docs](reference/lua/keyassignment/Search.md) for more information on
 using the `Search` action.

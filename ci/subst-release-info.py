@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import pathlib
 import re
 
@@ -91,6 +92,14 @@ def pick_latest_stable_release(release_info):
 
 
 def load_release_info():
+    if os.environ.get("DOCS_OFFLINE") == "1":
+        release_info = []
+        nightly = None
+        subst = fallback_subst()
+        with open("docs/releases.json", "w") as output:
+            json.dump(subst, output)
+        return
+
     releases_path = pathlib.Path("/tmp/wakterm.releases.json")
     if releases_path.exists():
         with releases_path.open() as f:

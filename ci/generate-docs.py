@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import glob
+import io
 import json
 import os
 import re
@@ -52,6 +53,7 @@ class Gen(object):
 
         index_filename = f"{self.dirname}/index.md"
         index_page = Page(self.title, index_filename, children=children)
+        self.generated_page = index_page
         index_page.render(output, depth)
         with open(f"{self.dirname}/index.md", "w") as idx:
             if self.index:
@@ -166,6 +168,7 @@ class GenColorScheme(object):
 
         index_filename = f"{self.dirname}/index.md"
         index_page = Page(self.title, index_filename)
+        self.generated_page = index_page
         index_page.render(output, depth)
 
         with open(index_filename, "w") as idx:
@@ -175,8 +178,8 @@ hide:
   - toc
 ---
 
-<link rel="stylesheet" href="/colorschemes/browser.css">
-<script defer src="/colorschemes/browser.js"></script>
+<link rel="stylesheet" href="browser.css">
+<script defer src="browser.js"></script>
 
 # Color Scheme Browser
 
@@ -232,7 +235,7 @@ TOC = [
             Page("Features", "features.md"),
             Page("Agent Harness Lifecycle", "agent-lifecycle.md"),
             Page("Agent Prompt Submission", "agent-send.md"),
-            Page("Agent API v1 Contract", "agent-api/v1/README.md"),
+            Page("Agent API v1 Contract", "agent-api/v1/index.md"),
             Page("Experimental Agent Output", "agent-output.md"),
             Page("Scrollback", "scrollback.md"),
             Page("Quick Select Mode", "quickselect.md"),
@@ -259,127 +262,127 @@ TOC = [
     ),
     Page(
         "Configuration",
-        "config/files.md",
+        "guides/configuration/files.md",
         children=[
-            Page("Colors & Appearance", "config/appearance.md"),
+            Page("Colors & Appearance", "guides/configuration/appearance.md"),
             GenColorScheme("Color Schemes", "colorschemes"),
-            Page("Launching Programs", "config/launch.md"),
-            Page("Fonts", "config/fonts.md"),
-            Page("Font Shaping", "config/font-shaping.md"),
-            Page("Keyboard Concepts", "config/keyboard-concepts.md"),
-            Page("Key Binding", "config/keys.md"),
-            Page("Key Tables", "config/key-tables.md"),
-            Page("Default Key Assignments", "config/default-keys.md"),
-            Page("Keyboard Encoding", "config/key-encoding.md"),
-            Page("Mouse Binding", "config/mouse.md"),
-            Page("Plugins", "config/plugins.md"),
-            Gen("Recipes", "recipes", extract_title=True),
+            Page("Launching Programs", "guides/configuration/launch.md"),
+            Page("Fonts", "guides/configuration/fonts.md"),
+            Page("Font Shaping", "guides/configuration/font-shaping.md"),
+            Page("Keyboard Concepts", "guides/configuration/keyboard-concepts.md"),
+            Page("Key Binding", "guides/configuration/keys.md"),
+            Page("Key Tables", "guides/configuration/key-tables.md"),
+            Page("Default Key Assignments", "guides/configuration/default-keys.md"),
+            Page("Keyboard Encoding", "guides/configuration/key-encoding.md"),
+            Page("Mouse Binding", "guides/configuration/mouse.md"),
+            Page("Plugins", "guides/configuration/plugins.md"),
+            Gen("Recipes", "guides/recipes", extract_title=True),
         ],
     ),
     Page(
         "Full Config & Lua Reference",
-        "config/lua/general.md",
+        "reference/lua/index.md",
         children=[
             Gen(
                 "Config Options",
-                "config/lua/config",
+                "reference/config",
             ),
             Gen(
                 "module: wakterm",
-                "config/lua/wakterm",
+                "reference/lua/wakterm",
             ),
             Gen(
                 "module: wakterm.color",
-                "config/lua/wakterm.color",
+                "reference/lua/wakterm.color",
             ),
             Gen(
                 "module: wakterm.gui",
-                "config/lua/wakterm.gui",
+                "reference/lua/wakterm.gui",
             ),
             Gen(
                 "module: wakterm.mux",
-                "config/lua/wakterm.mux",
+                "reference/lua/wakterm.mux",
             ),
             Gen(
                 "module: wakterm.plugin",
-                "config/lua/wakterm.plugin",
+                "reference/lua/wakterm.plugin",
             ),
             Gen(
                 "module: wakterm.procinfo",
-                "config/lua/wakterm.procinfo",
+                "reference/lua/wakterm.procinfo",
             ),
             Gen(
                 "module: wakterm.serde",
-                "config/lua/wakterm.serde",
+                "reference/lua/wakterm.serde",
             ),
             Gen(
                 "module: wakterm.time",
-                "config/lua/wakterm.time",
+                "reference/lua/wakterm.time",
             ),
             Gen(
                 "module: wakterm.url",
-                "config/lua/wakterm.url",
+                "reference/lua/wakterm.url",
             ),
             Gen(
                 "enum: KeyAssignment",
-                "config/lua/keyassignment",
+                "reference/lua/keyassignment",
             ),
             Gen(
                 "enum: CopyModeAssignment",
-                "config/lua/keyassignment/CopyMode",
+                "reference/lua/keyassignment/CopyMode",
             ),
-            Gen("object: Color", "config/lua/color"),
-            Page("object: ExecDomain", "config/lua/ExecDomain.md"),
-            Page("object: LocalProcessInfo", "config/lua/LocalProcessInfo.md"),
-            Gen("object: MuxDomain", "config/lua/MuxDomain"),
-            Gen("object: MuxWindow", "config/lua/mux-window"),
-            Gen("object: MuxTab", "config/lua/MuxTab"),
-            Page("object: PaneInformation", "config/lua/PaneInformation.md"),
-            Page("object: TabInformation", "config/lua/TabInformation.md"),
-            Page("object: SshDomain", "config/lua/SshDomain.md"),
-            Page("object: SpawnCommand", "config/lua/SpawnCommand.md"),
-            Gen("object: Time", "config/lua/wakterm.time/Time"),
-            Page("object: TlsDomainClient", "config/lua/TlsDomainClient.md"),
-            Page("object: TlsDomainServer", "config/lua/TlsDomainServer.md"),
+            Gen("object: Color", "reference/lua/color"),
+            Page("object: ExecDomain", "reference/lua/ExecDomain.md"),
+            Page("object: LocalProcessInfo", "reference/lua/LocalProcessInfo.md"),
+            Gen("object: MuxDomain", "reference/lua/MuxDomain"),
+            Gen("object: MuxWindow", "reference/lua/mux-window"),
+            Gen("object: MuxTab", "reference/lua/MuxTab"),
+            Page("object: PaneInformation", "reference/lua/PaneInformation.md"),
+            Page("object: TabInformation", "reference/lua/TabInformation.md"),
+            Page("object: SshDomain", "reference/lua/SshDomain.md"),
+            Page("object: SpawnCommand", "reference/lua/SpawnCommand.md"),
+            Gen("object: Time", "reference/lua/wakterm.time/Time"),
+            Page("object: TlsDomainClient", "reference/lua/TlsDomainClient.md"),
+            Page("object: TlsDomainServer", "reference/lua/TlsDomainServer.md"),
             Gen(
                 "object: Pane",
-                "config/lua/pane",
+                "reference/lua/pane",
             ),
             Gen(
                 "object: Window",
-                "config/lua/window",
+                "reference/lua/window",
             ),
-            Page("object: WslDomain", "config/lua/WslDomain.md"),
+            Page("object: WslDomain", "reference/lua/WslDomain.md"),
             Gen(
                 "events: Gui",
-                "config/lua/gui-events",
+                "reference/lua/gui-events",
             ),
             Gen(
                 "events: Multiplexer",
-                "config/lua/mux-events",
+                "reference/lua/mux-events",
             ),
             Gen(
                 "events: Window",
-                "config/lua/window-events",
+                "reference/lua/window-events",
             ),
         ],
     ),
     Page(
         "CLI Reference",
-        "cli/general.md",
+        "cli/reference/index.md",
         children=[
-            Page("wakterm agent", "cli/agent.md"),
-            Gen("wakterm cli", "cli/cli"),
-            Page("wakterm connect", "cli/connect.md"),
-            Page("wakterm imgcat", "cli/imgcat.md"),
-            Page("wakterm ls-fonts", "cli/ls-fonts.md"),
-            Page("wakterm record", "cli/record.md"),
-            Page("wakterm replay", "cli/replay.md"),
-            Page("wakterm serial", "cli/serial.md"),
-            Page("wakterm set-working-directory", "cli/set-working-directory.md"),
-            Page("wakterm show-keys", "cli/show-keys.md"),
-            Page("wakterm ssh", "cli/ssh.md"),
-            Page("wakterm start", "cli/start.md"),
+            Page("wakterm agent", "cli/reference/agent.md"),
+            Gen("wakterm cli", "cli/reference/cli"),
+            Page("wakterm connect", "cli/reference/connect.md"),
+            Page("wakterm imgcat", "cli/reference/imgcat.md"),
+            Page("wakterm ls-fonts", "cli/reference/ls-fonts.md"),
+            Page("wakterm record", "cli/reference/record.md"),
+            Page("wakterm replay", "cli/reference/replay.md"),
+            Page("wakterm serial", "cli/reference/serial.md"),
+            Page("wakterm set-working-directory", "cli/reference/set-working-directory.md"),
+            Page("wakterm show-keys", "cli/reference/show-keys.md"),
+            Page("wakterm ssh", "cli/reference/ssh.md"),
+            Page("wakterm start", "cli/reference/start.md"),
         ],
     ),
     Page(
@@ -404,11 +407,22 @@ TOC = [
     Page("Sponsor", "sponsor.md"),
 ]
 
-os.chdir("docs")
+def navigation_node(node):
+    if hasattr(node, "generated_page"):
+        node = node.generated_page
+    return {
+        "title": node.title,
+        "source": node.filename,
+        "children": [navigation_node(child) for child in node.children],
+    }
 
-with open("../mkdocs.yml", "w") as f:
-    f.write("# this is auto-generated by docs/generate-toc.py, do not edit\n")
-    f.write("INHERIT: docs/mkdocs-base.yml\n")
-    f.write("nav:\n")
-    for page in TOC:
-        page.render(f, depth=1)
+
+os.chdir("docs")
+sink = io.StringIO()
+for page in TOC:
+    page.render(sink, depth=1)
+
+navigation = [navigation_node(page) for page in TOC]
+with open("../docs-site/navigation-source.json", "w") as output:
+    json.dump(navigation, output, indent=2)
+    output.write("\n")

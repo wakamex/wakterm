@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}{% set first_heading = page.toc | first %}{% if page.title %}{{ page.title }}{% elif first_heading %}{{ first_heading.title | striptags }}{% else %}{{ page.slug }}{% endif %} - {{ config.title }}{% endblock title %}
+{% block description %}{{ page.description | default(value=config.description) }}{% endblock description %}
+{% block head %}
+{% set first_heading = page.toc | first %}
+{% set page_metadata_enabled = page.extra.metadata | default(value=config.extra.zola_docs.metadata) %}
+{% if page_metadata_enabled %}
+  <link rel="canonical" href="{{ page.permalink | safe }}">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="{{ page.title | default(value=first_heading.title | default(value=page.slug)) }}">
+  <meta property="og:url" content="{{ page.permalink | safe }}">
+  <meta property="og:description" content="{{ page.description | default(value=config.description) }}">
+  {% if config.extra.zola_docs.social_image %}<meta property="og:image" content="{{ get_url(path=config.extra.zola_docs.social_image) | safe }}">{% endif %}
+{% endif %}
+{% endblock head %}
+{% block body %}
+{% set first_heading = page.toc | first %}
+<main id="main-content" class="content">
+  <article>
+    {% set breadcrumbs_enabled = page.extra.breadcrumbs_enabled | default(value=config.extra.zola_docs.breadcrumbs) %}
+    {% if breadcrumbs_enabled and page.extra.breadcrumbs %}
+    <nav class="breadcrumbs" aria-label="Breadcrumb">
+      <ol>
+        <li><a href="{{ get_url(path=config.extra.zola_docs.home_url) | safe }}">{{ config.extra.zola_docs.site_name }}</a></li>
+        {% for crumb in page.extra.breadcrumbs %}
+        <li><a href="{{ get_url(path=crumb.path) | safe }}">{{ crumb.title }}</a></li>
+        {% endfor %}
+      </ol>
+    </nav>
+    {% endif %}
+    {% block page_header %}
+    <h1>{% if page.title %}{{ page.title }}{% elif first_heading %}{{ first_heading.title | safe }}{% else %}{{ page.slug | replace(from="-", to=" ") }}{% endif %}</h1>
+    {% endblock page_header %}
+    {% block page_metadata %}{% endblock page_metadata %}
+    {% set toc_enabled = page.extra.toc | default(value=config.extra.zola_docs.toc) %}
+    {% if toc_enabled and page.toc %}
+    <details class="toc">
+      <summary>On this page</summary>
+      <ol>
+        {% for heading in page.toc %}
+        <li>
+          <a href="{{ heading.permalink | safe }}">{{ heading.title | safe }}</a>
+          {% if heading.children %}
+          <ol>
+            {% for child in heading.children %}
+            <li><a href="{{ child.permalink | safe }}">{{ child.title | safe }}</a></li>
+            {% endfor %}
+          </ol>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ol>
+    </details>
+    {% endif %}
+    {% block page_before_content %}{% endblock page_before_content %}
+    <div class="prose">{{ page.content | safe }}</div>
+    {% block page_after_content %}{% endblock page_after_content %}
+    {% set edit_enabled = page.extra.edit_link | default(value=true) %}
+    {% if edit_enabled and config.extra.zola_docs.edit_url %}
+    <a class="edit-link" href="{{ config.extra.zola_docs.edit_url }}/{{ config.extra.zola_docs.edit_branch }}/{{ page.extra.source_path | default(value=page.relative_path) }}">{{ config.extra.zola_docs.edit_label }}</a>
+    {% endif %}
+    {% if config.extra.zola_docs.last_updated and page.updated %}
+    <p class="last-updated">{{ config.extra.zola_docs.last_updated_label }}: <time datetime="{{ page.updated }}">{{ page.updated }}</time></p>
+    {% endif %}
+    {% set page_navigation_enabled = page.extra.page_navigation | default(value=config.extra.zola_docs.page_navigation) %}
+    {% if page_navigation_enabled and (page.extra.previous or page.extra.next) %}
+    <nav class="page-navigation" aria-label="Page navigation">
+      {% if page.extra.previous %}<a class="previous" href="{{ get_url(path=page.extra.previous.path) | safe }}"><span>{{ config.extra.zola_docs.previous_label }}</span>{{ page.extra.previous.title }}</a>{% endif %}
+      {% if page.extra.next %}<a class="next" href="{{ get_url(path=page.extra.next.path) | safe }}"><span>{{ config.extra.zola_docs.next_label }}</span>{{ page.extra.next.title }}</a>{% endif %}
+    </nav>
+    {% endif %}
+    {% block page_footer %}{% endblock page_footer %}
+  </article>
+</main>
+{% endblock body %}
+{% block scripts %}
+{% if config.extra.zola_docs.mermaid and page.content is containing(pat='class="mermaid"') %}
+<script type="module">
+  import mermaid from "{{ config.extra.zola_docs.mermaid_url | safe }}";
+  mermaid.initialize({ startOnLoad: true, theme: "neutral" });
+</script>
+{% endif %}
+{% endblock scripts %}

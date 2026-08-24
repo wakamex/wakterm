@@ -1,0 +1,5 @@
+# `window:active_key_table()`
+
+Returns a string holding the top of the current key table activation stack, or `nil` if the stack is empty.
+
+See [Key Tables](../../../guides/configuration/key-tables.md) for a detailed example.

@@ -245,7 +245,7 @@ of the PTY.
 The Terminal Emulator then reads the output from the client-side and interprets
 the escape sequences to produce a display, and decodes keyboard/mouse input
 from the windowing environment and encodes it as escape sequences to send to
-the running program ([See keyboard encoding](config/key-encoding.md)) thereby
+the running program ([See keyboard encoding](guides/configuration/key-encoding.md)) thereby
 emulating in software the behavior of the classic hardware terminal devices.
 
 ## Windows and ConPTY

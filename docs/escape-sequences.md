@@ -41,7 +41,7 @@ applied to the terminal display using the following rules:
 * The cursor position will be updated based on the column width of the grapheme.
 
 After the graphemes are applied to the terminal display, the rendering portion of
-wakterm will attempt to apply your [font shaping](config/font-shaping.md) configuration
+wakterm will attempt to apply your [font shaping](guides/configuration/font-shaping.md) configuration
 based on runs of graphemes with matching graphic attributes to determine which glyphs
 should be rendered from your fonts; it is at this stage that emoji and ligatures are
 resolved.

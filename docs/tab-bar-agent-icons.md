@@ -176,7 +176,7 @@ The implementation is runtime-hardcoded, but the authoring process is:
 
 The saved helper for step 3 is:
 
-- [`scripts/icon_simplify_review.py`](/code/wakterm/scripts/icon_simplify_review.py)
+- [`scripts/icon_simplify_review.py`](https://github.com/wakamex/wakterm/blob/main/scripts/icon_simplify_review.py)
 
 It is intentionally narrow:
 

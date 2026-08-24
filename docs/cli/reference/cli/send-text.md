@@ -1,0 +1,31 @@
+# `wakterm cli send-text`
+
+*Run `wakterm cli send-text --help` to see more help*
+
+Send text to a pane as though it were pasted. If bracketed paste mode is
+enabled in the pane, then the text will be sent as a bracketed paste.
+
+For example:
+
+```
+$ wakterm cli send-text "hello there"
+```
+
+will cause `hello there` to be sent to the input in the current pane.
+
+You can also pipe text in via stdin:
+
+```
+$ echo hello there | wakterm cli send-text
+```
+
+The following arguments modify the behavior:
+
+* `--no-paste` - Send the text directly, rather than as a bracketed paste.
+* `--pane-id` - Specifies which pane to send the text to. See also [Targeting Panes](index.md#targeting-panes).
+
+## Synopsis
+
+```console
+{% include "../../../generated/cli-help/cmd-synopsis-wakterm-cli-send-text--help.txt" %}
+```

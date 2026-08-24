@@ -10,10 +10,11 @@ on:
       - "assets/icon/terminal.png"
       - "assets/icon/wakterm-icon.svg"
       - "ci/build-docs.sh"
-      - "ci/Dockerfile.docs"
+      - "ci/build-zola-docs.py"
       - "ci/generate-docs.py"
+      - "ci/install-zola.sh"
       - "ci/subst-release-info.py"
-      - "mkdocs_macros.py"
+      - "docs-site/**"
       - "wrangler.toml"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
@@ -54,7 +55,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           source $HOME/.cargo/env
-          CARDS=true ./ci/build-docs.sh
+          ./ci/build-docs.sh
       - name: Deploy to Cloudflare Pages
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

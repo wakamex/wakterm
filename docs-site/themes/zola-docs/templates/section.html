@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}{% if section.title %}{{ section.title }}{% else %}{{ section.path }}{% endif %} - {{ config.title }}{% endblock title %}
+{% block body %}
+<main id="main-content" class="content">
+  <article>
+    {% block section_header %}{% endblock section_header %}
+    {% block section_before_content %}{% endblock section_before_content %}
+    <div class="prose">{{ section.content | safe }}</div>
+    {% block section_after_content %}{% endblock section_after_content %}
+    {% if section.pages or section.subsections %}
+    <section class="directory">
+      <h2>Pages</h2>
+      <ul>
+        {% for subsection_path in section.subsections %}
+          {% set subsection = get_section(path=subsection_path) %}
+          <li><a href="{{ subsection.permalink | safe }}">{{ subsection.title | default(value=subsection.path) }}</a></li>
+        {% endfor %}
+        {% for child in section.pages %}
+          <li><a href="{{ child.permalink | safe }}">{{ child.title | default(value=child.slug) }}</a></li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+    {% block section_footer %}{% endblock section_footer %}
+  </article>
+</main>
+{% endblock body %}
+{% block scripts %}
+{% if config.extra.zola_docs.mermaid and section.content is containing(pat='class="mermaid"') %}
+<script type="module">
+  import mermaid from "{{ config.extra.zola_docs.mermaid_url | safe }}";
+  mermaid.initialize({ startOnLoad: true, theme: "neutral" });
+</script>
+{% endif %}
+{% endblock scripts %}
+

@@ -91,7 +91,7 @@ hide:
     $ ~/bin/wakterm
     ```
 
-    * Configuration instructions can be [found here](../config/files.md)
+    * Configuration instructions can be [found here](../guides/configuration/files.md)
 
 === "Ubuntu/Debian"
     ## Using the APT repo
@@ -153,7 +153,7 @@ hide:
     ```
 
     * The package installs `/usr/bin/wakterm` and `/usr/share/applications/org.wezfurlong.wakterm.desktop`
-    * Configuration instructions can be [found here](../config/files.md)
+    * Configuration instructions can be [found here](../guides/configuration/files.md)
 
 === "Copr"
     ## Installing on Fedora and rpm-based Systems via Copr

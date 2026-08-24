@@ -1,0 +1,62 @@
+title = "Wakterm documentation"
+description = "Documentation for the Wakterm terminal emulator and agent workspace."
+base_url = "https://wakterm.org/"
+theme = "zola-docs"
+output_dir = "../gh_pages"
+compile_sass = false
+build_search_index = true
+generate_sitemap = true
+generate_robots_txt = true
+
+[markdown]
+github_alerts = true
+insert_anchor_links = "right"
+
+[search]
+index_format = "fuse_json"
+include_title = true
+include_description = true
+include_content = true
+include_path = true
+truncate_content_length = 12000
+
+[link_checker]
+internal_level = "error"
+external_level = "warn"
+skip_prefixes = ["http://", "https://"]
+
+[extra.zola_docs]
+site_name = "Wakterm docs"
+home_url = ""
+navigation_path = "data/navigation.json"
+navigation_label = "Documentation"
+search_enabled = true
+search_label = "Search Wakterm documentation"
+search_placeholder = "Search"
+search_index = "search_index.en.json"
+search_results_limit = 10
+copy_code = true
+page_navigation = true
+breadcrumbs = true
+toc = true
+edit_url = "https://github.com/wakamex/wakterm/edit"
+edit_branch = "main"
+edit_label = "Edit this page"
+last_updated = true
+last_updated_label = "Last updated"
+previous_label = "Previous"
+next_label = "Next"
+appearance_selector = true
+appearance_label = "Appearance"
+metadata = true
+social_image = ""
+mermaid = true
+mermaid_url = "https://cdn.jsdelivr.net/npm/mermaid@11.12.0/+esm"
+versions_enabled = false
+versions_path = "data/versions.json"
+version_label = "Documentation version"
+current_version = ""
+version_banner = ""
+version_preserve_path = true
+favicon = "favicon.svg"
+extra_styles = ["wakterm.css"]

@@ -2,7 +2,7 @@ Copy mode allows you to make selections using the keyboard; no need to reach
 for your mouse or trackpad.  Copy mode is similar to [quick select
   mode](quickselect.md) but is geared up for describing selections based on
 keyboard control, whereas quick select mode is used to quickly select and
-copy commonly used patterns. The [colors](config/appearance.md#defining-your-own-colors)
+copy commonly used patterns. The [colors](guides/configuration/appearance.md#defining-your-own-colors)
 of the highlighted/selected text can be configured.
 
 The `ActivateCopyMode` key assignment is used to enter copy mode; it is
@@ -73,13 +73,13 @@ The default key assignments in copy mode are as follows:
 
 ### Configurable Key Assignments
 
-The key assignments for copy mode are specified by the `copy_mode` [Key Table](config/key-tables.md).
+The key assignments for copy mode are specified by the `copy_mode` [Key Table](guides/configuration/key-tables.md).
 
 You may provide your own definition of this key table if you wish to customize
 it.
 
 You may use
-[wakterm.gui.default_key_tables](config/lua/wakterm.gui/default_key_tables.md)
+[wakterm.gui.default_key_tables](reference/lua/wakterm.gui/default_key_tables.md)
 to obtain the defaults and extend them. In earlier versions of wakterm there
 wasn't a way to override portions of the key table, only to replace the entire
 table.
@@ -90,4 +90,4 @@ may be more recent than your version of wakterm) is shown below.
 You can see the configuration in your version of wakterm by running
 `wakterm show-keys --lua --key-table copy_mode`.
 
-{% include "examples/default-copy-mode-key-table.markdown" %}
+{% include "generated/key-tables/default-copy-mode-key-table.markdown" %}

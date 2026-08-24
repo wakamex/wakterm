@@ -98,7 +98,7 @@ config.ssh_domains = {
 }
 ```
 
-See [SshDomain](config/lua/SshDomain.md) for more information on possible settings to use with SSH domains.
+See [SshDomain](reference/lua/SshDomain.md) for more information on possible settings to use with SSH domains.
 
 To connect to the system, run:
 
@@ -116,7 +116,7 @@ $ wakterm connect SSHMUX:my.server
 $ wakterm cli spawn --domain-name SSHMUX:my.server
 ```
 
-To customize this functionality, see [wakterm.default_ssh_domains()](config/lua/wakterm/default_ssh_domains.md).
+To customize this functionality, see [wakterm.default_ssh_domains()](reference/lua/wakterm/default_ssh_domains.md).
 
 ## Unix Domains
 
@@ -240,7 +240,7 @@ config.tls_clients = {
 }
 ```
 
-See [TlsDomainClient](config/lua/TlsDomainClient.md) for more information on possible settings.
+See [TlsDomainClient](reference/lua/TlsDomainClient.md) for more information on possible settings.
 
 ### Configuring the server
 
@@ -252,7 +252,7 @@ config.tls_servers = {
 }
 ```
 
-See [TlsDomainServer](config/lua/TlsDomainServer.md) for more information on possible settings.
+See [TlsDomainServer](reference/lua/TlsDomainServer.md) for more information on possible settings.
 
 ### Connecting
 

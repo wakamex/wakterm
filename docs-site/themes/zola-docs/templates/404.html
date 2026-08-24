@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Page not found - {{ config.title }}{% endblock title %}
+{% block body %}
+<main id="main-content" class="content">
+  <h1>Page not found</h1>
+  <p>The address may be outdated. Try the documentation search or return to the <a href="{{ get_url(path=config.extra.zola_docs.home_url) | safe }}">documentation home page</a>.</p>
+</main>
+{% endblock body %}
