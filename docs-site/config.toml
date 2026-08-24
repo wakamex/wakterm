@@ -39,6 +39,7 @@ copy_code = true
 page_navigation = true
 breadcrumbs = true
 toc = true
+content_max_width = "none"
 edit_url = "https://github.com/wakamex/wakterm/edit"
 edit_branch = "main"
 edit_label = "Edit this page"
