@@ -1708,7 +1708,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__agent__start)
-            opts="-h --here --replace --name --split --pane-id --new-window --workspace --horizontal --left --right --top --bottom --cells --percent --repo --worktree --branch --cwd --cmd --help claude codex gemini opencode"
+            opts="-h --here --replace --name --split --pane-id --new-window --workspace --horizontal --left --right --top --bottom --cells --percent --repo --worktree --branch --cwd --cmd --help agy claude codex gemini opencode"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2790,7 +2790,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__agent__start)
-            opts="-h --here --replace --name --split --pane-id --new-window --workspace --horizontal --left --right --top --bottom --cells --percent --repo --worktree --branch --cwd --cmd --help claude codex gemini opencode"
+            opts="-h --here --replace --name --split --pane-id --new-window --workspace --horizontal --left --right --top --bottom --cells --percent --repo --worktree --branch --cwd --cmd --help agy claude codex gemini opencode"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

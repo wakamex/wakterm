@@ -180,7 +180,7 @@ _arguments "${_arguments_options[@]}" : \
 '(--left --right --top)--bottom[Split vertically, with the new pane on the bottom]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'::harness -- Built-in harness to launch. Preferred for claude/codex/gemini/opencode:(claude codex gemini opencode)' \
+'::harness -- Built-in harness to launch. Preferred for agy/claude/codex/gemini/opencode:(agy claude codex gemini opencode)' \
 && ret=0
 ;;
 (launch)
@@ -1028,7 +1028,7 @@ _arguments "${_arguments_options[@]}" : \
 '(--left --right --top)--bottom[Split vertically, with the new pane on the bottom]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'::harness -- Built-in harness to launch. Preferred for claude/codex/gemini/opencode:(claude codex gemini opencode)' \
+'::harness -- Built-in harness to launch. Preferred for agy/claude/codex/gemini/opencode:(agy claude codex gemini opencode)' \
 && ret=0
 ;;
 (launch)

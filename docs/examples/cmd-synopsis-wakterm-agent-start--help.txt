@@ -3,7 +3,7 @@ start an agent harness in the current pane, a split, a new tab, or a new window
 Usage: wakterm agent start [OPTIONS] [HARNESS]
 
 Arguments:
-  [HARNESS]  Built-in harness to launch. Preferred for claude/codex/gemini/opencode [possible values: claude, codex, gemini, opencode]
+  [HARNESS]  Built-in harness to launch. Preferred for agy/claude/codex/gemini/opencode [possible values: agy, claude, codex, gemini, opencode]
 
 Options:
       --here                   Start the harness in the current pane instead of creating a new pane/tab/window
