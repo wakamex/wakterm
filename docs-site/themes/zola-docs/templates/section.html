@@ -1,12 +1,23 @@
 {% extends "base.html" %}
 {% block title %}{% if section.title %}{{ section.title }}{% else %}{{ section.path }}{% endif %} - {{ config.title }}{% endblock title %}
 {% block body %}
-<main id="main-content" class="content">
+<main id="main-content" class="content" style="--docs-content-max-width: {{ config.extra.zola_docs.content_max_width }}">
   <article>
     {% block section_header %}{% endblock section_header %}
     {% block section_before_content %}{% endblock section_before_content %}
     <div class="prose">{{ section.content | safe }}</div>
     {% block section_after_content %}{% endblock section_after_content %}
+    {% set backlinks_enabled = section.extra.backlinks | default(value=config.extra.zola_docs.backlinks) %}
+    {% if backlinks_enabled and section.backlinks %}
+    <aside class="backlinks" aria-labelledby="backlinks-title">
+      <h2 id="backlinks-title">{{ config.extra.zola_docs.backlinks_label }}</h2>
+      <ul>
+        {% for backlink in section.backlinks %}
+        <li><a href="{{ backlink.permalink | safe }}">{{ backlink.title | default(value=backlink.permalink) }}</a></li>
+        {% endfor %}
+      </ul>
+    </aside>
+    {% endif %}
     {% if section.pages or section.subsections %}
     <section class="directory">
       <h2>Pages</h2>
@@ -33,4 +44,3 @@
 </script>
 {% endif %}
 {% endblock scripts %}
-

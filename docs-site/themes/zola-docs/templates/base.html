@@ -35,8 +35,9 @@
     {% endblock header_brand %}
     <button class="navigation-toggle" type="button" aria-controls="mobile-navigation-dialog" aria-expanded="false" data-navigation-open hidden>Menu</button>
     {% if config.extra.zola_docs.appearance_selector %}
-    <button class="appearance-toggle" type="button" aria-label="{{ config.extra.zola_docs.appearance_label }}" data-appearance-toggle>
-      <span aria-hidden="true" data-appearance-icon>Auto</span>
+    <button class="appearance-toggle" type="button" aria-label="{{ config.extra.zola_docs.appearance_label }}" title="{{ config.extra.zola_docs.appearance_label }}" data-appearance-toggle data-appearance-label="{{ config.extra.zola_docs.appearance_label }}">
+      <svg class="theme-icon theme-icon-light" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"></path></svg>
+      <svg class="theme-icon theme-icon-dark" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"></path></svg>
     </button>
     {% endif %}
     {% if config.extra.zola_docs.versions_enabled %}

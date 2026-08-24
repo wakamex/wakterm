@@ -3,15 +3,15 @@
 
   var appearance = document.querySelector("[data-appearance-toggle]");
   if (appearance) {
-    var icon = appearance.querySelector("[data-appearance-icon]");
-    var choices = ["auto", "light", "dark"];
+    var appearanceLabel = appearance.dataset.appearanceLabel || "Theme";
 
     function applyAppearance(choice, persist) {
       var dark = choice === "dark" || (choice === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
+      var action = dark ? "light" : "dark";
       document.documentElement.dataset.themeChoice = choice;
       document.documentElement.dataset.theme = dark ? "dark" : "light";
-      icon.textContent = choice.charAt(0).toUpperCase() + choice.slice(1);
-      appearance.title = "Appearance: " + choice;
+      appearance.setAttribute("aria-label", appearanceLabel + ": switch to " + action + " theme");
+      appearance.title = "Switch to " + action + " theme";
       if (persist) {
         try { localStorage.setItem("zola-docs-theme", choice); } catch (_error) {}
       }
@@ -19,8 +19,8 @@
 
     applyAppearance(document.documentElement.dataset.themeChoice || "auto", false);
     appearance.addEventListener("click", function () {
-      var current = document.documentElement.dataset.themeChoice || "auto";
-      applyAppearance(choices[(choices.indexOf(current) + 1) % choices.length], true);
+      var choice = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      applyAppearance(choice, true);
     });
     matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
       if (document.documentElement.dataset.themeChoice === "auto") applyAppearance("auto", false);

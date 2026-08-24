@@ -15,7 +15,7 @@
 {% endblock head %}
 {% block body %}
 {% set first_heading = page.toc | first %}
-<main id="main-content" class="content">
+<main id="main-content" class="content" style="--docs-content-max-width: {{ config.extra.zola_docs.content_max_width }}">
   <article>
     {% set breadcrumbs_enabled = page.extra.breadcrumbs_enabled | default(value=config.extra.zola_docs.breadcrumbs) %}
     {% if breadcrumbs_enabled and page.extra.breadcrumbs %}
@@ -55,6 +55,17 @@
     {% block page_before_content %}{% endblock page_before_content %}
     <div class="prose">{{ page.content | safe }}</div>
     {% block page_after_content %}{% endblock page_after_content %}
+    {% set backlinks_enabled = page.extra.backlinks | default(value=config.extra.zola_docs.backlinks) %}
+    {% if backlinks_enabled and page.backlinks %}
+    <aside class="backlinks" aria-labelledby="backlinks-title">
+      <h2 id="backlinks-title">{{ config.extra.zola_docs.backlinks_label }}</h2>
+      <ul>
+        {% for backlink in page.backlinks %}
+        <li><a href="{{ backlink.permalink | safe }}">{{ backlink.title | default(value=backlink.permalink) }}</a></li>
+        {% endfor %}
+      </ul>
+    </aside>
+    {% endif %}
     {% set edit_enabled = page.extra.edit_link | default(value=true) %}
     {% if edit_enabled and config.extra.zola_docs.edit_url %}
     <a class="edit-link" href="{{ config.extra.zola_docs.edit_url }}/{{ config.extra.zola_docs.edit_branch }}/{{ page.extra.source_path | default(value=page.relative_path) }}">{{ config.extra.zola_docs.edit_label }}</a>
