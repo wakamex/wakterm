@@ -1149,7 +1149,9 @@ impl ClientDomain {
         let inner = Self::get_client_inner_for_domain(domain_id)?;
 
         let panes = inner.client.list_panes().await?;
-        Self::process_pane_list(inner, panes, None)?;
+        Self::process_pane_list(Arc::clone(&inner), panes, None)?;
+        let status = inner.client.get_pane_status().await?;
+        Self::process_remote_status_snapshot(inner.as_ref(), status.agents, status.tab_rss_bytes);
 
         ui.close();
         Ok(())
@@ -1158,7 +1160,13 @@ impl ClientDomain {
     pub async fn resync(&self) -> anyhow::Result<()> {
         if let Some(inner) = self.inner() {
             let panes = inner.client.list_panes().await?;
-            Self::process_pane_list(inner, panes, None)?;
+            Self::process_pane_list(Arc::clone(&inner), panes, None)?;
+            let status = inner.client.get_pane_status().await?;
+            Self::process_remote_status_snapshot(
+                inner.as_ref(),
+                status.agents,
+                status.tab_rss_bytes,
+            );
         }
         Ok(())
     }
@@ -1177,8 +1185,8 @@ impl ClientDomain {
 
         loop {
             if let Some(inner) = self.inner() {
-                let panes = match inner.client.list_panes().await {
-                    Ok(panes) => panes,
+                let status = match inner.client.get_pane_status().await {
+                    Ok(status) => status,
                     Err(err) => {
                         let mut refresh = self.status_refresh.lock().unwrap();
                         refresh.in_progress = false;
@@ -1188,8 +1196,8 @@ impl ClientDomain {
                 };
                 Self::process_remote_status_snapshot(
                     inner.as_ref(),
-                    panes.agents,
-                    panes.tab_rss_bytes,
+                    status.agents,
+                    status.tab_rss_bytes,
                 );
             }
 
@@ -1540,8 +1548,6 @@ impl ClientDomain {
 
         let client_window_view_state = panes.client_window_view_state.clone();
         let remote_parked_tab_ids = panes.parked_tab_ids.clone();
-        let remote_agents = panes.agents.clone();
-        let remote_tab_rss_bytes = panes.tab_rss_bytes.clone();
         let mut fallback_window_view_state: HashMap<WindowId, (WindowId, TabId, PaneId)> =
             HashMap::new();
         let mut remote_tab_order_by_window: HashMap<WindowId, Vec<TabId>> = HashMap::new();
@@ -1765,8 +1771,6 @@ impl ClientDomain {
                 );
             }
         }
-
-        Self::process_remote_status_snapshot(inner.as_ref(), remote_agents, remote_tab_rss_bytes);
 
         let remote_tab_sets = remote_tab_order_by_window.clone();
         let local_windows_to_invalidate = remote_tab_sets
@@ -2028,7 +2032,7 @@ impl ClientDomain {
         }
     }
 
-    fn finish_attach(
+    async fn finish_attach(
         domain_id: DomainId,
         client: Client,
         panes: ListPanesResponse,
@@ -2061,7 +2065,9 @@ impl ClientDomain {
             "finish_attach processing pane list for domain {}",
             domain_id
         );
-        Self::process_pane_list(inner, panes, primary_window_id)?;
+        Self::process_pane_list(Arc::clone(&inner), panes, primary_window_id)?;
+        let status = inner.client.get_pane_status().await?;
+        Self::process_remote_status_snapshot(inner.as_ref(), status.agents, status.tab_rss_bytes);
         log::debug!("finish_attach complete for domain {}", domain_id);
 
         Ok(())
@@ -2383,7 +2389,7 @@ impl Domain for ClientDomain {
                     "attach handshake complete for domain {}; entering finish_attach",
                     domain_id
                 );
-                ClientDomain::finish_attach(domain_id, client, panes, window_id)
+                ClientDomain::finish_attach(domain_id, client, panes, window_id).await
             }
         })
         .await
@@ -3381,12 +3387,11 @@ mod test {
         let tab_b = leaf(1, 102, 1002, size(120, 40), true);
         let mut response = panes_response(vec![tab_a, tab_b], 101, 1001);
         response.parked_tab_ids = vec![102];
-        response.tab_rss_bytes.insert(102, 1_234_567);
         response.tab_badges[1] = AgentTabBadgeState {
             waiting_on_user: true,
             needs_attention: true,
         };
-        response.agents.push(AgentSnapshot {
+        let agent = AgentSnapshot {
             metadata,
             runtime,
             pane_id: 1002,
@@ -3397,8 +3402,13 @@ mod test {
             origin: AgentOrigin::Adopted,
             detection_source: None,
             needs_attention: true,
-        });
+        };
         apply_panes(&mux, inner.clone(), client_id.clone(), response);
+        ClientDomain::process_remote_status_snapshot(
+            inner.as_ref(),
+            vec![agent],
+            HashMap::from([(102, 1_234_567)]),
+        );
 
         let local_window_id = inner.remote_to_local_window(1).unwrap();
         let local_tab_id = inner.remote_to_local_tab_id(102).unwrap();

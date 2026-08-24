@@ -564,7 +564,16 @@ impl Pane for LocalPane {
     }
 
     fn get_foreground_process_info(&self, policy: CachePolicy) -> Option<LocalProcessInfo> {
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
+        if let Some(pid) = self.pty.lock().process_group_leader() {
+            let max_age = match policy {
+                CachePolicy::FetchImmediate => Duration::ZERO,
+                CachePolicy::AllowStale => PROC_INFO_CACHE_TTL,
+            };
+            return LocalProcessInfo::with_root_pid_cached(pid as u32, max_age);
+        }
+
+        #[cfg(all(unix, not(target_os = "linux")))]
         if let Some(pid) = self.pty.lock().process_group_leader() {
             return LocalProcessInfo::with_root_pid(pid as u32);
         }

@@ -470,7 +470,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 68;
+pub const CODEC_VERSION: usize = 69;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -571,6 +571,8 @@ pdu! {
     ParkedTabsChanged: 95,
     AcknowledgeAgentAttention: 96,
     AgentMetadataChanged: 97,
+    GetPaneStatus: 98,
+    GetPaneStatusResponse: 99,
 }
 
 impl Pdu {
@@ -719,6 +721,9 @@ pub struct GetTlsCredsResponse {
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct ListPanes {}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct GetPaneStatus {}
 
 #[derive(Deserialize, Serialize, PartialEq, Debug, Clone)]
 pub struct SetTabOrder {
@@ -872,6 +877,13 @@ pub struct ListPanesResponse {
     pub parked_tab_ids: Vec<TabId>,
     pub window_titles: HashMap<WindowId, String>,
     pub client_window_view_state: HashMap<WindowId, ClientWindowViewState>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct GetPaneStatusResponse {
+    pub sampled_at_ms: u64,
+    pub agents: Vec<AgentSnapshot>,
+    pub tab_rss_bytes: HashMap<TabId, u64>,
 }
 
 impl ListPanesResponse {
@@ -1910,6 +1922,12 @@ mod test {
                     events: vec![],
                     recovery: None,
                 },
+            }),
+            Pdu::GetPaneStatus(GetPaneStatus {}),
+            Pdu::GetPaneStatusResponse(GetPaneStatusResponse {
+                sampled_at_ms: 1_777_000_000_000,
+                agents: vec![],
+                tab_rss_bytes: HashMap::from([(7, 42_000_000)]),
             }),
         ] {
             let mut encoded = Vec::new();

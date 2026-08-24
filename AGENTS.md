@@ -1,5 +1,13 @@
 # Wakterm development guidance
 
+## Documentation scope
+
+Describe the documented subject's own observable behavior. Do not explain it by
+listing unrelated work it does not perform, and do not expose implementation
+details owned by another Wakterm component. Include a negative guarantee or a
+cross-component mechanism only when readers need it to use or implement the
+documented contract correctly.
+
 ## Multi-client mux synchronization
 
 Treat the server mux as the authority for shared window, tab, pane, and layout state. A GUI client has a local mirror of that state. Local active-tab and active-pane selection may remain client-specific unless a feature explicitly makes them shared.

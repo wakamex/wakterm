@@ -1383,10 +1383,41 @@ pub struct AgentEventsCommand {
     /// Maximum events to return
     #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=1000))]
     limit: u32,
+
+    /// Keep the connection open and stream event pages as JSON lines
+    #[arg(long)]
+    follow: bool,
+
+    /// Poll interval while following the stream
+    #[arg(long, default_value_t = 250, requires = "follow")]
+    poll_ms: u64,
 }
 
 impl AgentEventsCommand {
     async fn run(&self, client: Client) -> anyhow::Result<()> {
+        if self.follow {
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            return self
+                .run_follow_with(
+                    move |after_sequence, limit| {
+                        let client = client.clone();
+                        async move {
+                            client
+                                .read_agent_events(codec::ReadAgentEvents {
+                                    after_sequence,
+                                    limit,
+                                })
+                                .await
+                                .map(|response| response.page)
+                        }
+                    },
+                    &mut out,
+                    None,
+                )
+                .await;
+        }
+
         let response = client
             .read_agent_events(codec::ReadAgentEvents {
                 after_sequence: self.after_sequence,
@@ -1394,6 +1425,50 @@ impl AgentEventsCommand {
             })
             .await?;
         write_json(&response.page)
+    }
+
+    async fn run_follow_with<ReadPage, ReadPageFut, W: Write>(
+        &self,
+        mut read_page: ReadPage,
+        out: &mut W,
+        max_polls: Option<usize>,
+    ) -> anyhow::Result<()>
+    where
+        ReadPage: FnMut(u64, u32) -> ReadPageFut,
+        ReadPageFut: Future<Output = anyhow::Result<mux::agent_event::AgentEventPage>>,
+    {
+        let mut after_sequence = self.after_sequence;
+        let mut remaining_polls = max_polls;
+
+        loop {
+            let page = read_page(after_sequence, self.limit).await?;
+            let cursor_too_old = matches!(
+                &page.status,
+                mux::agent_event::AgentEventStatus::CursorTooOld
+            );
+            serde_json::to_writer(&mut *out, &page)?;
+            writeln!(out)?;
+            out.flush()?;
+
+            if cursor_too_old {
+                return Ok(());
+            }
+            if let Some(next) = page.next_after_sequence {
+                after_sequence = next;
+            }
+            let reached_head = after_sequence >= page.latest_sequence;
+
+            if let Some(remaining) = remaining_polls.as_mut() {
+                if *remaining <= 1 {
+                    return Ok(());
+                }
+                *remaining -= 1;
+            }
+
+            if reached_head {
+                smol::Timer::after(Duration::from_millis(self.poll_ms)).await;
+            }
+        }
     }
 }
 
@@ -2982,6 +3057,82 @@ mod test {
     use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn agent_events_follow_reuses_cursor_and_streams_empty_pages() {
+        use mux::agent_event::{
+            AgentEvent, AgentEventKind, AgentEventPage, AgentEventStatus, AGENT_EVENT_SCHEMA,
+        };
+        use std::collections::VecDeque;
+        use std::rc::Rc;
+
+        let event = AgentEvent {
+            sequence: 5,
+            event_id: "event-5".to_string(),
+            kind: AgentEventKind::AssistantMessage,
+            agent_id: "agent-1".to_string(),
+            incarnation_id: "incarnation-1".to_string(),
+            observed_at: Utc.with_ymd_and_hms(2026, 8, 24, 12, 0, 0).unwrap(),
+            turn_id: Some("turn-1".to_string()),
+            lifecycle: None,
+            reason: None,
+            turn_state: None,
+            text: Some("done".to_string()),
+            outcome: None,
+            recoverable: None,
+            detail: None,
+        };
+        let page =
+            |requested_after_sequence, latest_sequence, events: Vec<AgentEvent>| AgentEventPage {
+                schema: AGENT_EVENT_SCHEMA.to_string(),
+                status: AgentEventStatus::Ok,
+                requested_after_sequence,
+                oldest_available_sequence: 1,
+                latest_sequence,
+                next_after_sequence: Some(
+                    events
+                        .last()
+                        .map_or(requested_after_sequence, |event: &AgentEvent| {
+                            event.sequence
+                        }),
+                ),
+                events,
+                recovery: None,
+            };
+        let pages = Rc::new(RefCell::new(VecDeque::from([
+            page(4, 4, vec![]),
+            page(4, 4, vec![]),
+            page(4, 5, vec![event]),
+        ])));
+        let cursors = Rc::new(RefCell::new(Vec::new()));
+        let command = AgentEventsCommand {
+            after_sequence: 4,
+            limit: 100,
+            follow: true,
+            poll_ms: 0,
+        };
+        let mut output = Vec::new();
+
+        promise::spawn::block_on(command.run_follow_with(
+            {
+                let pages = Rc::clone(&pages);
+                let cursors = Rc::clone(&cursors);
+                move |after_sequence, _| {
+                    cursors.borrow_mut().push(after_sequence);
+                    let page = pages.borrow_mut().pop_front().unwrap();
+                    async move { Ok(page) }
+                }
+            },
+            &mut output,
+            Some(3),
+        ))
+        .unwrap();
+
+        assert_eq!(&*cursors.borrow(), &[4, 4, 4]);
+        let pages = String::from_utf8(output).unwrap();
+        assert_eq!(pages.lines().count(), 3);
+        assert!(pages.contains("event-5"));
+    }
     use std::rc::Rc;
     use std::sync::Mutex;
     use tempfile::TempDir;

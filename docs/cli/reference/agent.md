@@ -217,7 +217,13 @@ Reads durable normalized Agent API v1 events.
 
 ```sh
 wakterm agent events --after 0 --limit 100
+wakterm agent events --after 0 --limit 100 --follow
 ```
+
+`--follow` keeps one mux connection open and writes each page as one JSON line.
+It drains retained pages without delay, polls at `--poll-ms` after reaching the
+stream head, and exits after a `cursor_too_old` page so the consumer can take a
+fresh catalog snapshot.
 
 ## `wakterm agent capabilities` and `catalog`
 

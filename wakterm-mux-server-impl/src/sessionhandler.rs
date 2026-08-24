@@ -883,7 +883,6 @@ impl SessionHandler {
                             let mut tab_titles = vec![];
                             let mut effective_tab_titles = vec![];
                             let mut tab_badges = vec![];
-                            let mut tab_rss_bytes = HashMap::new();
                             let mut parked_tab_ids = vec![];
                             let mut window_titles = HashMap::new();
                             for window_id in mux.iter_windows().into_iter() {
@@ -898,11 +897,6 @@ impl SessionHandler {
                                         window.iter_visible().next().map(|tab| tab.tab_id());
                                 }
                                 for tab in window.iter() {
-                                    if let Some(rss_bytes) =
-                                        mux.approximate_tab_process_rss(tab.tab_id())
-                                    {
-                                        tab_rss_bytes.insert(tab.tab_id(), rss_bytes);
-                                    }
                                     let tab_state =
                                         window_state.tabs.entry(tab.tab_id()).or_default();
                                     if tab_state.active_pane_id.is_none() {
@@ -938,11 +932,28 @@ impl SessionHandler {
                                 tab_titles,
                                 effective_tab_titles,
                                 tab_badges,
-                                agents: mux.list_agents_cached(),
-                                tab_rss_bytes,
+                                agents: Vec::new(),
+                                tab_rss_bytes: HashMap::new(),
                                 parked_tab_ids,
                                 window_titles,
                                 client_window_view_state: view_state,
+                            }))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
+            Pdu::GetPaneStatus(GetPaneStatus {}) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let mux = Mux::get();
+                            let status = mux.tab_resource_status();
+                            Ok(Pdu::GetPaneStatusResponse(GetPaneStatusResponse {
+                                sampled_at_ms: status.sampled_at_ms,
+                                agents: mux.list_agents_cached(),
+                                tab_rss_bytes: status.tab_rss_bytes,
                             }))
                         },
                         send_response,
@@ -1705,6 +1716,7 @@ impl SessionHandler {
             Pdu::Invalid { .. } => send_response(Err(anyhow!("invalid PDU {:?}", decoded.pdu))),
             Pdu::Pong { .. }
             | Pdu::ListPanesResponse { .. }
+            | Pdu::GetPaneStatusResponse { .. }
             | Pdu::ListAgentsResponse { .. }
             | Pdu::ListAgentsCachedResponse { .. }
             | Pdu::SubmitAgentRequestResponse { .. }
@@ -3330,6 +3342,14 @@ mod test {
             other => panic!("expected ListPanesResponse, got {:?}", other),
         };
 
+        assert!(response_a.agents.is_empty());
+        assert!(response_a.tab_rss_bytes.is_empty());
+        let status = match handler_a.request(&executor, Pdu::GetPaneStatus(GetPaneStatus {})) {
+            Pdu::GetPaneStatusResponse(response) => response,
+            other => panic!("expected GetPaneStatusResponse, got {:?}", other),
+        };
+        assert!(status.sampled_at_ms > 0);
+
         let state_a = response_a
             .client_window_view_state
             .get(&layout.window_id)
@@ -3461,7 +3481,11 @@ mod test {
             .tab_badges
             .iter()
             .any(|badge| badge.waiting_on_user && badge.needs_attention));
-        assert!(response
+        let status = match handler.request(&executor, Pdu::GetPaneStatus(GetPaneStatus {})) {
+            Pdu::GetPaneStatusResponse(response) => response,
+            other => panic!("expected GetPaneStatusResponse, got {:?}", other),
+        };
+        assert!(status
             .agents
             .iter()
             .any(|agent| agent.pane_id == pane_id && agent.needs_attention));
@@ -3481,7 +3505,11 @@ mod test {
             .tab_badges
             .iter()
             .all(|badge| !badge.needs_attention));
-        assert!(response.agents.iter().all(|agent| !agent.needs_attention));
+        let status = match handler.request(&executor, Pdu::GetPaneStatus(GetPaneStatus {})) {
+            Pdu::GetPaneStatusResponse(response) => response,
+            other => panic!("expected GetPaneStatusResponse, got {:?}", other),
+        };
+        assert!(status.agents.iter().all(|agent| !agent.needs_attention));
     }
 
     #[test]

@@ -74,6 +74,19 @@ pub mod window;
 use crate::activity::Activity;
 
 pub const DEFAULT_WORKSPACE: &str = "default";
+const TAB_RESOURCE_STATUS_TTL: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TabResourceStatusSnapshot {
+    pub sampled_at_ms: u64,
+    pub tab_rss_bytes: HashMap<TabId, u64>,
+}
+
+#[derive(Default)]
+struct TabResourceStatusCache {
+    sampled_at: Option<Instant>,
+    snapshot: TabResourceStatusSnapshot,
+}
 
 #[derive(Clone, Debug)]
 pub enum MuxNotification {
@@ -175,6 +188,7 @@ pub struct Mux {
     mirrored_agent_snapshot_by_pane: RwLock<HashMap<PaneId, AgentSnapshot>>,
     mirrored_agent_badge_by_tab: RwLock<HashMap<TabId, AgentTabBadgeState>>,
     mirrored_tab_rss_bytes: RwLock<HashMap<TabId, u64>>,
+    tab_resource_status_cache: Mutex<TabResourceStatusCache>,
     agent_panes_by_name: RwLock<HashMap<String, PaneId>>,
     agent_metadata_by_pane: RwLock<HashMap<PaneId, Arc<AgentMetadata>>>,
     detected_agent_panes: RwLock<HashSet<PaneId>>,
@@ -346,13 +360,13 @@ impl AgentArtifactWatcherState {
         }
     }
 
-    fn watch_candidate(&mut self, pane_id: PaneId, harness: &AgentHarness, cwd: &str) {
+    fn watch_pane(&mut self, pane_id: PaneId, harness: &AgentHarness, cwd: &str) {
         let roots = agent_observer_watch_roots(harness, cwd)
             .into_iter()
             .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
             .collect::<Vec<_>>();
 
-        self.unwatch_candidate(pane_id);
+        self.unwatch_pane(pane_id);
         if roots.is_empty() || self.watcher.is_none() {
             return;
         }
@@ -382,7 +396,7 @@ impl AgentArtifactWatcherState {
         }
     }
 
-    fn unwatch_candidate(&mut self, pane_id: PaneId) {
+    fn unwatch_pane(&mut self, pane_id: PaneId) {
         let Some(roots) = self.roots_by_pane.remove(&pane_id) else {
             self.last_hint_at_by_pane.remove(&pane_id);
             return;
@@ -929,6 +943,7 @@ impl Mux {
             mirrored_agent_snapshot_by_pane: RwLock::new(HashMap::new()),
             mirrored_agent_badge_by_tab: RwLock::new(HashMap::new()),
             mirrored_tab_rss_bytes: RwLock::new(HashMap::new()),
+            tab_resource_status_cache: Mutex::new(TabResourceStatusCache::default()),
             agent_panes_by_name: RwLock::new(HashMap::new()),
             agent_metadata_by_pane: RwLock::new(HashMap::new()),
             detected_agent_panes: RwLock::new(HashSet::new()),
@@ -1240,6 +1255,7 @@ impl Mux {
                 self.mirrored_tab_rss_bytes.write().remove(&tab_id);
             }
         }
+        self.invalidate_tab_resource_status();
     }
 
     pub fn set_mirrored_agent_snapshot(&self, pane_id: PaneId, snapshot: Option<AgentSnapshot>) {
@@ -1303,9 +1319,7 @@ impl Mux {
         self.agent_adoption_candidates.write().remove(&pane_id);
         self.pending_codex_restores.write().remove(&pane_id);
         self.failed_codex_restores.write().remove(&pane_id);
-        self.agent_artifact_watcher
-            .lock()
-            .unwatch_candidate(pane_id);
+        self.agent_artifact_watcher.lock().unwatch_pane(pane_id);
         let pane = self
             .get_pane(pane_id)
             .ok_or_else(|| anyhow!("pane {} is invalid", pane_id))?;
@@ -1343,10 +1357,15 @@ impl Mux {
         runtime.tty_name = tty_name;
         runtime.terminal_progress = terminal_progress;
         runtime.harness = infer_harness(&metadata.launch_cmd, foreground_process_name.as_deref());
+        let observer_harness = runtime.harness.clone();
+        let observer_cwd = metadata.declared_cwd.clone();
         self.agent_runtime_by_pane.write().insert(pane_id, runtime);
         metadata_by_pane.insert(pane_id, Arc::new(metadata));
         drop(metadata_by_pane);
         drop(names);
+        self.agent_artifact_watcher
+            .lock()
+            .watch_pane(pane_id, &observer_harness, &observer_cwd);
         crate::session_persistence::request_session_save();
         Ok(())
     }
@@ -1416,9 +1435,7 @@ impl Mux {
         self.agent_panes_by_name.write().remove(&metadata.name);
         self.agent_runtime_by_pane.write().remove(&pane_id);
         self.agent_adoption_candidates.write().remove(&pane_id);
-        self.agent_artifact_watcher
-            .lock()
-            .unwatch_candidate(pane_id);
+        self.agent_artifact_watcher.lock().unwatch_pane(pane_id);
         self.agent_observer_state_by_pane.write().remove(&pane_id);
         self.agent_input_generation_by_pane.write().remove(&pane_id);
         self.agent_attention_seen_at.write().remove(&pane_id);
@@ -1590,9 +1607,7 @@ impl Mux {
         self.mirrored_agent_cwd_by_pane.write().remove(&pane_id);
         self.detected_agent_panes.write().remove(&pane_id);
         self.agent_adoption_candidates.write().remove(&pane_id);
-        self.agent_artifact_watcher
-            .lock()
-            .unwatch_candidate(pane_id);
+        self.agent_artifact_watcher.lock().unwatch_pane(pane_id);
         if self.get_agent_metadata_for_pane(pane_id).is_none() {
             self.agent_runtime_by_pane.write().remove(&pane_id);
             self.agent_observer_state_by_pane.write().remove(&pane_id);
@@ -1795,7 +1810,7 @@ impl Mux {
         self.agent_adoption_candidates
             .write()
             .insert(pane_id, candidate.clone());
-        self.agent_artifact_watcher.lock().watch_candidate(
+        self.agent_artifact_watcher.lock().watch_pane(
             pane_id,
             &candidate.harness,
             &candidate.declared_cwd,
@@ -2001,7 +2016,16 @@ impl Mux {
     fn handle_agent_artifact_event(&self, paths: Vec<PathBuf>) {
         let pane_ids = self.agent_artifact_watcher.lock().matching_panes(&paths);
         for pane_id in pane_ids {
-            self.refresh_detected_agent_runtime_for_pane(pane_id);
+            if self.get_agent_metadata_for_pane(pane_id).is_some() {
+                self.refresh_agent_runtime_for_pane_with_update(
+                    pane_id,
+                    false,
+                    AgentRefreshPolicy::Throttled,
+                    |_| {},
+                );
+            } else {
+                self.refresh_detected_agent_runtime_for_pane(pane_id);
+            }
         }
     }
 
@@ -2963,7 +2987,7 @@ impl Mux {
         titles
     }
 
-    pub fn approximate_tab_process_rss(&self, tab_id: TabId) -> Option<u64> {
+    fn compute_tab_process_rss(&self, tab_id: TabId) -> Option<u64> {
         fn collect(
             process: &procinfo::LocalProcessInfo,
             seen: &mut HashSet<u32>,
@@ -2996,6 +3020,41 @@ impl Mux {
         measured
             .then_some(total)
             .or_else(|| self.mirrored_tab_rss_bytes.read().get(&tab_id).copied())
+    }
+
+    pub fn tab_resource_status(&self) -> TabResourceStatusSnapshot {
+        let mut cache = self.tab_resource_status_cache.lock();
+        if cache
+            .sampled_at
+            .is_some_and(|sampled_at| sampled_at.elapsed() <= TAB_RESOURCE_STATUS_TTL)
+        {
+            return cache.snapshot.clone();
+        }
+
+        let mut tab_rss_bytes = HashMap::new();
+        for tab_id in self.tabs.read().keys().copied().collect::<Vec<_>>() {
+            if let Some(rss_bytes) = self.compute_tab_process_rss(tab_id) {
+                tab_rss_bytes.insert(tab_id, rss_bytes);
+            }
+        }
+        let snapshot = TabResourceStatusSnapshot {
+            sampled_at_ms: Utc::now().timestamp_millis().max(0) as u64,
+            tab_rss_bytes,
+        };
+        cache.sampled_at = Some(Instant::now());
+        cache.snapshot = snapshot.clone();
+        snapshot
+    }
+
+    pub fn approximate_tab_process_rss(&self, tab_id: TabId) -> Option<u64> {
+        self.tab_resource_status()
+            .tab_rss_bytes
+            .get(&tab_id)
+            .copied()
+    }
+
+    fn invalidate_tab_resource_status(&self) {
+        self.tab_resource_status_cache.lock().sampled_at = None;
     }
 
     fn cached_tab_badge_state_for_agents(
@@ -4434,6 +4493,7 @@ impl Mux {
         pane.set_download_handler(&downloader);
 
         self.panes.write().insert(pane.pane_id(), Arc::clone(pane));
+        self.invalidate_tab_resource_status();
         let pane_id = pane.pane_id();
         if let Some(reader) = pane.reader()? {
             let banner = self.banner.read().clone();
@@ -4447,6 +4507,7 @@ impl Mux {
 
     pub fn add_tab_no_panes(&self, tab: &Arc<Tab>) {
         self.tabs.write().insert(tab.tab_id(), Arc::clone(tab));
+        self.invalidate_tab_resource_status();
         self.recompute_pane_count();
     }
 
@@ -4462,11 +4523,10 @@ impl Mux {
         log::debug!("removing pane {}", pane_id);
         let mut changed = false;
         let pane_location = self.resolve_pane_id(pane_id);
+        self.invalidate_tab_resource_status();
         self.clear_agent_metadata(pane_id);
         self.clear_detected_agent_info(pane_id);
-        self.agent_artifact_watcher
-            .lock()
-            .unwatch_candidate(pane_id);
+        self.agent_artifact_watcher.lock().unwatch_pane(pane_id);
         self.agent_observer_state_by_pane.write().remove(&pane_id);
         self.mirrored_agent_harness_by_pane.write().remove(&pane_id);
         self.mirrored_agent_cwd_by_pane.write().remove(&pane_id);
@@ -4506,6 +4566,7 @@ impl Mux {
         log::debug!("remove_tab_internal tab {}", tab_id);
 
         let tab = self.tabs.write().remove(&tab_id)?;
+        self.invalidate_tab_resource_status();
         self.mirrored_agent_badge_by_tab.write().remove(&tab_id);
         self.mirrored_tab_rss_bytes.write().remove(&tab_id);
 
@@ -5284,6 +5345,41 @@ mod test {
     use wakterm_term::{KeyCode, KeyModifiers, Line, MouseEvent, StableRowIndex};
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn tab_resource_status_reuses_one_sample_until_invalidated() {
+        let mux = Mux::new(None);
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 640,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let tab = Arc::new(Tab::new(&size));
+        let (pane, calls) = FakePane::new_detected_counted(
+            alloc_pane_id(),
+            size,
+            alloc_domain_id(),
+            "status-cache",
+            "/tmp/status-cache",
+            "codex",
+            &["codex"],
+        );
+        let pane: Arc<dyn Pane> = pane;
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+
+        let first = mux.tab_resource_status();
+        let second = mux.tab_resource_status();
+        assert_eq!(first, second);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        mux.invalidate_tab_resource_status();
+        let third = mux.tab_resource_status();
+        assert!(third.sampled_at_ms >= second.sampled_at_ms);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
 
     struct FakePane {
         id: PaneId,
@@ -8063,6 +8159,110 @@ mod test {
                 .and_then(|metadata| metadata.adopted_pid),
             Some(1)
         );
+        unsafe {
+            std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");
+        }
+    }
+
+    #[test]
+    fn filesystem_artifact_event_refreshes_adopted_agent() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        }
+
+        let session_dir = temp.path().join("2026").join("08").join("24");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let session = session_dir.join("rollout-adopted-event-stream.jsonl");
+        std::fs::write(
+            &session,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-adopted-stream\",\"cwd\":\"/tmp/adopted-event-stream\"}}\n",
+                "{\"ordinal\":2,\"type\":\"event_msg\",\"timestamp\":\"2026-08-24T00:40:20Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-live\"}}\n",
+                "{\"ordinal\":3,\"type\":\"response_item\",\"timestamp\":\"2026-08-24T00:40:24Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done live\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-live\"}}}\n",
+                "{\"ordinal\":4,\"type\":\"event_msg\",\"timestamp\":\"2026-08-24T00:40:24Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-live\",\"last_agent_message\":\"done live\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new_detected(
+            158,
+            size,
+            domain.id,
+            "codex",
+            "/tmp/adopted-event-stream",
+            "/usr/bin/codex",
+            &["codex"],
+        );
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        let metadata = AgentMetadata {
+            agent_id: "agent-adopted-event-stream".to_string(),
+            name: "adopted_event_stream".to_string(),
+            launch_cmd: "codex".to_string(),
+            declared_cwd: "/tmp/adopted-event-stream".to_string(),
+            adopted_pid: Some(1),
+            adopted_start_time: Some(1),
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+            codex_app_server: None,
+        };
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = crate::agent::AgentHarness::Codex;
+        runtime.transport = crate::agent::AgentTransport::ObservedPty;
+        runtime.session_path = Some(session.to_string_lossy().into_owned());
+        runtime.alive = true;
+        mux.install_agent_metadata_runtime_without_process_identity(pane_id, metadata, runtime)
+            .unwrap();
+        mux.handle_agent_artifact_event(vec![session.clone()]);
+
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_runtime_by_pane
+                    .read()
+                    .get(&pane_id)
+                    .and_then(|runtime| runtime.observed_turn.as_ref())
+                    .is_some_and(|turn| turn.provider_turn_id == "turn-live")
+            },
+            "adopted artifact watcher observation",
+        );
+        let runtime = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .expect("adopted runtime after artifact hint");
+        let observed_turn = runtime.observed_turn.expect("completed observed turn");
+        assert_eq!(observed_turn.provider_turn_id, "turn-live");
+        assert_eq!(
+            observed_turn.outcome,
+            crate::agent::AgentObservedTurnOutcome::Completed
+        );
+        assert_eq!(observed_turn.final_message.as_deref(), Some("done live"));
+
         unsafe {
             std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");
         }

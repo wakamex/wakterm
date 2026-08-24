@@ -1771,6 +1771,7 @@ impl Client {
 
     rpc!(ping, Ping = (), Pong);
     rpc!(list_panes, ListPanes = (), ListPanesResponse);
+    rpc!(get_pane_status, GetPaneStatus = (), GetPaneStatusResponse);
     rpc!(list_agents, ListAgents = (), ListAgentsResponse);
     rpc!(
         prepare_codex_launch,

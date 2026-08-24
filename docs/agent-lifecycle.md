@@ -79,6 +79,11 @@ Automatic adoption may promote a detected pane only after a confirmed session
 match. If the harness exits back to a shell, stale automatically adopted state
 must be cleared instead of making the shell look like a live agent.
 
+Provider artifact observation continues after adoption. Filesystem changes are
+hints to refresh the exact pane and confirmed provider session through the
+observer worker. This keeps durable agent events current even when no client is
+listing agents or submitting prompts. Event reads remain side-effect free.
+
 Unnamed tabs whose active pane contains an adopted or app-server agent use that
 agent's leaf folder name as an automatic display title. The title follows the
 active pane because one tab may contain multiple agent panes with different

@@ -76,15 +76,27 @@ with reason `mux_restarted` when a new mux runtime opens the store, then emits a
 new available lifecycle event only if that exact incarnation is observed again.
 
 Provider parsing and SQLite commits run on the observer worker, not the mux
-reactor. Confirmed adopted sessions bypass lossy refresh throttling and receive
-one trailing refresh after an output burst, so event state advances without an
-event consumer polling provider files or calling the catalog.
+reactor. Wakterm watches provider artifact roots for both detected and adopted
+panes. Artifact changes schedule the existing throttled observer path, and a
+confirmed adopted session receives a trailing refresh when a hint lands inside
+the throttle window. Event consumers only read the durable stream. They do not
+need to poll provider files or call the catalog to make the producer advance.
 
 The CLI page operation is:
 
 ```console
 wakterm agent events --after 123 --limit 100
 ```
+
+Long-lived consumers can reuse one mux connection and receive JSON-lines pages:
+
+```console
+wakterm agent events --after 123 --limit 100 --follow
+```
+
+Follow mode emits one line per page, drains retained pages without delay, polls
+at `--poll-ms` after reaching the stream head, and exits after `cursor_too_old`
+so the consumer can perform the documented catalog-snapshot recovery.
 
 Unknown additive fields must be tolerated. An incompatible major schema or an
 unknown event kind must fail explicitly. Provider paths and parser cursors are
