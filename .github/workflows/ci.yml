@@ -103,6 +103,14 @@ jobs:
           crate: cargo-nextest
           cache-key: ci-${{ matrix.nextest_key }}
 
+      - name: Install gelatyx
+        if: matrix.id == 'ubuntu'
+        uses: baptiste0928/cargo-install@v3
+        with:
+          crate: gelatyx
+          version: "0.3.0"
+          cache-key: gelatyx-${{ matrix.id }}
+
       - name: Install Linux system deps
         if: matrix.id == 'ubuntu'
         run: |

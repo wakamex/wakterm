@@ -39,6 +39,12 @@ if [ ! -x "$gui_bin" ]; then
   exit 1
 fi
 
+GELATYX_BIN="${GELATYX_BIN:-gelatyx}"
+if ! command -v "$GELATYX_BIN" >/dev/null 2>&1; then
+  echo "Error: gelatyx not found. Derived Lua key tables require gelatyx formatting." >&2
+  exit 1
+fi
+
 trim_file() {
   perl -pe 's/[ \t]+$//' | perl -0777 -pe 's/^\n+|\n\K\n+$//g'
 }
@@ -84,13 +90,14 @@ render_key_table() {
     }
     echo '```'
   } > "$fmt_tmp"
-  if hash gelatyx 2>/dev/null; then
-    if ! gelatyx --language lua --language-config ci/stylua.toml "$fmt_tmp" >/dev/null; then
-      rm -f -- "$fmt_tmp"
-      return 1
-    fi
+  if ! "$GELATYX_BIN" --language lua --language-config ci/stylua.toml "$fmt_tmp" >/dev/null; then
+    rm -f -- "$fmt_tmp"
+    return 1
   fi
-  cat "$fmt_tmp"
+  if ! cat "$fmt_tmp"; then
+    rm -f -- "$fmt_tmp"
+    return 1
+  fi
   rm -f -- "$fmt_tmp"
 }
 
