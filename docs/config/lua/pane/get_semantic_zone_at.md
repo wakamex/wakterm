@@ -1,7 +1,5 @@
 # `pane:get_semantic_zone_at(x, y)`
 
-{{since('20230320-124340-559cb7b0')}}
-
 Resolves the semantic zone that encapsulates the supplied *x* and *y* coordinates.
 
 *x* is the cell column index, where 0 is the left-most column.

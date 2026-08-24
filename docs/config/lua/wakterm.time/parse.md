@@ -1,7 +1,5 @@
 # `wakterm.time.parse(str, format)`
 
-{{since('20220807-113146-c2fee766')}}
-
 Parses a string that is formatted according to the supplied format string:
 
 ```

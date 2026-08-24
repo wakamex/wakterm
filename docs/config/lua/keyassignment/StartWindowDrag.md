@@ -1,7 +1,5 @@
 # `StartWindowDrag`
 
-{{since('20210314-114017-04b7cedd')}}
-
 Places the window in the drag-to-move state, which means that the window will
 move to follow your mouse pointer until the mouse button is released.
 

@@ -5,8 +5,6 @@ tags:
 ---
 # `wsl_domains`
 
-{{since('20220319-142410-0fcdea07')}}
-
 Configures [WSL](https://docs.microsoft.com/en-us/windows/wsl/about) domains.
 
 This option accepts a list of [WslDomain](../WslDomain.md) objects.

@@ -1,7 +1,5 @@
 # `wakterm.serde.yaml_encode(value)`
 
-{{since('nightly')}}
-
 Encodes the supplied `lua` value as `yaml`:
 
 ```

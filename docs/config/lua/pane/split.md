@@ -1,7 +1,5 @@
 # `pane:split{}`
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 Splits `pane` and spawns a program into the split, returning the
 `Pane` object associated with it:
 

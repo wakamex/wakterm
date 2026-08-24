@@ -1,7 +1,5 @@
 # window:copy_to_clipboard(text \[,clipboard\])
 
-{{since('20220807-113146-c2fee766')}}
-
 Puts `text` into the specified `clipboard`.
 
 Clipboard can be one of:

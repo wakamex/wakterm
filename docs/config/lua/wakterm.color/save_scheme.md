@@ -1,7 +1,5 @@
 # `wakterm.color.save_scheme(colors, metadata, file_name)`
 
-{{since('20220807-113146-c2fee766')}}
-
 Saves a color scheme as a wakterm TOML file.
 This is useful when sharing your custom color scheme with others.
 While you could share the lua representation of the scheme, the

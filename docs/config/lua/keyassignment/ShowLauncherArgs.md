@@ -1,7 +1,5 @@
 # `ShowLauncherArgs`
 
-{{since('20220319-142410-0fcdea07')}}
-
 Activate the [Launcher Menu](../../launch.md#the-launcher-menu)
 in the current tab, scoping it to a set of items and with an optional title.
 
@@ -10,13 +8,13 @@ The arguments are a lua table with the following keys:
 * `flags` - required; the set of flags that specifies what to show in the launcher
 * `title` - optional; the title to show in the tab while the launcher is active
 * `help_text` - a string to display when in the default mode. Defaults to:
-  `"Select an item and press Enter=launch  Esc=cancel  /=filter"` {{since('nightly', inline=True)}}
+  `"Select an item and press Enter=launch  Esc=cancel  /=filter"`
 * `fuzzy_help_text` - a string to display when in fuzzy finding mode. Defaults to:
-  `"Fuzzy matching: "` {{since('nightly', inline=True)}}
+  `"Fuzzy matching: "`
 * `alphabet` - a string of unique characters. The characters in the string are used
   to calculate one or two key press shortcuts that can be used to quickly choose from
   the Launcher when in the default mode. Defaults to the same value as
-  [launcher_alphabet](../config/launcher_alphabet.md) {{since('nightly', inline=True)}}
+  [launcher_alphabet](../config/launcher_alphabet.md)
 
 The possible flags are listed below. You must explicitly list each item that you
 want to include in the launcher. If you only specify `"FUZZY"` then you will see
@@ -33,7 +31,7 @@ an empty launcher:
 * `"DOMAINS"` - include multiplexing domains
 * `"KEY_ASSIGNMENTS"` - include items taken from your key assignments
 * `"WORKSPACES"` - include workspaces
-* `"COMMANDS"` - include a number of default commands {{since('20220408-101518-b908e2dd', inline=True)}}
+* `"COMMANDS"` - include a number of default commands
 
 The flags can be joined together using a `|` character, so `"TABS|DOMAINS"` is
 an example of a set of flags that will include both tabs and domains in the

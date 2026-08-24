@@ -10,8 +10,6 @@ Configures SSH multiplexing domains.  [Read more about SSH Domains](
 
 This option accepts a list of [SshDomain](../SshDomain.md) objects.
 
-{{since('20230408-112425-69ae8472')}}
-
 If you don't set `ssh_domains` in your config, wakterm will default
 to configuring it as if you had:
 

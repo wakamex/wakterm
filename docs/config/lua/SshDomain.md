@@ -38,8 +38,6 @@ config.ssh_domains = {
 }
 ```
 
-{{since('20220101-133340-7edc5b5a')}}
-
 You may now specify a table with ssh config overrides:
 
 ```lua
@@ -53,8 +51,6 @@ config.ssh_domains = {
   },
 }
 ```
-
-{{since('20220319-142410-0fcdea07')}}
 
 You may now specify the type of `multiplexing` used by an ssh domain.
 The following values are possible:
@@ -122,8 +118,6 @@ config.ssh_domains = {
   },
 }
 ```
-
-{{since('20221119-145034-49b9839f')}}
 
 The lag indicator now defaults to disabled. It is recommended to display
 the lag information in your status bar using [this

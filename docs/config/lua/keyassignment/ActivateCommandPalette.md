@@ -1,7 +1,5 @@
 # `ActivateCommandPalette`
 
-{{since('20230320-124340-559cb7b0')}}
-
 Activates the Command Palette, a modal overlay that enables discovery and activation of various commands.
 
 ```lua

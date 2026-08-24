@@ -1,7 +1,5 @@
 # `ActivateWindowRelative(delta)`
 
-{{since('20230320-124340-559cb7b0')}}
-
 Activates a GUI window relative to the current window.
 
 `ActivateWindowRelative(1)` activates the next window, while

@@ -68,8 +68,6 @@ config.tls_clients = {
 }
 ```
 
-{{since('20220319-142410-0fcdea07')}}
-
 You may now specify the round-trip latency threshold for enabling predictive
 local echo using `local_echo_threshold_ms`. If the measured round-trip latency
 between the wakterm client and the server exceeds the specified threshold, the
@@ -87,8 +85,6 @@ config.tls_clients = {
   },
 }
 ```
-
-{{since('20221119-145034-49b9839f')}}
 
 The lag indicator now defaults to disabled. It is recommended to display
 the lag information in your status bar using [this

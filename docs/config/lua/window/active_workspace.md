@@ -1,7 +1,5 @@
 # `window:active_workspace()`
 
-{{since('20220319-142410-0fcdea07')}}
-
 Returns the name of the active workspace.
 
 This example demonstrates using the launcher menu to select and create workspaces,

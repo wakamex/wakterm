@@ -7,8 +7,6 @@ tags:
 ---
 # `wakterm.strftime_utc(format)`
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 Formats the current UTC date/time into a string using [the Rust chrono
 strftime syntax](https://docs.rs/chrono/0.4.19/chrono/format/strftime/index.html).
 

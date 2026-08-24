@@ -1,7 +1,5 @@
 # `pane:move_to_new_window([WORKSPACE])`
 
-{{since('20230326-111934-3666303c')}}
-
 Creates a window and moves `pane` into that window.
 
 The *WORKSPACE* parameter is optional; if specified, it will be used
@@ -25,5 +23,4 @@ config.keys = {
 
 See also [pane:move_to_new_window()](move_to_new_window.md),
 [wakterm cli move-pane-to-new-tab](../../../cli/cli/move-pane-to-new-tab.md).
-
 

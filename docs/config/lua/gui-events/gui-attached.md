@@ -1,7 +1,5 @@
 # `gui-attached`
 
-{{since('20230320-124340-559cb7b0')}}
-
 This event is triggered when the GUI is starting up after attaching the
 selected domain.  For example, when you use `wakterm connect DOMAIN` or
 `wakterm start --domain DOMAIN` to start the GUI, the `gui-attached` event will

@@ -1,7 +1,5 @@
 # `wakterm cli get-text`
 
-{{since('20230320-124340-559cb7b0')}}
-
 *Run `wakterm cli get-text --help` to see more help*
 
 Retrieves the textual content of a pane and output it to stdout.

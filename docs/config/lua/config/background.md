@@ -5,8 +5,6 @@ tags:
 ---
 # `background`
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 The `background` config option allows you to compose a number of layers to
 produce the background content in the terminal.
 
@@ -24,7 +22,6 @@ example at the bottom of this page:
 The `background` option is a table that lists the desired layers starting with
 the deepest/back-most layer.  Subsequent layers are composited over the top of
 preceding layers.
-
 
 ## Layer Definition
 

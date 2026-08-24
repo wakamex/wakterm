@@ -4,8 +4,6 @@ tags:
 ---
 ## `exit_behavior = "CloseOnCleanExit"`
 
-{{since('20210314-114017-04b7cedd')}}
-
 Controls the behavior when the shell program spawned by the terminal exits.
 There are three possible values:
 
@@ -34,8 +32,6 @@ the pane to remain open.
 
 See also: [clean_exit_codes](clean_exit_codes.md) for fine tuning what is
 considered to be a clean exit status.
-
-{{since('20220624-141144-bd1b7c5d')}}
 
 The default is now `"Close"`.
 

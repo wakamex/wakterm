@@ -4,8 +4,6 @@ tags:
 ---
 # `alternate_buffer_wheel_scroll_speed = 3`
 
-{{since('20210203-095643-70a364eb')}}
-
 Normally the vertical mouse wheel will scroll the terminal viewport
 so that different sections of the scrollback are visible.
 

@@ -5,8 +5,6 @@ tags:
 
 # ui_key_cap_rendering
 
-{{since('20240203-110809-5046fc22')}}
-
 Controls how keyboard shortcuts are rendered in the Command Palette.
 
 Possible values are:

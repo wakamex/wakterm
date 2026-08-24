@@ -13,8 +13,6 @@ exist in your configuration file.
 
 ## Constructor Syntax
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 `wakterm.action` is a special enum constructor type that makes it bit
 more ergonomic to express the various actions than in earlier releases.
 The older syntax is still supported, so you needn't scramble to update

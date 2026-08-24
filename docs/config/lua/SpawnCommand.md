@@ -58,7 +58,6 @@ wakterm.action.SpawnCommandInNewWindow {
   -- See the Multiplexing section of the docs for more on this topic.
   domain = { DomainName = 'my.server' },
 
-  -- Since: 20230320-124340-559cb7b0
   -- Specify the initial position for a GUI window when this command
   -- is used in a context that will create a new window, such as with
   -- wakterm.mux.spawn_window, SpawnCommandInNewWindow
@@ -75,4 +74,3 @@ wakterm.action.SpawnCommandInNewWindow {
   },
 }
 ```
-

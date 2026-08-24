@@ -1,7 +1,5 @@
 # `pane:get_user_vars()`
 
-{{since('20210502-130208-bff6815d')}}
-
 Returns a table holding the user variables that have been assigned
 to this pane.
 

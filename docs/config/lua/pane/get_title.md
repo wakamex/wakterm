@@ -1,7 +1,5 @@
 # `pane:get_title()`
 
-{{since('20201031-154415-9614e117')}}
-
 Returns the title of the pane.  This will typically be `wakterm` by default but
 can be modified by applications that send `OSC 1` (Icon/Tab title changing)
 and/or `OSC 2` (Window title changing) escape sequences.

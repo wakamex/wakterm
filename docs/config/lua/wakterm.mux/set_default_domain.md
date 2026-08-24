@@ -1,7 +1,5 @@
 # `wakterm.mux.set_default_domain(MuxDomain)`
 
-{{since('20230320-124340-559cb7b0')}}
-
 Assign a new default domain in the mux.
 
 The domain that you assign here will override any configured

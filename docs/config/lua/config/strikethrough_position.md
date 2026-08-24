@@ -4,8 +4,6 @@ tags:
 ---
 # `strikethrough_position`
 
-{{since('20221119-145034-49b9839f')}}
-
 If specified, overrides the position of strikethrough lines.
 
 The default is derived from the underline position metric specified by the designer

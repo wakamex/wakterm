@@ -51,8 +51,6 @@ and you can set them in wakterm:
 config.harfbuzz_features = { 'zero' }
 ```
 
-{{since('20220101-133340-7edc5b5a')}}
-
 You can specify `harfbuzz_features` on a per-font basis, rather than
 globally for all fonts:
 

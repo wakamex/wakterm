@@ -1,7 +1,5 @@
 # `window-focus-changed`
 
-{{since('20221119-145034-49b9839f')}}
-
 The `window-focus-changed` event is emitted when the focus state for a window
 is changed.
 

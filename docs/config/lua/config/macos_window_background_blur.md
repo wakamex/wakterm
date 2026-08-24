@@ -4,8 +4,6 @@ tags:
 ---
 # `macos_window_background_blur = 0`
 
-{{since('20230326-111934-3666303c')}}
-
 When combined with `window_background_opacity`, configures the blur radius
 amount used by macOS when compositing the window on the screen.
 

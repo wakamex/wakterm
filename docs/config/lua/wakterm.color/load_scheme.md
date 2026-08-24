@@ -1,7 +1,5 @@
 # `wakterm.color.load_scheme(file_name)`
 
-{{since('20220807-113146-c2fee766')}}
-
 Loads a wakterm color scheme from a TOML file.  This function
 returns a tuple of the the color definitions and the metadata:
 

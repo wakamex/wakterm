@@ -1,7 +1,5 @@
 ## `window:spawn_tab{}`
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 Spawns a program into a new tab within this window, returning the
 [MuxTab](../MuxTab/index.md), [Pane](../pane/index.md) and
 [MuxWindow](index.md) objects associated with it:
@@ -55,5 +53,4 @@ defined in your configuration using the following:
 ```lua
 window:spawn_tab { domain = { DomainName = 'my.name' } }
 ```
-
 

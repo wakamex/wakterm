@@ -4,8 +4,6 @@ tags:
 ---
 # `show_new_tab_button_in_tab_bar = true`
 
-{{since('20221119-145034-49b9839f')}}
-
 When set to `true` (the default), the tab bar will display the new-tab button,
 which can be left-clicked to create a new tab, or right-clicked to display the
 [Launcher Menu](../../launch.md).

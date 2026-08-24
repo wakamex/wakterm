@@ -1,7 +1,5 @@
 # `window:perform_action(key_assignment, pane)`
 
-{{since('20201031-154415-9614e117')}}
-
 Performs a key assignment against the `window` and `pane`.
 There are a number of actions that can be performed against a `pane` in
 a `window` when configured via the `keys` and `mouse` configuration options.

@@ -11,6 +11,4 @@ for `Allsorts`.
 
 It is strongly recommended that you use the default `Harfbuzz` shaper.
 
-{{since('20211204-082213-a66c61ee9')}}
-
 The incomplete `Allsorts` shaper was removed.

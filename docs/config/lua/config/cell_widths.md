@@ -4,8 +4,6 @@ tags:
 ---
 # `cell_widths = {}`
 
-{{since('nightly')}}
-
 The character width recommended by the Unicode standard is occasionally
 inconsistent and may not align with linguistic tradition.
 
@@ -18,7 +16,6 @@ inconsistent and may not align with linguistic tradition.
 The `cell_widths` configuration parameter allows users to override the
 default character width. This setting takes priority over the
 `treat_east_asian_ambiguous_width_as_wide` setting.
-
 
 [Nerd Font](https://www.nerdfonts.com/) has square glyphs and is an
 example of half advance width.  Below is a configuration example that

@@ -1,7 +1,5 @@
 # `window-resized`
 
-{{since('20210314-114017-04b7cedd')}}
-
 The `window-resized` event is emitted when the window is resized and when
 transitioning between full-screen and regular windowed mode.
 

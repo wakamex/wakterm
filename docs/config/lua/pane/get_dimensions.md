@@ -1,7 +1,5 @@
 # `pane:get_dimensions()`
 
-{{since('20201031-154415-9614e117')}}
-
 Returns a lua representation of the `RenderableDimensions` struct
 that identifies the dimensions and position of the viewport as
 well as the scrollback for the pane.

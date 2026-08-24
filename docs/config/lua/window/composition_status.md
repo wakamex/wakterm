@@ -1,7 +1,5 @@
 # window:composition_status()
 
-{{since('20220319-142410-0fcdea07')}}
-
 Returns a string holding the current dead key or IME composition text,
 or `nil` if the input layer is not in a composition state.
 

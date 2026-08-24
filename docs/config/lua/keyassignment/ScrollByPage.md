@@ -12,8 +12,6 @@ config.keys = {
 }
 ```
 
-{{since('20220319-142410-0fcdea07')}}
-
 You may now use floating point values to scroll by partial pages.  This example shows
 how to make the `PageUp`/`PageDown` scroll by half a page at a time:
 

@@ -8,8 +8,6 @@ tags:
 ---
 # wakterm.shell_join_args({"foo", "bar"})
 
-{{since('20220807-113146-c2fee766')}}
-
 `wakterm.shell_join_args` joins together its array arguments by applying posix
 style shell quoting on each argument and then adding a space.
 

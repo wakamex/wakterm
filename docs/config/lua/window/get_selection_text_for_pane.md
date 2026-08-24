@@ -1,7 +1,5 @@
 # `window:get_selection_text_for_pane(pane)`
 
-{{since('20210404-112810-b63a949d')}}
-
 Returns the text that is currently selected within the specified pane within
 the specified window.  This is the same text that would be copied to the
 clipboard if the [CopyTo](../keyassignment/CopyTo.md) action were to be

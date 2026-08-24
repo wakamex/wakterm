@@ -1,7 +1,5 @@
 # `wakterm.gui.default_key_tables()`
 
-{{since('20221119-145034-49b9839f')}}
-
 Returns a table holding the effective default set of `key_tables`.  That is the
 set of keys that is used as a base if there was no configuration file.
 

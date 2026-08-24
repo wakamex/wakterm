@@ -1,7 +1,5 @@
 # Function require
 
-{{since('20230320-124340-559cb7b0')}}
-
 Will clone the plugin repo if it doesn't already
 exist and store it in the runtime dir under `plugins/NAME` where
 `NAME` is derived from the repo URL. Once cloned, the repo is

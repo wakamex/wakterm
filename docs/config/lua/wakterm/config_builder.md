@@ -6,8 +6,6 @@ tags:
 
 # wakterm.config_builder()
 
-{{since('20230320-124340-559cb7b0')}}
-
 Returns a config builder object that can be used to define your configuration:
 
 ```lua
@@ -79,6 +77,4 @@ The consequence of an error is that wakterm will show a configuration error
 window and use the default config until you have resolved the error and
 reloaded the configuration.  When not using strict mode, the warning
 will not prevent the rest of your configuration from being used.
-
-
 

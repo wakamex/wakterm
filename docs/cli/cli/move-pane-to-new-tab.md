@@ -1,7 +1,5 @@
 # `wakterm cli move-pane-to-new-tab`
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 *Run `wakterm cli move-pane-to-new-tab --help` to see more help*
 
 Allows moving a pane into a new tab either in the same window or in a new window.

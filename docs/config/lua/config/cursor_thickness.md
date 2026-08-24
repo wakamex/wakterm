@@ -5,8 +5,6 @@ tags:
 ---
 # `cursor_thickness`
 
-{{since('20221119-145034-49b9839f')}}
-
 If specified, overrides the base thickness of the lines used to
 render the textual cursor glyph.
 

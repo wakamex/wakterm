@@ -1,7 +1,5 @@
 # `wakterm.color.get_builtin_schemes()`
 
-{{since('20220807-113146-c2fee766')}}
-
 (In earlier releases, you can use [wakterm.get_builtin_color_schemes()](../wakterm/get_builtin_color_schemes.md))
 
 Returns a lua table keyed by color scheme name and whose values are

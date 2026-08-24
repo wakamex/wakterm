@@ -4,19 +4,13 @@ tags:
 ---
 # `tab_bar_style`
 
-{{since('20210814-124438-54e29167')}}
-
 `new_tab_left`, `new_tab_right`, `new_tab_hover_left`, `new_tab_hover_right`
 have been removed and replaced by the more flexible `new_tab` and `new_tab_hover` elements.
-
-{{since('20210502-154244-3f7122cb')}}
 
 `active_tab_left`, `active_tab_right`, `inactive_tab_left`,
 `inactive_tab_right`, `inactive_tab_hover_left`, `inactive_tab_hover_right`
 have been removed and replaced by the more flexible
 [format-tab-title](../window-events/format-tab-title.md) event.
-
-{{since('20210314-114017-04b7cedd')}}
 
 This config option allows styling the elements that appear in the tab bar.
 This configuration supplements the [tab bar color](../../appearance.md#tab-bar-appearance-colors)
@@ -77,8 +71,6 @@ config.tab_bar_style = {
 ```
 
 #### Retro Tab Bar with Integrated Window Management Buttons
-
-{{since('20230408-112425-69ae8472')}}
 
 When using [`window_decorations =
 "INTEGRATED_BUTTONS|RESIZE"`](window_decorations.md), you can

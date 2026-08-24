@@ -1,7 +1,5 @@
 # `augment-command-palette`
 
-{{since('20230712-072601-f4abf8fd')}}
-
 This event is emitted when the [Command Palette](../keyassignment/ActivateCommandPalette.md) is shown.
 
 Its purpose is to enable you to add additional entries to the list of commands

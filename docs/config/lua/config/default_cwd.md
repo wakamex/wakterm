@@ -4,8 +4,6 @@ tags:
 ---
 # `default_cwd`
 
-{{since('20210203-095643-70a364eb')}}
-
 Sets the default current working directory used by the initial window.
 
 The value is a string specifying the absolute path that should be used for the

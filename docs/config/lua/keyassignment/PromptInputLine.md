@@ -5,8 +5,6 @@ tags:
 
 # `PromptInputLine`
 
-{{since('20230408-112425-69ae8472')}}
-
 Activates an overlay to display a prompt and request a line of input
 from the user.
 
@@ -28,10 +26,10 @@ that purpose.
   user entered. `line` may be `nil` if they hit Escape without entering
   anything, or CTRL-C to cancel the input.
 * `prompt` - the text to show as the prompt. You may embed escape sequences
-  and/or use [wakterm.format](../wakterm/format.md).  Defaults to: `"> "`. {{since('nightly', inline=True)}}
+  and/or use [wakterm.format](../wakterm/format.md).  Defaults to: `"> "`.
 * `initial_value` - optional.  If provided, the initial content of the input
   field will be set to this value.  The user may edit it prior to submitting
-  the input. {{since('nightly', inline=True)}}
+  the input.
 
 ## Example of interactively renaming the current tab
 

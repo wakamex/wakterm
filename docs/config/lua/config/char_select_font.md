@@ -6,8 +6,6 @@ tags:
 ---
 # `char_select_font`
 
-{{since('nightly')}}
-
 Configures the font to use for character selection. The `char_select_font`
 setting can specify a set of fallbacks and other options, and is described
 in more detail in the [Fonts](../../fonts.md) section.

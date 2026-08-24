@@ -15,6 +15,4 @@ the automatic update checks.
 config.show_update_window = false
 ```
 
-{{since('nightly')}}
-
 This option no longer has any effect and will be removed in a future release.

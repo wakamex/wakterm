@@ -5,8 +5,6 @@ tags:
 ---
 # `window_background_gradient`
 
-{{since('20210814-124438-54e29167')}}
-
 Dynamically generates a `window_background_image` from the provided gradient
 specification.  When `window_background_gradient` is configured, the value
 for `window_background_image` is ignored.
@@ -73,8 +71,6 @@ Take a look at <https://github.com/mazznoer/colorgrad-rs#using-web-color-format>
 for some usage examples and additional information about gradients.
 
 ## Linear gradient:
-
-{{since('20220624-141144-bd1b7c5d')}}
 
 A linear gradient follows a linear path across the window. It can be rotated
 around the window center. The angle is described in degrees and moves 

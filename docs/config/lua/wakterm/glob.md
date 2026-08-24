@@ -7,8 +7,6 @@ tags:
 
 # `wakterm.glob(pattern [, relative_to])`
 
-{{since('20200503-171512-b13ef15f')}}
-
 This function evaluates the glob `pattern` and returns an array containing the
 absolute file names of the matching results.  Due to limitations in the lua
 bindings, all of the paths must be able to be represented as UTF-8 or this
@@ -26,5 +24,4 @@ for _, v in ipairs(wakterm.glob '/etc/*.conf') do
   wakterm.log_error('entry: ' .. v)
 end
 ```
-
 

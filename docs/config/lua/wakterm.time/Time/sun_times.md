@@ -1,7 +1,5 @@
 # `Time:sun_times(lat, lon)`
 
-{{since('20220807-113146-c2fee766')}}
-
 For the date component of the time object, compute the times of the sun rise
 and sun set for the given latitude and longitude.
 

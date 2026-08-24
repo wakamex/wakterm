@@ -1,7 +1,5 @@
 # `SetPaneZoomState(bool)`
 
-{{since('20220807-113146-c2fee766')}}
-
 Sets the zoom state of the current pane.  A Zoomed pane takes up
 all available space in the tab, hiding all other panes while it is zoomed.
 Switching its zoom state off will restore the prior split arrangement.

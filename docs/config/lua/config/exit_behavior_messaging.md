@@ -4,8 +4,6 @@ tags:
 ---
 ## `exit_behavior_messaging = "Verbose"`
 
-{{since('20230712-072601-f4abf8fd')}}
-
 Controls how wakterm indicates the exit status of the spawned process
 in a pane when it terminates.
 

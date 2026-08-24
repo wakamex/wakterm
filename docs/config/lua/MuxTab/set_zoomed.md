@@ -1,7 +1,5 @@
 # `tab:set_zoomed(bool)`
 
-{{since('20220807-113146-c2fee766')}}
-
 Sets the zoomed state for the active pane within this tab.
 
 A zoomed pane takes up all available space in the tab, hiding all other panes

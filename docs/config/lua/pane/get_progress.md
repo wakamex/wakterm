@@ -1,7 +1,5 @@
 # `pane:get_progress()`
 
-{{since('nightly')}}
-
 Returns the *progress* state associated with the pane.
 
 By default, when the terminal is reset, the progress state will be `"None"` to

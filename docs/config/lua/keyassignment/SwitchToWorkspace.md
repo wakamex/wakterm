@@ -1,7 +1,5 @@
 # `SwitchToWorkspace`
 
-{{since('20220319-142410-0fcdea07')}}
-
 Switch to a different workspace, creating it if it doesn't already exist.
 
 `SwitchToWorkspace` accepts two optional parameters:
@@ -53,8 +51,6 @@ return config
 ```
 
 ## Prompting for the workspace name
-
-{{since('20230408-112425-69ae8472')}}
 
 ```lua
 local act = wakterm.action

@@ -4,8 +4,6 @@ tags:
 ---
 # `normalize_output_to_unicode_nfc = false`
 
-{{since('20221119-145034-49b9839f')}}
-
 When set to true, contiguous runs codepoints output to the terminal
 are [normalized](http://www.unicode.org/faq/normalization.html) to [Unicode
 Normalization Form C (NFC)](https://www.unicode.org/reports/tr15/#Norm_Forms).

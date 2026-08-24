@@ -4,8 +4,6 @@ tags:
 ---
 # `default_gui_startup_args = {"start"}`
 
-{{since('20220101-133340-7edc5b5a')}}
-
 When launching the GUI using either `wakterm` or `wakterm-gui` (with no
 subcommand explicitly specified), wakterm will use the value of
 `default_gui_startup_args` to pick a default mode for running the GUI.

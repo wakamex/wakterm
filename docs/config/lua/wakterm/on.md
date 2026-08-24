@@ -6,8 +6,6 @@ tags:
 ---
 # `wakterm.on(event_name, callback)`
 
-{{since('20201031-154415-9614e117')}}
-
 This function follows the html/javascript naming for defining event handlers.
 
 `wakterm.on` causes your specified `callback` to be called when `event_name`

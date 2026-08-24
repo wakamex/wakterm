@@ -36,8 +36,6 @@ The `color_scheme` option takes precedence over the `colors` section below,
 and is mutually exclusive with it. If you want to merge/override colors
 you need to use [wakterm.color.get_default_colors()](lua/wakterm.color/get_default_colors.md) and explicitly merge them.
 
-{{since('20220903-194523-3bb1ed61')}}
-
 The behavior has been changed so that the `color_scheme` you have selected, if
 any, is used to define the colors, and then any colors you define in the
 `colors` section will override those colors.
@@ -106,14 +104,12 @@ config.colors = {
   -- Arbitrary colors of the palette in the range from 16 to 255
   indexed = { [136] = '#af8700' },
 
-  -- Since: 20220319-142410-0fcdea07
   -- When the IME, a dead key or a leader key are being processed and are effectively
   -- holding input pending the result of input composition, change the cursor
   -- to this color to give a visual cue about the compose state.
   compose_cursor = 'orange',
 
   -- Colors for copy_mode and quick_select
-  -- available since: 20220807-113146-c2fee766
   -- In copy_mode, the color of the active text is:
   -- 1. copy_mode_active_highlight_* if additional text was selected using the mouse
   -- 2. selection_* otherwise
@@ -131,17 +127,15 @@ config.colors = {
   quick_select_match_bg = { AnsiColor = 'Navy' },
   quick_select_match_fg = { Color = '#ffffff' },
 
-  input_selector_label_bg = { AnsiColor = 'Black' }, -- {{since('nightly', inline=True)}}
-  input_selector_label_fg = { Color = '#ffffff' }, -- {{since('nightly', inline=True)}}
+  input_selector_label_bg = { AnsiColor = 'Black' },
+  input_selector_label_fg = { Color = '#ffffff' },
 
-  launcher_label_bg = { AnsiColor = 'Black' }, -- {{since('nightly', inline=True)}}
-  launcher_label_fg = { Color = '#ffffff' }, -- {{since('nightly', inline=True)}}
+  launcher_label_bg = { AnsiColor = 'Black' },
+  launcher_label_fg = { Color = '#ffffff' },
 }
 
 return config
 ```
-
-{{since('20220101-133340-7edc5b5a')}}
 
 You may specify colors in the HSL color space, if you prefer that over RGB, by using:
 
@@ -156,8 +150,6 @@ config.colors = {
   foreground = 'hsl:235 100 50',
 }
 ```
-
-{{since('20220319-142410-0fcdea07')}}
 
 Colors now also accept the following CSS-style color specifications:
 
@@ -436,8 +428,6 @@ You may add padding around the edges of the terminal area.
 
 ## Styling Inactive Panes
 
-{{since('20201031-154415-9614e117')}}
-
 To make it easier to see which pane is active, the inactive panes are dimmed
 and de-saturated slightly.
 
@@ -474,8 +464,6 @@ reduce it by half, and 2.0 will double the value.
 ## Window Background Image
 
 ![Screenshot](../screenshots/wakterm-vday-screenshot.png)
-
-{{since('20201031-154415-9614e117')}}
 
 You can attach an image to the background of the wakterm window:
 
@@ -522,16 +510,12 @@ behavior and more, take a look at the more powerful
 
 ## Window Background Gradient
 
-{{since('20210814-124438-54e29167')}}
-
 ![Gradient](../screenshots/radial-gradient.png)
 
 See [window_background_gradient](lua/config/window_background_gradient.md)
 for configuration information on gradients.
 
 ## Window Background Opacity
-
-{{since('20201031-154415-9614e117')}}
 
 If your Operating System provides Compositing support then wakterm is able to
 specify the alpha channel value for the background content, rendering the
@@ -555,8 +539,6 @@ config.window_background_opacity = 1.0
 ```
 
 ## Text Background Opacity
-
-{{since('20201031-154415-9614e117')}}
 
 When using a background image or background opacity, the image content can
 have relatively low contrast with respect to the text you are trying to

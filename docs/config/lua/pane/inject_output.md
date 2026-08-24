@@ -1,7 +1,5 @@
 # `pane:inject_output(text)`
 
-{{since('20221119-145034-49b9839f')}}
-
 Sends text, which may include escape sequences, to the output side of the
 current pane.  The text will be evaluated by the terminal emulator and can thus
 be used to inject/force the terminal to process escape sequences that adjust

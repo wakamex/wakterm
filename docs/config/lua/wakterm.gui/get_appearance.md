@@ -1,7 +1,5 @@
 # `wakterm.gui.get_appearance()`
 
-{{since('20220807-113146-c2fee766')}}
-
 This function returns the appearance of the window environment.  The appearance
 can be one of the following 4 values:
 

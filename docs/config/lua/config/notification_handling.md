@@ -5,8 +5,6 @@ tags:
 
 # `notification_handling = "AlwaysShow"`
 
-{{since('20240127-113634-bbcac864')}}
-
 This option controls how wakterm behaves when a toast notification escape
 sequence is received.
 

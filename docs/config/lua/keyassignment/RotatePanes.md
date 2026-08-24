@@ -1,7 +1,5 @@
 # `RotatePanes`
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 Rotates the sequence of panes within the active tab, preserving the sizes based on the tab positions.
 
 Panes within a tab have an ordering that follows the creation order of the splits.

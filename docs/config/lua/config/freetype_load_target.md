@@ -4,8 +4,6 @@ tags:
 ---
 # `freetype_load_target = "Normal"`
 
-{{since('20210314-114017-04b7cedd')}}
-
 Configures the hinting and (potentially) the rendering mode used with the
 freetype rasterizer.  The following values are possible:
 
@@ -28,9 +26,6 @@ to choose between using the alpha channel or using subpixel-rendering, and you
 must select subpixel-rendering in your main configuration in order for the
 correct render mode to activate: setting it only in a
 [wakterm.font](../wakterm/font.md) override is not sufficient.
-
-
-{{since('20240127-113634-bbcac864')}}
 
 It is now possible to select `"VerticalLcd"` to use a subpixel-rendering
 variant of `Normal` optimized for vertically decimated LCD displays.

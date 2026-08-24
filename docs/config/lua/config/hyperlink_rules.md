@@ -19,20 +19,16 @@ The value is a list of rule entries. Each entry has the following fields:
   the first capture group.  In the example below, `mailto:$0` is
   used to prefix a protocol to the text to make it into an URL.
 
-{{since('20230320-124340-559cb7b0', outline=True)}}
-    * `highlight` - specifies the range of the matched text that should be
-      highlighted/underlined when the mouse hovers over the link.  The value is
-      a number that corresponds to a capture group in the regex.  The default
-      is `0`, highlighting the entire region of text matched by the regex.  `1`
-      would be the first capture group, and so on.
+* `highlight` - specifies the range of the matched text that should be
+  highlighted/underlined when the mouse hovers over the link.  The value is
+  a number that corresponds to a capture group in the regex.  The default
+  is `0`, highlighting the entire region of text matched by the regex.  `1`
+  would be the first capture group, and so on.
 
-{{since('20230408-112425-69ae8472', outline=True)}}
-    The regex syntax now supports backreferences and look around assertions.
-    See [Fancy Regex Syntax](https://docs.rs/fancy-regex/latest/fancy_regex/#syntax)
-    for the extended syntax, which builds atop the underlying
-    [Regex syntax](https://docs.rs/regex/latest/regex/#syntax).
-    In prior versions, only the base
-    [Regex syntax](https://docs.rs/regex/latest/regex/#syntax) was supported.
+The regex syntax supports backreferences and look around assertions.
+See [Fancy Regex Syntax](https://docs.rs/fancy-regex/latest/fancy_regex/#syntax)
+for the extended syntax, which builds atop the underlying
+[Regex syntax](https://docs.rs/regex/latest/regex/#syntax).
 
 Assigning `hyperlink_rules` overrides the built-in default rules.
 

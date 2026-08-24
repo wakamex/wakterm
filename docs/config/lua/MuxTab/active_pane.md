@@ -1,7 +1,5 @@
 # `tab:active_pane()`
 
-{{since('20230408-112425-69ae8472')}}
-
 A convenience accessor for returning the active pane in the tab.
 
 In earlier versions of wakterm, you could obtain this via:

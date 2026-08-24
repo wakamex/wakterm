@@ -4,8 +4,6 @@ tags:
 ---
 ## `clean_exit_codes = { 0 }`
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 Defines the set of exit codes that are considered to be a "clean" exit by
 [exit_behavior](exit_behavior.md) when the program running in the terminal
 completes.

@@ -1,7 +1,5 @@
 # `wakterm.mux` module
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 The `wakterm.mux` module exposes functions that operate on the multiplexer layer.
 
 The multiplexer manages the set of running programs into panes, tabs, windows
@@ -25,5 +23,4 @@ at the top of your configuration file to access it.
 *You should **avoid using, at the file scope in your config**, mux functions that cause new splits, tabs or windows to be created. The configuration file can be evaluated multiple times in various contexts. If you want to spawn new programs when wakterm starts up, look at the [gui-startup](../gui-events/gui-startup.md) and [mux-startup](../mux-events/mux-startup.md) events.*
 
 ## Available functions, constants
-
 

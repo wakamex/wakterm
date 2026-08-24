@@ -45,21 +45,21 @@ local act = wakterm.action
 | Double Left Down | `NONE`   | `act.SelectTextAtMouseCursor("Word")`  |
 | Single Left Down | `NONE`   | `act.SelectTextAtMouseCursor("Cell")`  |
 | Single Left Down | `SHIFT`   | `act.ExtendSelectionToMouseCursor("Cell")`  |
-| Single Left Down | `ALT`   | `act.SelectTextAtMouseCursor("Block")`  {{since('20220624-141144-bd1b7c5d', inline=True)}} |
+| Single Left Down | `ALT`   | `act.SelectTextAtMouseCursor("Block")` |
 | Single Left Up | `SHIFT`   | `act.CompleteSelectionOrOpenLinkAtMouseCursor("ClipboardAndPrimarySelection")`  |
 | Single Left Up | `NONE`   | `act.CompleteSelectionOrOpenLinkAtMouseCursor("ClipboardAndPrimarySelection")`  |
-| Single Left Up | `ALT`   | `act.CompleteSelection("ClipboardAndPrimarySelection")`  {{since('20220624-141144-bd1b7c5d', inline=True)}} |
+| Single Left Up | `ALT`   | `act.CompleteSelection("ClipboardAndPrimarySelection")` |
 | Double Left Up | `NONE`   | `act.CompleteSelection("ClipboardAndPrimarySelection")`  |
 | Triple Left Up | `NONE`   | `act.CompleteSelection("ClipboardAndPrimarySelection")`  |
 | Single Left Drag | `NONE`   | `act.ExtendSelectionToMouseCursor("Cell")`  |
-| Single Left Drag | `ALT`   | `act.ExtendSelectionToMouseCursor("Block")` {{since('20220624-141144-bd1b7c5d', inline=True)}} |
-| Single Left Down | `ALT+SHIFT`   | `act.ExtendSelectionToMouseCursor("Block")`  {{since('20220624-141144-bd1b7c5d', inline=True)}} |
-| Single Left Up | `ALT+SHIFT`   | `act.CompleteSelection("ClipboardAndPrimarySelection")`  {{since('20220624-141144-bd1b7c5d', inline=True)}} |
+| Single Left Drag | `ALT`   | `act.ExtendSelectionToMouseCursor("Block")` |
+| Single Left Down | `ALT+SHIFT`   | `act.ExtendSelectionToMouseCursor("Block")` |
+| Single Left Up | `ALT+SHIFT`   | `act.CompleteSelection("ClipboardAndPrimarySelection")` |
 | Double Left Drag | `NONE`   | `act.ExtendSelectionToMouseCursor("Word")`  |
 | Triple Left Drag | `NONE`   | `act.ExtendSelectionToMouseCursor("Line")`  |
 | Single Middle Down | `NONE`   | `act.PasteFrom("PrimarySelection")`  |
-| Single Left Drag | `SUPER` | `act.StartWindowDrag` (*since 20210314-114017-04b7cedd*) |
-| Single Left Drag | `CTRL+SHIFT` | `act.StartWindowDrag` (*since 20210314-114017-04b7cedd*) |
+| Single Left Drag | `SUPER` | `act.StartWindowDrag` |
+| Single Left Drag | `CTRL+SHIFT` | `act.StartWindowDrag` |
 
 If you don't want the default assignments to be registered, you can
 disable all of them with this configuration; if you chose to do this,
@@ -70,8 +70,6 @@ config.disable_default_mouse_bindings = true
 ```
 
 ## Configuring Mouse Assignments
-
-{{since('20200607-144723-74889cd4')}}
 
 You can define mouse actions using the `mouse_bindings` configuration section:
 
@@ -123,14 +121,14 @@ Each entry in the mouse binding table can have the following fields:
    pane from receiving that mouse event.  You can, of course, define these and
    still send your mouse event to the pane by holding down the configured
    [mouse reporting bypass modifier
-   key](lua/config/bypass_mouse_reporting_modifiers.md). {{since('20220807-113146-c2fee766', inline=True)}}
+   key](lua/config/bypass_mouse_reporting_modifiers.md).
 * `alt_screen` - an optional field that defaults to `'Any'`, but that can also
   be set to either `true` or `false`. This mouse binding entry will only be
   considered if the current pane's alt screen state matches this field.  Most
   of the default mouse assignments are defined as `alt_screen='Any'`, a notable
   exception being that mouse wheel scrolling only applies when
   `alt_screen=false`, as the mouse wheel is typically mapped to arrow keys by
-  the terminal in alt screen mode. {{since('20220807-113146-c2fee766', inline=True)}}.
+  the terminal in alt screen mode.
 
 The `action` and `mods` portions are described in more detail in the key assignment
 information below.
@@ -156,8 +154,6 @@ you wanted quadruple-click bindings you can specify `streak=4`.
 | Triple Left Down  | `event={Down={streak=3, button="Left"}}` |
 | Double Left Up  | `event={Up={streak=2, button="Left"}}` |
 | Single Left Drag  | `event={Drag={streak=1, button="Left"}}` |
-
-{{since('20220807-113146-c2fee766')}}
 
 You can handle vertical wheel scroll events using the example shown below. The
 `streak` and amount associated with either `WheelUp` or `WheelDown` are set to
@@ -188,7 +184,6 @@ config.mouse_bindings = {
 
 return config
 ```
-
 
 # Gotcha on binding an 'Up' event only
 
@@ -221,7 +216,6 @@ config.mouse_bindings = {
 }
 return config
 ```
-
 
 # Available Actions
 

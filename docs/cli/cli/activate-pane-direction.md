@@ -1,7 +1,5 @@
 # `wakterm cli activate-pane-direction DIRECTION`
 
-{{since('20221119-145034-49b9839f')}}
-
 *Run `wakterm cli activate-pane-direction --help` to see more help*
 
 Changes the activate pane to the one in the specified direction.

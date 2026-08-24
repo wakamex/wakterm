@@ -36,9 +36,6 @@ The following options affect the behavior:
 * `--horizontal` - Equivalent to `--right`. If neither this nor any other direction is specified, the default is equivalent to `--bottom`.
 * `--pane-id` - Specifies the pane that should be split. See also [Targeting Panes](index.md#targeting-panes).
 
-
-{{since('20220624-141144-bd1b7c5d')}}
-
 * `--bottom` - Split vertically, with the new pane on the bottom.
 * `--cells CELLS` - The number of cells that the new split should have. If omitted, 50% of the available space is used.
 * `--left` - Split horizontally, with the new pane on the left.

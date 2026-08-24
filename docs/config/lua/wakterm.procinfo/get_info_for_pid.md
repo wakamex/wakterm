@@ -1,7 +1,5 @@
 # `wakterm.procinfo.get_info_for_pid(pid)`
 
-{{since('20220807-113146-c2fee766')}}
-
 Returns a [LocalProcessInfo](../LocalProcessInfo.md) object for the specified
 process id.
 

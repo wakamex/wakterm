@@ -3,12 +3,9 @@
 Activate the tab specified by the argument value. eg: `0` activates the
 leftmost tab, while `1` activates the second tab from the left, and so on.
 
-{{since('20200620-160318-e00b076c')}}
-
 `ActivateTab` now accepts negative numbers; these wrap around from the start
 of the tabs to the end, so `-1` references the right-most tab, `-2` the tab
 to its left and so on.
-
 
 ```lua
 local wakterm = require 'wakterm'
@@ -32,5 +29,4 @@ end
 
 return config
 ```
-
 

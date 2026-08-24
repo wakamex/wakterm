@@ -5,8 +5,6 @@ tags:
 
 # `Confirmation`
 
-{{since('nightly')}}
-
 Activates an overlay to display a confirmation menu
 
 When the user accepts a line, emits an event that allows you to act
@@ -56,9 +54,6 @@ config.keys = {
 
 return config
 ```
-
-
-
 
 See also:
    * [InputSelector](InputSelector.md).

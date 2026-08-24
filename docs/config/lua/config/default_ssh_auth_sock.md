@@ -5,8 +5,6 @@ tags:
 ---
 # `default_ssh_auth_sock`
 
-{{since('nightly')}}
-
 Setting this value will cause wakterm to replace the the value of the
 `SSH_AUTH_SOCK` environment when it first starts up, and to use this value for
 the auth socket registered with the multiplexer server (visible via `wakterm

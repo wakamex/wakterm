@@ -1,7 +1,5 @@
 # WslDomain
 
-{{since('20220319-142410-0fcdea07')}}
-
 The `WslDomain` struct specifies information about an individual `WslDomain`,
 which is used to tell wakterm how to interact with one of your locally
 installed [WSL](https://docs.microsoft.com/en-us/windows/wsl/about)

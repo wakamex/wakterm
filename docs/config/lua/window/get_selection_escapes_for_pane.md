@@ -1,7 +1,5 @@
 # `window:get_selection_escapes_for_pane(pane)`
 
-{{since('20220807-113146-c2fee766')}}
-
 Returns the text that is currently selected within the specified pane within
 the specified window formatted with the escape sequences necessary to reproduce
 the same colors and styling .

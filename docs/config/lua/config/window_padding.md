@@ -23,8 +23,6 @@ config.window_padding = {
 }
 ```
 
-{{since('20211204-082213-a66c61ee9')}}
-
 You may now express padding using a number of different units by specifying
 a string value with a unit suffix:
 

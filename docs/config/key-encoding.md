@@ -17,8 +17,6 @@ keypresses like `Control-I` to be ASCII Tab, as an example.
 
 ## xterm `modifyOtherKeys`
 
-{{since('20221119-145034-49b9839f')}}
-
 When wakterm receives the sequence `CSI >4;Nm`, where `N` is `0`, `1` or `2`,
 the keyboard encoding is changed according to
 [modifyOtherKeys](https://invisible-island.net/xterm/manpage/xterm.html#VT100-Widget-Resources:modifyOtherKeys),

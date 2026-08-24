@@ -1,7 +1,5 @@
 # `update-right-status`
 
-{{since('20210314-114017-04b7cedd')}}
-
 The `update-right-status` event is emitted periodically (based on the
 interval specified by the [status_update_interval](../config/status_update_interval.md)
 configuration value).
@@ -21,8 +19,6 @@ if the hook takes longer than the
 [status_update_interval](../config/status_update_interval.md) to complete,
 `wakterm` won't schedule another call until `status_update_interval`
 milliseconds have elapsed since the last call completed.
-
-{{since('20220903-194523-3bb1ed61')}}
 
 This event is considered to be deprecated and you should migrate
 to using [update-status](update-status.md), which behaves the

@@ -1,7 +1,5 @@
 # `Multiple`
 
-{{since('20211204-082213-a66c61ee9')}}
-
 Performs a sequence of multiple assignments.  This is useful when you
 want a single key press to trigger multiple actions.
 

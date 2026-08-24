@@ -81,8 +81,6 @@ When the search overlay is active the behavior of wakterm changes:
 
 #### Configurable search mode key assignments
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 The key assignments for search mode are specified by the `search_mode` [Key Table](config/key-tables.md).
 
 You may use
@@ -102,8 +100,6 @@ You can see the configuration in your version of wakterm by running
 (Those assignments reference `CopyMode` because search mode is a facet of [Copy Mode](copymode.md)).
 
 ### Configuring Saved Searches
-
-{{since('20200607-144723-74889cd4')}}
 
 If you find that you're often searching for the same things then you may wish to assign
 a keybinding to trigger that search.

@@ -4,8 +4,6 @@ tags:
 ---
 # `swallow_mouse_click_on_window_focus`
 
-{{since('20220319-142410-0fcdea07')}}
-
 When set to `true`, clicking on a wakterm window will focus it.
 
 When set to `false`, clicking on a wakterm window will focus it and then pass

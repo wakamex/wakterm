@@ -1,7 +1,5 @@
 # `window:active_pane()`
 
-{{since('20221119-145034-49b9839f')}}
-
 A convenience accessor for returning the active pane in the active tab of the
 GUI window.
 

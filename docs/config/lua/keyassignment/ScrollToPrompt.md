@@ -1,7 +1,5 @@
 # `ScrollToPrompt`
 
-{{since('20210203-095643-70a364eb')}}
-
 This action operates on Semantic Zones defined by applications that use [OSC
 133 Semantic Prompt Escapes](https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md) and requires configuring your shell to emit those sequences.
 
@@ -28,5 +26,4 @@ config.keys = {
   { key = 'DownArrow', mods = 'SHIFT', action = act.ScrollToPrompt(1) },
 }
 ```
-
 

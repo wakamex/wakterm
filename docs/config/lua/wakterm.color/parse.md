@@ -1,7 +1,5 @@
 # `wakterm.color.parse(string)`
 
-{{since('20220807-113146-c2fee766')}}
-
 Parses the passed color and returns a [Color
 object](../color/index.md).  `Color` objects evaluate as strings but
 have a number of methods that allow transforming and comparing

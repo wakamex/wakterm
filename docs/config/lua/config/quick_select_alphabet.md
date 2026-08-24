@@ -4,8 +4,6 @@ tags:
 ---
 # `quick_select_alphabet`
 
-{{since('20210502-130208-bff6815d')}}
-
 Specify the alphabet used to produce labels for the items
 matched in [quick select mode](../../../quickselect.md).
 

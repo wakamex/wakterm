@@ -5,8 +5,6 @@ tags:
 
 # `win32_system_backdrop = SETTING`
 
-{{since('20230712-072601-f4abf8fd')}}
-
 When combined with `window_background_opacity`, chooses from available
 window background effects provided by Windows.
 
@@ -61,5 +59,4 @@ config.win32_system_backdrop = 'Tabbed'
 ```
 
 ![Tabbed Effect](../../../screenshots/wakterm-tabbed.png)
-
 

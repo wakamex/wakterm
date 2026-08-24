@@ -1,7 +1,5 @@
 # `window:toast_notification(title, message,  [url, [timeout_milliseconds]])`
 
-{{since('20210502-154244-3f7122cb')}}
-
 Generates a desktop "toast notification" with the specified *title* and *message*.
 
 An optional *url* parameter can be provided; clicking on the notification will

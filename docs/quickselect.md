@@ -1,5 +1,3 @@
-{{since('20210502-154244-3f7122cb')}}
-
 Quick Select mode allows you to quickly highlight text that matches
 commonly copied patterns, select a match by typing a one-or-two character
 prefix and copy it to the clipboard.
@@ -28,8 +26,6 @@ text, and cancel quick select mode.
 Pressing `ESCAPE` will cancel quick select mode.
 
 ![Screenshot demonstrating the quickselect text highlights](screenshots/wakterm-quick-select.png)
-
-{{since('nightly')}}
 
 A configuration option [quick_select_remove_styling](config/lua/config/quick_select_remove_styling.md)
 has been added which when set to `true`, results in all color and styling

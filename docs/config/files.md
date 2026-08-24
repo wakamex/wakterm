@@ -1,4 +1,3 @@
-
 ## Quick Start
 
 Create a file named `.wakterm.lua` in your home directory, with the following
@@ -97,8 +96,6 @@ to force the configuration to be reloaded.
     many copies of wakterm, or are frequently reloading your config file.
 
 ### Configuration Overrides
-
-{{since('20210314-114017-04b7cedd')}}
 
 `wakterm` allows overriding configuration values via the command line; here are
 a couple of examples:
@@ -225,7 +222,6 @@ local config = {}
 helpers.apply_to_config(config)
 return config
 ```
-
 
 ## Configuration Reference
 

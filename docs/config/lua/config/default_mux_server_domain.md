@@ -4,8 +4,6 @@ tags:
 ---
 # `default_mux_server_domain = "local"`
 
-{{since('20230712-072601-f4abf8fd')}}
-
 !!! note
     This option only applies to the standalone mux server.  For the equivalent option in
     the GUI, see [default_domain](default_domain.md)

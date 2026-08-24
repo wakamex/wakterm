@@ -5,8 +5,6 @@ tags:
 ---
 # `display_pixel_geometry = "RGB"`
 
-{{since('20230408-112425-69ae8472')}}
-
 Configures whether subpixel anti-aliasing should produce either `"RGB"` or
 `"BGR"` ordered output.
 

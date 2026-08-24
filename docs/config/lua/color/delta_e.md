@@ -1,7 +1,5 @@
 # `color:delta_e(color)`
 
-{{since('20220807-113146-c2fee766')}}
-
 Computes the CIEDE2000 DeltaE value representing the difference
 between the two colors.
 

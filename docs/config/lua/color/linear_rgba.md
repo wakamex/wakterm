@@ -1,7 +1,5 @@
 # `color:linear_rgba()`
 
-{{since('20220807-113146-c2fee766')}}
-
 Returns a tuple of the colors converted to linear RGBA and
 expressed as floating point numbers in the range `0.0-1.0`:
 

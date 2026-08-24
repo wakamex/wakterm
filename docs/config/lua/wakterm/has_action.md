@@ -7,8 +7,6 @@ tags:
 
 # wakterm.has_action(NAME)
 
-{{since('20230408-112425-69ae8472')}}
-
 Returns true if the string *NAME* is a valid key assignment action variant
 that can be used with [wakterm.action](action.md).
 

@@ -4,8 +4,6 @@ tags:
 ---
 # `automatically_reload_config`
 
-{{since('20201031-154415-9614e117')}}
-
 When true (the default), watch the config file and reload it
 automatically when it is detected as changing.
 When false, you will need to manually trigger a config reload

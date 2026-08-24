@@ -2,8 +2,6 @@
 
 **NOTE: You probably want to use [wakterm.gui.get_appearance()](../wakterm.gui/get_appearance.md) instead, as it is easier to use!**
 
-{{since('20210814-124438-54e29167')}}
-
 This method returns the appearance of the window environment.  The appearance
 can be one of the following 4 values:
 
@@ -44,8 +42,6 @@ return {}
 ```
 
 ### Wayland GNOME Appearance
-
-{{since('20220807-113146-c2fee766')}}
 
 wakterm uses [XDG Desktop
 Portal](https://flatpak.github.io/xdg-desktop-portal/) to determine the

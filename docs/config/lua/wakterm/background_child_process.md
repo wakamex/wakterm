@@ -8,8 +8,6 @@ tags:
 
 # `wakterm.background_child_process(args)`
 
-{{since('20211204-082213-a66c61ee9')}}
-
 This function accepts an argument list; it will attempt to spawn that command
 in the background.
 

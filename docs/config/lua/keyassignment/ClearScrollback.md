@@ -3,8 +3,6 @@
 Clears the lines that have scrolled off the top of the viewport, resetting
 the scrollbar thumb to the full height of the window.
 
-{{since('20210203-095643-70a364eb')}}
-
 Added a parameter that allows additionally clear the viewport:
 
 ```lua

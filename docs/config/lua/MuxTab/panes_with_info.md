@@ -1,7 +1,5 @@
 # `tab:panes_with_info()`
 
-{{since('20220807-113146-c2fee766')}}
-
 Returns an array table containing an extended info entry for each of the panes
 contained by this tab.
 

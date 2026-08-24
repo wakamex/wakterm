@@ -1,7 +1,5 @@
 # `pane:get_lines_as_text([nlines])`
 
-{{since('20201031-154415-9614e117')}}
-
 Returns the textual representation (not including color or other attributes) of
 the *physical* lines of text in the viewport as a string.
 

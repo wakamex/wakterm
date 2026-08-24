@@ -1,7 +1,5 @@
 # `user-var-changed`
 
-{{since('20220903-194523-3bb1ed61')}}
-
 The `user-var-changed` event is emitted when a *user var* escape sequence is
 used to set a user var.
 

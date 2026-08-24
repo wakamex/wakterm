@@ -4,8 +4,6 @@ tags:
 ---
 # `freetype_pcf_long_family_names = false`
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 This option provides control over the
 [no-long-family-names](https://freetype.org/freetype2/docs/reference/ft2-properties.html#no-long-family-names)
 FreeType PCF font driver property.

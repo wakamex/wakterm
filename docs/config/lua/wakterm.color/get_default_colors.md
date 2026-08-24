@@ -1,7 +1,5 @@
 # `wakterm.color.get_default_colors()`
 
-{{since('20220807-113146-c2fee766')}}
-
 Returns the set of colors that would be used by default.
 
 This is useful if you want to reference those colors in a color scheme

@@ -1,14 +1,10 @@
 # `wakterm show-keys`
 
-{{since('20220624-141144-bd1b7c5d')}}
-
-
 Prints the complete set of key assignments based on your config file.
 
 The command shows each key table as well as the set of mouse bindings.
 
 A truncated example of the output is shown below.
-
 
 ```
 Default key table

@@ -17,8 +17,6 @@ assumes that Black+Bold renders as a Dark Grey which is
 legible on a Black background, but if this option is set to
 false, it would render as Black on Black.
 
-{{since('20230320-124340-559cb7b0')}}
-
 This option can now have one of three values:
 
 * `"No"` - the bold attribute will not influence palette selection

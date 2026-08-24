@@ -1,7 +1,5 @@
 # `pane:get_foreground_process_info()`
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 Returns a [LocalProcessInfo](../LocalProcessInfo.md) object corresponding to the current foreground process that is running in the pane.
 
 This method has some restrictions and caveats:

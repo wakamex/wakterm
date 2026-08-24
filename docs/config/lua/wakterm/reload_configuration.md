@@ -5,8 +5,6 @@ tags:
 ---
 # `wakterm.reload_configuration()`
 
-{{since('20220807-113146-c2fee766')}}
-
 Immediately causes the configuration to be reloaded and re-applied.
 
 If you call this at the file scope in your config you will create

@@ -1,7 +1,5 @@
 # `Time:format_utc(format)`
 
-{{since('20220807-113146-c2fee766')}}
-
 Formats the time object as a string, using UTC date/time representation of the time.
 
 The format string supports the [set of formatting placeholders described here](https://docs.rs/chrono/latest/chrono/format/strftime/index.html).

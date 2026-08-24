@@ -1,7 +1,5 @@
 # `gui-startup`
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 The `gui-startup` event is emitted once when the GUI server is starting up
 when running the `wakterm start` subcommand.
 
@@ -18,8 +16,6 @@ configuration to save you the effort of doing it manually each time.
 This event fires before [gui-attached](gui-attached.md).
 
 This event does not fire for `wakterm connect` invocations.
-
-{{since('20220807-113146-c2fee766')}}
 
 The event receives an optional [SpawnCommand](../SpawnCommand.md) argument that
 corresponds to any arguments that may have been passed via `wakterm start`.

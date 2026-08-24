@@ -8,8 +8,6 @@ tags:
 
 # `wakterm.open_with(path_or_url [, application])`
 
-{{since('20220101-133340-7edc5b5a')}}
-
 This function opens the specified `path_or_url` with either the specified
 `application` or uses the default application if `application` was not passed
 in.

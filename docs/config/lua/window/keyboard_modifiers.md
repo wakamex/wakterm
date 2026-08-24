@@ -1,7 +1,5 @@
 # window:keyboard_modifiers()
 
-{{since('20230712-072601-f4abf8fd')}}
-
 Returns two values; the keyboard modifiers and the key status leds.
 
 Both values are exposed to lua as strings with `|`-delimited values

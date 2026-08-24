@@ -1,7 +1,5 @@
 # CopyMode `{ MoveBackwardSemanticZone = ZONE }`
 
-{{since('20220903-194523-3bb1ed61')}}
-
 Moves the CopyMode cursor position to the first semantic zone of the specified
 type that precedes the current zone.
 
@@ -30,5 +28,4 @@ return {
   },
 }
 ```
-
 

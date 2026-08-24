@@ -4,8 +4,6 @@ tags:
 ---
 # `webgpu_preferred_adapter`
 
-{{since('20221119-145034-49b9839f')}}
-
 Specifies which WebGpu adapter should be used.
 
 This option is only applicable when you have configured `front_end = "WebGpu"`.

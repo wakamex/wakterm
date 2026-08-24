@@ -4,8 +4,6 @@ tags:
 ---
 # `freetype_render_target = "Normal"`
 
-{{since('20210502-130208-bff6815d')}}
-
 Configures the *rendering* mode used with the freetype rasterizer.
 
 The default is to use the value of [freetype_load_target](freetype_load_target.md).

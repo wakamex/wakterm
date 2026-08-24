@@ -1,7 +1,5 @@
 # `update-status`
 
-{{since('20220903-194523-3bb1ed61')}}
-
 The `update-status` event is emitted periodically (based on the
 interval specified by the [status_update_interval](../config/status_update_interval.md)
 configuration value).
@@ -21,5 +19,4 @@ if the hook takes longer than the
 [status_update_interval](../config/status_update_interval.md) to complete,
 `wakterm` won't schedule another call until `status_update_interval`
 milliseconds have elapsed since the last call completed.
-
 

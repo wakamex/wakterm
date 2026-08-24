@@ -7,8 +7,6 @@ tags:
 
 # `wakterm.action_callback(callback)`
 
-{{since('20211204-082213-a66c61ee9')}}
-
 This function is a helper to register a custom event and return an action triggering it.
 
 It is helpful to write custom key bindings directly, without having to declare
@@ -24,7 +22,6 @@ end
 ```
 
 See [wakterm.on](./on.md) and [wakterm.action](./action.md) for more info on what you can do with these.
-
 
 ## Usage
 

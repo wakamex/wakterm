@@ -5,8 +5,6 @@ tags:
 ---
 # `command_palette_font`
 
-{{since('nightly')}}
-
 Configures the font to use for command palette. The `command_palette_font`
 setting can specify a set of fallbacks and other options, and is described
 in more detail in the [Fonts](../../fonts.md) section.

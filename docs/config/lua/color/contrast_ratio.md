@@ -1,7 +1,5 @@
 # `color:contrast_ratio(color)`
 
-{{since('20220807-113146-c2fee766')}}
-
 Computes the contrast ratio between the two colors.
 
 ```

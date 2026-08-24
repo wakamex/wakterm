@@ -4,8 +4,6 @@ tags:
 ---
 # `unicode_version = 9`
 
-{{since('20211204-082213-a66c61ee9')}}
-
 Specifies the version of unicode that will be used when interpreting the
 width/presentation of text.
 
@@ -84,7 +82,6 @@ OSC 1337 ; UnicodeVersion=pop LABEL ST
 ```
 
 Pops entries from the stack stopping after an entry labelled with `LABEL` is popped.
-
 
 The labels are helpful when writing a wrapper alias, for example:
 

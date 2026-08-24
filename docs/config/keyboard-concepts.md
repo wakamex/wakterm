@@ -32,7 +32,6 @@ And then some wakterm concepts:
 * *Key Assignment* - an action assigned to a matching key and modifier combination.
 * *Key Table* - a grouping of key assignments. For each window, `wakterm` maintains a stack of table activations, allowing for rich modal keyboard input customization
 
-
 ## Keyboard Processing Flow
 
 This schematic depicts the processing flow for keyboard events in `wakterm`:
@@ -102,8 +101,6 @@ enable
 
 ### macOS Left and Right Option Key
 
-{{since('20200620-160318-e00b076c')}}
-
 The default behavior is to treat the left `Option` key as the `Alt` modifier
 with no composition effects, while the right `Option` key performs composition
 (making it approximately equivalent to `AltGr` on other operating systems).
@@ -114,8 +111,6 @@ You can control this behavior in your configuration:
 config.send_composed_key_when_left_alt_is_pressed = false
 config.send_composed_key_when_right_alt_is_pressed = true
 ```
-
-{{since('20210203-095643-70a364eb')}}
 
 wakterm is now able to perform dead-key expansion when `use_ime = false`.  Dead
 keys are treated as composition effects, so with the default settings of
@@ -136,8 +131,6 @@ some operating systems.
 [The `use_ime` docs have more information](lua/config/use_ime.md).
 
 ### Dead Keys
-
-{{since('20201031-154415-9614e117')}}
 
 By default, if you are using a layout with *dead keys* (eg: US International
 layout, or a number of European layouts such as German or French) pressing
@@ -166,6 +159,4 @@ When a key combination produces a composed key result, wakterm will look up
 both the composed and uncomposed versions of the keypress in your key mappings.
 If either lookup matches your assignment, that will take precedence over
 the normal key processing.
-
-
 

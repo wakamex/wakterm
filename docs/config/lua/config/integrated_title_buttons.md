@@ -4,8 +4,6 @@ tags:
 ---
 # `integrated_title_buttons = BUTTONS`
 
-{{since('20230408-112425-69ae8472')}}
-
 Configures the ordering and set of window management buttons to show when
 `window_decorations = "INTEGRATED_BUTTONS|RESIZE"`.
 

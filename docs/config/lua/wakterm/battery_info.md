@@ -6,8 +6,6 @@ tags:
 
 # `wakterm.battery_info()`
 
-{{since('20210314-114017-04b7cedd')}}
-
 This function returns battery information for each of the installed
 batteries on the system.  This is useful for example to assemble
 status information for the status bar.

@@ -5,8 +5,6 @@ tags:
 ---
 # `min_scroll_bar_height = "0.5cell"`
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 Controls the minimum size of the scroll bar "thumb".
 
 The value can be a number to specify the number of pixels, or a string with a unit suffix:

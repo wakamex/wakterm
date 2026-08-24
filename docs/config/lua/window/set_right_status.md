@@ -1,7 +1,5 @@
 # `window:set_right_status(string)`
 
-{{since('20210314-114017-04b7cedd')}}
-
 This method can be used to change the content that is displayed in the tab bar,
 to the right of the tabs and new tab button.  The content is displayed
 right-aligned and will be clipped from the left edge to fit in the available

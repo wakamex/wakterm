@@ -1,7 +1,5 @@
 # `domain:attach()`
 
-{{since('20230320-124340-559cb7b0')}}
-
 Attempts to attach the domain.
 
 Attaching a domain will attempt to import the windows, tabs and panes from the

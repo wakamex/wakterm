@@ -6,8 +6,6 @@ tags:
 ---
 # `wakterm.permute_any_or_no_mods(table)`
 
-{{since('20201031-154415-9614e117')}}
-
 This function is intended to help with generating key or mouse binding
 entries that should apply regardless of the combination of modifier keys
 pressed.

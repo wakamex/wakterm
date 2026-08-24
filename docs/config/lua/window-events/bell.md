@@ -1,7 +1,5 @@
 # `bell`
 
-{{since('20211204-082213-a66c61ee9')}}
-
 The `bell` event is emitted when the ASCII BEL sequence is emitted to
 a pane in the window.
 

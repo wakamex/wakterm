@@ -198,9 +198,9 @@ It is valid to omit the code number; for example `CSI m` is equivalent to `CSI
 |53  |OverlineOn|Renders text with a single overline/overbar|
 |55  |OverlineOff|Cancels OverlineOn|
 |59  |UnderlineColorDefault|Resets the underline color to default, which is to match the foreground color|
-|73  |VerticalAlignSuperScript|Adjusts the baseline of the text so that it renders as superscript {{since('20221119-145034-49b9839f', inline=True)}}|
-|74  |VerticalAlignSubScript|Adjusts the baseline of the text so that it renders as subscript {{since('20221119-145034-49b9839f', inline=True)}}|
-|75  |VerticalAlignBaseLine|Reset the baseline of the text to normal {{since('20221119-145034-49b9839f', inline=True)}}|
+|73  |VerticalAlignSuperScript|Adjusts the baseline of the text so that it renders as superscript|
+|74  |VerticalAlignSubScript|Adjusts the baseline of the text so that it renders as subscript|
+|75  |VerticalAlignBaseLine|Reset the baseline of the text to normal|
 |90  |ForegroundBrightBlack|Sets the foreground color to Bright Black, which is palette index 8|
 |91  |ForegroundBrightRed|Sets the foreground color to Bright Red, which is palette index 9|
 |92  |ForegroundBrightGreen|Sets the foreground color to Bright Green, which is palette index 10|
@@ -268,17 +268,14 @@ is not specified in the accompanying ITU T.416 specification and is ignored by
 CSI 38 : 2 : : R : G : B m
 ```
 
-(*Since 20210814-124438-54e29167*) For the sake of compatibility with some other
-terminal emulators this additional form is also supported where the colorspace
-ID argument is not specified:
+For compatibility with other terminal emulators, this additional form is also
+supported where the colorspace ID argument is not specified:
 
 ```
 CSI 38 : 2 : R : G : B m
 ```
 
 ##### CSI 38:6 - foreground color: RGBA
-
-{{since('20220807-113146-c2fee766')}}
 
 This is a wakterm extension: wakterm considers color mode `6` as RGBA,
 allowing you to specify the alpha channel in addition to the RGB channels.
@@ -296,17 +293,14 @@ The `R`, `G` and `B` symbols below are decimal numbers in the range `0-255`:
 CSI 48 : 2 : : R : G : B m
 ```
 
-(*Since 20210814-124438-54e29167*) For the sake of compatibility with some other
-terminal emulators this additional form is also supported where the colorspace
-ID argument is not specified:
+For compatibility with other terminal emulators, this additional form is also
+supported where the colorspace ID argument is not specified:
 
 ```
 CSI 48 : 2 : R : G : B m
 ```
 
 ##### CSI 48:6 - background color: RGBA
-
-{{since('20220807-113146-c2fee766')}}
 
 This is a wakterm extension: wakterm considers color mode `6` as RGBA,
 allowing you to specify the alpha channel in addition to the RGB channels.
@@ -324,17 +318,14 @@ The `R`, `G` and `B` symbols below are decimal numbers in the range `0-255`:
 CSI 58 : 2 : : R : G : B m
 ```
 
-(*Since 20210814-124438-54e29167*) For the sake of compatibility with some other
-terminal emulators this additional form is also supported where the colorspace
-ID argument is not specified:
+For compatibility with other terminal emulators, this additional form is also
+supported where the colorspace ID argument is not specified:
 
 ```
 CSI 58 : 2 : R : G : B m
 ```
 
 ##### CSI 58:6 - underline color: RGBA
-
-{{since('20220807-113146-c2fee766')}}
 
 This is a wakterm extension: wakterm considers color mode `6` as RGBA,
 allowing you to specify the alpha channel in addition to the RGB channels.
@@ -348,8 +339,6 @@ CSI 58 : 6 : : R : G : B : A m
 #### Editing Functions
 
 #### Mode Functions
-
-{{since('20210814-124438-54e29167')}}
 
 wakterm supports [Synchronized Rendering](https://gist.github.com/christianparpart/d8a62cc1ab659194337d73e399004036).
 DECSET 2026 is set to batch (hold) rendering until DECSET 2026 is reset to flush the queued screen data.
@@ -393,9 +382,9 @@ The table below is keyed by the OSC code.
 |7  |Set Current Working Directory | [See Shell Integration](shell-integration.md#osc-7-escape-sequence-to-set-the-working-directory) ||
 |8  |Set Hyperlink | [See Explicit Hyperlinks](hyperlinks.md#explicit-hyperlinks) | |
 |9  |iTerm2 Show System Notification | Show a "toast" notification | `printf "\e]9;%s\e\\" "hello there"` |
-|10 |Set Default Text Foreground Color| | `\x1b]10;#ff0000\x1b\\`.<br/> Also supports RGBA in nightly builds: `printf "\e]10;rgba(127,127,127,0.4)\x07"` |
-|11 |Set Default Text Background Color| | `\x1b]11;#0000ff\x1b\\`.<br/> Also supports RGBA in nightly builds: `printf "\e]11;rgba:efff/ecff/f4ff/d000\x07"` |
-|12 |Set Text Cursor Color| | `\x1b]12;#00ff00\x1b\\`.<br/> Also supports RGBA in nightly builds. |
+|10 |Set Default Text Foreground Color| | `\x1b]10;#ff0000\x1b\\`.<br/> Also supports RGBA: `printf "\e]10;rgba(127,127,127,0.4)\x07"` |
+|11 |Set Default Text Background Color| | `\x1b]11;#0000ff\x1b\\`.<br/> Also supports RGBA: `printf "\e]11;rgba:efff/ecff/f4ff/d000\x07"` |
+|12 |Set Text Cursor Color| | `\x1b]12;#00ff00\x1b\\`.<br/> Also supports RGBA. |
 |52 |Manipulate clipboard | Requests to query the clipboard are ignored. Allows setting or clearing the clipboard | |
 |104|ResetColors | Reset color palette entries to their default values | |
 |133|FinalTerm semantic escapes| Informs the terminal about Input, Output and Prompt regions on the display | [See Shell Integration](shell-integration.md) |

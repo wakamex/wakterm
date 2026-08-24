@@ -4,8 +4,6 @@ tags:
 ---
 # `launcher_alphabet`
 
-{{since('nightly')}}
-
 Specify a string of unique characters. The characters in the string are used
 to calculate one or two key press shortcuts that can be used to quickly choose from
 the Launcher when in the default mode. Defaults to:

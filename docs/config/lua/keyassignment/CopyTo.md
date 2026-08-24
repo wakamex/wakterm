@@ -18,6 +18,4 @@ config.keys = {
 }
 ```
 
-{{since('20220319-142410-0fcdea07')}}
-
 `PrimarySelection` is now also supported on Wayland systems that support [primary-selection-unstable-v1](https://wayland.app/protocols/primary-selection-unstable-v1) or the older Gtk primary selection protocol.

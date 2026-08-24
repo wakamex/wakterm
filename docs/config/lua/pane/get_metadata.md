@@ -1,7 +1,5 @@
 # `pane:get_metadata()`
 
-{{since('20220903-194523-3bb1ed61')}}
-
 Returns metadata about a pane. The return value depends on the instance of the
 underlying pane. If the pane doesn't support this method, `nil` will be returned.
 Otherwise, the value is a lua table with the metadata contained in table fields.

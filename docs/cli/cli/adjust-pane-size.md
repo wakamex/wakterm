@@ -1,7 +1,5 @@
 # `wakterm cli adjust-pane-size DIRECTION`
 
-{{since('20230712-072601-f4abf8fd')}}
-
 *Run `wakterm cli adjust-pane-size --help` to see more help*
 
 Adjust the size of the current pane, or the pane specified by `--pane-id`, in the specified direction.

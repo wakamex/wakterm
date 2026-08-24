@@ -1,7 +1,5 @@
 # `ToggleAlwaysOnBottom`
 
-{{since('20240127-113634-bbcac864')}}
-
 Toggles the window to remain behind all other windows.
 
 ```lua

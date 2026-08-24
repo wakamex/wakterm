@@ -6,8 +6,6 @@ tags:
 
 # `wakterm.emit(event_name, args...)`
 
-{{since('20201031-154415-9614e117')}}
-
 `wakterm.emit` resolves the registered callback(s) for the specified
 event name and calls each of them in turn, passing the additional
 arguments through to the callback.

@@ -4,8 +4,6 @@ tags:
 ---
 # `text_min_contrast_ratio = nil`
 
-{{since('nightly')}}
-
 An optional floating point value that defaults to `nil` (not being set).
 
 When set, it defines the minimum contrast ratio between the foreground

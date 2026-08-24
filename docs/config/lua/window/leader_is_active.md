@@ -1,7 +1,5 @@
 # window:leader_is_active()
 
-{{since('20220319-142410-0fcdea07')}}
-
 Returns `true` if the [Leader Key](../../keys.md) is active in the window, or false otherwise.
 
 This example shows `LEADER` in the right status area, and turns the cursor orange,

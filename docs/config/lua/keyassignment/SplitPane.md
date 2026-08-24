@@ -1,7 +1,5 @@
 # `SplitPane`
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 Splits the active pane in a particular direction, spawning a new command into the newly created pane.
 
 This assignment has a number of fields that control the overall action:

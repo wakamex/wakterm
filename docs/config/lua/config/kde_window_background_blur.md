@@ -4,8 +4,6 @@ tags:
 ---
 # `kde_window_background_blur = false`
 
-{{since('nightly')}}
-
 When combined with `window_background_opacity`, enables background blur
 using the KDE Wayland blur protocol.
 

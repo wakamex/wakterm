@@ -1,7 +1,5 @@
 # `wakterm.color.load_base16_scheme(file_name)`
 
-{{since('20220807-113146-c2fee766')}}
-
 Loads a yaml file in [base16](https://github.com/chriskempson/base16) format
 and returns it as a wakterm color scheme.
 

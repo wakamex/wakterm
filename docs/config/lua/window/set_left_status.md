@@ -1,7 +1,5 @@
 # `window:set_left_status(string)`
 
-{{since('20220807-113146-c2fee766')}}
-
 This method can be used to change the content that is displayed in the tab bar,
 to the left of the tabs.  The content is displayed
 left-aligned and will take as much space as needed to display the content

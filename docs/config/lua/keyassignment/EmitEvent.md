@@ -1,7 +1,5 @@
 # `EmitEvent`
 
-{{since('20201031-154415-9614e117')}}
-
 This action causes the equivalent of `wakterm.emit(name, window, pane)` to be
 called in the context of the current pane.
 

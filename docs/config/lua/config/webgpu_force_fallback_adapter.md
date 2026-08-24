@@ -4,8 +4,6 @@ tags:
 ---
 # `webgpu_force_fallback_adapter = false`
 
-{{since('20221119-145034-49b9839f')}}
-
 If set to `true`, forces the use of a fallback software (CPU based) rendering
 backend.  The performance will not be as good as using a GPU.
 

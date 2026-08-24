@@ -1,7 +1,5 @@
 # `ClearSelection`
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 Clears the selection in the current pane.
 
 This example shows how to rebind `CTRL-C` to copy to the clipboard

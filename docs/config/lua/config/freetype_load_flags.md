@@ -4,8 +4,6 @@ tags:
 ---
 # `freetype_load_flags = "DEFAULT"`
 
-{{since('20210314-114017-04b7cedd')}}
-
 An advanced option to fine tune the freetype rasterizer.  This is a bitfield,
 so you can combine one or more of these options together, separated by the `|`
 character, although not many of the available options necessarily make sense to
@@ -33,8 +31,6 @@ Available flags are:
 config.freetype_load_flags = 'NO_HINTING|MONOCHROME'
 ```
 
-{{since('20240128-202157-1e552d76')}}
-
 The default value has changed to `NO_HINTING` as that generally works
 more predictably and with fewer surprising artifacts.
 
@@ -44,8 +40,6 @@ explicitly:
 ```lua
 config.freetype_load_flags = 'NO_HINTING'
 ```
-
-{{since('20240203-110809-5046fc22')}}
 
 The default value depends on the effective dpi of the display.
 If the dpi is 100 or larger, the default value is `NO_HINTING`.

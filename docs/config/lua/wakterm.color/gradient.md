@@ -1,7 +1,5 @@
 # `wakterm.color.gradient(gradient, num_colors)`
 
-{{since('20220807-113146-c2fee766')}}
-
 Given a gradient spec and a number of colors, returns a table
 holding that many colors spaced evenly across the range of
 the gradient.

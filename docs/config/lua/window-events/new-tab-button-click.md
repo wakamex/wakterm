@@ -1,7 +1,5 @@
 # `new-tab-button-click`
 
-{{since('20230326-111934-3666303c')}}
-
 The `new-tab-button-click` event is emitted when the user clicks on the
 "new tab" button in the tab bar. This is the `+` button that is drawn
 to the right of the last tab.

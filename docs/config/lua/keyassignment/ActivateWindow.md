@@ -1,7 +1,5 @@
 # `ActivateWindow(n)`
 
-{{since('20230320-124340-559cb7b0')}}
-
 Activates the *nth* GUI window, zero-based.
 
 Performing this action is equivalent to executing this lua code fragment:
@@ -29,7 +27,6 @@ end
 
 return config
 ```
-
 
 See also 
 [ActivateWindowRelative](ActivateWindowRelative.md),

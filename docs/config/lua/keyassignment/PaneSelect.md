@@ -1,7 +1,5 @@
 # `PaneSelect`
 
-{{since('20220624-141144-bd1b7c5d')}}
-
 This action activates the pane selection modal display. In this mode, each pane
 will be overlayed with a one- or two-character label taken from the selection
 alphabet.
@@ -21,8 +19,6 @@ The available actions are:
 The selection alphabet defaults to the same value as
 [quick_select_alphabet](../config/quick_select_alphabet.md), but can be
 explicitly via the `alphabet` field:
-
-{{since('20240127-113634-bbcac864')}}
 
 Additional modes are now supported:
 

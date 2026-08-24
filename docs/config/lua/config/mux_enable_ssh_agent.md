@@ -5,8 +5,6 @@ tags:
 ---
 # `mux_enable_ssh_agent = true`
 
-{{since('nightly')}}
-
 When set to `true` (the default), wakterm will configure the `SSH_AUTH_SOCK`
 environment variable for panes spawned in the `local` domain.
 

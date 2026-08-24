@@ -1,7 +1,5 @@
 # `window:effective_config()`
 
-{{since('20210314-114017-04b7cedd')}}
-
 Returns a lua table representing the effective configuration for the Window.
 The table is in the same format as that used to specify the config in
 the `wakterm.lua` file, but represents the fully-populated state of the

@@ -1,7 +1,5 @@
 # wakterm:is_focused()
 
-{{since('20221119-145034-49b9839f')}}
-
 Returns `true` if the window has focus.
 
 The `update-status` event is fired when the focus state changes.

@@ -11,12 +11,8 @@ $ wakterm imgcat /path/to/image.png
 
 ![inline image display](screenshots/wakterm-imgcat.png)
 
-
 **Note that the image protocol isn't fully handled by multiplexer sessions
 at this time**.
-
-
-{{since('20220319-142410-0fcdea07')}}
 
 wakterm supports an extension to the protocol; passing `doNotMoveCursor=1` as
 an argument to the `File` escape sequence causes wakterm to not move the cursor

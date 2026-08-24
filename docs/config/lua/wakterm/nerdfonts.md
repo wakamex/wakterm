@@ -7,8 +7,6 @@ tags:
 ---
 # `wakterm.nerdfonts`
 
-{{since('20220319-142410-0fcdea07')}}
-
 A special userdata value that can be used to resolve the symbolic name
 of a glyph from the [Nerd Fonts](https://www.nerdfonts.com/cheat-sheet)
 font set into a string that can be used for example when formatting
@@ -35,14 +33,11 @@ wakterm.on('update-right-status', function(window, pane)
 end)
 ```
 
-{{since('20230712-072601-f4abf8fd')}}
-
 The bundled `Nerd Font Symbols Font` was updated to version 3.0 which,
 unfortunately, makes [breaking
 changes](https://github.com/ryanoasis/nerd-fonts/releases/tag/v3.0.0) to a
 number of symbol assignments, and renames all of the Material Design Icons so
 that they no longer have an `mdi_` prefix and instead have an `md_` prefix.
-
 
 The following symbols are defined:
 

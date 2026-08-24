@@ -4,8 +4,6 @@ tags:
 ---
 # `underline_position`
 
-{{since('20221119-145034-49b9839f')}}
-
 If specified, overrides the position of underlines.
 
 The default is to use the underline position metric specified by the designer

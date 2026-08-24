@@ -5,8 +5,6 @@ tags:
 
 # `macos_fullscreen_extend_behind_notch = false`
 
-{{since('nightly')}}
-
 When `true` and in full screen mode, the window will extend behind 
 the notch on macOS.
 
