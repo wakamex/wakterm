@@ -27,6 +27,16 @@
     });
   }
 
+  var tableOfContents = document.querySelector(".toc");
+  if (tableOfContents) {
+    var compactTableOfContents = matchMedia("(max-width: 52rem)");
+    function updateTableOfContents() {
+      tableOfContents.open = !compactTableOfContents.matches;
+    }
+    compactTableOfContents.addEventListener("change", updateTableOfContents);
+    updateTableOfContents();
+  }
+
   var navigationButton = document.querySelector("[data-navigation-open]");
   var sidebar = document.querySelector(".sidebar");
   var sidebarDetails = sidebar && sidebar.querySelector(":scope > details");

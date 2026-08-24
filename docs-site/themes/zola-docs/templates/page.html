@@ -34,7 +34,7 @@
     {% block page_metadata %}{% endblock page_metadata %}
     {% set toc_enabled = page.extra.toc | default(value=config.extra.zola_docs.toc) %}
     {% if toc_enabled and page.toc %}
-    <details class="toc">
+    <details class="toc" open>
       <summary>On this page</summary>
       <ol>
         {% for heading in page.toc %}
