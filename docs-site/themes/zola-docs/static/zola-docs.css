@@ -68,6 +68,12 @@ a:hover { text-decoration-thickness: 0.12em; }
 .sidebar summary { cursor: pointer; font-weight: 700; }
 .sidebar[data-navigation-desktop] > details > summary { display: none; }
 .sidebar h2 { margin: 1.2rem 0 0.3rem; color: var(--docs-muted); font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; }
+.sidebar-navigation-group { margin-top: 1.2rem; }
+.sidebar-navigation-group > summary { display: flex; align-items: center; gap: 0.35rem; color: var(--docs-muted); font-size: 0.75rem; letter-spacing: 0.08em; list-style: none; text-transform: uppercase; }
+.sidebar-navigation-group > summary::-webkit-details-marker { display: none; }
+.sidebar-navigation-group > summary a { display: inline; }
+.sidebar-chevron { flex: 0 0 auto; width: 0.8rem; height: 0.8rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.25; transition: transform 120ms ease; }
+.sidebar-navigation-group[open] > summary .sidebar-chevron { transform: rotate(90deg); }
 .sidebar ul { margin: 0; padding: 0; list-style: none; }
 .sidebar ul ul { margin: 0.25rem 0 0.5rem 0.8rem; padding-left: 0.65rem; border-left: 1px solid var(--docs-border); }
 .sidebar li + li { margin-top: 0.25rem; }
@@ -118,6 +124,9 @@ a:hover { text-decoration-thickness: 0.12em; }
 .navigation-dialog nav { padding: 0 1rem 1rem; }
 .navigation-dialog .mobile-navigation-group { margin-top: 0.7rem; border-bottom: 1px solid var(--docs-border); }
 .navigation-dialog .mobile-navigation-group > summary { padding: 0.6rem 0; color: var(--docs-muted); font-size: 0.78rem; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; }
+.navigation-dialog .sidebar-navigation-group { margin-top: 0.7rem; }
+.navigation-dialog .sidebar-navigation-group > summary { padding: 0.6rem 0; }
+.navigation-dialog .sidebar-navigation-group > ul { margin: 0 0 0.8rem; padding: 0; }
 .navigation-dialog .mobile-navigation-group[open] > summary { position: sticky; top: 3.7rem; z-index: 1; background: var(--docs-bg); border-bottom: 1px solid var(--docs-border); }
 .navigation-dialog .mobile-navigation-group > ul { margin: 0 0 0.8rem; padding: 0; list-style: none; }
 .navigation-dialog ul { list-style: none; }

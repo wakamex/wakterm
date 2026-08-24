@@ -115,9 +115,13 @@
         <nav aria-label="{{ config.extra.zola_docs.navigation_label }}">
           {% for group in navigation %}
           <section>
-            <h2>{% if group.path is defined %}<a href="{{ get_url(path=group.path) | safe }}">{{ group.title }}</a>{% else %}{{ group.title }}{% endif %}</h2>
             {% set group_id = group.id | default(value="") %}
             {% if not navigation_scoped or group_id == navigation_group %}
+            <details class="sidebar-navigation-group" open>
+              <summary>
+                <svg class="sidebar-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>
+                {% if group.path is defined %}<a href="{{ get_url(path=group.path) | safe }}">{{ group.title }}</a>{% else %}<span>{{ group.title }}</span>{% endif %}
+              </summary>
             <ul>
               {% for item in group.items %}
               {% if item.path is defined %}{% set item_url = get_url(path=item.path) %}{% set item_current_path = "/" ~ item.path %}{% set item_branch = item.path %}{% else %}{% set item_url = item.url %}{% set item_current_path = item.url %}{% set item_branch = item.url %}{% endif %}
@@ -145,6 +149,9 @@
               </li>
               {% endfor %}
             </ul>
+            </details>
+            {% else %}
+            <h2>{% if group.path is defined %}<a href="{{ get_url(path=group.path) | safe }}">{{ group.title }}</a>{% else %}{{ group.title }}{% endif %}</h2>
             {% endif %}
           </section>
           {% endfor %}
