@@ -335,6 +335,7 @@ struct AgentArtifactWatcherState {
     watcher: Option<RecommendedWatcher>,
     roots_by_pane: HashMap<PaneId, Vec<PathBuf>>,
     panes_by_root: HashMap<PathBuf, HashSet<PaneId>>,
+    discovery_panes_by_root: HashMap<PathBuf, HashSet<PaneId>>,
     artifact_paths_by_pane: HashMap<PaneId, Vec<PathBuf>>,
     panes_by_artifact_path: HashMap<PathBuf, HashSet<PaneId>>,
     last_hint_at_by_pane: HashMap<PaneId, Instant>,
@@ -402,6 +403,7 @@ impl AgentArtifactWatcherState {
             watcher,
             roots_by_pane: HashMap::new(),
             panes_by_root: HashMap::new(),
+            discovery_panes_by_root: HashMap::new(),
             artifact_paths_by_pane: HashMap::new(),
             panes_by_artifact_path: HashMap::new(),
             last_hint_at_by_pane: HashMap::new(),
@@ -442,6 +444,10 @@ impl AgentArtifactWatcherState {
                 .entry(root.clone())
                 .or_default()
                 .insert(pane_id);
+            self.discovery_panes_by_root
+                .entry(root.clone())
+                .or_default()
+                .insert(pane_id);
             watched_roots.push(root);
         }
 
@@ -472,21 +478,44 @@ impl AgentArtifactWatcherState {
                 .insert(pane_id);
         }
         if !paths.is_empty() {
+            let roots = self
+                .roots_by_pane
+                .get(&pane_id)
+                .cloned()
+                .unwrap_or_default();
+            for root in roots {
+                let remove_root = self
+                    .discovery_panes_by_root
+                    .get_mut(&root)
+                    .map(|panes| {
+                        panes.remove(&pane_id);
+                        panes.is_empty()
+                    })
+                    .unwrap_or(false);
+                if remove_root {
+                    self.discovery_panes_by_root.remove(&root);
+                }
+            }
             self.artifact_paths_by_pane.insert(pane_id, paths);
         }
     }
 
     fn remove_confirmed_artifact(&mut self, pane_id: PaneId) {
-        let Some(paths) = self.artifact_paths_by_pane.remove(&pane_id) else {
-            return;
-        };
-        for path in paths {
-            if let Some(panes) = self.panes_by_artifact_path.get_mut(&path) {
-                panes.remove(&pane_id);
-                if panes.is_empty() {
-                    self.panes_by_artifact_path.remove(&path);
+        if let Some(paths) = self.artifact_paths_by_pane.remove(&pane_id) {
+            for path in paths {
+                if let Some(panes) = self.panes_by_artifact_path.get_mut(&path) {
+                    panes.remove(&pane_id);
+                    if panes.is_empty() {
+                        self.panes_by_artifact_path.remove(&path);
+                    }
                 }
             }
+        }
+        for root in self.roots_by_pane.get(&pane_id).into_iter().flatten() {
+            self.discovery_panes_by_root
+                .entry(root.clone())
+                .or_default()
+                .insert(pane_id);
         }
     }
 
@@ -498,6 +527,17 @@ impl AgentArtifactWatcherState {
         };
 
         for root in roots {
+            let remove_discovery_root = self
+                .discovery_panes_by_root
+                .get_mut(&root)
+                .map(|panes| {
+                    panes.remove(&pane_id);
+                    panes.is_empty()
+                })
+                .unwrap_or(false);
+            if remove_discovery_root {
+                self.discovery_panes_by_root.remove(&root);
+            }
             let remove_root = self
                 .panes_by_root
                 .get_mut(&root)
@@ -521,19 +561,20 @@ impl AgentArtifactWatcherState {
     fn matching_panes(&mut self, event_paths: &[PathBuf]) -> Vec<PaneId> {
         let mut matched = HashSet::new();
         for event_path in event_paths {
-            for (artifact_path, panes) in &self.panes_by_artifact_path {
-                if event_path.starts_with(artifact_path) || artifact_path.starts_with(&event_path) {
-                    matched.extend(panes.iter().copied());
+            if let Some(panes) = self.panes_by_artifact_path.get(event_path) {
+                matched.extend(panes.iter().copied());
+            } else {
+                for (artifact_path, panes) in &self.panes_by_artifact_path {
+                    if event_path.starts_with(artifact_path)
+                        || artifact_path.starts_with(event_path)
+                    {
+                        matched.extend(panes.iter().copied());
+                    }
                 }
             }
-            for (root, panes) in &self.panes_by_root {
+            for (root, panes) in &self.discovery_panes_by_root {
                 if event_path.starts_with(root) || root.starts_with(&event_path) {
-                    matched.extend(
-                        panes
-                            .iter()
-                            .filter(|pane_id| !self.artifact_paths_by_pane.contains_key(pane_id))
-                            .copied(),
-                    );
+                    matched.extend(panes.iter().copied());
                 }
             }
         }
@@ -5684,6 +5725,10 @@ mod test {
                 root.to_path_buf(),
                 pane_ids.iter().copied().collect(),
             )]),
+            discovery_panes_by_root: HashMap::from([(
+                root.to_path_buf(),
+                pane_ids.iter().copied().collect(),
+            )]),
             artifact_paths_by_pane: HashMap::new(),
             panes_by_artifact_path: HashMap::new(),
             last_hint_at_by_pane: HashMap::new(),
@@ -5722,6 +5767,31 @@ mod test {
             watcher.matching_panes(&[root.join("new-session.jsonl")]),
             vec![unconfirmed],
         );
+
+        watcher.set_confirmed_artifact(confirmed, &AgentHarness::Claude, None);
+        watcher.last_hint_at_by_pane.clear();
+        assert_eq!(
+            watcher.matching_panes(&[root.join("new-session.jsonl")]),
+            vec![confirmed, unconfirmed],
+        );
+    }
+
+    #[test]
+    fn artifact_directory_event_preserves_prefix_routing() {
+        let root = Path::new("/tmp/wakterm-artifact-prefix-routing");
+        let confirmed = alloc_pane_id();
+        let unconfirmed = alloc_pane_id();
+        let mut watcher = artifact_watcher_for_routing_test(root, &[confirmed, unconfirmed]);
+        watcher.set_confirmed_artifact(
+            confirmed,
+            &AgentHarness::Codex,
+            root.join("confirmed.jsonl").to_str(),
+        );
+
+        assert_eq!(
+            watcher.matching_panes(&[root.to_path_buf()]),
+            vec![confirmed, unconfirmed],
+        );
     }
 
     #[test]
@@ -5749,6 +5819,7 @@ mod test {
 
         watcher.unwatch_pane(pane_b);
         assert!(!watcher.panes_by_root.contains_key(&root));
+        assert!(watcher.discovery_panes_by_root.is_empty());
         assert!(watcher.roots_by_pane.is_empty());
     }
 
