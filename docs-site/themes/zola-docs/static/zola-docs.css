@@ -71,6 +71,7 @@ a:hover { text-decoration-thickness: 0.12em; }
 .sidebar-navigation-row { display: flex; align-items: baseline; gap: 0.35rem; }
 .sidebar-chevron { flex: 0 0 auto; width: 0.8rem; height: 0.8rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.25; }
 .sidebar-chevron.is-expanded { transform: rotate(90deg); }
+.sidebar-child-count { margin-left: auto; color: var(--docs-muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; font-weight: 400; }
 .sidebar ul { margin: 0; padding: 0; list-style: none; }
 .sidebar ul ul { margin: 0.25rem 0 0.5rem 0.8rem; padding-left: 0.65rem; border-left: 1px solid var(--docs-border); }
 .sidebar li + li { margin-top: 0.25rem; }
