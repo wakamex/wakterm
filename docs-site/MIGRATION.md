@@ -1,6 +1,6 @@
 # Zola documentation migration
 
-Status: Milestones 3 through 6 implemented on `docs/zola-migration`.
+Status: Milestones 3 through 6 complete on `main`.
 
 ## Content and routes
 
@@ -63,6 +63,8 @@ MkDocs internals.
 - MkDocs, its container image, macros, overrides, and copy workaround have been removed.
 - Backup branch `backup/mkdocs-before-zola-cutover-20260824` points to
   `78d6b8cbbec7c702f7d1abcf94acf37bc90dd58b` and contains the complete former MkDocs pipeline.
+- GitHub Actions run `32694066266` built and deployed the site successfully. Live route, search,
+  conditional Mermaid, interface-control, and legacy redirect checks passed after deployment.
 
 Build with `make docs`. Use `DOCS_OFFLINE=1 make docs` to force fallback release links without a
 network request. Run the authoring server with `make servedocs`.
