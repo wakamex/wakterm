@@ -7,7 +7,7 @@ The default output is tabular:
 ```
 $ wakterm cli list
 WORKSPACE TAB  PANE                         SIZE WINID TABID PANEID CWD
-default   main wakterm cli list -- wez@foo:~ 80x24     0     0      0 file://foo/home/wez/
+default   main wakterm cli list -- wak@foo:~ 80x24     0     0      0 file://foo/home/wak/
 ```
 
 Each row describes a pane. The meaning of the fields are:
