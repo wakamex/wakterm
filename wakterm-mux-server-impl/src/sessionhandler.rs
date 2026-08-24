@@ -11,13 +11,14 @@ use mux::{Mux, MuxNotification};
 use promise::spawn::spawn_into_main_thread;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use termwiz::surface::SequenceNo;
 use url::Url;
 use wakterm_term::terminal::Alert;
 use wakterm_term::StableRowIndex;
 
 const MAX_PENDING_PANE_ALERTS: usize = 256;
+const MAX_AGENT_EVENT_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct PduSender {
@@ -845,11 +846,13 @@ impl SessionHandler {
             Pdu::ReadAgentEvents(ReadAgentEvents {
                 after_sequence,
                 limit,
+                wait_ms,
             }) => {
                 spawn_into_main_thread(async move {
                     let store = Mux::get().agent_service().event_store();
+                    let wait = Duration::from_millis(wait_ms.into()).min(MAX_AGENT_EVENT_WAIT);
                     let result = store
-                        .read_page_async(after_sequence, limit as usize)
+                        .read_page_wait_async(after_sequence, limit as usize, wait)
                         .await
                         .map(|page| Pdu::ReadAgentEventsResponse(ReadAgentEventsResponse { page }));
                     send_response(result);
@@ -3684,6 +3687,7 @@ mod test {
             Pdu::ReadAgentEvents(ReadAgentEvents {
                 after_sequence: catalog.as_of_event_sequence,
                 limit: 100,
+                wait_ms: 0,
             }),
         ) {
             Pdu::ReadAgentEventsResponse(response) => response.page,

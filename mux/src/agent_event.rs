@@ -2,6 +2,7 @@ use crate::agent::{read_gemini_conversation, AgentHarness, AgentMetadata, AgentR
 use crate::agent_admission::incarnation_id;
 use anyhow::{anyhow, bail, Context};
 use chrono::{DateTime, Utc};
+use event_listener::Event;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -11,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use std::{fs, thread};
 
 pub const AGENT_EVENT_SCHEMA: &str = "wakterm.agent-events.v1";
@@ -165,6 +167,7 @@ pub struct AgentEventStore {
     retention_limit: usize,
     latest_sequence: Arc<AtomicU64>,
     live: Arc<AtomicBool>,
+    changed: Arc<Event>,
     reader: AgentEventReader,
 }
 
@@ -252,6 +255,7 @@ impl AgentEventStore {
             retention_limit: retention_limit.max(1),
             latest_sequence,
             live,
+            changed: Arc::new(Event::new()),
         }
     }
 
@@ -259,7 +263,7 @@ impl AgentEventStore {
         let result = self.start_runtime_epoch_inner();
         match result {
             Ok(latest) => {
-                self.latest_sequence.store(latest, Ordering::Release);
+                self.publish_latest_sequence(latest);
                 self.live.store(true, Ordering::Release);
                 Ok(())
             }
@@ -313,6 +317,14 @@ impl AgentEventStore {
 
     pub fn latest_sequence(&self) -> u64 {
         self.latest_sequence.load(Ordering::Acquire)
+    }
+
+    fn publish_latest_sequence(&self, latest: u64) {
+        self.latest_sequence.store(latest, Ordering::Release);
+        // Notify after every writer transaction. A concurrent reader may have
+        // already published the same latest sequence, but passive waiters must
+        // still be woken to reread the durable store.
+        self.changed.notify(usize::MAX);
     }
 
     fn connect(&self) -> anyhow::Result<Connection> {
@@ -468,7 +480,7 @@ impl AgentEventStore {
         apply_retention(&tx, self.retention_limit)?;
         tx.commit()?;
         let latest = latest_sequence(&conn)?;
-        self.latest_sequence.store(latest, Ordering::Release);
+        self.publish_latest_sequence(latest);
         Ok(())
     }
 
@@ -518,7 +530,7 @@ impl AgentEventStore {
         }
         tx.commit()?;
         let latest = latest_sequence(&conn)?;
-        self.latest_sequence.store(latest, Ordering::Release);
+        self.publish_latest_sequence(latest);
         Ok(())
     }
 
@@ -532,6 +544,46 @@ impl AgentEventStore {
         limit: usize,
     ) -> promise::Future<AgentEventPage> {
         self.reader.read_page(after_sequence, limit)
+    }
+
+    pub async fn read_page_wait_async(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+        wait: Duration,
+    ) -> anyhow::Result<AgentEventPage> {
+        let deadline = Instant::now() + wait;
+        loop {
+            // Register before reading SQLite so a commit between the read and
+            // the await cannot be missed.
+            let changed = self.changed.listen();
+            let page = self.read_page_async(after_sequence, limit).await?;
+            if wait.is_zero()
+                || page.status != AgentEventStatus::Ok
+                || !page.events.is_empty()
+                || after_sequence < page.latest_sequence
+            {
+                return Ok(page);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(page);
+            }
+            let timed_out = smol::future::or(
+                async {
+                    changed.await;
+                    false
+                },
+                async {
+                    smol::Timer::after(remaining).await;
+                    true
+                },
+            )
+            .await;
+            if timed_out {
+                return Ok(page);
+            }
+        }
     }
 }
 
@@ -2019,6 +2071,61 @@ mod tests {
         assert_eq!(second.events.len(), 1);
         assert_eq!(second.events[0].lifecycle.as_deref(), Some("unavailable"));
         assert_eq!(second.events[0].reason.as_deref(), Some("test_unavailable"));
+    }
+
+    #[test]
+    fn blocking_reader_wakes_all_consumers_after_commit() {
+        let temp = TempDir::new().unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        store.start_runtime_epoch().unwrap();
+        let metadata = metadata("unknown");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Unknown,
+            "/tmp/unused-session".to_string(),
+        );
+        let mut writer = store.writer().unwrap();
+        writer.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        let ready = Arc::new(std::sync::Barrier::new(5));
+        let readers = (0..4)
+            .map(|_| {
+                let store = store.clone();
+                let ready = Arc::clone(&ready);
+                thread::spawn(move || {
+                    ready.wait();
+                    promise::spawn::block_on(store.read_page_wait_async(
+                        after,
+                        100,
+                        Duration::from_secs(1),
+                    ))
+                    .unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        ready.wait();
+        thread::sleep(Duration::from_millis(20));
+        writer
+            .record_unavailable(&metadata, Utc::now(), "test_unavailable")
+            .unwrap();
+
+        for reader in readers {
+            let page = reader.join().unwrap();
+            assert_eq!(page.events.len(), 1);
+            assert_eq!(page.events[0].reason.as_deref(), Some("test_unavailable"));
+        }
+    }
+
+    #[test]
+    fn writer_notification_survives_reader_publishing_sequence_first() {
+        let temp = TempDir::new().unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let changed = store.changed.listen();
+        store.latest_sequence.store(42, Ordering::Release);
+
+        store.publish_latest_sequence(42);
+
+        promise::spawn::block_on(changed);
     }
 
     #[test]

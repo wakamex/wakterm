@@ -17,6 +17,7 @@ chrono.workspace = true
 config.workspace = true
 crossbeam.workspace = true
 downcast-rs.workspace = true
+event-listener.workspace = true
 fancy-regex.workspace = true
 filedescriptor.workspace = true
 finl_unicode.workspace = true

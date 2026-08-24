@@ -6,5 +6,5 @@ Options:
       --after <AFTER_SEQUENCE>  Return events strictly after this durable global sequence [default: 0]
       --limit <LIMIT>           Maximum events to return [default: 100]
       --follow                  Keep the connection open and stream event pages as JSON lines
-      --poll-ms <POLL_MS>       Poll interval while following the stream [default: 250]
+      --wait-ms <WAIT_MS>       Maximum server wait at the stream head [default: 30000]
   -h, --help                    Print help

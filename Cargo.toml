@@ -41,6 +41,7 @@ async-executor = "1.11"
 async-io = "2.3"
 async-task = "4.7"
 async-trait = "0.1"
+event-listener = "5.4"
 async_ossl = { path = "async_ossl" }
 backtrace = "0.3"
 base64 = {version="0.22", default-features=false }

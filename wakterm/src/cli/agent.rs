@@ -1388,9 +1388,9 @@ pub struct AgentEventsCommand {
     #[arg(long)]
     follow: bool,
 
-    /// Poll interval while following the stream
-    #[arg(long, default_value_t = 250, requires = "follow")]
-    poll_ms: u64,
+    /// Maximum server wait at the stream head
+    #[arg(long, default_value_t = 30_000, requires = "follow")]
+    wait_ms: u32,
 }
 
 impl AgentEventsCommand {
@@ -1398,6 +1398,7 @@ impl AgentEventsCommand {
         if self.follow {
             let stdout = std::io::stdout();
             let mut out = stdout.lock();
+            let wait_ms = self.wait_ms;
             return self
                 .run_follow_with(
                     move |after_sequence, limit| {
@@ -1407,6 +1408,7 @@ impl AgentEventsCommand {
                                 .read_agent_events(codec::ReadAgentEvents {
                                     after_sequence,
                                     limit,
+                                    wait_ms,
                                 })
                                 .await
                                 .map(|response| response.page)
@@ -1422,6 +1424,7 @@ impl AgentEventsCommand {
             .read_agent_events(codec::ReadAgentEvents {
                 after_sequence: self.after_sequence,
                 limit: self.limit,
+                wait_ms: 0,
             })
             .await?;
         write_json(&response.page)
@@ -1456,17 +1459,11 @@ impl AgentEventsCommand {
             if let Some(next) = page.next_after_sequence {
                 after_sequence = next;
             }
-            let reached_head = after_sequence >= page.latest_sequence;
-
             if let Some(remaining) = remaining_polls.as_mut() {
                 if *remaining <= 1 {
                     return Ok(());
                 }
                 *remaining -= 1;
-            }
-
-            if reached_head {
-                smol::Timer::after(Duration::from_millis(self.poll_ms)).await;
             }
         }
     }
@@ -3109,7 +3106,7 @@ mod test {
             after_sequence: 4,
             limit: 100,
             follow: true,
-            poll_ms: 0,
+            wait_ms: 30_000,
         };
         let mut output = Vec::new();
 

@@ -3476,6 +3476,7 @@ dependencies = [
  "criterion",
  "crossbeam",
  "downcast-rs",
+ "event-listener",
  "fancy-regex",
  "filedescriptor",
  "finl_unicode",

@@ -859,6 +859,8 @@ pub struct AdmitAgentPromptResponse {
 pub struct ReadAgentEvents {
     pub after_sequence: u64,
     pub limit: u32,
+    #[serde(default)]
+    pub wait_ms: u32,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
@@ -1910,6 +1912,7 @@ mod test {
             Pdu::ReadAgentEvents(ReadAgentEvents {
                 after_sequence: 12,
                 limit: 50,
+                wait_ms: 0,
             }),
             Pdu::ReadAgentEventsResponse(ReadAgentEventsResponse {
                 page: mux::agent_event::AgentEventPage {

@@ -94,9 +94,15 @@ Long-lived consumers can reuse one mux connection and receive JSON-lines pages:
 wakterm agent events --after 123 --limit 100 --follow
 ```
 
-Follow mode emits one line per page, drains retained pages without delay, polls
-at `--poll-ms` after reaching the stream head, and exits after `cursor_too_old`
-so the consumer can perform the documented catalog-snapshot recovery.
+Follow mode emits one line per page and drains retained pages without delay. At
+the stream head it holds one bounded `ReadAgentEvents` request until a durable
+commit or `--wait-ms` timeout, then repeats from the returned sequence. It exits
+after `cursor_too_old` so the consumer can perform the documented
+catalog-snapshot recovery.
+
+`ReadAgentEvents.wait_ms` is additive, defaults to zero when absent, and is
+clamped to 30 seconds by the server. Existing events and retention gaps return
+immediately.
 
 Unknown additive fields must be tolerated. An incompatible major schema or an
 unknown event kind must fail explicitly. Provider paths and parser cursors are
