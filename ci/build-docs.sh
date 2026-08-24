@@ -7,13 +7,13 @@ fi
 
 for util in gelatyx ; do
   if ! hash $util 2>/dev/null ; then
-    cargo install $util --locked
+    cargo install $util --version 0.3.0 --locked
   fi
 done
 
 tracked_markdown=$(mktemp)
 trap "rm ${tracked_markdown}" "EXIT"
-find docs -type f | egrep '\.(markdown|md)$' > $tracked_markdown
+find docs -type f | grep -E '\.(markdown|md)$' > $tracked_markdown
 
 gelatyx --language lua --file-list $tracked_markdown --language-config ci/stylua.toml
 gelatyx --language lua --file-list $tracked_markdown --language-config ci/stylua.toml --check || exit 1
@@ -49,22 +49,27 @@ cp "assets/icon/wakterm-icon.svg" docs/favicon.svg
 mkdir -p docs/fonts
 cp assets/fonts/SymbolsNerdFontMono-Regular.ttf docs/fonts/
 
-docker_or_podman() {
+container_runtime() {
   if hash podman 2>/dev/null ; then
-    podman "$@"
+    echo podman
   elif hash docker 2>/dev/null ; then
-    docker "$@"
+    echo docker
   else
     echo "Please install either podman or docker"
     exit 1
   fi
 }
 
-docker_or_podman build -t wakterm/mkdocs-material -f ci/Dockerfile.docs .
+runtime=$(container_runtime)
+run_args=(--rm)
+if [[ "$runtime" == "podman" ]]; then
+  run_args+=(--security-opt label=disable)
+fi
+
+"$runtime" build -t wakterm/mkdocs-material -f ci/Dockerfile.docs .
 
 if [ "$SERVE" == "yes" ] ; then
-  docker_or_podman run --rm -it -p8000:8000 -v ${PWD}:/docs wakterm/mkdocs-material serve -a 0.0.0.0:8000
-  #docker_or_podman run --rm -it --network=host -v ${PWD}:/docs wakterm/mkdocs-material $@
+  "$runtime" run "${run_args[@]}" -it -p8000:8000 -v "${PWD}:/docs" wakterm/mkdocs-material serve -a 0.0.0.0:8000
 else
-  docker_or_podman run --rm -e CARDS=true -v ${PWD}:/docs wakterm/mkdocs-material build
+  "$runtime" run "${run_args[@]}" -e CARDS=true -v "${PWD}:/docs" wakterm/mkdocs-material build
 fi
