@@ -48,16 +48,11 @@ All changes relative to upstream wakterm/wakterm main at 05343b387.
 - macOS pane navigation shortcuts (Cmd-Alt-Left/Right/Up/Down) ([0f9963b](https://github.com/wakamex/wakterm/commit/0f9963b26)).
 - Shift-Enter compatibility binding ([8016097](https://github.com/wakamex/wakterm/commit/8016097e4)).
 
-### Multiplexer Stability and Persistence
+### Multiplexer Persistence and Reliability
 
 - Systemd service integration: `install-user-service.sh` for user service management with lingering, and `install-system-service.sh` for system-wide service boot persistence ([cd0a922](https://github.com/wakamex/wakterm/commit/cd0a9225c), [21f6417](https://github.com/wakamex/wakterm/commit/21f6417f7), [9b09fc1](https://github.com/wakamex/wakterm/commit/9b09fc133)).
 - Explicit resize origin tracking: suppresses client self-echoes without timing heuristics, eliminating resize flicker and feedback loops ([a961262](https://github.com/wakamex/wakterm/commit/a9612626d)).
 - Synchronized tab ordering: authoritative server tab order with drift reconciliation on client reconnect ([6c6b4fa](https://github.com/wakamex/wakterm/commit/6c6b4fa69), [63e94d1](https://github.com/wakamex/wakterm/commit/63e94d1f8)).
-
-### Public Fixes
-
-#### Mux and session reliability
-
 - Fix deadlock in session save vs main thread executor ([2ff8f7c](https://github.com/wakamex/wakterm/commit/2ff8f7c9d)).
 - Fix mux subscriber lifetime leak ([bba995d](https://github.com/wakamex/wakterm/commit/bba995d8e)).
 - Prevent notification backlog disconnects during heavy event traffic ([4dacab7](https://github.com/wakamex/wakterm/commit/4dacab75c)).
@@ -69,7 +64,7 @@ All changes relative to upstream wakterm/wakterm main at 05343b387.
 - Fix duplicate tempdir stores idempotency in blob leases ([8d7abe4](https://github.com/wakamex/wakterm/commit/8d7abe40e)).
 - Avoid sync agent detection blocking during client attach ([c3d57f8](https://github.com/wakamex/wakterm/commit/c3d57f8df)).
 
-#### Terminal and input fixes
+### Terminal and Input Fixes
 
 - Reset extended state and modes on RIS escape sequence, [#26](https://github.com/wakamex/wakterm/issues/26) ([5cc8708](https://github.com/wakamex/wakterm/commit/5cc87080c)).
 - Prevent divide-by-zero panic in inline image placement, [#22](https://github.com/wakamex/wakterm/issues/22) ([8699d68](https://github.com/wakamex/wakterm/commit/8699d68c2)).
@@ -82,7 +77,7 @@ All changes relative to upstream wakterm/wakterm main at 05343b387.
 - Guard ZSH_NAME under Bash nounset (set -u), [#38](https://github.com/wakamex/wakterm/issues/38) ([174b81a](https://github.com/wakamex/wakterm/commit/174b81aeb)).
 - Avoid reentrant window lock during title updates and IME borrow operations ([6a67d08](https://github.com/wakamex/wakterm/commit/6a67d0825)).
 
-#### Linux and Wayland fixes
+### Linux and Wayland Fixes
 
 - Detect WSL case-insensitively, [#37](https://github.com/wakamex/wakterm/issues/37) ([a6245e0](https://github.com/wakamex/wakterm/commit/a6245e056)).
 - Honor disabled titlebar decorations on Wayland, [#33](https://github.com/wakamex/wakterm/issues/33) ([f6d6bd6](https://github.com/wakamex/wakterm/commit/f6d6bd6ea)).
@@ -91,7 +86,7 @@ All changes relative to upstream wakterm/wakterm main at 05343b387.
 - Align Wayland buffers to buffer scale, [#30](https://github.com/wakamex/wakterm/issues/30) ([bd5495a](https://github.com/wakamex/wakterm/commit/bd5495a97)).
 - Keep render subscription alive across workspace closure, [#36](https://github.com/wakamex/wakterm/issues/36) ([561a6e4](https://github.com/wakamex/wakterm/commit/561a6e4aa)).
 
-#### Windows and macOS fixes
+### Windows and macOS Fixes
 
 - Restore window placement on Windows ([2d4098f](https://github.com/wakamex/wakterm/commit/2d4098fef)).
 - Handle TerminateProcess result correctly on Windows, [#35](https://github.com/wakamex/wakterm/issues/35) ([6e1f0cc](https://github.com/wakamex/wakterm/commit/6e1f0ccaf)).
@@ -99,7 +94,7 @@ All changes relative to upstream wakterm/wakterm main at 05343b387.
 - Reconcile focus after showing window on Windows ([27d7673](https://github.com/wakamex/wakterm/commit/27d76738f)).
 - Prevent GUI freeze and delayed tab opening on macOS during client attach and background spawn handoff ([9630dbe](https://github.com/wakamex/wakterm/commit/9630dbebb), [07422e2](https://github.com/wakamex/wakterm/commit/07422e220), [455f3cb](https://github.com/wakamex/wakterm/commit/455f3cb9d)).
 
-#### Memory and resource bounds
+### Memory and Resource Bounds
 
 - Bound SynchronizedOutput buffer to 4MB to prevent memory leaks from unresponsive TUI applications ([0dc472e](https://github.com/wakamex/wakterm/commit/0dc472eca)).
 - Bound adversarial terminal sequence parsing memory allocation ([a905a0a](https://github.com/wakamex/wakterm/commit/a905a0a05)).
