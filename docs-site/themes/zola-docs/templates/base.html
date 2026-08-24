@@ -117,23 +117,21 @@
           <section>
             {% set group_id = group.id | default(value="") %}
             {% if not navigation_scoped or group_id == navigation_group %}
-            <details class="sidebar-navigation-group" open>
-              <summary>
-                <svg class="sidebar-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>
-                {% if group.path is defined %}<a href="{{ get_url(path=group.path) | safe }}">{{ group.title }}</a>{% else %}<span>{{ group.title }}</span>{% endif %}
-              </summary>
+            <h2 class="sidebar-navigation-parent">{% if group.path is defined %}<a class="sidebar-navigation-row" href="{{ get_url(path=group.path) | safe }}"><svg class="sidebar-chevron is-expanded" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>{{ group.title }}</a>{% else %}<span class="sidebar-navigation-row"><svg class="sidebar-chevron is-expanded" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>{{ group.title }}</span>{% endif %}</h2>
             <ul>
               {% for item in group.items %}
               {% if item.path is defined %}{% set item_url = get_url(path=item.path) %}{% set item_current_path = "/" ~ item.path %}{% set item_branch = item.path %}{% else %}{% set item_url = item.url %}{% set item_current_path = item.url %}{% set item_branch = item.url %}{% endif %}
+              {% set sidebar_children = item.sidebar_children | default(value=true) %}
+              {% set item_branch_current = navigation_scoped and navigation_branch == item_branch %}
+              {% set item_children_expanded = item.children and ((sidebar_children and (not navigation_scoped or item_branch_current)) or current_path == item_current_path) %}
               <li>
-                <a href="{{ item_url | safe }}"{% if current_path == item_current_path %} aria-current="page"{% elif navigation_scoped and navigation_branch == item_branch %} aria-current="location"{% endif %}>{{ item.title }}</a>
-                {% set sidebar_children = item.sidebar_children | default(value=true) %}
-                {% if item.children and sidebar_children and (not navigation_scoped or navigation_branch == item_branch) %}
+                <a class="sidebar-navigation-row" href="{{ item_url | safe }}"{% if current_path == item_current_path %} aria-current="page"{% elif item_branch_current %} aria-current="location"{% endif %}>{% if item.children %}<svg class="sidebar-chevron{% if item_children_expanded %} is-expanded{% endif %}" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>{% endif %}{{ item.title }}</a>
+                {% if item_children_expanded %}
                 <ul>
                   {% for child in item.children %}
                   {% if child.path is defined %}{% set child_url = get_url(path=child.path) %}{% set child_current_path = "/" ~ child.path %}{% else %}{% set child_url = child.url %}{% set child_current_path = child.url %}{% endif %}
                   <li>
-                    <a href="{{ child_url | safe }}"{% if current_path == child_current_path %} aria-current="page"{% endif %}>{{ child.title }}</a>
+                    <a class="sidebar-navigation-row" href="{{ child_url | safe }}"{% if current_path == child_current_path %} aria-current="page"{% endif %}>{% if child.children %}<svg class="sidebar-chevron is-expanded" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>{% endif %}{{ child.title }}</a>
                     {% if child.children %}
                     <ul>
                       {% for grandchild in child.children %}
@@ -149,9 +147,8 @@
               </li>
               {% endfor %}
             </ul>
-            </details>
             {% else %}
-            <h2>{% if group.path is defined %}<a href="{{ get_url(path=group.path) | safe }}">{{ group.title }}</a>{% else %}{{ group.title }}{% endif %}</h2>
+            <h2 class="sidebar-navigation-parent">{% if group.path is defined %}<a class="sidebar-navigation-row" href="{{ get_url(path=group.path) | safe }}"><svg class="sidebar-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>{{ group.title }}</a>{% else %}<span class="sidebar-navigation-row"><svg class="sidebar-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>{{ group.title }}</span>{% endif %}</h2>
             {% endif %}
           </section>
           {% endfor %}

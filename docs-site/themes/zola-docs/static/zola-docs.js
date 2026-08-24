@@ -47,7 +47,6 @@
     var dialogHeader = document.createElement("div");
     var dialogTitle = document.createElement("strong");
     var closeButton = document.createElement("button");
-    var groupState = [];
     dialog.id = "mobile-navigation-dialog";
     dialog.className = "navigation-dialog";
     dialog.setAttribute("aria-label", navigation.getAttribute("aria-label") || "Navigation");
@@ -60,39 +59,6 @@
     dialog.append(dialogHeader);
     document.body.append(dialog);
 
-    function enhanceGroups() {
-      navigation.querySelectorAll(":scope > section").forEach(function (section) {
-        var heading = section.querySelector(":scope > h2");
-        var list = section.querySelector(":scope > ul");
-        if (!heading || !list) return;
-        var group = document.createElement("details");
-        var summary = document.createElement("summary");
-        var headingLink = heading.querySelector("a");
-        var rootItem;
-        group.className = "mobile-navigation-group";
-        group.open = Boolean(section.querySelector('[aria-current="page"]'));
-        summary.textContent = heading.textContent;
-        if (headingLink) {
-          rootItem = document.createElement("li");
-          rootItem.className = "mobile-navigation-root";
-          rootItem.append(headingLink.cloneNode(true));
-          list.prepend(rootItem);
-        }
-        group.append(summary, list);
-        heading.replaceWith(group);
-        groupState.push({ section: section, heading: heading, list: list, group: group, rootItem: rootItem });
-      });
-    }
-
-    function restoreGroups() {
-      groupState.forEach(function (entry) {
-        if (entry.rootItem) entry.rootItem.remove();
-        entry.group.replaceWith(entry.heading);
-        entry.heading.after(entry.list);
-      });
-      groupState = [];
-    }
-
     function closeNavigation() {
       if (dialog.open) dialog.close();
     }
@@ -103,14 +69,12 @@
         sidebarDetails.open = false;
         if (!dialog.contains(navigation)) {
           dialog.append(navigation);
-          enhanceGroups();
         }
         sidebar.dataset.navigationEnhanced = "true";
         navigationButton.hidden = false;
       } else {
         closeNavigation();
         if (!sidebarDetails.contains(navigation)) {
-          restoreGroups();
           sidebarDetails.append(navigation);
         }
         delete sidebar.dataset.navigationEnhanced;
