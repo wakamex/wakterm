@@ -2759,6 +2759,24 @@ fn codex_response_message_text(payload: &Value) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
+fn codex_response_message_is_synthetic_context(payload: &Value) -> bool {
+    payload
+        .get("content")
+        .and_then(Value::as_array)
+        .is_some_and(|content| {
+            content.iter().any(|block| {
+                block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .is_some_and(|text| {
+                        text.starts_with("<environment_context>")
+                            && text.ends_with("</environment_context>")
+                    })
+            })
+        })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CodexOutputMessage {
     pub start_offset: u64,
@@ -3013,12 +3031,18 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
                         }
                     }
                     Some("user") => {
+                        if codex_response_message_is_synthetic_context(payload) {
+                            return Ok(false);
+                        }
                         if last_user_at.is_none() {
                             last_user_at = parse_record_timestamp(&record);
                         }
                         if belongs_to_current_turn {
                             if let Some(message) = codex_response_message_text(payload) {
-                                current_turn_primary_user_sha256 = Some(message_sha256(&message));
+                                if current_turn_primary_user_sha256.is_none() {
+                                    current_turn_primary_user_sha256 =
+                                        Some(message_sha256(&message));
+                                }
                                 current_turn_user_message_count += 1;
                             }
                         }
@@ -4022,6 +4046,33 @@ mod test {
             turn.final_message.as_deref(),
             Some("complete final response")
         );
+    }
+
+    #[test]
+    fn codex_turn_identity_ignores_injected_environment_context() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout-context-injection.jsonl");
+        fs::write(
+            &session,
+            concat!(
+                "{\"ordinal\":10,\"type\":\"event_msg\",\"timestamp\":\"2026-08-25T16:35:07.000Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-panetone\"}}\n",
+                "{\"ordinal\":11,\"type\":\"response_item\",\"timestamp\":\"2026-08-25T16:35:07.067Z\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<environment_context>\\n  <current_date>2026-08-25</current_date>\\n</environment_context>\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-panetone\"}}}\n",
+                "{\"ordinal\":12,\"type\":\"response_item\",\"timestamp\":\"2026-08-25T16:35:07.103Z\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"[Panetone cross-agent message]\\nFix bznz\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-panetone\"}}}\n",
+                "{\"ordinal\":13,\"type\":\"response_item\",\"timestamp\":\"2026-08-25T16:35:08Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"working\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-panetone\"}}}\n",
+                "{\"ordinal\":14,\"type\":\"event_msg\",\"timestamp\":\"2026-08-25T16:35:09Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-panetone\",\"last_agent_message\":\"done\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        let details = read_last_codex_observation(&session).unwrap();
+        let turn = details.observed_turn.unwrap();
+
+        assert_eq!(turn.provider_turn_id, "turn-panetone");
+        assert_eq!(
+            turn.primary_user_message_sha256.as_deref(),
+            Some(message_sha256("[Panetone cross-agent message]\nFix bznz").as_str())
+        );
+        assert_eq!(turn.user_message_count, 1);
     }
 
     #[test]
