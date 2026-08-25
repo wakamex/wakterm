@@ -104,3 +104,39 @@ uv run --no-project scripts/bench_restored_mux.py \
 PSS is the primary memory number because it divides shared mappings among the
 processes that use them. Summed RSS is also retained in the JSON output, but it
 double-counts shared pages.
+
+## Tab navigator resource sampling
+
+The ignored release workload `bench_tab_resource_status_24_tabs` profiles the
+resource snapshot used by the tab navigator. It creates 24 tabs with one live
+sleeping process each. The navigator refreshes every five seconds while open.
+
+Five untraced runs on the same host produced these medians:
+
+| Work | Result |
+| --- | ---: |
+| Cold process and RSS snapshot | 9.20 ms |
+| Cold process CPU | 9.07 ms |
+| Warm process-cache snapshot | 0.184 ms |
+| Retained RSS after cold snapshot | 56 KiB |
+| Current row RSS lookups | 1.65 us per navigator refresh |
+| One-snapshot row RSS lookups | 0.39 us per navigator refresh |
+| Voluntary context switches | 0 |
+| Major faults | 0 |
+
+The cold path scanned 548 host processes and then sampled 24 pane roots. A
+focused `strace` recorded 597 `openat`, 596 `statx`, 2,933 `read`, 48
+`readlink`, and 2 `getdents64` calls. At one refresh every five seconds, the
+9.20 ms sample averages 0.18% of one core while the navigator is open.
+
+Cloning the cached RSS map once per row is 4.2 times slower than taking one
+snapshot, but the absolute difference is 1.26 microseconds per five-second
+refresh. The process scan dominates, and its measured load is too small to
+justify a separate discovery path or a longer stale-data window.
+
+Run the workload with:
+
+```sh
+cargo test -p mux bench_tab_resource_status_24_tabs \
+  --release -- --ignored --nocapture
+```

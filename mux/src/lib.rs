@@ -5629,6 +5629,150 @@ mod test {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore]
+    fn bench_tab_resource_status_24_tabs() {
+        const TAB_COUNT: usize = 24;
+        const WARM_SAMPLES: usize = 100;
+        const NAVIGATOR_REFRESHES: usize = 10_000;
+
+        fn process_usage() -> (i64, i64, i64, i64, i64) {
+            let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+            assert_eq!(
+                unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) },
+                0
+            );
+            let usage = unsafe { usage.assume_init() };
+            let cpu_us = (usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) * 1_000_000
+                + usage.ru_utime.tv_usec
+                + usage.ru_stime.tv_usec;
+            (
+                cpu_us,
+                usage.ru_nvcsw,
+                usage.ru_nivcsw,
+                usage.ru_minflt,
+                usage.ru_majflt,
+            )
+        }
+
+        fn process_rss_kib() -> u64 {
+            let statm = std::fs::read_to_string("/proc/self/statm").unwrap();
+            let pages = statm
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .parse::<u64>()
+                .unwrap();
+            let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+            pages * page_size as u64 / 1024
+        }
+
+        let size = TerminalSize {
+            rows: 73,
+            cols: 253,
+            pixel_width: 2024,
+            pixel_height: 1314,
+            dpi: 96,
+        };
+        let mux = Mux::new(None);
+        let domain_id = alloc_domain_id();
+        let mut children = Vec::with_capacity(TAB_COUNT);
+        let mut tab_ids = Vec::with_capacity(TAB_COUNT);
+        for index in 0..TAB_COUNT {
+            let child = std::process::Command::new("/usr/bin/sleep")
+                .arg("infinity")
+                .spawn()
+                .unwrap();
+            let tab = Arc::new(Tab::new(&size));
+            let pane = FakePane::new_with_process_root(
+                alloc_pane_id(),
+                size,
+                domain_id,
+                &format!("harness-{}", index + 1),
+                child.id(),
+            );
+            let pane: Arc<dyn Pane> = pane;
+            tab.assign_pane(&pane);
+            tab_ids.push(tab.tab_id());
+            mux.add_tab_and_active_pane(&tab).unwrap();
+            children.push(child);
+        }
+
+        thread::sleep(Duration::from_millis(310));
+        mux.invalidate_tab_resource_status();
+        let cold_rss_before = process_rss_kib();
+        eprintln!("BENCH_TAB_RESOURCE_COLD_BEGIN");
+        let cold_usage_before = process_usage();
+        let started = Instant::now();
+        let cold = mux.tab_resource_status();
+        let cold_ns = started.elapsed().as_nanos();
+        let cold_usage_after = process_usage();
+        eprintln!("BENCH_TAB_RESOURCE_COLD_END");
+        let cold_rss_after = process_rss_kib();
+        assert_eq!(cold.tab_rss_bytes.len(), TAB_COUNT);
+
+        eprintln!("BENCH_TAB_RESOURCE_WARM_BEGIN");
+        let warm_usage_before = process_usage();
+        let started = Instant::now();
+        for _ in 0..WARM_SAMPLES {
+            mux.invalidate_tab_resource_status();
+            std::hint::black_box(mux.tab_resource_status());
+        }
+        let warm_ns = started.elapsed().as_nanos();
+        let warm_usage_after = process_usage();
+        eprintln!("BENCH_TAB_RESOURCE_WARM_END");
+
+        eprintln!("BENCH_TAB_RESOURCE_PER_ROW_BEGIN");
+        let started = Instant::now();
+        for _ in 0..NAVIGATOR_REFRESHES {
+            let rss = tab_ids
+                .iter()
+                .map(|tab_id| mux.approximate_tab_process_rss(*tab_id))
+                .collect::<Vec<_>>();
+            std::hint::black_box(rss);
+        }
+        let per_row_ns = started.elapsed().as_nanos();
+        eprintln!("BENCH_TAB_RESOURCE_PER_ROW_END");
+
+        eprintln!("BENCH_TAB_RESOURCE_ONE_SNAPSHOT_BEGIN");
+        let started = Instant::now();
+        for _ in 0..NAVIGATOR_REFRESHES {
+            let snapshot = mux.tab_resource_status();
+            let rss = tab_ids
+                .iter()
+                .map(|tab_id| snapshot.tab_rss_bytes.get(tab_id).copied())
+                .collect::<Vec<_>>();
+            std::hint::black_box(rss);
+        }
+        let one_snapshot_ns = started.elapsed().as_nanos();
+        eprintln!("BENCH_TAB_RESOURCE_ONE_SNAPSHOT_END");
+
+        for child in &mut children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        eprintln!(
+            "BENCH_TAB_RESOURCE_COLD_NS={cold_ns} WARM_NS={warm_ns} WARM_SAMPLES={WARM_SAMPLES} \
+             PER_ROW_NS={per_row_ns} ONE_SNAPSHOT_NS={one_snapshot_ns} \
+             NAVIGATOR_REFRESHES={NAVIGATOR_REFRESHES} TABS={TAB_COUNT} \
+             COLD_CPU_US={} COLD_VOL_CTX={} COLD_INVOL_CTX={} COLD_MINOR={} COLD_MAJOR={} \
+             COLD_RSS_DELTA_KIB={} WARM_CPU_US={} WARM_VOL_CTX={} WARM_INVOL_CTX={} \
+             WARM_MINOR={} WARM_MAJOR={} ",
+            cold_usage_after.0 - cold_usage_before.0,
+            cold_usage_after.1 - cold_usage_before.1,
+            cold_usage_after.2 - cold_usage_before.2,
+            cold_usage_after.3 - cold_usage_before.3,
+            cold_usage_after.4 - cold_usage_before.4,
+            cold_rss_after.saturating_sub(cold_rss_before),
+            warm_usage_after.0 - warm_usage_before.0,
+            warm_usage_after.1 - warm_usage_before.1,
+            warm_usage_after.2 - warm_usage_before.2,
+            warm_usage_after.3 - warm_usage_before.3,
+            warm_usage_after.4 - warm_usage_before.4,
+        );
+    }
+
+    #[test]
     #[ignore]
     fn bench_agent_infra_duplicate_artifact_bursts() {
         let path = PathBuf::from("/tmp/wakterm-artifact-burst/session.jsonl");
@@ -5893,6 +6037,8 @@ mod test {
         cwd: Option<Url>,
         foreground_process_name: Option<String>,
         foreground_process_info: Option<LocalProcessInfo>,
+        #[cfg(target_os = "linux")]
+        foreground_process_root_pid: Option<u32>,
         foreground_process_info_calls: Option<Arc<AtomicUsize>>,
     }
 
@@ -5910,6 +6056,8 @@ mod test {
                 cwd: None,
                 foreground_process_name: None,
                 foreground_process_info: None,
+                #[cfg(target_os = "linux")]
+                foreground_process_root_pid: None,
                 foreground_process_info_calls: None,
             })
         }
@@ -5947,6 +6095,8 @@ mod test {
                     console: 0,
                     children: HashMap::new(),
                 }),
+                #[cfg(target_os = "linux")]
+                foreground_process_root_pid: None,
                 foreground_process_info_calls: None,
             })
         }
@@ -5985,6 +6135,8 @@ mod test {
                     console: 0,
                     children: HashMap::new(),
                 }),
+                #[cfg(target_os = "linux")]
+                foreground_process_root_pid: None,
                 foreground_process_info_calls: Some(foreground_process_info_calls.clone()),
             });
             (pane, foreground_process_info_calls)
@@ -6005,6 +6157,8 @@ mod test {
                 cwd: Some(Self::test_file_url(cwd)),
                 foreground_process_name: None,
                 foreground_process_info: None,
+                #[cfg(target_os = "linux")]
+                foreground_process_root_pid: None,
                 foreground_process_info_calls: None,
             })
         }
@@ -6046,6 +6200,29 @@ mod test {
                     console: 0,
                     children: HashMap::new(),
                 }),
+                #[cfg(target_os = "linux")]
+                foreground_process_root_pid: None,
+                foreground_process_info_calls: None,
+            })
+        }
+
+        #[cfg(target_os = "linux")]
+        fn new_with_process_root(
+            id: PaneId,
+            size: TerminalSize,
+            domain_id: DomainId,
+            title: &str,
+            root_pid: u32,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                id,
+                size: Mutex::new(size),
+                domain_id,
+                title: title.to_string(),
+                cwd: None,
+                foreground_process_name: Some("sleep".to_string()),
+                foreground_process_info: None,
+                foreground_process_root_pid: Some(root_pid),
                 foreground_process_info_calls: None,
             })
         }
@@ -6178,6 +6355,10 @@ mod test {
         fn get_foreground_process_info(&self, _policy: CachePolicy) -> Option<LocalProcessInfo> {
             if let Some(calls) = &self.foreground_process_info_calls {
                 calls.fetch_add(1, Ordering::SeqCst);
+            }
+            #[cfg(target_os = "linux")]
+            if let Some(pid) = self.foreground_process_root_pid {
+                return LocalProcessInfo::with_root_pid_cached(pid, Duration::from_millis(300));
             }
             self.foreground_process_info.clone()
         }
@@ -6606,6 +6787,8 @@ mod test {
                 console: 0,
                 children: HashMap::new(),
             }),
+            #[cfg(target_os = "linux")]
+            foreground_process_root_pid: None,
             foreground_process_info_calls: None,
         });
         mux.panes.write().insert(pane_id, shell_pane);
@@ -8486,6 +8669,8 @@ mod test {
             cwd: Some(FakePane::test_file_url("/tmp/pending-restore/")),
             foreground_process_name: Some("/usr/bin/codex".to_string()),
             foreground_process_info: Some(process),
+            #[cfg(target_os = "linux")]
+            foreground_process_root_pid: None,
             foreground_process_info_calls: None,
         });
         let pane_id = pane.pane_id();
