@@ -23,6 +23,26 @@ use wakterm_uds::UnixStream;
 
 const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
+fn initialize_params() -> Value {
+    json!({
+        "clientInfo": {"name": "wakterm", "title": "Wakterm", "version": config::wakterm_version()},
+        "capabilities": {
+            "experimentalApi": true,
+            "optOutNotificationMethods": ["app/list/updated"]
+        }
+    })
+}
+
+fn metadata_only_resume_params(thread_id: &str, cwd: &str) -> Value {
+    // Wakterm follows live notifications and does not consume hydrated turn
+    // history. Keeping it out of resume responses also bounds frame size.
+    json!({
+        "threadId": thread_id,
+        "cwd": cwd,
+        "excludeTurns": true
+    })
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PrepareCodexLaunch {
     pub name: String,
@@ -125,13 +145,7 @@ impl Connection {
     }
 
     fn initialize(&self) -> anyhow::Result<()> {
-        self.request(
-            "initialize",
-            json!({
-                "clientInfo": {"name": "wakterm", "title": "Wakterm", "version": config::wakterm_version()},
-                "capabilities": {"optOutNotificationMethods": ["app/list/updated"]}
-            }),
-        )?;
+        self.request("initialize", initialize_params())?;
         self.notify("initialized", json!({}))
     }
 
@@ -260,7 +274,7 @@ impl CodexAppServer {
         let result = if let Some(thread_id) = request.resume_thread_id.as_deref() {
             connection.request(
                 "thread/resume",
-                json!({"threadId": thread_id, "cwd": request.cwd}),
+                metadata_only_resume_params(thread_id, &request.cwd),
             )?
         } else {
             connection.request(
@@ -339,7 +353,7 @@ impl CodexAppServer {
             let recovered = (|| {
                 let result = connection.request(
                     "thread/resume",
-                    json!({"threadId": thread.session.thread_id, "cwd": thread.cwd}),
+                    metadata_only_resume_params(&thread.session.thread_id, &thread.cwd),
                 )?;
                 let restored = result
                     .get("thread")
@@ -855,6 +869,19 @@ mod test {
     }
 
     #[test]
+    fn opts_into_metadata_only_thread_resume() {
+        assert_eq!(initialize_params()["capabilities"]["experimentalApi"], true);
+        assert_eq!(
+            metadata_only_resume_params("thread-id", "/code/project"),
+            json!({
+                "threadId": "thread-id",
+                "cwd": "/code/project",
+                "excludeTurns": true
+            })
+        );
+    }
+
+    #[test]
     fn validates_only_deliberately_supported_tui_options() {
         validate_tui_args(&[
             "--model".into(),
@@ -1053,6 +1080,28 @@ mod test {
         ]);
         assert_eq!(argv.first().map(String::as_str), Some("powershell.exe"));
         assert!(argv.iter().any(|arg| arg == "-EncodedCommand"));
+    }
+
+    #[test]
+    #[ignore = "requires the installed Codex app-server"]
+    fn real_installed_codex_resumes_existing_thread_without_history() {
+        let thread_id = std::env::var("WAKTERM_TEST_CODEX_THREAD_ID")
+            .expect("WAKTERM_TEST_CODEX_THREAD_ID must name an existing thread");
+        let cwd = std::env::var("WAKTERM_TEST_CODEX_CWD")
+            .expect("WAKTERM_TEST_CODEX_CWD must name the thread working directory");
+        let server = CodexAppServer::new(usize::MAX - 1);
+
+        let resumed = server
+            .prepare(PrepareCodexLaunch {
+                name: "wakterm-real-resume-smoke".to_string(),
+                cwd,
+                resume_thread_id: Some(thread_id.clone()),
+                tui_args: vec![],
+            })
+            .unwrap();
+
+        assert_eq!(resumed.session.thread_id, thread_id);
+        assert!(!resumed.session.session_id.is_empty());
     }
 
     #[test]
