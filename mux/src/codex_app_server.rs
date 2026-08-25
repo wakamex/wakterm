@@ -330,13 +330,6 @@ impl CodexAppServer {
         );
         state.recovered_once = true;
         ensure_running(&mut state)?;
-        for thread in threads {
-            anyhow::ensure!(
-                state.executable.as_deref() == Some(thread.session.executable.as_str())
-                    && state.version.as_deref() == Some(thread.session.version.as_str()),
-                "installed Codex executable or version differs from persisted recovery metadata"
-            );
-        }
         let connection = state
             .connection
             .as_ref()

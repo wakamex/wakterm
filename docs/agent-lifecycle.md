@@ -49,12 +49,19 @@ creates a separate tab instead. Invocations outside Wakterm must use
 `--new-tab`, because there is no current Wakterm PTY to own the TUI.
 
 This transport intentionally keeps the native provider UI. It does not render
-a Wakterm agent UI, does not adopt an existing PTY into the app-server, and
-does not change the observed-PTY path for manually launched Codex processes.
+a Wakterm agent UI or attach a live existing PTY to the app-server. Manually
+launched Codex processes remain on the observed-PTY path while they are live.
 The shared process has one executable, version, `CODEX_HOME`, authentication
 identity, environment policy, feature set, and remote Code Mode host. Launches
 that need a different process-wide configuration must use a different mux or
 the observed-PTY path.
+
+Automatic restoration is a new-process boundary. Wakterm optimistically
+resumes every restorable Codex thread through the current shared app-server,
+even when the previous process was adopted from an observed PTY or used an
+older Codex version. The returned thread identity must exactly match the saved
+thread. If managed resume fails, Wakterm uses the exact native resume recipe;
+neither path may create a replacement session.
 
 ## Detection and confirmed adoption
 
@@ -178,10 +185,12 @@ launch only when the native TUI and mux supervisor can attach concurrently to
 the same session. Otherwise retain the observed and restorable PTY path and be
 honest about its weaker lifecycle evidence.
 
-Do not automatically promote a detected or adopted PTY into a supervised
-transport. If attachment is added later, it must be explicit, limited to a
-verified session, and declare success only after the structured connection and
-native TUI confirm the same provider identity.
+Do not automatically promote a live detected or adopted PTY into a supervised
+transport. Automatic restoration may select a supervised transport because it
+starts a new process, but it must resume the verified session and declare
+success only after the structured connection and native TUI confirm the same
+provider identity. Any future attachment to a live process must remain
+explicit.
 
 ## Supervised backend protocol policy
 

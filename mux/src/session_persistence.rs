@@ -7,6 +7,7 @@
 //! terminal content. Processes must be relaunched.
 
 use crate::agent::{codex_resume_command, AgentMetadata};
+use crate::codex_app_server::{PrepareCodexLaunch, PreparedCodexLaunch};
 use crate::pane::PaneId;
 use crate::tab::PaneNode;
 use crate::Mux;
@@ -48,6 +49,11 @@ pub struct SavedAgentRestoreIntent {
     pub session_id: String,
     #[serde(default)]
     pub attention_seen_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+struct PreparedAgentRestore {
+    command: CommandBuilder,
+    intent: SavedAgentRestoreIntent,
 }
 
 /// Saved state for the entire mux session.
@@ -469,9 +475,13 @@ async fn restore_tab(
 ) -> anyhow::Result<crate::tab::TabId> {
     let first_entry = first_leaf_entry(&saved_tab.tree);
     let first_cwd = first_entry.and_then(|entry| restore_cwd_for_entry(entry, restore_intents));
-    let first_command = match first_entry {
-        Some(entry) => restore_command_for_entry(entry, restore_intents)?,
+    let first_restore = match first_entry {
+        Some(entry) => prepare_restore_for_entry(entry, restore_intents)?,
         None => None,
+    };
+    let (first_command, first_intent) = match first_restore {
+        Some(prepared) => (Some(prepared.command), Some(prepared.intent)),
+        None => (None, None),
     };
 
     // Use a generous size for spawning so split percentages produce
@@ -496,16 +506,14 @@ async fn restore_tab(
         .await
         .context("spawning first pane for tab")?;
 
-    if let Some(entry) = first_entry {
-        if let Some(intent) = restore_intents.get(&entry.pane_id) {
-            let pane_id = tab
-                .iter_panes_ignoring_zoom()
-                .first()
-                .map(|positioned| positioned.pane.pane_id())
-                .context("restored tab has no first pane")?;
-            restore_agent_intent(pane_id, intent)
-                .context("registering Codex restore intent for first pane")?;
-        }
+    if let Some(intent) = first_intent.as_ref() {
+        let pane_id = tab
+            .iter_panes_ignoring_zoom()
+            .first()
+            .map(|positioned| positioned.pane.pane_id())
+            .context("restored tab has no first pane")?;
+        restore_agent_intent(pane_id, intent)
+            .context("registering Codex restore intent for first pane")?;
     }
 
     tab.set_title(&Mux::sanitize_tab_title_text(&saved_tab.title));
@@ -567,9 +575,13 @@ fn restore_node<'a>(
                 let right_entry = first_leaf_entry(right);
                 let cwd =
                     right_entry.and_then(|entry| restore_cwd_for_entry(entry, restore_intents));
-                let right_command = match right_entry {
-                    Some(entry) => restore_command_for_entry(entry, restore_intents)?,
+                let right_restore = match right_entry {
+                    Some(entry) => prepare_restore_for_entry(entry, restore_intents)?,
                     None => None,
+                };
+                let (right_command, right_intent) = match right_restore {
+                    Some(prepared) => (Some(prepared.command), Some(prepared.intent)),
+                    None => (None, None),
                 };
                 let pane = domain
                     .spawn_pane(split_data.second, right_command, cwd)
@@ -578,11 +590,9 @@ fn restore_node<'a>(
 
                 Mux::get().add_pane(&pane)?;
 
-                if let Some(entry) = right_entry {
-                    if let Some(intent) = restore_intents.get(&entry.pane_id) {
-                        restore_agent_intent(pane.pane_id(), intent)
-                            .context("registering Codex restore intent for split pane")?;
-                    }
+                if let Some(intent) = right_intent.as_ref() {
+                    restore_agent_intent(pane.pane_id(), intent)
+                        .context("registering Codex restore intent for split pane")?;
                 }
 
                 // Use percentage-based splits so the proportions adapt
@@ -689,53 +699,105 @@ fn restore_agent_intent(pane_id: PaneId, intent: &SavedAgentRestoreIntent) -> an
     result
 }
 
-fn restore_command_for_entry(
+fn prepare_restore_for_entry(
     entry: &crate::tab::PaneEntry,
     restore_intents: &HashMap<PaneId, SavedAgentRestoreIntent>,
-) -> anyhow::Result<Option<CommandBuilder>> {
+) -> anyhow::Result<Option<PreparedAgentRestore>> {
     let Some(intent) = restore_intents.get(&entry.pane_id) else {
         return Ok(None);
     };
-    if let Some(session) = intent.metadata.codex_app_server.as_ref() {
-        anyhow::ensure!(
-            session.session_id == intent.session_id,
-            "persisted Codex session identity mismatch for pane {}",
-            entry.pane_id
-        );
-        let prepared = Mux::get().prepare_codex_app_server_launch(
-            crate::codex_app_server::PrepareCodexLaunch {
-                name: intent.metadata.name.clone(),
-                cwd: intent.metadata.declared_cwd.clone(),
-                resume_thread_id: Some(session.thread_id.clone()),
-                tui_args: session.tui_args.clone(),
-            },
-        )?;
-        anyhow::ensure!(
-            prepared.session.thread_id == session.thread_id
-                && prepared.session.session_id == session.session_id
-                && prepared.session.executable == session.executable
-                && prepared.session.version == session.version,
-            "Codex restored a different identity for pane {}",
-            entry.pane_id
-        );
-        return Ok(Some(CommandBuilder::from_argv(
-            prepared.argv.into_iter().map(Into::into).collect(),
-        )));
+    Ok(Some(prepare_agent_restore(intent, |request| {
+        Mux::get().prepare_codex_app_server_launch(request)
+    })?))
+}
+
+fn prepare_agent_restore(
+    intent: &SavedAgentRestoreIntent,
+    prepare_managed: impl FnOnce(PrepareCodexLaunch) -> anyhow::Result<PreparedCodexLaunch>,
+) -> anyhow::Result<PreparedAgentRestore> {
+    let persisted_managed = intent.metadata.codex_app_server.as_ref();
+    let resume_thread_id = persisted_managed
+        .map(|session| session.thread_id.as_str())
+        .unwrap_or(intent.session_id.as_str());
+    let tui_args = persisted_managed
+        .map(|session| session.tui_args.clone())
+        .map(Ok)
+        .unwrap_or_else(|| {
+            let mut argv = shell_words::split(&intent.metadata.launch_cmd)
+                .context("parsing adopted Codex launch command")?;
+            anyhow::ensure!(!argv.is_empty(), "Codex launch command must not be empty");
+            argv.remove(0);
+            Ok::<_, anyhow::Error>(argv)
+        })?;
+    let request = PrepareCodexLaunch {
+        name: intent.metadata.name.clone(),
+        cwd: intent.metadata.declared_cwd.clone(),
+        resume_thread_id: Some(resume_thread_id.to_string()),
+        tui_args,
+    };
+
+    match prepare_managed(request) {
+        Ok(prepared) => {
+            anyhow::ensure!(
+                prepared.session.thread_id == resume_thread_id,
+                "Codex restored thread {}, expected {}",
+                prepared.session.thread_id,
+                resume_thread_id
+            );
+            if let Some(previous) = persisted_managed {
+                anyhow::ensure!(
+                    prepared.session.session_id == previous.session_id,
+                    "Codex restored session {}, expected {}",
+                    prepared.session.session_id,
+                    previous.session_id
+                );
+            }
+            let mut restored = intent.clone();
+            restored.metadata.launch_cmd = prepared.session.executable.clone();
+            restored.metadata.adopted_pid = None;
+            restored.metadata.adopted_start_time = None;
+            restored.session_id = prepared.session.session_id.clone();
+            restored.metadata.codex_app_server = Some(prepared.session);
+            Ok(PreparedAgentRestore {
+                command: CommandBuilder::from_argv(
+                    prepared.argv.into_iter().map(Into::into).collect(),
+                ),
+                intent: restored,
+            })
+        }
+        Err(managed_error) => {
+            log::warn!(
+                "Could not restore Codex thread {} through the shared app-server; using exact native resume: {:#}",
+                resume_thread_id,
+                managed_error
+            );
+            let mut restored = intent.clone();
+            restored.metadata.codex_app_server = None;
+            restored.session_id = resume_thread_id.to_string();
+            let mut command = codex_resume_command(&restored.metadata.launch_cmd, resume_thread_id)
+                .with_context(|| {
+                    format!(
+                        "building Codex native fallback for restored thread {}",
+                        resume_thread_id
+                    )
+                })?;
+            if let Some(session) = persisted_managed {
+                command
+                    .get_argv_mut()
+                    .extend(session.tui_args.iter().cloned().map(Into::into));
+            }
+            Ok(PreparedAgentRestore {
+                command,
+                intent: restored,
+            })
+        }
     }
-    codex_resume_command(&intent.metadata.launch_cmd, &intent.session_id)
-        .map(Some)
-        .with_context(|| {
-            format!(
-                "building Codex resume command for restored pane {}",
-                entry.pane_id
-            )
-        })
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::agent::AgentMetadata;
+    use crate::agent::{AgentMetadata, CodexAppServerSession};
     use crate::client::{ClientId, ClientViewId};
     use crate::domain::{Domain, DomainState};
     use crate::pane::{alloc_pane_id, CachePolicy, LogicalLine, Pane};
@@ -1210,6 +1272,142 @@ mod test {
             session.agent_restore_intents[0].session_id,
             "pending-session"
         );
+    }
+
+    #[test]
+    fn adopted_codex_restore_optimistically_promotes_to_current_app_server() {
+        let thread_id = "00000000-0000-4000-8000-000000000001";
+        let mut metadata = sample_agent_metadata("adopted");
+        metadata.launch_cmd = "codex -a never -s danger-full-access".to_string();
+        metadata.adopted_pid = Some(42);
+        metadata.adopted_start_time = Some(99);
+        let intent = SavedAgentRestoreIntent {
+            pane_id: 7,
+            metadata,
+            session_id: thread_id.to_string(),
+            attention_seen_at: None,
+        };
+
+        let restored = prepare_agent_restore(&intent, |request| {
+            assert_eq!(request.resume_thread_id.as_deref(), Some(thread_id));
+            assert_eq!(
+                request.tui_args,
+                vec!["-a", "never", "-s", "danger-full-access"]
+            );
+            Ok(PreparedCodexLaunch {
+                argv: vec!["latest-codex".into(), "resume".into(), thread_id.into()],
+                session: CodexAppServerSession {
+                    thread_id: thread_id.to_string(),
+                    session_id: "current-session".to_string(),
+                    executable: "latest-codex".to_string(),
+                    version: "codex-cli latest".to_string(),
+                    tui_args: vec![
+                        "-a".to_string(),
+                        "never".to_string(),
+                        "-s".to_string(),
+                        "danger-full-access".to_string(),
+                    ],
+                },
+            })
+        })
+        .unwrap();
+
+        assert_eq!(
+            restored
+                .command
+                .get_argv()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["latest-codex", "resume", thread_id]
+        );
+        assert_eq!(restored.intent.metadata.launch_cmd, "latest-codex");
+        assert_eq!(restored.intent.metadata.adopted_pid, None);
+        assert_eq!(restored.intent.metadata.adopted_start_time, None);
+        assert_eq!(
+            restored
+                .intent
+                .metadata
+                .codex_app_server
+                .as_ref()
+                .map(|session| session.version.as_str()),
+            Some("codex-cli latest")
+        );
+    }
+
+    #[test]
+    fn managed_codex_restore_accepts_latest_version_and_preserves_identity() {
+        let thread_id = "00000000-0000-4000-8000-000000000002";
+        let mut metadata = sample_agent_metadata("managed");
+        metadata.codex_app_server = Some(CodexAppServerSession {
+            thread_id: thread_id.to_string(),
+            session_id: "provider-session".to_string(),
+            executable: "old-codex".to_string(),
+            version: "codex-cli old".to_string(),
+            tui_args: vec!["--no-alt-screen".to_string()],
+        });
+        let intent = SavedAgentRestoreIntent {
+            pane_id: 8,
+            metadata,
+            session_id: "provider-session".to_string(),
+            attention_seen_at: None,
+        };
+
+        let restored = prepare_agent_restore(&intent, |request| {
+            assert_eq!(request.resume_thread_id.as_deref(), Some(thread_id));
+            assert_eq!(request.tui_args, vec!["--no-alt-screen"]);
+            Ok(PreparedCodexLaunch {
+                argv: vec!["latest-codex".into(), "resume".into(), thread_id.into()],
+                session: CodexAppServerSession {
+                    thread_id: thread_id.to_string(),
+                    session_id: "provider-session".to_string(),
+                    executable: "latest-codex".to_string(),
+                    version: "codex-cli latest".to_string(),
+                    tui_args: vec!["--no-alt-screen".to_string()],
+                },
+            })
+        })
+        .unwrap();
+
+        let session = restored.intent.metadata.codex_app_server.unwrap();
+        assert_eq!(session.thread_id, thread_id);
+        assert_eq!(session.session_id, "provider-session");
+        assert_eq!(session.executable, "latest-codex");
+        assert_eq!(session.version, "codex-cli latest");
+    }
+
+    #[test]
+    fn failed_managed_restore_falls_back_to_exact_native_thread() {
+        let thread_id = "00000000-0000-4000-8000-000000000003";
+        let mut metadata = sample_agent_metadata("fallback");
+        metadata.codex_app_server = Some(CodexAppServerSession {
+            thread_id: thread_id.to_string(),
+            session_id: "provider-session".to_string(),
+            executable: "old-codex".to_string(),
+            version: "codex-cli old".to_string(),
+            tui_args: vec!["--no-alt-screen".to_string()],
+        });
+        let intent = SavedAgentRestoreIntent {
+            pane_id: 9,
+            metadata,
+            session_id: "provider-session".to_string(),
+            attention_seen_at: None,
+        };
+
+        let restored =
+            prepare_agent_restore(&intent, |_| anyhow::bail!("thread unavailable")).unwrap();
+
+        assert_eq!(
+            restored
+                .command
+                .get_argv()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["codex", "resume", thread_id, "--no-alt-screen"]
+        );
+        assert_eq!(restored.intent.session_id, thread_id);
+        assert!(restored.intent.metadata.codex_app_server.is_none());
     }
 
     #[test]
