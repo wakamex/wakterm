@@ -625,6 +625,18 @@ fn read_page_from_connection(
     after_sequence: u64,
     limit: usize,
 ) -> anyhow::Result<AgentEventPage> {
+    let tx = conn.unchecked_transaction()?;
+    let page = read_page_from_snapshot(&tx, latest_sequence_cache, after_sequence, limit)?;
+    tx.commit()?;
+    Ok(page)
+}
+
+fn read_page_from_snapshot(
+    conn: &Connection,
+    latest_sequence_cache: &AtomicU64,
+    after_sequence: u64,
+    limit: usize,
+) -> anyhow::Result<AgentEventPage> {
     let latest = latest_sequence(conn)?;
     let pruned_through = meta_value(conn, "pruned_through_sequence")?.unwrap_or(0);
     let oldest = conn
@@ -2071,6 +2083,41 @@ mod tests {
         assert_eq!(second.events.len(), 1);
         assert_eq!(second.events[0].lifecycle.as_deref(), Some("unavailable"));
         assert_eq!(second.events[0].reason.as_deref(), Some("test_unavailable"));
+    }
+
+    #[test]
+    fn event_page_uses_one_snapshot_across_concurrent_retention() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("events.sqlite3");
+        let store = AgentEventStore::with_retention_limit(path.clone(), 1);
+        store.start_runtime_epoch().unwrap();
+        let metadata = metadata("unknown");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Unknown,
+            "/tmp/unused-session".to_string(),
+        );
+        let mut writer = store.writer().unwrap();
+        writer.observe_agent(&metadata, &runtime).unwrap();
+
+        let reader = connect_reader(&path).unwrap();
+        let tx = reader.unchecked_transaction().unwrap();
+        let snapshot_latest = latest_sequence(&tx).unwrap();
+        writer
+            .record_unavailable(&metadata, Utc::now(), "test_unavailable")
+            .unwrap();
+
+        let cached_latest = AtomicU64::new(0);
+        let page = read_page_from_snapshot(&tx, &cached_latest, 0, 100).unwrap();
+        assert_eq!(page.status, AgentEventStatus::Ok);
+        assert_eq!(page.latest_sequence, snapshot_latest);
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].sequence, snapshot_latest);
+        tx.commit().unwrap();
+
+        let current = store.read_page(0, 100).unwrap();
+        assert_eq!(current.status, AgentEventStatus::CursorTooOld);
+        assert!(current.latest_sequence > snapshot_latest);
     }
 
     #[test]
