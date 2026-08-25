@@ -833,7 +833,17 @@ pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
             _ => {}
         }
         finalize_runtime_snapshot(runtime);
+        let runtime = runtime.clone();
         drop(runtimes);
+        if matches!(method, "turn/started" | "item/completed" | "turn/completed") {
+            if let Some(metadata) = mux.agent_metadata_by_pane.read().get(&pane_id).cloned() {
+                mux.persist_codex_app_server_notification(
+                    (*metadata).clone(),
+                    runtime,
+                    message.clone(),
+                );
+            }
+        }
         if let Some((_, _, tab_id)) = mux.resolve_pane_id(pane_id) {
             mux.notify_tab_title_changed(tab_id);
         }
@@ -1056,6 +1066,127 @@ mod test {
         assert_eq!(runtimes[&2].status, AgentStatus::Busy);
         assert_eq!(runtimes[&2].turn_state, AgentTurnState::WaitingOnAgent);
         assert_eq!(runtimes[&2].attention_reason, None);
+    }
+
+    #[test]
+    fn restored_app_server_notifications_produce_durable_agent_events() {
+        let mux = Mux::new(None);
+        mux.start_agent_event_runtime_epoch().unwrap();
+        let mut metadata = metadata("restored", "thread-restored");
+        metadata.adopted_pid = Some(42);
+        metadata.adopted_start_time = Some(84);
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = crate::agent::AgentHarness::Codex;
+        runtime.alive = true;
+        runtime.session_path = None;
+        mux.agent_metadata_by_pane
+            .write()
+            .insert(7, Arc::new(metadata));
+        mux.agent_runtime_by_pane.write().insert(7, runtime);
+
+        apply_notification_to_runtime(
+            &mux,
+            &json!({
+                "method": "turn/started",
+                "params": {
+                    "threadId": "thread-restored",
+                    "turn": {"id": "turn-restored", "startedAt": 1_777_000_000}
+                }
+            }),
+        );
+        apply_notification_to_runtime(
+            &mux,
+            &json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "thread-restored",
+                    "turnId": "turn-restored",
+                    "completedAtMs": 1_777_000_001_000_i64,
+                    "item": {
+                        "id": "message-restored",
+                        "type": "agentMessage",
+                        "text": "restored answer"
+                    }
+                }
+            }),
+        );
+        apply_notification_to_runtime(
+            &mux,
+            &json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-restored",
+                    "turn": {
+                        "id": "turn-restored",
+                        "status": "completed",
+                        "completedAt": 1_777_000_002,
+                        "items": [{
+                            "id": "message-restored",
+                            "type": "agentMessage",
+                            "text": "restored answer"
+                        }]
+                    }
+                }
+            }),
+        );
+
+        let page = (0..100)
+            .find_map(|_| {
+                let page = mux.agent_event_store.read_page(0, 100).unwrap();
+                if page
+                    .events
+                    .iter()
+                    .any(|event| event.kind == crate::agent_event::AgentEventKind::TurnFinal)
+                {
+                    Some(page)
+                } else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    None
+                }
+            })
+            .expect("app-server final was not persisted");
+        let message = page
+            .events
+            .iter()
+            .find(|event| event.kind == crate::agent_event::AgentEventKind::AssistantMessage)
+            .expect("assistant message event");
+        assert_eq!(message.turn_id.as_deref(), Some("turn-restored"));
+        assert_eq!(message.text.as_deref(), Some("restored answer"));
+        let final_event = page
+            .events
+            .iter()
+            .find(|event| event.kind == crate::agent_event::AgentEventKind::TurnFinal)
+            .expect("turn final event");
+        assert_eq!(final_event.turn_id.as_deref(), Some("turn-restored"));
+        assert_eq!(final_event.outcome.as_deref(), Some("completed"));
+        assert_eq!(final_event.text.as_deref(), Some("restored answer"));
+
+        apply_notification_to_runtime(
+            &mux,
+            &json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "thread-restored",
+                    "turnId": "turn-restored",
+                    "completedAtMs": 1_777_000_001_000_i64,
+                    "item": {
+                        "id": "message-restored",
+                        "type": "agentMessage",
+                        "text": "restored answer"
+                    }
+                }
+            }),
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        let repeated = mux.agent_event_store.read_page(0, 100).unwrap();
+        assert_eq!(
+            repeated
+                .events
+                .iter()
+                .filter(|event| event.kind == crate::agent_event::AgentEventKind::AssistantMessage)
+                .count(),
+            1
+        );
     }
 
     #[cfg(unix)]

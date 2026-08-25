@@ -53,10 +53,15 @@ gap.
 Codex, Claude, Gemini, and OpenCode projections are live. Turn IDs come from
 provider records: Codex turn IDs, Claude human-user UUIDs, Gemini user-message
 IDs, and OpenCode assistant `parentID` values. Finals require provider completion
-evidence: Codex `task_complete` or `turn_aborted`, Claude `end_turn`, a persisted
-Gemini response message, or OpenCode `finish: stop`. OpenCode `tool-calls` is
+evidence: Codex `task_complete`, `turn_aborted`, or app-server turn completion,
+Claude `end_turn`, a persisted Gemini response message, or OpenCode
+`finish: stop`. OpenCode `tool-calls` is
 intermediate and never a final. Plans are emitted separately when the provider
 records an explicit plan artifact, currently Claude `ExitPlanMode`.
+
+For Codex app-server TUI sessions, completed agent-message items and turns are
+committed from the live app-server notification stream. This includes sessions
+restored after a mux restart and does not require catalog or prompt activity.
 
 Gemini observation accepts both legacy JSON conversation snapshots and the
 current append-only JSONL format. Duplicate JSONL records update the same

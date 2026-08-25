@@ -712,6 +712,175 @@ impl AgentEventWriter {
         self.store.live.store(result.is_ok(), Ordering::Release);
         result
     }
+
+    pub(crate) fn observe_codex_app_server_notification(
+        &mut self,
+        metadata: &AgentMetadata,
+        runtime: &AgentRuntimeSnapshot,
+        message: &Value,
+    ) -> anyhow::Result<()> {
+        let result = (|| {
+            self.store
+                .observe_agent_inner(&mut self.conn, metadata, runtime)?;
+            self.store.record_codex_app_server_notification_inner(
+                &mut self.conn,
+                metadata,
+                runtime.observed_at,
+                message,
+            )
+        })();
+        self.store.live.store(result.is_ok(), Ordering::Release);
+        result
+    }
+}
+
+impl AgentEventStore {
+    fn record_codex_app_server_notification_inner(
+        &self,
+        conn: &mut Connection,
+        metadata: &AgentMetadata,
+        observed_at: DateTime<Utc>,
+        message: &Value,
+    ) -> anyhow::Result<()> {
+        let Some(incarnation) = incarnation_id(metadata) else {
+            return Ok(());
+        };
+        let Some(session) = metadata.codex_app_server.as_ref() else {
+            return Ok(());
+        };
+        let Some(method) = message.get("method").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        let params = message.get("params").unwrap_or(&Value::Null);
+        if params.get("threadId").and_then(Value::as_str) != Some(session.thread_id.as_str()) {
+            return Ok(());
+        }
+
+        let mut pending = Vec::new();
+        match method {
+            "turn/started" => {
+                let Some(turn_id) = params.pointer("/turn/id").and_then(Value::as_str) else {
+                    return Ok(());
+                };
+                let timestamp = params
+                    .pointer("/turn/startedAt")
+                    .and_then(Value::as_i64)
+                    .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+                    .unwrap_or(observed_at);
+                let key = format!("codex-app-server:{}:{turn_id}", session.thread_id);
+                let mut started = PendingEvent::new(
+                    format!("{key}:started"),
+                    AgentEventKind::TurnStarted,
+                    timestamp,
+                );
+                started.turn_id = Some(turn_id.to_string());
+                pending.push(started);
+                let mut state = PendingEvent::new(
+                    format!("{key}:started-state"),
+                    AgentEventKind::TurnStateChanged,
+                    timestamp,
+                );
+                state.turn_id = Some(turn_id.to_string());
+                state.turn_state = Some("waiting_on_agent".to_string());
+                pending.push(state);
+            }
+            "item/completed" => {
+                let Some(turn_id) = params.get("turnId").and_then(Value::as_str) else {
+                    return Ok(());
+                };
+                let item = params.get("item").unwrap_or(&Value::Null);
+                if item.get("type").and_then(Value::as_str) != Some("agentMessage") {
+                    return Ok(());
+                }
+                let Some(item_id) = item.get("id").and_then(Value::as_str) else {
+                    return Ok(());
+                };
+                let Some(text) = item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                else {
+                    return Ok(());
+                };
+                let timestamp = params
+                    .get("completedAtMs")
+                    .and_then(Value::as_i64)
+                    .and_then(DateTime::from_timestamp_millis)
+                    .unwrap_or(observed_at);
+                let mut event = PendingEvent::new(
+                    format!(
+                        "codex-app-server:{}:{turn_id}:item:{item_id}:message",
+                        session.thread_id
+                    ),
+                    AgentEventKind::AssistantMessage,
+                    timestamp,
+                );
+                event.turn_id = Some(turn_id.to_string());
+                event.text = Some(text.to_string());
+                pending.push(event);
+            }
+            "turn/completed" => {
+                let Some(turn_id) = params.pointer("/turn/id").and_then(Value::as_str) else {
+                    return Ok(());
+                };
+                let status = params
+                    .pointer("/turn/status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("failed");
+                let timestamp = params
+                    .pointer("/turn/completedAt")
+                    .and_then(Value::as_i64)
+                    .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+                    .unwrap_or(observed_at);
+                let text = params
+                    .pointer("/turn/items")
+                    .and_then(Value::as_array)
+                    .and_then(|items| {
+                        items.iter().rev().find(|item| {
+                            item.get("type").and_then(Value::as_str) == Some("agentMessage")
+                        })
+                    })
+                    .and_then(|item| item.get("text"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string);
+                let key = format!("codex-app-server:{}:{turn_id}", session.thread_id);
+                let mut final_event =
+                    PendingEvent::new(format!("{key}:final"), AgentEventKind::TurnFinal, timestamp);
+                final_event.turn_id = Some(turn_id.to_string());
+                final_event.outcome = Some(
+                    if status == "completed" {
+                        "completed"
+                    } else {
+                        "aborted"
+                    }
+                    .to_string(),
+                );
+                final_event.text = text;
+                pending.push(final_event);
+                let mut state = PendingEvent::new(
+                    format!("{key}:completed-state"),
+                    AgentEventKind::TurnStateChanged,
+                    timestamp,
+                );
+                state.turn_id = Some(turn_id.to_string());
+                state.turn_state = Some("waiting_on_user".to_string());
+                pending.push(state);
+            }
+            _ => return Ok(()),
+        }
+
+        let tx = conn.transaction()?;
+        for event in pending {
+            insert_event(&tx, &metadata.agent_id, &incarnation, event)?;
+        }
+        apply_retention(&tx, self.retention_limit)?;
+        tx.commit()?;
+        self.publish_latest_sequence(latest_sequence(conn)?);
+        Ok(())
+    }
 }
 
 fn latest_sequence(conn: &Connection) -> anyhow::Result<u64> {

@@ -629,6 +629,11 @@ struct AgentObserverRequest {
 
 enum AgentObserverCommand {
     Refresh(AgentObserverRequest),
+    CodexAppServerNotification {
+        metadata: AgentMetadata,
+        runtime: AgentRuntimeSnapshot,
+        message: serde_json::Value,
+    },
     Unavailable {
         metadata: AgentMetadata,
         observed_at: DateTime<Utc>,
@@ -1070,6 +1075,20 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                     }
                 }
             }
+            AgentObserverCommand::CodexAppServerNotification {
+                metadata,
+                runtime,
+                message,
+            } => {
+                if let Some(writer) = event_writer.as_mut() {
+                    if let Err(err) =
+                        writer.observe_codex_app_server_notification(&metadata, &runtime, &message)
+                    {
+                        log::error!("failed to persist Codex app-server agent events: {err:#}");
+                        writer_failed = true;
+                    }
+                }
+            }
         }
         if writer_failed {
             event_writer = None;
@@ -1238,6 +1257,24 @@ impl Mux {
 
     pub(crate) fn apply_codex_app_server_notification(&self, message: &serde_json::Value) {
         codex_app_server::apply_notification_to_runtime(self, message);
+    }
+
+    pub(crate) fn persist_codex_app_server_notification(
+        &self,
+        metadata: AgentMetadata,
+        runtime: AgentRuntimeSnapshot,
+        message: serde_json::Value,
+    ) {
+        if let Err(err) =
+            self.agent_observer_tx
+                .send(AgentObserverCommand::CodexAppServerNotification {
+                    metadata,
+                    runtime,
+                    message,
+                })
+        {
+            log::error!("failed to queue Codex app-server agent events: {err}");
+        }
     }
 
     pub(crate) fn codex_app_server_disconnected(&self) {
