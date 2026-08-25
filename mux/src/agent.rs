@@ -45,8 +45,9 @@ pub struct CodexAppServerSession {
     pub tui_args: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AgentHarness {
+    #[default]
     Unknown,
     Agy,
     Claude,
@@ -197,6 +198,12 @@ pub struct AgentSnapshot {
 pub struct AgentProcessMatch {
     pub harness: AgentHarness,
     pub launch_cmd: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ExpectedAgentSession {
+    pub harness: AgentHarness,
+    pub session_id: String,
 }
 
 pub fn prime_runtime_for_new_agent(
@@ -361,6 +368,202 @@ pub fn detect_harness_process(
         harness,
         launch_cmd: launch_cmd.to_string(),
     })
+}
+
+fn is_harness_tui_program(harness: &AgentHarness, value: &str) -> bool {
+    Path::new(value)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            let name = name.to_ascii_lowercase();
+            match harness {
+                AgentHarness::Claude => matches!(
+                    name.as_str(),
+                    "claude" | "claude.exe" | "claude.cmd" | "claude.bat" | "claude.js"
+                ),
+                AgentHarness::Codex => matches!(
+                    name.as_str(),
+                    "codex" | "codex.exe" | "codex.cmd" | "codex.bat" | "codex.js"
+                ),
+                _ => false,
+            }
+        })
+        .unwrap_or(false)
+}
+
+fn harness_tui_process<'a>(
+    harness: &AgentHarness,
+    process: &'a LocalProcessInfo,
+) -> Option<&'a LocalProcessInfo> {
+    if is_harness_tui_program(harness, &process.name)
+        || is_harness_tui_program(harness, process.executable.to_string_lossy().as_ref())
+        || process
+            .argv
+            .iter()
+            .take(2)
+            .any(|arg| is_harness_tui_program(harness, arg))
+    {
+        return Some(process);
+    }
+    process
+        .children
+        .values()
+        .find_map(|child| harness_tui_process(harness, child))
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ClaudeOptionValues {
+    None,
+    One,
+    Many,
+    Optional,
+}
+
+fn claude_option_values(option: &str) -> ClaudeOptionValues {
+    match option {
+        "--add-dir" | "--allowedTools" | "--allowed-tools" | "--betas" | "--disallowedTools"
+        | "--disallowed-tools" | "--file" | "--mcp-config" | "--plugin-dir" | "--tools" => {
+            ClaudeOptionValues::Many
+        }
+        "--agent"
+        | "--agents"
+        | "--append-system-prompt"
+        | "--autocompact"
+        | "--debug-file"
+        | "--effort"
+        | "--environment"
+        | "--fallback-model"
+        | "--input-format"
+        | "--json-schema"
+        | "--max-budget-usd"
+        | "--model"
+        | "-n"
+        | "--name"
+        | "--output-format"
+        | "--permission-mode"
+        | "--remote-control-name"
+        | "--setting-sources"
+        | "--settings"
+        | "--system-prompt" => ClaudeOptionValues::One,
+        "-d" | "--debug" | "--from-pr" | "-w" | "--worktree" => ClaudeOptionValues::Optional,
+        _ => ClaudeOptionValues::None,
+    }
+}
+
+fn normalize_claude_argv(argv: &mut Vec<String>) {
+    let original = std::mem::take(argv);
+    let Some(program) = original.first() else {
+        return;
+    };
+    argv.push(program.clone());
+    let mut index = 1;
+    if original
+        .get(index)
+        .is_some_and(|value| is_harness_tui_program(&AgentHarness::Claude, value))
+    {
+        argv.push(original[index].clone());
+        index += 1;
+    }
+    while index < original.len() {
+        let argument = &original[index];
+        if matches!(argument.as_str(), "-c" | "--continue" | "--fork-session") {
+            index += 1;
+            continue;
+        }
+        if matches!(
+            argument.as_str(),
+            "-r" | "--resume" | "--session-id" | "--teleport"
+        ) {
+            index += 1;
+            if original
+                .get(index)
+                .is_some_and(|value| !value.starts_with('-'))
+            {
+                index += 1;
+            }
+            continue;
+        }
+        if argument.starts_with("--resume=")
+            || argument.starts_with("--session-id=")
+            || argument.starts_with("--teleport=")
+        {
+            index += 1;
+            continue;
+        }
+        if !argument.starts_with('-') {
+            // A bare Claude argument is an initial prompt or command. Replaying
+            // it after an exact resume could start an unintended turn.
+            index += 1;
+            continue;
+        }
+
+        argv.push(argument.clone());
+        let values = claude_option_values(argument.split_once('=').map_or(argument, |pair| pair.0));
+        if argument.contains('=') || values == ClaudeOptionValues::None {
+            index += 1;
+            continue;
+        }
+        index += 1;
+        match values {
+            ClaudeOptionValues::One => {
+                if let Some(value) = original.get(index) {
+                    argv.push(value.clone());
+                    index += 1;
+                }
+            }
+            ClaudeOptionValues::Many => {
+                while let Some(value) = original.get(index).filter(|value| !value.starts_with('-'))
+                {
+                    argv.push(value.clone());
+                    index += 1;
+                }
+            }
+            ClaudeOptionValues::Optional => {
+                if let Some(value) = original.get(index).filter(|value| !value.starts_with('-')) {
+                    argv.push(value.clone());
+                    index += 1;
+                }
+            }
+            ClaudeOptionValues::None => {}
+        }
+    }
+}
+
+fn remove_native_resume_selector(harness: &AgentHarness, argv: &mut Vec<String>) -> bool {
+    match harness {
+        AgentHarness::Claude => normalize_claude_argv(argv),
+        AgentHarness::Codex => {
+            if let Some(resume) = argv.iter().position(|arg| arg == "resume") {
+                argv.truncate(resume);
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
+pub fn native_restore_launch_command(
+    harness: &AgentHarness,
+    process: &LocalProcessInfo,
+) -> Option<String> {
+    let process = harness_tui_process(harness, process)?;
+    let mut argv = if process.argv.is_empty() {
+        vec![process.executable.to_string_lossy().into_owned()]
+    } else {
+        process.argv.clone()
+    };
+    if !remove_native_resume_selector(harness, &mut argv) {
+        return None;
+    }
+    if argv.is_empty() {
+        return None;
+    }
+    Some(
+        argv.iter()
+            .map(|arg| shell_words::quote(arg))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 fn harness_process_is_compatible(
@@ -533,13 +736,13 @@ fn derive_attention_reason(runtime: &AgentRuntimeSnapshot) -> Option<String> {
 }
 
 pub fn refresh_runtime_from_harness(runtime: &mut AgentRuntimeSnapshot, metadata: &AgentMetadata) {
-    refresh_runtime_from_harness_with_expected_codex_session(runtime, metadata, None);
+    refresh_runtime_from_harness_with_expected_session(runtime, metadata, None);
 }
 
-pub(crate) fn refresh_runtime_from_harness_with_expected_codex_session(
+pub(crate) fn refresh_runtime_from_harness_with_expected_session(
     runtime: &mut AgentRuntimeSnapshot,
     metadata: &AgentMetadata,
-    expected_codex_session_id: Option<&str>,
+    expected_session: Option<&ExpectedAgentSession>,
 ) {
     if metadata.codex_app_server.is_some() {
         runtime.harness = AgentHarness::Codex;
@@ -606,6 +809,9 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_codex_session(
             cwd,
             runtime.session_path.as_deref(),
             runtime.observer_started_at,
+            expected_session
+                .filter(|expected| expected.harness == AgentHarness::Claude)
+                .map(|expected| expected.session_id.as_str()),
         ),
         AgentHarness::Codex => observe_codex(
             cwd,
@@ -613,7 +819,9 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_codex_session(
             runtime.observer_started_at,
             metadata.adopted_pid,
             metadata.adopted_start_time,
-            expected_codex_session_id,
+            expected_session
+                .filter(|expected| expected.harness == AgentHarness::Codex)
+                .map(|expected| expected.session_id.as_str()),
         ),
         AgentHarness::Gemini => observe_gemini(
             cwd,
@@ -1034,6 +1242,7 @@ fn observe_claude(
     cwd: &str,
     preferred_session: Option<&str>,
     updated_after: Option<DateTime<Utc>>,
+    expected_session_id: Option<&str>,
 ) -> anyhow::Result<Option<HarnessObservation>> {
     let Some(root) = claude_sessions_root() else {
         return Ok(None);
@@ -1041,6 +1250,27 @@ fn observe_claude(
     let project_dir = root.join(cwd.replace('/', "-"));
     if !project_dir.is_dir() {
         return Ok(None);
+    }
+
+    if let Some(expected_session_id) = expected_session_id {
+        let expected_path = project_dir.join(format!("{expected_session_id}.jsonl"));
+        if !expected_path.is_file()
+            || claude_session_id(&expected_path)?.as_deref() != Some(expected_session_id)
+        {
+            return Ok(None);
+        }
+        let modified_at = DateTime::<Utc>::from(fs::metadata(&expected_path)?.modified()?);
+        let details = read_last_claude_observation(&expected_path)?;
+        return Ok(Some(HarnessObservation {
+            session_path: Some(expected_path.to_string_lossy().to_string()),
+            progress_summary: details.progress_summary,
+            harness_mode: details.harness_mode,
+            turn_phase: details.turn_phase,
+            updated_at: details.updated_at.or(Some(modified_at)),
+            turn_state: details.turn_state,
+            last_turn_completed_at: details.last_turn_completed_at,
+            observed_turn: details.observed_turn,
+        }));
     }
 
     if let Some(preferred_session) = preferred_session {
@@ -1562,22 +1792,47 @@ fn opencode_db_path() -> Option<PathBuf> {
         })
 }
 
-pub fn codex_resume_command(launch_cmd: &str, session_id: &str) -> anyhow::Result<CommandBuilder> {
+pub fn native_resume_command(
+    harness: &AgentHarness,
+    launch_cmd: &str,
+    session_id: &str,
+) -> anyhow::Result<CommandBuilder> {
     anyhow::ensure!(
         !session_id.trim().is_empty(),
-        "Codex session ID must not be empty"
+        "agent session ID must not be empty"
     );
-    let mut argv = shell_words::split(launch_cmd).context("parsing Codex launch command")?;
-    anyhow::ensure!(!argv.is_empty(), "Codex launch command must not be empty");
+    if harness == &AgentHarness::Claude {
+        anyhow::ensure!(
+            is_uuid(session_id.trim()),
+            "Claude restore requires an exact session UUID"
+        );
+    }
+    let mut argv = shell_words::split(launch_cmd).context("parsing agent launch command")?;
+    anyhow::ensure!(!argv.is_empty(), "agent launch command must not be empty");
     anyhow::ensure!(
-        matches!(infer_harness(launch_cmd, None), AgentHarness::Codex),
-        "Codex restore requires a Codex launch command"
+        infer_harness(launch_cmd, None) == *harness,
+        "restore requires a launch command for {:?}",
+        harness
     );
-    argv.push("resume".to_string());
+    anyhow::ensure!(
+        remove_native_resume_selector(harness, &mut argv),
+        "automatic restore is not implemented for {:?}",
+        harness
+    );
+    argv.push(
+        match harness {
+            AgentHarness::Claude => "--resume",
+            AgentHarness::Codex => "resume",
+            _ => unreachable!(),
+        }
+        .to_string(),
+    );
     argv.push(session_id.trim().to_string());
-    Ok(CommandBuilder::from_argv(
-        argv.into_iter().map(OsString::from).collect(),
-    ))
+    let mut command = CommandBuilder::from_argv(argv.into_iter().map(OsString::from).collect());
+    if harness == &AgentHarness::Claude {
+        command.env_remove("CLAUDECODE");
+    }
+    Ok(command)
 }
 
 pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> Vec<PathBuf> {
@@ -1650,6 +1905,26 @@ fn claude_session_is_interactive(path: &Path) -> anyhow::Result<bool> {
     Ok(record.get("type").and_then(Value::as_str) != Some("queue-operation"))
 }
 
+pub fn claude_session_id(path: &Path) -> anyhow::Result<Option<String>> {
+    const MAX_SESSION_HEADER_RECORDS: usize = 64;
+    let reader = BufReader::new(fs::File::open(path)?);
+    for line in reader.lines().take(MAX_SESSION_HEADER_RECORDS) {
+        let line = line?;
+        let record: Value = serde_json::from_str(&line)
+            .with_context(|| format!("parsing Claude session header {}", path.display()))?;
+        if let Some(id) = record
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            anyhow::ensure!(is_uuid(id), "Claude session ID is not a UUID");
+            return Ok(Some(id.to_string()));
+        }
+    }
+    Ok(None)
+}
+
 fn codex_session_matches_cwd(path: &Path, cwd: &str) -> anyhow::Result<bool> {
     let Some(first_line) = BufReader::new(fs::File::open(path)?)
         .lines()
@@ -1690,6 +1965,17 @@ pub fn codex_session_id(path: &Path) -> anyhow::Result<Option<String>> {
         .filter(|id| !id.is_empty())
         .map(ToOwned::to_owned);
     Ok(id)
+}
+
+pub fn restorable_session_id(
+    harness: &AgentHarness,
+    path: &Path,
+) -> anyhow::Result<Option<String>> {
+    match harness {
+        AgentHarness::Claude => claude_session_id(path),
+        AgentHarness::Codex => codex_session_id(path),
+        _ => Ok(None),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -3296,6 +3582,116 @@ mod test {
     }
 
     #[test]
+    fn codex_restore_recipe_uses_expanded_process_argv_and_removes_resume() {
+        let process = proc_info(
+            "zsh",
+            "/usr/bin/zsh",
+            &["zsh"],
+            1,
+            vec![proc_info(
+                "codex",
+                "/usr/local/bin/codex",
+                &[
+                    "/usr/local/bin/codex",
+                    "-a",
+                    "never",
+                    "-s",
+                    "danger-full-access",
+                    "resume",
+                    "00000000-0000-4000-8000-000000000001",
+                ],
+                2,
+                vec![proc_info(
+                    "codex-code-mod",
+                    "/usr/local/bin/codex-code-mode-host",
+                    &["/usr/local/bin/codex-code-mode-host"],
+                    3,
+                    vec![],
+                )],
+            )],
+        );
+
+        assert_eq!(
+            native_restore_launch_command(&AgentHarness::Codex, &process).as_deref(),
+            Some("/usr/local/bin/codex -a never -s danger-full-access")
+        );
+    }
+
+    #[test]
+    fn codex_restore_recipe_quotes_process_arguments_without_evaluating_shell_text() {
+        let process = proc_info(
+            "codex",
+            "/usr/local/bin/codex",
+            &[
+                "/usr/local/bin/codex",
+                "--add-dir",
+                "/tmp/a; $(touch /tmp/never-run)",
+            ],
+            1,
+            vec![],
+        );
+        let command = native_restore_launch_command(&AgentHarness::Codex, &process).unwrap();
+
+        assert_eq!(
+            shell_words::split(&command).unwrap(),
+            process.argv,
+            "the normalized command must round-trip as data"
+        );
+    }
+
+    #[test]
+    fn codex_restore_recipe_rejects_auxiliary_code_mode_host() {
+        let process = proc_info(
+            "codex-code-mod",
+            "/usr/local/bin/codex-code-mode-host",
+            &["/usr/local/bin/codex-code-mode-host"],
+            1,
+            vec![],
+        );
+
+        assert_eq!(
+            native_restore_launch_command(&AgentHarness::Codex, &process),
+            None
+        );
+    }
+
+    #[test]
+    fn claude_restore_recipe_uses_expanded_process_argv_and_removes_session_selectors() {
+        let process = proc_info(
+            "zsh",
+            "/usr/bin/zsh",
+            &["zsh"],
+            1,
+            vec![proc_info(
+                "claude",
+                "/home/mihai/.local/bin/claude",
+                &[
+                    "/home/mihai/.local/bin/claude",
+                    "--dangerously-skip-permissions",
+                    "--add-dir",
+                    "/home/mihai",
+                    "--add-dir",
+                    "/code",
+                    "--add-dir",
+                    ".git",
+                    "--resume",
+                    "00000000-0000-4000-8000-000000000002",
+                    "--fork-session",
+                ],
+                2,
+                vec![],
+            )],
+        );
+
+        assert_eq!(
+            native_restore_launch_command(&AgentHarness::Claude, &process).as_deref(),
+            Some(
+                "/home/mihai/.local/bin/claude --dangerously-skip-permissions --add-dir /home/mihai --add-dir /code --add-dir .git"
+            )
+        );
+    }
+
+    #[test]
     fn treats_gemini_node_wrapper_as_compatible_foreground_process() {
         assert!(harness_process_is_compatible(
             &AgentHarness::Gemini,
@@ -3491,7 +3887,7 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_CLAUDE_DIR", temp.path());
-        let observed = observe_claude(cwd, None, None).unwrap().unwrap();
+        let observed = observe_claude(cwd, None, None, None).unwrap().unwrap();
         remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
 
         assert_eq!(observed.progress_summary.as_deref(), Some("done"));
@@ -3506,6 +3902,45 @@ mod test {
             observed.last_turn_completed_at,
             Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 2).unwrap())
         );
+    }
+
+    #[test]
+    fn restored_claude_observer_uses_the_exact_expected_session() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = "/tmp/claude-restore";
+        let project_dir = temp.path().join(cwd.replace('/', "-"));
+        fs::create_dir_all(&project_dir).unwrap();
+        let expected_id = "00000000-0000-4000-8000-000000000006";
+        let other_id = "00000000-0000-4000-8000-000000000007";
+        let expected = project_dir.join(format!("{expected_id}.jsonl"));
+        let other = project_dir.join(format!("{other_id}.jsonl"));
+        fs::write(
+            &expected,
+            format!(
+                "{{\"type\":\"assistant\",\"sessionId\":\"{expected_id}\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"expected\"}}]}}}}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &other,
+            format!(
+                "{{\"type\":\"assistant\",\"sessionId\":\"{other_id}\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"newer\"}}]}}}}\n"
+            ),
+        )
+        .unwrap();
+
+        set_env_path("WAKTERM_AGENT_CLAUDE_DIR", temp.path());
+        let observed = observe_claude(cwd, None, Some(Utc::now()), Some(expected_id))
+            .unwrap()
+            .unwrap();
+        remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
+
+        assert_eq!(
+            observed.session_path.as_deref(),
+            Some(expected.to_string_lossy().as_ref())
+        );
+        assert_eq!(observed.progress_summary.as_deref(), Some("expected"));
     }
 
     #[test]
@@ -3918,8 +4353,12 @@ mod test {
             Some("session-resume")
         );
 
-        let command =
-            codex_resume_command("codex -a never -s danger-full-access", "session-resume").unwrap();
+        let command = native_resume_command(
+            &AgentHarness::Codex,
+            "codex -a never -s danger-full-access",
+            "session-resume",
+        )
+        .unwrap();
         let argv = command
             .get_argv()
             .iter()
@@ -3935,6 +4374,46 @@ mod test {
                 "danger-full-access",
                 "resume",
                 "session-resume",
+            ]
+        );
+    }
+
+    #[test]
+    fn claude_restore_command_uses_the_persisted_session_id() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("session.jsonl");
+        fs::write(
+            &session,
+            concat!(
+                "{\"type\":\"file-history-snapshot\"}\n",
+                "{\"type\":\"user\",\"sessionId\":\"00000000-0000-4000-8000-000000000003\"}\n"
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            claude_session_id(&session).unwrap().as_deref(),
+            Some("00000000-0000-4000-8000-000000000003")
+        );
+
+        let command = native_resume_command(
+            &AgentHarness::Claude,
+            "claude --dangerously-skip-permissions 'original prompt' --resume old --fork-session",
+            "00000000-0000-4000-8000-000000000003",
+        )
+        .unwrap();
+        let argv = command
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            argv,
+            vec![
+                "claude",
+                "--dangerously-skip-permissions",
+                "--resume",
+                "00000000-0000-4000-8000-000000000003",
             ]
         );
     }

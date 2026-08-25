@@ -4,7 +4,13 @@
 
 Wakterm supports agent harnesses as terminal processes running in PTY panes. It detects supported harnesses (Agy, Claude, Codex, Gemini, OpenCode), observes provider session state, and automatically adopts confirmed sessions into its persistent agent registry.
 
-Restorable Codex sessions are restored automatically across multiplexer restart and system reboot in their declared working directory, resuming the exact confirmed provider session. If a restart interrupts an active turn, Wakterm restores the session but does not guarantee that the in-flight turn continues. Codex can also be started as a supervised app-server TUI: the multiplexer supervises one shared Codex app-server while each pane renders the native Codex TUI.
+Restorable Claude and Codex sessions are restored automatically across
+multiplexer restart and system reboot in their declared working directory,
+resuming the exact confirmed provider session. Claude resumes through its
+native TUI. Codex first resumes through the current shared app-server and uses
+an exact native fallback if that fails. If a restart interrupts an active
+turn, Wakterm restores the session but does not guarantee that the in-flight
+turn continues.
 
 Agent API v1 provides versioned capability negotiation, catalog queries, authoritative prompt admission, durable event streams, and return request tracking. Structured supervisor backends that preserve the provider native TUI remain the long-term direction. Wakterm-rendered agent presentation is not the normal product direction. This document defines the lifecycle boundaries and guarantees.
 
@@ -123,6 +129,21 @@ resume operation:
 Do not persist process IDs as recovery handles. Do not persist access tokens,
 temporary authentication material, or inherited environment secrets in layout
 or session files.
+
+Shell aliases are not durable restore recipes. Wakterm does not invoke an
+interactive shell or evaluate startup files to expand them. For a supported
+observed harness, it derives the native restore recipe from the concrete live
+process argv, removes any existing provider-owned session selector, and
+inserts the confirmed session ID during restoration. Confirmed runtime and
+provider identity determine restore eligibility; the spelling of the original
+launch command does not.
+
+Native restoration has one shared provider boundary: identify a restorable
+harness, extract its stable session ID, normalize its concrete process argv,
+construct its exact resume invocation, and confirm the session after launch.
+Claude and Codex implement that boundary. Provider-specific managed transports
+remain optional preparation paths layered on the same persisted restore
+intent.
 
 The provider session identity is authoritative for recovery. File names,
 timestamps, titles, and command lines are supporting evidence unless a

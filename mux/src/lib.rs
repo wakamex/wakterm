@@ -1,9 +1,10 @@
 use crate::agent::{
     adopted_agent_matches_process_info, agent_observer_artifact_paths, agent_observer_watch_roots,
-    codex_session_id, default_launch_cmd_for_harness, derive_runtime_status,
-    detect_harness_process, finalize_runtime_snapshot, infer_harness, prime_runtime_for_new_agent,
-    refresh_runtime_from_harness_with_expected_codex_session, AgentHarness, AgentMetadata,
-    AgentOrigin, AgentRuntimeSnapshot, AgentSnapshot, AgentTabBadgeState,
+    default_launch_cmd_for_harness, derive_runtime_status, detect_harness_process,
+    finalize_runtime_snapshot, infer_harness, native_restore_launch_command,
+    prime_runtime_for_new_agent, refresh_runtime_from_harness_with_expected_session,
+    restorable_session_id, AgentHarness, AgentMetadata, AgentOrigin, AgentRuntimeSnapshot,
+    AgentSnapshot, AgentTabBadgeState, ExpectedAgentSession,
 };
 use crate::agent_event::AgentEventStore;
 use crate::agent_request::{AgentRequest, AgentRequestState, AgentRequestStore};
@@ -193,8 +194,8 @@ pub struct Mux {
     agent_metadata_by_pane: RwLock<HashMap<PaneId, Arc<AgentMetadata>>>,
     detected_agent_panes: RwLock<HashSet<PaneId>>,
     agent_adoption_candidates: RwLock<HashMap<PaneId, AgentAdoptionCandidate>>,
-    pending_codex_restores: RwLock<HashMap<PaneId, PendingCodexRestore>>,
-    failed_codex_restores: RwLock<HashMap<PaneId, FailedCodexRestore>>,
+    pending_agent_restores: RwLock<HashMap<PaneId, PendingAgentRestore>>,
+    failed_agent_restores: RwLock<HashMap<PaneId, FailedAgentRestore>>,
     agent_artifact_watcher: Mutex<AgentArtifactWatcherState>,
     last_detected_agent_full_scan: Mutex<Option<Instant>>,
     agent_runtime_by_pane: RwLock<HashMap<PaneId, AgentRuntimeSnapshot>>,
@@ -285,19 +286,20 @@ struct AgentAdoptionCandidate {
 }
 
 #[derive(Clone)]
-struct PendingCodexRestore {
+struct PendingAgentRestore {
+    harness: AgentHarness,
     metadata: AgentMetadata,
     session_id: String,
 }
 
 #[derive(Clone, Copy)]
-struct FailedCodexRestore {
+struct FailedAgentRestore {
     foreground_pid: Option<u32>,
     process_start_time: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CodexRestoreOutcome {
+enum AgentRestoreOutcome {
     Pending,
     Completed,
     Failed,
@@ -620,7 +622,7 @@ struct AgentObserverRequest {
     requested_at: Instant,
     metadata: AgentMetadata,
     runtime: AgentRuntimeSnapshot,
-    expected_codex_session_id: Option<String>,
+    expected_session: Option<ExpectedAgentSession>,
     adopted: bool,
     schedule_trailing_refresh: bool,
 }
@@ -1022,10 +1024,10 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                 counter!("mux.agent_observer.refresh.rate").increment(1);
                 let started = Instant::now();
                 let mut runtime = request.runtime;
-                refresh_runtime_from_harness_with_expected_codex_session(
+                refresh_runtime_from_harness_with_expected_session(
                     &mut runtime,
                     &request.metadata,
-                    request.expected_codex_session_id.as_deref(),
+                    request.expected_session.as_ref(),
                 );
                 if request.adopted {
                     if let Some(writer) = event_writer.as_mut() {
@@ -1195,8 +1197,8 @@ impl Mux {
             agent_metadata_by_pane: RwLock::new(HashMap::new()),
             detected_agent_panes: RwLock::new(HashSet::new()),
             agent_adoption_candidates: RwLock::new(HashMap::new()),
-            pending_codex_restores: RwLock::new(HashMap::new()),
-            failed_codex_restores: RwLock::new(HashMap::new()),
+            pending_agent_restores: RwLock::new(HashMap::new()),
+            failed_agent_restores: RwLock::new(HashMap::new()),
             agent_artifact_watcher: Mutex::new(AgentArtifactWatcherState::new()),
             last_detected_agent_full_scan: Mutex::new(None),
             agent_runtime_by_pane: RwLock::new(HashMap::new()),
@@ -1393,9 +1395,10 @@ impl Mux {
         self.set_agent_metadata_with_initial_refresh(pane_id, metadata)
     }
 
-    pub fn register_codex_restore_intent(
+    pub fn register_agent_restore_intent(
         &self,
         pane_id: PaneId,
+        harness: AgentHarness,
         metadata: AgentMetadata,
         session_id: String,
     ) -> anyhow::Result<()> {
@@ -1405,19 +1408,23 @@ impl Mux {
             pane_id
         );
         anyhow::ensure!(
-            matches!(
-                infer_harness(&metadata.launch_cmd, None),
-                AgentHarness::Codex
-            ),
-            "Codex restore requires a Codex launch command"
+            matches!(harness, AgentHarness::Claude | AgentHarness::Codex),
+            "automatic restore is not implemented for {:?}",
+            harness
+        );
+        anyhow::ensure!(
+            infer_harness(&metadata.launch_cmd, None) == harness,
+            "restore requires a launch command for {:?}",
+            harness
         );
         anyhow::ensure!(
             !session_id.trim().is_empty(),
-            "Codex session ID must not be empty"
+            "agent session ID must not be empty"
         );
-        self.pending_codex_restores.write().insert(
+        self.pending_agent_restores.write().insert(
             pane_id,
-            PendingCodexRestore {
+            PendingAgentRestore {
+                harness,
                 metadata,
                 session_id,
             },
@@ -1426,27 +1433,42 @@ impl Mux {
         Ok(())
     }
 
-    pub(crate) fn codex_restore_intent_for_pane(
+    pub(crate) fn agent_restore_intent_for_pane(
         &self,
         pane_id: PaneId,
-    ) -> Option<(AgentMetadata, String)> {
-        if let Some(pending) = self.pending_codex_restores.read().get(&pane_id).cloned() {
-            return Some((pending.metadata, pending.session_id));
+    ) -> Option<(AgentHarness, AgentMetadata, String)> {
+        if let Some(pending) = self.pending_agent_restores.read().get(&pane_id).cloned() {
+            return Some((pending.harness, pending.metadata, pending.session_id));
         }
         let metadata = self.get_agent_metadata_for_pane(pane_id)?;
         if let Some(session) = metadata.codex_app_server.as_ref() {
-            return Some(((*metadata).clone(), session.session_id.clone()));
-        }
-        if !matches!(
-            infer_harness(&metadata.launch_cmd, None),
-            AgentHarness::Codex
-        ) {
-            return None;
+            return Some((
+                AgentHarness::Codex,
+                (*metadata).clone(),
+                session.session_id.clone(),
+            ));
         }
         let runtime = self.agent_runtime_by_pane.read().get(&pane_id).cloned()?;
+        let harness = runtime.harness;
+        if !matches!(harness, AgentHarness::Claude | AgentHarness::Codex) {
+            return None;
+        }
         let session_path = runtime.session_path.as_deref()?;
-        let session_id = codex_session_id(Path::new(session_path)).ok().flatten()?;
-        Some(((*metadata).clone(), session_id))
+        let session_id = restorable_session_id(&harness, Path::new(session_path))
+            .ok()
+            .flatten()?;
+        let mut restored_metadata = (*metadata).clone();
+        if let Some(launch_cmd) = self
+            .get_pane(pane_id)
+            .and_then(|pane| pane.get_foreground_process_info(CachePolicy::AllowStale))
+            .as_ref()
+            .and_then(|process| native_restore_launch_command(&harness, process))
+        {
+            restored_metadata.launch_cmd = launch_cmd;
+        } else if infer_harness(&restored_metadata.launch_cmd, None) != harness {
+            restored_metadata.launch_cmd = default_launch_cmd_for_harness(&harness)?.to_string();
+        }
+        Some((harness, restored_metadata, session_id))
     }
 
     pub fn set_mirrored_agent_metadata(&self, pane_id: PaneId, metadata: Option<&AgentMetadata>) {
@@ -1566,8 +1588,8 @@ impl Mux {
     ) -> anyhow::Result<()> {
         self.detected_agent_panes.write().remove(&pane_id);
         self.agent_adoption_candidates.write().remove(&pane_id);
-        self.pending_codex_restores.write().remove(&pane_id);
-        self.failed_codex_restores.write().remove(&pane_id);
+        self.pending_agent_restores.write().remove(&pane_id);
+        self.failed_agent_restores.write().remove(&pane_id);
         self.agent_artifact_watcher.lock().unwatch_pane(pane_id);
         let pane = self
             .get_pane(pane_id)
@@ -1667,11 +1689,11 @@ impl Mux {
             metadata_by_pane.remove(&pane_id)
         };
         let removed_pending = self
-            .pending_codex_restores
+            .pending_agent_restores
             .write()
             .remove(&pane_id)
             .is_some();
-        self.failed_codex_restores.write().remove(&pane_id);
+        self.failed_agent_restores.write().remove(&pane_id);
         let Some(metadata) = metadata else {
             if removed_pending {
                 crate::session_persistence::request_session_save();
@@ -1867,12 +1889,12 @@ impl Mux {
         }
     }
 
-    fn failed_codex_restore_blocks_pane(&self, pane_id: PaneId, pane: &Arc<dyn Pane>) -> bool {
-        let Some(failure) = self.failed_codex_restores.read().get(&pane_id).copied() else {
+    fn failed_agent_restore_blocks_pane(&self, pane_id: PaneId, pane: &Arc<dyn Pane>) -> bool {
+        let Some(failure) = self.failed_agent_restores.read().get(&pane_id).copied() else {
             return false;
         };
         if pane.is_dead() {
-            self.failed_codex_restores.write().remove(&pane_id);
+            self.failed_agent_restores.write().remove(&pane_id);
             return false;
         }
         let Some(process) = pane.get_foreground_process_info(CachePolicy::AllowStale) else {
@@ -1883,7 +1905,7 @@ impl Mux {
         {
             true
         } else {
-            self.failed_codex_restores.write().remove(&pane_id);
+            self.failed_agent_restores.write().remove(&pane_id);
             false
         }
     }
@@ -1916,20 +1938,20 @@ impl Mux {
         }
 
         let Some(pane) = self.get_pane(pane_id) else {
-            self.pending_codex_restores.write().remove(&pane_id);
+            self.pending_agent_restores.write().remove(&pane_id);
             self.clear_detected_agent_info(pane_id);
             return None;
         };
         if pane.is_dead() {
-            self.pending_codex_restores.write().remove(&pane_id);
+            self.pending_agent_restores.write().remove(&pane_id);
             self.clear_detected_agent_info(pane_id);
             return None;
         }
-        if self.failed_codex_restore_blocks_pane(pane_id, &pane) {
+        if self.failed_agent_restore_blocks_pane(pane_id, &pane) {
             return None;
         }
         let Some((_domain_id, window_id, tab_id)) = self.resolve_pane_id(pane_id) else {
-            self.pending_codex_restores.write().remove(&pane_id);
+            self.pending_agent_restores.write().remove(&pane_id);
             self.clear_detected_agent_info(pane_id);
             return None;
         };
@@ -2136,7 +2158,7 @@ impl Mux {
 
     fn observer_metadata_for_candidate(&self, candidate: &AgentAdoptionCandidate) -> AgentMetadata {
         if let Some(pending) = self
-            .pending_codex_restores
+            .pending_agent_restores
             .read()
             .get(&candidate.pane_id)
             .cloned()
@@ -2167,15 +2189,15 @@ impl Mux {
         );
     }
 
-    fn fail_pending_codex_restore(&self, pane_id: PaneId, candidate: &AgentAdoptionCandidate) {
+    fn fail_pending_agent_restore(&self, pane_id: PaneId, candidate: &AgentAdoptionCandidate) {
         let removed = self
-            .pending_codex_restores
+            .pending_agent_restores
             .write()
             .remove(&pane_id)
             .is_some();
-        self.failed_codex_restores.write().insert(
+        self.failed_agent_restores.write().insert(
             pane_id,
-            FailedCodexRestore {
+            FailedAgentRestore {
                 foreground_pid: candidate.foreground_pid,
                 process_start_time: candidate.process_start_time,
             },
@@ -2186,59 +2208,75 @@ impl Mux {
         }
     }
 
-    fn complete_pending_codex_restore(
+    fn complete_pending_agent_restore(
         &self,
         pane_id: PaneId,
         candidate: AgentAdoptionCandidate,
         runtime: AgentRuntimeSnapshot,
-    ) -> CodexRestoreOutcome {
-        let Some(pending) = self.pending_codex_restores.read().get(&pane_id).cloned() else {
-            return CodexRestoreOutcome::Pending;
+    ) -> AgentRestoreOutcome {
+        let Some(pending) = self.pending_agent_restores.read().get(&pane_id).cloned() else {
+            return AgentRestoreOutcome::Pending;
         };
 
         if !self.candidate_matches_current_process(&candidate) {
             log::warn!(
-                "Codex restore pane {} changed process incarnation before confirmation",
-                pane_id
+                "{:?} restore pane {} changed process incarnation before confirmation",
+                pending.harness,
+                pane_id,
             );
-            self.fail_pending_codex_restore(pane_id, &candidate);
-            return CodexRestoreOutcome::Failed;
+            self.fail_pending_agent_restore(pane_id, &candidate);
+            return AgentRestoreOutcome::Failed;
+        }
+
+        if candidate.harness != pending.harness || runtime.harness != pending.harness {
+            log::warn!(
+                "{:?} restore pane {} started {:?} instead",
+                pending.harness,
+                pane_id,
+                candidate.harness,
+            );
+            self.fail_pending_agent_restore(pane_id, &candidate);
+            return AgentRestoreOutcome::Failed;
         }
 
         let Some(session_path) = runtime.session_path.as_deref() else {
-            return CodexRestoreOutcome::Pending;
+            return AgentRestoreOutcome::Pending;
         };
-        let actual_session_id = match codex_session_id(Path::new(session_path)) {
-            Ok(Some(session_id)) => session_id,
-            Ok(None) => {
-                log::warn!(
-                    "Codex restore pane {} session {} has no provider session ID",
-                    pane_id,
-                    session_path
-                );
-                self.fail_pending_codex_restore(pane_id, &candidate);
-                return CodexRestoreOutcome::Failed;
-            }
-            Err(err) => {
-                log::warn!(
-                    "Codex restore pane {} could not read provider session {}: {err:#}",
-                    pane_id,
-                    session_path
-                );
-                self.fail_pending_codex_restore(pane_id, &candidate);
-                return CodexRestoreOutcome::Failed;
-            }
-        };
+        let actual_session_id =
+            match restorable_session_id(&pending.harness, Path::new(session_path)) {
+                Ok(Some(session_id)) => session_id,
+                Ok(None) => {
+                    log::warn!(
+                        "{:?} restore pane {} session {} has no provider session ID",
+                        pending.harness,
+                        pane_id,
+                        session_path
+                    );
+                    self.fail_pending_agent_restore(pane_id, &candidate);
+                    return AgentRestoreOutcome::Failed;
+                }
+                Err(err) => {
+                    log::warn!(
+                        "{:?} restore pane {} could not read provider session {}: {err:#}",
+                        pending.harness,
+                        pane_id,
+                        session_path
+                    );
+                    self.fail_pending_agent_restore(pane_id, &candidate);
+                    return AgentRestoreOutcome::Failed;
+                }
+            };
 
         if actual_session_id != pending.session_id {
             log::warn!(
-                "Codex restore pane {} opened session {}, expected {}",
+                "{:?} restore pane {} opened session {}, expected {}",
+                pending.harness,
                 pane_id,
                 actual_session_id,
                 pending.session_id
             );
-            self.fail_pending_codex_restore(pane_id, &candidate);
-            return CodexRestoreOutcome::Failed;
+            self.fail_pending_agent_restore(pane_id, &candidate);
+            return AgentRestoreOutcome::Failed;
         }
 
         let mut metadata = pending.metadata;
@@ -2248,11 +2286,12 @@ impl Mux {
             self.install_agent_metadata_runtime_without_process_identity(pane_id, metadata, runtime)
         {
             log::warn!(
-                "Codex restore pane {} could not bind metadata: {err:#}",
+                "{:?} restore pane {} could not bind metadata: {err:#}",
+                pending.harness,
                 pane_id
             );
-            self.fail_pending_codex_restore(pane_id, &candidate);
-            return CodexRestoreOutcome::Failed;
+            self.fail_pending_agent_restore(pane_id, &candidate);
+            return AgentRestoreOutcome::Failed;
         }
 
         self.refresh_agent_runtime_for_pane_with_update(
@@ -2264,7 +2303,7 @@ impl Mux {
         if let Some((_domain_id, _window_id, tab_id)) = self.resolve_pane_id(pane_id) {
             self.notify_tab_title_changed(tab_id);
         }
-        CodexRestoreOutcome::Completed
+        AgentRestoreOutcome::Completed
     }
 
     #[cfg(test)]
@@ -2547,11 +2586,12 @@ impl Mux {
                     requested_at: Instant::now(),
                     metadata: metadata.clone(),
                     runtime: runtime.clone(),
-                    expected_codex_session_id: self
-                        .pending_codex_restores
-                        .read()
-                        .get(&pane_id)
-                        .map(|pending| pending.session_id.clone()),
+                    expected_session: self.pending_agent_restores.read().get(&pane_id).map(
+                        |pending| ExpectedAgentSession {
+                            harness: pending.harness.clone(),
+                            session_id: pending.session_id.clone(),
+                        },
+                    ),
                     adopted,
                     schedule_trailing_refresh: schedule_trailing_refresh
                         && requires_lossless_observation,
@@ -2672,7 +2712,7 @@ impl Mux {
             && self.detected_agent_panes.read().contains(&update.pane_id)
         {
             let pending_restore = self
-                .pending_codex_restores
+                .pending_agent_restores
                 .read()
                 .contains_key(&update.pane_id);
             let candidate = self
@@ -2689,12 +2729,12 @@ impl Mux {
                 (Some(candidate), Some(runtime)) => {
                     if pending_restore {
                         if matches!(
-                            self.complete_pending_codex_restore(
+                            self.complete_pending_agent_restore(
                                 update.pane_id,
                                 candidate,
                                 runtime,
                             ),
-                            CodexRestoreOutcome::Completed
+                            AgentRestoreOutcome::Completed
                         ) {
                             adopted = true;
                         }
@@ -8422,6 +8462,132 @@ mod test {
     }
 
     #[test]
+    fn codex_restore_intent_uses_confirmed_runtime_and_concrete_process_command() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let session_id = "00000000-0000-4000-8000-000000000004";
+        let pane = FakePane::new_detected(
+            209,
+            size,
+            domain.id,
+            "codex",
+            "/code/alias",
+            "/usr/local/bin/codex",
+            &["/usr/local/bin/codex", "-a", "never", "resume", session_id],
+        );
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let session_dir = tempfile::tempdir().unwrap();
+        let session_path = session_dir.path().join("rollout.jsonl");
+        std::fs::write(
+            &session_path,
+            format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\"}}}}\n"),
+        )
+        .unwrap();
+        let mut metadata = sample_agent_metadata("alias");
+        metadata.launch_cmd = "co".to_string();
+        mux.set_agent_metadata(pane_id, metadata.clone()).unwrap();
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Codex;
+        runtime.transport = crate::agent::AgentTransport::ObservedPty;
+        runtime.alive = true;
+        runtime.session_path = Some(session_path.to_string_lossy().into_owned());
+        mux.agent_runtime_by_pane.write().insert(pane_id, runtime);
+
+        let (harness, restored, restored_session_id) =
+            mux.agent_restore_intent_for_pane(pane_id).unwrap();
+        assert_eq!(harness, AgentHarness::Codex);
+        assert_eq!(restored_session_id, session_id);
+        assert_eq!(restored.launch_cmd, "/usr/local/bin/codex -a never");
+        assert_eq!(restored.agent_id, metadata.agent_id);
+    }
+
+    #[test]
+    fn claude_restore_intent_uses_confirmed_runtime_and_concrete_process_command() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let session_id = "00000000-0000-4000-8000-000000000005";
+        let pane = FakePane::new_detected(
+            213,
+            size,
+            domain.id,
+            "claude",
+            "/code/alias",
+            "/home/mihai/.local/bin/claude",
+            &[
+                "/home/mihai/.local/bin/claude",
+                "--dangerously-skip-permissions",
+                "--add-dir",
+                "/home/mihai",
+                "--resume",
+                session_id,
+            ],
+        );
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let session_dir = tempfile::tempdir().unwrap();
+        let session_path = session_dir.path().join(format!("{session_id}.jsonl"));
+        std::fs::write(
+            &session_path,
+            format!("{{\"type\":\"user\",\"sessionId\":\"{session_id}\"}}\n"),
+        )
+        .unwrap();
+        let mut metadata = sample_agent_metadata("alias");
+        metadata.launch_cmd = "cl".to_string();
+        mux.set_agent_metadata(pane_id, metadata.clone()).unwrap();
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Claude;
+        runtime.transport = crate::agent::AgentTransport::ObservedPty;
+        runtime.alive = true;
+        runtime.session_path = Some(session_path.to_string_lossy().into_owned());
+        mux.agent_runtime_by_pane.write().insert(pane_id, runtime);
+
+        let (harness, restored, restored_session_id) =
+            mux.agent_restore_intent_for_pane(pane_id).unwrap();
+        assert_eq!(harness, AgentHarness::Claude);
+        assert_eq!(restored_session_id, session_id);
+        assert_eq!(
+            restored.launch_cmd,
+            "/home/mihai/.local/bin/claude --dangerously-skip-permissions --add-dir /home/mihai"
+        );
+        assert_eq!(restored.agent_id, metadata.agent_id);
+    }
+
+    #[test]
     fn codex_restore_handshake_binds_only_the_expected_provider_session() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
@@ -8465,8 +8631,9 @@ mod test {
             .unwrap();
 
         let matching_metadata = sample_agent_metadata("restore-match");
-        mux.register_codex_restore_intent(
+        mux.register_agent_restore_intent(
             matching_pane_id,
+            AgentHarness::Codex,
             matching_metadata.clone(),
             "session-match".to_string(),
         )
@@ -8498,12 +8665,12 @@ mod test {
             .insert(matching_pane_id, matching_candidate.clone());
 
         assert_eq!(
-            mux.complete_pending_codex_restore(
+            mux.complete_pending_agent_restore(
                 matching_pane_id,
                 matching_candidate,
                 matching_runtime,
             ),
-            CodexRestoreOutcome::Completed
+            AgentRestoreOutcome::Completed
         );
         assert_eq!(
             mux.get_agent_metadata_for_pane(matching_pane_id)
@@ -8512,7 +8679,7 @@ mod test {
             Some("restore-match")
         );
         assert!(!mux
-            .pending_codex_restores
+            .pending_agent_restores
             .read()
             .contains_key(&matching_pane_id));
 
@@ -8543,8 +8710,9 @@ mod test {
             .unwrap();
 
         let mismatching_metadata = sample_agent_metadata("restore-mismatch");
-        mux.register_codex_restore_intent(
+        mux.register_agent_restore_intent(
             mismatching_pane_id,
+            AgentHarness::Codex,
             mismatching_metadata.clone(),
             "session-expected".to_string(),
         )
@@ -8576,18 +8744,18 @@ mod test {
             .insert(mismatching_pane_id, mismatching_candidate.clone());
 
         assert_eq!(
-            mux.complete_pending_codex_restore(
+            mux.complete_pending_agent_restore(
                 mismatching_pane_id,
                 mismatching_candidate,
                 mismatching_runtime,
             ),
-            CodexRestoreOutcome::Failed
+            AgentRestoreOutcome::Failed
         );
         assert!(mux
             .get_agent_metadata_for_pane(mismatching_pane_id)
             .is_none());
         assert!(!mux
-            .pending_codex_restores
+            .pending_agent_restores
             .read()
             .contains_key(&mismatching_pane_id));
         assert!(!mux
@@ -8598,6 +8766,95 @@ mod test {
             .list_agents()
             .iter()
             .all(|agent| agent.pane_id != mismatching_pane_id));
+    }
+
+    #[test]
+    fn claude_restore_handshake_binds_the_exact_provider_session() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let session_id = "00000000-0000-4000-8000-000000000009";
+        let session_dir = tempfile::tempdir().unwrap();
+        let session_path = session_dir.path().join(format!("{session_id}.jsonl"));
+        std::fs::write(
+            &session_path,
+            format!("{{\"type\":\"mode\",\"sessionId\":\"{session_id}\"}}\n"),
+        )
+        .unwrap();
+
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new_detected(
+            214,
+            size,
+            domain.id,
+            "claude",
+            "/tmp/claude-restore-match",
+            "/home/mihai/.local/bin/claude",
+            &["claude", "--resume", session_id],
+        );
+        let pane_id = pane.pane_id();
+        let tab_id = tab.tab_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let mut metadata = sample_agent_metadata("claude-restore-match");
+        metadata.launch_cmd = "claude --dangerously-skip-permissions".to_string();
+        mux.register_agent_restore_intent(
+            pane_id,
+            AgentHarness::Claude,
+            metadata.clone(),
+            session_id.to_string(),
+        )
+        .unwrap();
+        mux.detected_agent_panes.write().insert(pane_id);
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Claude;
+        runtime.transport = crate::agent::AgentTransport::ObservedPty;
+        runtime.session_path = Some(session_path.to_string_lossy().into_owned());
+        mux.agent_runtime_by_pane
+            .write()
+            .insert(pane_id, runtime.clone());
+        let candidate = AgentAdoptionCandidate {
+            pane_id,
+            harness: AgentHarness::Claude,
+            declared_cwd: metadata.declared_cwd.clone(),
+            launch_cmd: metadata.launch_cmd.clone(),
+            foreground_pid: Some(1),
+            process_start_time: Some(1),
+            created_at: metadata.created_at,
+            tab_id,
+            window_id,
+            workspace: DEFAULT_WORKSPACE.to_string(),
+            domain_id: domain.id,
+            detection_source: "restore-test".to_string(),
+        };
+        mux.agent_adoption_candidates
+            .write()
+            .insert(pane_id, candidate.clone());
+
+        assert_eq!(
+            mux.complete_pending_agent_restore(pane_id, candidate, runtime),
+            AgentRestoreOutcome::Completed
+        );
+        assert_eq!(
+            mux.get_agent_metadata_for_pane(pane_id)
+                .as_deref()
+                .map(|metadata| metadata.name.as_str()),
+            Some("claude-restore-match")
+        );
+        assert!(!mux.pending_agent_restores.read().contains_key(&pane_id));
     }
 
     #[cfg(target_os = "linux")]
@@ -8680,8 +8937,13 @@ mod test {
 
         let mut metadata = sample_agent_metadata("pending-restore");
         metadata.declared_cwd = "/tmp/pending-restore".to_string();
-        mux.register_codex_restore_intent(pane_id, metadata.clone(), "pending-session".to_string())
-            .unwrap();
+        mux.register_agent_restore_intent(
+            pane_id,
+            AgentHarness::Codex,
+            metadata.clone(),
+            "pending-session".to_string(),
+        )
+        .unwrap();
 
         let agents = mux.list_agents();
         assert_eq!(agents.len(), 1);
@@ -8700,7 +8962,7 @@ mod test {
         let restored = mux.get_agent_metadata_for_pane(pane_id).unwrap();
         assert_eq!(restored.name, metadata.name);
         assert_eq!(restored.declared_cwd, metadata.declared_cwd);
-        assert!(!mux.pending_codex_restores.read().contains_key(&pane_id));
+        assert!(!mux.pending_agent_restores.read().contains_key(&pane_id));
         assert_eq!(
             mux.agent_runtime_by_pane
                 .read()

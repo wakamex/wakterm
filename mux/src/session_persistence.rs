@@ -6,7 +6,7 @@
 //! This is similar to tmux-resurrect: it saves the structure but not
 //! terminal content. Processes must be relaunched.
 
-use crate::agent::{codex_resume_command, AgentMetadata};
+use crate::agent::{infer_harness, native_resume_command, AgentHarness, AgentMetadata};
 use crate::codex_app_server::{PrepareCodexLaunch, PreparedCodexLaunch};
 use crate::pane::PaneId;
 use crate::tab::PaneNode;
@@ -45,10 +45,21 @@ pub struct SavedWindow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedAgentRestoreIntent {
     pub pane_id: PaneId,
+    #[serde(default)]
+    pub harness: AgentHarness,
     pub metadata: AgentMetadata,
     pub session_id: String,
     #[serde(default)]
     pub attention_seen_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl SavedAgentRestoreIntent {
+    fn harness(&self) -> AgentHarness {
+        match self.harness {
+            AgentHarness::Unknown => infer_harness(&self.metadata.launch_cmd, None),
+            ref harness => harness.clone(),
+        }
+    }
 }
 
 struct PreparedAgentRestore {
@@ -248,9 +259,12 @@ fn collect_agent_restore_intents(
     match node {
         PaneNode::Empty => {}
         PaneNode::Leaf(entry) => {
-            if let Some((metadata, session_id)) = mux.codex_restore_intent_for_pane(entry.pane_id) {
+            if let Some((harness, metadata, session_id)) =
+                mux.agent_restore_intent_for_pane(entry.pane_id)
+            {
                 intents.push(SavedAgentRestoreIntent {
                     pane_id: entry.pane_id,
+                    harness,
                     metadata,
                     session_id,
                     attention_seen_at: mux.agent_attention_seen_at(entry.pane_id),
@@ -513,7 +527,7 @@ async fn restore_tab(
             .map(|positioned| positioned.pane.pane_id())
             .context("restored tab has no first pane")?;
         restore_agent_intent(pane_id, intent)
-            .context("registering Codex restore intent for first pane")?;
+            .context("registering agent restore intent for first pane")?;
     }
 
     tab.set_title(&Mux::sanitize_tab_title_text(&saved_tab.title));
@@ -592,7 +606,7 @@ fn restore_node<'a>(
 
                 if let Some(intent) = right_intent.as_ref() {
                     restore_agent_intent(pane.pane_id(), intent)
-                        .context("registering Codex restore intent for split pane")?;
+                        .context("registering agent restore intent for split pane")?;
                 }
 
                 // Use percentage-based splits so the proportions adapt
@@ -682,11 +696,13 @@ fn first_leaf_entry(node: &PaneNode) -> Option<&crate::tab::PaneEntry> {
 
 fn restore_agent_intent(pane_id: PaneId, intent: &SavedAgentRestoreIntent) -> anyhow::Result<()> {
     let mux = Mux::get();
-    let result = if intent.metadata.codex_app_server.is_some() {
+    let harness = intent.harness();
+    let result = if harness == AgentHarness::Codex && intent.metadata.codex_app_server.is_some() {
         mux.restore_agent_metadata(pane_id, intent.metadata.clone())
     } else {
-        mux.register_codex_restore_intent(
+        mux.register_agent_restore_intent(
             pane_id,
+            harness,
             intent.metadata.clone(),
             intent.session_id.clone(),
         )
@@ -715,6 +731,28 @@ fn prepare_agent_restore(
     intent: &SavedAgentRestoreIntent,
     prepare_managed: impl FnOnce(PrepareCodexLaunch) -> anyhow::Result<PreparedCodexLaunch>,
 ) -> anyhow::Result<PreparedAgentRestore> {
+    let harness = intent.harness();
+    if harness == AgentHarness::Claude {
+        return Ok(PreparedAgentRestore {
+            command: native_resume_command(
+                &harness,
+                &intent.metadata.launch_cmd,
+                &intent.session_id,
+            )
+            .with_context(|| {
+                format!(
+                    "building Claude native restore for session {}",
+                    intent.session_id
+                )
+            })?,
+            intent: intent.clone(),
+        });
+    }
+    anyhow::ensure!(
+        harness == AgentHarness::Codex,
+        "automatic restore is not implemented for {:?}",
+        harness
+    );
     let persisted_managed = intent.metadata.codex_app_server.as_ref();
     let resume_thread_id = persisted_managed
         .map(|session| session.thread_id.as_str())
@@ -774,13 +812,17 @@ fn prepare_agent_restore(
             let mut restored = intent.clone();
             restored.metadata.codex_app_server = None;
             restored.session_id = resume_thread_id.to_string();
-            let mut command = codex_resume_command(&restored.metadata.launch_cmd, resume_thread_id)
-                .with_context(|| {
-                    format!(
-                        "building Codex native fallback for restored thread {}",
-                        resume_thread_id
-                    )
-                })?;
+            let mut command = native_resume_command(
+                &AgentHarness::Codex,
+                &restored.metadata.launch_cmd,
+                resume_thread_id,
+            )
+            .with_context(|| {
+                format!(
+                    "building Codex native fallback for restored thread {}",
+                    resume_thread_id
+                )
+            })?;
             if let Some(session) = persisted_managed {
                 command
                     .get_argv_mut()
@@ -1237,6 +1279,55 @@ mod test {
     }
 
     #[test]
+    fn saved_session_includes_confirmed_claude_restore_intent() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = crate::TestMuxGuard;
+
+        let window_id = *mux.new_empty_window(Some("default".to_string()), None);
+        let tab_size = size(120, 40);
+        let tab = Arc::new(Tab::new(&tab_size));
+        let pane = TestPane::new(alloc_pane_id(), tab_size);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let mut metadata = sample_agent_metadata("claude-resume");
+        metadata.launch_cmd = "cl".to_string();
+        mux.set_agent_metadata(pane_id, metadata).unwrap();
+        let session_dir = tempfile::tempdir().unwrap();
+        let session_id = "00000000-0000-4000-8000-000000000008";
+        let session_path = session_dir.path().join(format!("{session_id}.jsonl"));
+        std::fs::write(
+            &session_path,
+            format!("{{\"type\":\"user\",\"sessionId\":\"{session_id}\"}}\n"),
+        )
+        .unwrap();
+        let mut runtime = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .expect("agent runtime");
+        runtime.harness = AgentHarness::Claude;
+        runtime.transport = crate::agent::AgentTransport::ObservedPty;
+        runtime.session_path = Some(session_path.to_string_lossy().into_owned());
+        mux.agent_runtime_by_pane.write().insert(pane_id, runtime);
+
+        let session = build_saved_session(&mux);
+
+        assert_eq!(session.agent_restore_intents.len(), 1);
+        let intent = &session.agent_restore_intents[0];
+        assert_eq!(intent.harness, AgentHarness::Claude);
+        assert_eq!(intent.session_id, session_id);
+        assert_eq!(intent.metadata.launch_cmd, "claude");
+        assert_eq!(intent.metadata.name, "claude-resume");
+    }
+
+    #[test]
     fn saved_session_preserves_pending_codex_restore_intent() {
         let _test_lock = crate::TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
@@ -1253,8 +1344,9 @@ mod test {
         mux.add_tab_and_active_pane(&tab).unwrap();
         mux.add_tab_to_window(&tab, window_id).unwrap();
 
-        mux.register_codex_restore_intent(
+        mux.register_agent_restore_intent(
             pane_id,
+            AgentHarness::Codex,
             sample_agent_metadata("pending-resume"),
             "pending-session".to_string(),
         )
@@ -1275,6 +1367,24 @@ mod test {
     }
 
     #[test]
+    fn restore_intent_without_harness_field_retains_codex_session_compatibility() {
+        let intent = SavedAgentRestoreIntent {
+            pane_id: 7,
+            harness: AgentHarness::Codex,
+            metadata: sample_agent_metadata("legacy"),
+            session_id: "legacy-session".to_string(),
+            attention_seen_at: None,
+        };
+        let mut value = serde_json::to_value(intent).unwrap();
+        value.as_object_mut().unwrap().remove("harness");
+
+        let restored: SavedAgentRestoreIntent = serde_json::from_value(value).unwrap();
+
+        assert_eq!(restored.harness(), AgentHarness::Codex);
+        assert_eq!(restored.session_id, "legacy-session");
+    }
+
+    #[test]
     fn adopted_codex_restore_optimistically_promotes_to_current_app_server() {
         let thread_id = "00000000-0000-4000-8000-000000000001";
         let mut metadata = sample_agent_metadata("adopted");
@@ -1283,6 +1393,7 @@ mod test {
         metadata.adopted_start_time = Some(99);
         let intent = SavedAgentRestoreIntent {
             pane_id: 7,
+            harness: AgentHarness::Codex,
             metadata,
             session_id: thread_id.to_string(),
             attention_seen_at: None,
@@ -1336,6 +1447,48 @@ mod test {
     }
 
     #[test]
+    fn adopted_claude_restore_uses_exact_native_session_without_codex_preparation() {
+        let session_id = "00000000-0000-4000-8000-000000000004";
+        let mut metadata = sample_agent_metadata("claude");
+        metadata.launch_cmd =
+            "claude --dangerously-skip-permissions --add-dir /home/mihai --add-dir /code"
+                .to_string();
+        let intent = SavedAgentRestoreIntent {
+            pane_id: 10,
+            harness: AgentHarness::Claude,
+            metadata,
+            session_id: session_id.to_string(),
+            attention_seen_at: None,
+        };
+
+        let restored = prepare_agent_restore(&intent, |_| {
+            panic!("Claude native restore must not start the Codex app-server")
+        })
+        .unwrap();
+
+        assert_eq!(
+            restored
+                .command
+                .get_argv()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec![
+                "claude",
+                "--dangerously-skip-permissions",
+                "--add-dir",
+                "/home/mihai",
+                "--add-dir",
+                "/code",
+                "--resume",
+                session_id,
+            ]
+        );
+        assert_eq!(restored.intent.harness, AgentHarness::Claude);
+        assert_eq!(restored.intent.metadata.name, "claude");
+    }
+
+    #[test]
     fn managed_codex_restore_accepts_latest_version_and_preserves_identity() {
         let thread_id = "00000000-0000-4000-8000-000000000002";
         let mut metadata = sample_agent_metadata("managed");
@@ -1348,6 +1501,7 @@ mod test {
         });
         let intent = SavedAgentRestoreIntent {
             pane_id: 8,
+            harness: AgentHarness::Codex,
             metadata,
             session_id: "provider-session".to_string(),
             attention_seen_at: None,
@@ -1389,6 +1543,7 @@ mod test {
         });
         let intent = SavedAgentRestoreIntent {
             pane_id: 9,
+            harness: AgentHarness::Codex,
             metadata,
             session_id: "provider-session".to_string(),
             attention_seen_at: None,
@@ -1485,7 +1640,94 @@ mod test {
             command_dirs.lock().unwrap().as_slice(),
             &[Some(metadata.declared_cwd)]
         );
-        assert_eq!(restored_mux.pending_codex_restores.read().len(), 1);
+        assert_eq!(restored_mux.pending_agent_restores.read().len(), 1);
+    }
+
+    #[test]
+    fn restore_tab_resumes_exact_claude_session_and_registers_pending_intent() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let source_mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&source_mux);
+
+        let window_id = *source_mux.new_empty_window(Some("default".to_string()), None);
+        let tab_size = size(120, 40);
+        let tab = Arc::new(Tab::new(&tab_size));
+        let pane = TestPane::new(alloc_pane_id(), tab_size);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        source_mux.add_tab_and_active_pane(&tab).unwrap();
+        source_mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let mut metadata = sample_agent_metadata("claude-resume");
+        metadata.launch_cmd = "claude --dangerously-skip-permissions".to_string();
+        source_mux
+            .set_agent_metadata(pane_id, metadata.clone())
+            .unwrap();
+        let session_dir = tempfile::tempdir().unwrap();
+        let session_id = "00000000-0000-4000-8000-000000000010";
+        let session_path = session_dir.path().join(format!("{session_id}.jsonl"));
+        std::fs::write(
+            &session_path,
+            format!("{{\"type\":\"mode\",\"sessionId\":\"{session_id}\"}}\n"),
+        )
+        .unwrap();
+        let mut runtime = source_mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .expect("agent runtime");
+        runtime.harness = AgentHarness::Claude;
+        runtime.transport = crate::agent::AgentTransport::ObservedPty;
+        runtime.session_path = Some(session_path.to_string_lossy().into_owned());
+        source_mux
+            .agent_runtime_by_pane
+            .write()
+            .insert(pane_id, runtime);
+
+        let saved_session = build_saved_session(&source_mux);
+        let saved_tab = saved_session.windows[0].tabs[0].clone();
+        let intents = saved_session
+            .agent_restore_intents
+            .into_iter()
+            .map(|intent| (intent.pane_id, intent))
+            .collect::<HashMap<_, _>>();
+
+        let restored_mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&restored_mux);
+        let _guard = crate::TestMuxGuard;
+        let restored_window = *restored_mux.new_empty_window(Some("default".to_string()), None);
+        let recording_domain = Arc::new(TestDomain::new());
+        let commands = Arc::clone(&recording_domain.commands);
+        let command_dirs = Arc::clone(&recording_domain.command_dirs);
+        let domain: Arc<dyn Domain> = recording_domain;
+
+        smol::block_on(async {
+            restore_tab(&domain, &saved_tab, tab_size, restored_window, &intents)
+                .await
+                .expect("restore tab");
+        });
+
+        assert_eq!(
+            commands.lock().unwrap().as_slice(),
+            &[vec![
+                "claude".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+                "--resume".to_string(),
+                session_id.to_string(),
+            ]]
+        );
+        assert_eq!(
+            command_dirs.lock().unwrap().as_slice(),
+            &[Some(metadata.declared_cwd)]
+        );
+        let pending = restored_mux.pending_agent_restores.read();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending.values().next().map(|intent| &intent.harness),
+            Some(&AgentHarness::Claude)
+        );
     }
 
     #[test]
