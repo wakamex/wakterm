@@ -4,6 +4,7 @@ members = [
   "bidi/generate",
   "strip-ansi-escapes",
   "sync-color-schemes",
+  "tab-color-palette-gen",
   "deps/cairo",
   "wakterm",
   "wakterm-blob-leases",

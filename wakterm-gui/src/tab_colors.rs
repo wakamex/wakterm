@@ -1,7 +1,9 @@
 use crate::termwindow::TabInformation;
+#[cfg(test)]
+use config::TabBarColors;
 use config::{
     ConfigHandle, RgbaColor, SrgbaTuple, TabBarColorIntensity, TabBarColorMode, TabBarColorPalette,
-    TabBarColors, CACHE_DIR,
+    CACHE_DIR,
 };
 use lazy_static::lazy_static;
 use mux::pane::CachePolicy;
@@ -10,15 +12,21 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::TryInto;
-use std::f32::consts::TAU;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
-const ASSIGNMENT_CACHE_VERSION: u8 = 1;
+const ASSIGNMENT_CACHE_VERSION: u8 = 2;
 lazy_static! {
     static ref ASSIGNMENT_STORE: Mutex<AssignmentStore> = Mutex::new(AssignmentStore::default());
 }
+static DARK_PALETTE: LazyLock<Vec<RgbaColor>> =
+    LazyLock::new(|| parse_generated_palette(crate::tab_color_palette::DARK));
+static LIGHT_PALETTE: LazyLock<Vec<RgbaColor>> =
+    LazyLock::new(|| parse_generated_palette(crate::tab_color_palette::LIGHT));
+static MIXED_PALETTE: LazyLock<Vec<RgbaColor>> =
+    LazyLock::new(|| parse_generated_palette(crate::tab_color_palette::MIXED));
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TabColorVisualState {
@@ -60,8 +68,7 @@ pub fn assign_tab_colors(config: &ConfigHandle, tabs: &mut [TabInformation]) {
         .collect();
 
     let unique_keys: BTreeSet<String> = keys_by_tab.iter().map(|(_, key)| key.clone()).collect();
-    let bar_background = tab_bar_background(config);
-    let palette = candidate_palette(config.tab_bar_color_palette, bar_background);
+    let palette = candidate_palette(config.tab_bar_color_palette);
 
     let colors_by_key = match config.tab_bar_color_mode {
         TabBarColorMode::Off => HashMap::new(),
@@ -72,7 +79,7 @@ pub fn assign_tab_colors(config: &ConfigHandle, tabs: &mut [TabInformation]) {
                 (key, palette[preferred_idx])
             })
             .collect(),
-        TabBarColorMode::Assign => assigned_colors_for_keys(unique_keys, &palette, bar_background),
+        TabBarColorMode::Assign => assigned_colors_for_keys(unique_keys, palette),
     };
 
     for (idx, key) in keys_by_tab {
@@ -80,6 +87,7 @@ pub fn assign_tab_colors(config: &ConfigHandle, tabs: &mut [TabInformation]) {
     }
 }
 
+#[cfg(test)]
 fn tab_bar_background(config: &ConfigHandle) -> RgbaColor {
     config
         .resolved_palette
@@ -111,20 +119,20 @@ pub fn tab_render_colors(
 }
 
 fn stable_tab_key(tab: &TabInformation) -> String {
-    if !tab.tab_title.is_empty() {
-        return format!("tab-title:{}", tab.tab_title);
+    let effective = tab.effective_title();
+    if !effective.is_empty() {
+        return named_tab_key(&effective);
     }
 
     if let Some(cwd) = active_pane_cwd(tab) {
-        return format!("cwd:{cwd}");
-    }
-
-    let effective = tab.effective_title();
-    if !effective.is_empty() {
-        return format!("title:{effective}");
+        return named_tab_key(&cwd);
     }
 
     format!("tab-id:{}", tab.tab_id)
+}
+
+fn named_tab_key(name: &str) -> String {
+    format!("name:{name}")
 }
 
 fn active_pane_cwd(tab: &TabInformation) -> Option<String> {
@@ -155,14 +163,13 @@ fn cwd_key_from_url(url: &url::Url) -> String {
 fn assigned_colors_for_keys(
     keys: BTreeSet<String>,
     palette: &[RgbaColor],
-    bar_background: RgbaColor,
 ) -> HashMap<String, RgbaColor> {
     let cache_path = assignment_cache_path();
     let mut store = ASSIGNMENT_STORE.lock();
     store.ensure_loaded(&cache_path);
 
     let dirty_before = store.assignments.len();
-    let result = assign_colors_for_keys(&mut store.assignments, keys, palette, bar_background);
+    let result = assign_colors_for_keys(&mut store.assignments, keys, palette);
     let dirty = store.assignments.len() != dirty_before;
 
     if dirty {
@@ -181,7 +188,6 @@ fn assign_colors_for_keys(
     assignments: &mut BTreeMap<String, RgbaColor>,
     keys: BTreeSet<String>,
     palette: &[RgbaColor],
-    bar_background: RgbaColor,
 ) -> HashMap<String, RgbaColor> {
     let mut result = HashMap::new();
 
@@ -189,12 +195,7 @@ fn assign_colors_for_keys(
         let color = if let Some(color) = assignments.get(&key).copied() {
             color
         } else {
-            let color = choose_most_distinct_color(
-                &key,
-                assignments.values().copied(),
-                palette,
-                bar_background,
-            );
+            let color = choose_next_assigned_color(&key, assignments.values().copied(), palette);
             assignments.insert(key.clone(), color);
             color
         };
@@ -204,73 +205,17 @@ fn assign_colors_for_keys(
     result
 }
 
-fn choose_most_distinct_color(
+fn choose_next_assigned_color(
     key: &str,
     existing: impl IntoIterator<Item = RgbaColor>,
     palette: &[RgbaColor],
-    bar_background: RgbaColor,
 ) -> RgbaColor {
-    let existing: Vec<RgbaColor> = existing.into_iter().collect();
-    let preferred_idx = preferred_candidate_idx(key, palette.len());
-    let used: HashSet<RgbaColor> = existing.iter().copied().collect();
-
-    let candidates: Vec<(usize, RgbaColor)> = palette
+    let used: HashSet<RgbaColor> = existing.into_iter().collect();
+    palette
         .iter()
         .copied()
-        .enumerate()
-        .filter(|(_, color)| !used.contains(color))
-        .collect();
-
-    let candidates = if candidates.is_empty() {
-        palette.iter().copied().enumerate().collect::<Vec<_>>()
-    } else {
-        candidates
-    };
-
-    candidates
-        .into_iter()
-        .max_by(|(idx_a, color_a), (idx_b, color_b)| {
-            let score_a = min_color_distance(*color_a, &existing, bar_background);
-            let score_b = min_color_distance(*color_b, &existing, bar_background);
-            score_a
-                .partial_cmp(&score_b)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| {
-                    circular_distance(*idx_b, preferred_idx, palette.len()).cmp(&circular_distance(
-                        *idx_a,
-                        preferred_idx,
-                        palette.len(),
-                    ))
-                })
-        })
-        .map(|(_, color)| color)
-        .unwrap_or(palette[preferred_idx])
-}
-
-fn min_color_distance(
-    candidate: RgbaColor,
-    existing: &[RgbaColor],
-    _bar_background: RgbaColor,
-) -> f32 {
-    if existing.is_empty() {
-        return f32::MAX;
-    }
-
-    let candidate = inactive_rendered_bg(candidate);
-    existing
-        .iter()
-        .copied()
-        .map(|existing| color_distance(candidate, inactive_rendered_bg(existing)))
-        .fold(f32::INFINITY, f32::min)
-}
-
-fn color_distance(a: RgbaColor, b: RgbaColor) -> f32 {
-    let (al, aa, ab) = oklab(a);
-    let (bl, ba, bb) = oklab(b);
-    let dl = al - bl;
-    let da = aa - ba;
-    let db = ab - bb;
-    dl * dl + da * da + db * db
+        .find(|color| !used.contains(color))
+        .unwrap_or_else(|| palette[preferred_candidate_idx(key, palette.len())])
 }
 
 fn preferred_candidate_idx(key: &str, len: usize) -> usize {
@@ -279,73 +224,16 @@ fn preferred_candidate_idx(key: &str, len: usize) -> usize {
     (hasher.finish() as usize) % len
 }
 
-fn circular_distance(a: usize, b: usize, len: usize) -> usize {
-    let forward = a.abs_diff(b);
-    let wrap = len.saturating_sub(forward);
-    forward.min(wrap)
-}
-
-fn candidate_palette(kind: TabBarColorPalette, _bar_background: RgbaColor) -> Vec<RgbaColor> {
-    let mut colors = match kind {
-        TabBarColorPalette::Dark => curated_dark_palette(),
-        TabBarColorPalette::Light => build_oklch_slice(
-            &[0.80, 0.84, 0.88],
-            &[0.09, 0.12, 0.15],
-            &[0.0, 0.5 / 24.0, 1.0 / 24.0],
-            24,
-        ),
-        TabBarColorPalette::Mixed => {
-            let mut colors = curated_dark_palette();
-            colors.extend(build_oklch_slice(
-                &[0.80, 0.84, 0.88],
-                &[0.09, 0.12, 0.15],
-                &[0.25 / 24.0, 0.75 / 24.0, 1.25 / 24.0],
-                24,
-            ));
-            colors
-        }
-    };
-
-    colors.retain(|color| match kind {
-        TabBarColorPalette::Dark => true,
-        TabBarColorPalette::Light => prefers_dark_text(inactive_rendered_bg(*color)),
-        TabBarColorPalette::Mixed => true,
-    });
-
-    colors
-}
-
-fn curated_dark_palette() -> Vec<RgbaColor> {
-    [
-        "#2885ef", "#e6b816", "#dd4c62", "#00a66a", "#f695ee", "#00d8f6", "#ae5ecf", "#66da85",
-        "#ff927e", "#988900", "#96b7ff", "#c37000", "#7e70ec", "#cd509f", "#00a4a7", "#b1cc46",
-        "#00dec2", "#519c03", "#ffa242", "#ff8eb9", "#0098d6", "#cea4ff", "#d95800", "#43c9ff",
-    ]
-    .iter()
-    .copied()
-    .map(hex_color)
-    .collect()
-}
-
-fn build_oklch_slice(
-    lightnesses: &[f32],
-    chromas: &[f32],
-    offsets: &[f32],
-    steps: usize,
-) -> Vec<RgbaColor> {
-    let mut colors = Vec::with_capacity(lightnesses.len() * chromas.len() * steps);
-    for (row, &lightness) in lightnesses.iter().enumerate() {
-        for (band, &chroma) in chromas.iter().enumerate() {
-            let offset = offsets[(row + band) % offsets.len()];
-            for idx in 0..steps {
-                let hue = TAU * (((idx as f32) / (steps as f32)) + offset).fract();
-                if let Some(color) = oklch_to_rgba(lightness, chroma, hue) {
-                    colors.push(color);
-                }
-            }
-        }
+fn candidate_palette(kind: TabBarColorPalette) -> &'static [RgbaColor] {
+    match kind {
+        TabBarColorPalette::Dark => &DARK_PALETTE,
+        TabBarColorPalette::Light => &LIGHT_PALETTE,
+        TabBarColorPalette::Mixed => &MIXED_PALETTE,
     }
-    colors
+}
+
+fn parse_generated_palette(colors: &[&str]) -> Vec<RgbaColor> {
+    colors.iter().copied().map(hex_color).collect()
 }
 
 fn hex_color(hex: &str) -> RgbaColor {
@@ -356,6 +244,7 @@ fn hex_color(hex: &str) -> RgbaColor {
     RgbaColor::from((r, g, b))
 }
 
+#[cfg(test)]
 fn inactive_rendered_bg(base: RgbaColor) -> RgbaColor {
     dim_srgba(base, 0.4)
 }
@@ -366,84 +255,8 @@ fn dim_srgba(color: RgbaColor, factor: f32) -> RgbaColor {
     RgbaColor::from(SrgbaTuple(r * factor, g * factor, b * factor, a))
 }
 
-fn oklch_to_rgba(lightness: f32, chroma: f32, hue: f32) -> Option<RgbaColor> {
-    let a = chroma * hue.cos();
-    let b = chroma * hue.sin();
-
-    let l = lightness + 0.396_337_78 * a + 0.215_803_76 * b;
-    let m = lightness - 0.105_561_346 * a - 0.063_854_17 * b;
-    let s = lightness - 0.089_484_18 * a - 1.291_485_5 * b;
-
-    let l = l * l * l;
-    let m = m * m * m;
-    let s = s * s * s;
-
-    let r = 4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_94 * s;
-    let g = -1.268_438 * l + 2.609_757_4 * m - 0.341_319_38 * s;
-    let b = -0.004_196_086_3 * l - 0.703_418_6 * m + 1.707_614_7 * s;
-
-    if !(0.0..=1.0).contains(&r) || !(0.0..=1.0).contains(&g) || !(0.0..=1.0).contains(&b) {
-        return None;
-    }
-
-    Some(RgbaColor::from(SrgbaTuple(
-        linear_channel_to_srgb(r),
-        linear_channel_to_srgb(g),
-        linear_channel_to_srgb(b),
-        1.0,
-    )))
-}
-
-fn prefers_dark_text(color: RgbaColor) -> bool {
-    relative_luminance(color) >= relative_luminance(light_text())
-}
-
-fn relative_luminance(color: RgbaColor) -> f32 {
-    let (r, g, b) = linear_rgb(color);
-    0.2126 * r + 0.7152 * g + 0.0722 * b
-}
-
-fn linear_rgb(color: RgbaColor) -> (f32, f32, f32) {
-    let SrgbaTuple(r, g, b, _) = *color;
-    (
-        srgb_channel_to_linear(r),
-        srgb_channel_to_linear(g),
-        srgb_channel_to_linear(b),
-    )
-}
-
-fn srgb_channel_to_linear(value: f32) -> f32 {
-    if value <= 0.04045 {
-        value / 12.92
-    } else {
-        ((value + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-fn linear_channel_to_srgb(value: f32) -> f32 {
-    if value <= 0.003_130_8 {
-        value * 12.92
-    } else {
-        1.055 * value.powf(1.0 / 2.4) - 0.055
-    }
-}
-
-fn oklab(color: RgbaColor) -> (f32, f32, f32) {
-    let (r, g, b) = linear_rgb(color);
-
-    let l = (0.412_221_46 * r + 0.536_332_55 * g + 0.051_445_995 * b).cbrt();
-    let m = (0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b).cbrt();
-    let s = (0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b).cbrt();
-
-    (
-        0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
-        1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
-        0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s,
-    )
-}
-
 fn assignment_cache_path() -> PathBuf {
-    CACHE_DIR.join("tab-bar-color-assignments-v1.json")
+    CACHE_DIR.join("tab-bar-color-assignments-v2.json")
 }
 
 fn inactive_text() -> RgbaColor {
@@ -456,10 +269,6 @@ fn active_text() -> RgbaColor {
 
 fn hover_text() -> RgbaColor {
     RgbaColor::from(SrgbaTuple(0.5647059, 0.5647059, 0.5647059, 1.0))
-}
-
-fn light_text() -> RgbaColor {
-    RgbaColor::from(SrgbaTuple(0.8666667, 0.8666667, 0.8666667, 1.0))
 }
 
 impl AssignmentStore {
@@ -551,14 +360,13 @@ impl AssignmentStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        active_text, assign_colors_for_keys, candidate_palette, choose_most_distinct_color,
-        cwd_key_from_url, dim_srgba, hover_text, inactive_rendered_bg, inactive_text,
-        oklch_to_rgba, prefers_dark_text, stable_tab_key, tab_bar_background, tab_render_colors,
-        AssignmentStore,
+        active_text, assign_colors_for_keys, candidate_palette, choose_next_assigned_color,
+        cwd_key_from_url, dim_srgba, hex_color, hover_text, inactive_rendered_bg, inactive_text,
+        named_tab_key, stable_tab_key, tab_bar_background, tab_render_colors, AssignmentStore,
     };
     use crate::termwindow::{PaneInformation, TabInformation};
     use config::{ConfigHandle, RgbaColor, TabBarColorIntensity, TabBarColorPalette};
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::{BTreeMap, BTreeSet, HashSet};
     use tempfile::tempdir;
     use wakterm_term::Progress;
 
@@ -588,6 +396,7 @@ mod tests {
             needs_attention: false,
             assigned_color: None,
             window_id: 0,
+            effective_title: title.to_string(),
             tab_title: title.to_string(),
         }
     }
@@ -595,7 +404,30 @@ mod tests {
     #[test]
     fn stable_tab_key_prefers_explicit_tab_title() {
         let tab = tab(1, "debate");
-        assert_eq!(stable_tab_key(&tab), "tab-title:debate");
+        assert_eq!(stable_tab_key(&tab), "name:debate");
+    }
+
+    #[test]
+    fn stable_tab_key_ignores_decorated_display_title() {
+        let mut tab = tab(1, "application");
+        tab.tab_title = "⠹ application".to_string();
+        assert_eq!(stable_tab_key(&tab), "name:application");
+    }
+
+    #[test]
+    fn stable_tab_key_respects_collision_suffix() {
+        let first = tab(1, "zsh");
+        let second = tab(2, "zsh2");
+        let third = tab(3, "zsh3");
+        assert_eq!(stable_tab_key(&first), "name:zsh");
+        assert_eq!(stable_tab_key(&second), "name:zsh2");
+        assert_eq!(stable_tab_key(&third), "name:zsh3");
+    }
+
+    #[test]
+    fn title_and_cwd_names_share_key_namespace() {
+        let cwd = url::Url::parse("file:///code/x").unwrap();
+        assert_eq!(named_tab_key("x"), named_tab_key(&cwd_key_from_url(&cwd)));
     }
 
     #[test]
@@ -618,10 +450,9 @@ mod tests {
             loaded: true,
             assignments: BTreeMap::new(),
         };
-        store.assignments.insert(
-            "title:one".to_string(),
-            oklch_to_rgba(0.62, 0.14, 1.0).unwrap(),
-        );
+        store
+            .assignments
+            .insert("title:one".to_string(), hex_color("#2885ef"));
         store.save_to(&path).unwrap();
 
         let loaded = AssignmentStore::load_from(&path);
@@ -640,11 +471,25 @@ mod tests {
     }
 
     #[test]
+    fn old_assignment_cache_version_is_ignored() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("tab-colors.json");
+        std::fs::write(
+            &path,
+            r##"{"version":1,"assignments":{"name:x":"#2885ef"}}"##,
+        )
+        .unwrap();
+
+        let loaded = AssignmentStore::load_from(&path);
+        assert!(loaded.loaded);
+        assert!(loaded.assignments.is_empty());
+    }
+
+    #[test]
     fn assign_tab_colors_reuses_persisted_title_mapping_after_reload() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("tab-colors.json");
-        let background = tab_bar_background(&ConfigHandle::default_config());
-        let palette = candidate_palette(TabBarColorPalette::Mixed, background);
+        let palette = candidate_palette(TabBarColorPalette::Mixed);
         let key = stable_tab_key(&tab(1, "wakterm"));
         let mut store = AssignmentStore {
             loaded: true,
@@ -653,8 +498,7 @@ mod tests {
         let first_color = assign_colors_for_keys(
             &mut store.assignments,
             BTreeSet::from([key.clone()]),
-            &palette,
-            background,
+            palette,
         )[&key];
 
         store.save_to(&path).unwrap();
@@ -664,56 +508,41 @@ mod tests {
         let second_color = assign_colors_for_keys(
             &mut loaded.assignments,
             BTreeSet::from([reloaded_key.clone()]),
-            &palette,
-            background,
+            palette,
         )[&reloaded_key];
 
         assert_eq!(String::from(second_color), String::from(first_color));
     }
 
     #[test]
-    fn choose_most_distinct_color_is_deterministic_and_avoids_reuse_when_possible() {
-        let existing = [
-            oklch_to_rgba(0.62, 0.14, 0.1).unwrap(),
-            oklch_to_rgba(0.62, 0.14, 2.0).unwrap(),
-            oklch_to_rgba(0.62, 0.12, 4.1).unwrap(),
-        ];
-        let background = tab_bar_background(&ConfigHandle::default_config());
-        let palette = candidate_palette(TabBarColorPalette::Mixed, background);
-        let chosen = choose_most_distinct_color("fresh", existing, &palette, background);
-
+    fn assign_mode_consumes_the_precomputed_sequence_without_reuse() {
+        let palette = candidate_palette(TabBarColorPalette::Mixed);
+        let existing = palette[..37].iter().copied();
         assert_eq!(
-            chosen,
-            choose_most_distinct_color("fresh", existing, &palette, background)
+            choose_next_assigned_color("fresh", existing, palette),
+            palette[37]
         );
-        assert!(!existing.contains(&chosen));
     }
 
     #[test]
     fn assign_mode_assigns_unseen_keys_independent_of_input_order() {
-        let mut first = BTreeMap::from([(
-            "existing".to_string(),
-            oklch_to_rgba(0.62, 0.14, 0.2).unwrap(),
-        )]);
+        let mut first = BTreeMap::from([("existing".to_string(), hex_color("#2885ef"))]);
         let mut second = first.clone();
-        let background = tab_bar_background(&ConfigHandle::default_config());
-        let palette = candidate_palette(TabBarColorPalette::Mixed, background);
+        let palette = candidate_palette(TabBarColorPalette::Mixed);
 
         let first_result = assign_colors_for_keys(
             &mut first,
             Vec::from(["bravo".to_string(), "alpha".to_string()])
                 .into_iter()
                 .collect(),
-            &palette,
-            background,
+            palette,
         );
         let second_result = assign_colors_for_keys(
             &mut second,
             Vec::from(["alpha".to_string(), "bravo".to_string()])
                 .into_iter()
                 .collect(),
-            &palette,
-            background,
+            palette,
         );
 
         assert_eq!(first_result, second_result);
@@ -721,21 +550,39 @@ mod tests {
     }
 
     #[test]
-    fn dark_palette_keeps_full_curated_seed_set() {
-        let background = tab_bar_background(&ConfigHandle::default_config());
-        assert_eq!(
-            candidate_palette(TabBarColorPalette::Dark, background).len(),
-            24
-        );
+    fn generated_palettes_are_full_and_have_no_duplicate_display_colors() {
+        for kind in [
+            TabBarColorPalette::Dark,
+            TabBarColorPalette::Light,
+            TabBarColorPalette::Mixed,
+        ] {
+            let palette = candidate_palette(kind);
+            assert_eq!(palette.len(), 512);
+            assert_eq!(palette.iter().copied().collect::<HashSet<_>>().len(), 512);
+            assert_eq!(
+                palette
+                    .iter()
+                    .map(|color| {
+                        let config::SrgbaTuple(r, g, b, _) = **color;
+                        (
+                            (r * 0.4 * 255.0).round() as u8,
+                            (g * 0.4 * 255.0).round() as u8,
+                            (b * 0.4 * 255.0).round() as u8,
+                        )
+                    })
+                    .collect::<HashSet<_>>()
+                    .len(),
+                512
+            );
+        }
     }
 
     #[test]
-    fn light_palette_prefers_dark_text() {
-        let background = tab_bar_background(&ConfigHandle::default_config());
-        assert!(candidate_palette(TabBarColorPalette::Light, background)
-            .iter()
-            .copied()
-            .all(|color| prefers_dark_text(inactive_rendered_bg(color))));
+    fn generated_palettes_have_independent_prefixes() {
+        assert_ne!(
+            &candidate_palette(TabBarColorPalette::Dark)[..24],
+            &candidate_palette(TabBarColorPalette::Mixed)[..24]
+        );
     }
 
     #[test]
@@ -814,12 +661,5 @@ mod tests {
             .bg,
             dim_srgba(RgbaColor::from((40, 133, 239)), 0.5)
         );
-    }
-
-    #[test]
-    fn oklch_to_rgba_produces_opaque_color() {
-        let color = oklch_to_rgba(0.62, 0.10, 1.4).unwrap();
-        let config::SrgbaTuple(_, _, _, alpha) = *color;
-        assert_eq!(alpha, 1.0);
     }
 }
