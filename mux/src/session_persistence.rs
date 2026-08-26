@@ -843,7 +843,7 @@ fn prepare_agent_restore(
     prepare_managed: impl FnOnce(PrepareCodexLaunch) -> anyhow::Result<PreparedCodexLaunch>,
 ) -> anyhow::Result<PreparedAgentRestore> {
     let harness = intent.harness();
-    if harness == AgentHarness::Claude {
+    if matches!(harness, AgentHarness::Agy | AgentHarness::Claude) {
         return Ok(PreparedAgentRestore {
             command: native_resume_command(
                 &harness,
@@ -852,8 +852,8 @@ fn prepare_agent_restore(
             )
             .with_context(|| {
                 format!(
-                    "building Claude native restore for session {}",
-                    intent.session_id
+                    "building {:?} native restore for session {}",
+                    harness, intent.session_id
                 )
             })?,
             intent: intent.clone(),
@@ -1629,6 +1629,57 @@ mod test {
     }
 
     #[test]
+    fn saved_session_includes_confirmed_agy_restore_intent() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = crate::TestMuxGuard;
+
+        let window_id = *mux.new_empty_window(Some("default".to_string()), None);
+        let tab_size = size(120, 40);
+        let tab = Arc::new(Tab::new(&tab_size));
+        let pane = TestPane::new(alloc_pane_id(), tab_size);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let conversation_id = "00000000-0000-4000-8000-000000000009";
+        let mut metadata = sample_agent_metadata("agy-resume");
+        metadata.launch_cmd = "agy --dangerously-skip-permissions".to_string();
+        mux.set_agent_metadata(pane_id, metadata).unwrap();
+        let transcript = PathBuf::from("/tmp/antigravity-cli")
+            .join("brain")
+            .join(conversation_id)
+            .join(".system_generated")
+            .join("logs")
+            .join("transcript.jsonl");
+        let mut runtime = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .expect("agent runtime");
+        runtime.harness = AgentHarness::Agy;
+        runtime.transport = crate::agent::AgentTransport::ObservedPty;
+        runtime.session_path = Some(transcript.to_string_lossy().into_owned());
+        mux.agent_runtime_by_pane.write().insert(pane_id, runtime);
+
+        let session = build_saved_session(&mux);
+
+        assert_eq!(session.agent_restore_intents.len(), 1);
+        let intent = &session.agent_restore_intents[0];
+        assert_eq!(intent.harness, AgentHarness::Agy);
+        assert_eq!(intent.session_id, conversation_id);
+        assert_eq!(
+            intent.metadata.launch_cmd,
+            "agy --dangerously-skip-permissions"
+        );
+        assert_eq!(intent.metadata.name, "agy-resume");
+    }
+
+    #[test]
     fn saved_session_preserves_pending_codex_restore_intent() {
         let _test_lock = crate::TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
@@ -1788,6 +1839,43 @@ mod test {
         );
         assert_eq!(restored.intent.harness, AgentHarness::Claude);
         assert_eq!(restored.intent.metadata.name, "claude");
+    }
+
+    #[test]
+    fn adopted_agy_restore_uses_exact_native_conversation_without_codex_preparation() {
+        let conversation_id = "00000000-0000-4000-8000-000000000010";
+        let mut metadata = sample_agent_metadata("agy");
+        metadata.launch_cmd =
+            "agy --dangerously-skip-permissions --conversation old --continue".to_string();
+        let intent = SavedAgentRestoreIntent {
+            pane_id: 11,
+            harness: AgentHarness::Agy,
+            metadata,
+            session_id: conversation_id.to_string(),
+            attention_seen_at: None,
+        };
+
+        let restored = prepare_agent_restore(&intent, |_| {
+            panic!("Agy native restore must not start the Codex app-server")
+        })
+        .unwrap();
+
+        assert_eq!(
+            restored
+                .command
+                .get_argv()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec![
+                "agy",
+                "--dangerously-skip-permissions",
+                "--conversation",
+                conversation_id,
+            ]
+        );
+        assert_eq!(restored.intent.harness, AgentHarness::Agy);
+        assert_eq!(restored.intent.metadata.name, "agy");
     }
 
     #[test]
@@ -2029,6 +2117,96 @@ mod test {
         assert_eq!(
             pending.values().next().map(|intent| &intent.harness),
             Some(&AgentHarness::Claude)
+        );
+    }
+
+    #[test]
+    fn restore_tab_resumes_exact_agy_conversation_and_registers_pending_intent() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let source_mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&source_mux);
+
+        let window_id = *source_mux.new_empty_window(Some("default".to_string()), None);
+        let tab_size = size(120, 40);
+        let tab = Arc::new(Tab::new(&tab_size));
+        let pane = TestPane::new(alloc_pane_id(), tab_size);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        source_mux.add_tab_and_active_pane(&tab).unwrap();
+        source_mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let mut metadata = sample_agent_metadata("agy-resume");
+        metadata.launch_cmd = "agy --dangerously-skip-permissions".to_string();
+        source_mux
+            .set_agent_metadata(pane_id, metadata.clone())
+            .unwrap();
+        let conversation_id = "00000000-0000-4000-8000-000000000011";
+        let session_dir = tempfile::tempdir().unwrap();
+        let session_path = session_dir
+            .path()
+            .join("brain")
+            .join(conversation_id)
+            .join(".system_generated")
+            .join("logs")
+            .join("transcript.jsonl");
+        std::fs::create_dir_all(session_path.parent().unwrap()).unwrap();
+        std::fs::write(&session_path, "{}\n").unwrap();
+        let mut runtime = source_mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .expect("agent runtime");
+        runtime.harness = AgentHarness::Agy;
+        runtime.transport = crate::agent::AgentTransport::ObservedPty;
+        runtime.session_path = Some(session_path.to_string_lossy().into_owned());
+        source_mux
+            .agent_runtime_by_pane
+            .write()
+            .insert(pane_id, runtime);
+
+        let saved_session = build_saved_session(&source_mux);
+        let saved_tab = saved_session.windows[0].tabs[0].clone();
+        let intents = saved_session
+            .agent_restore_intents
+            .into_iter()
+            .map(|intent| (intent.pane_id, intent))
+            .collect::<HashMap<_, _>>();
+
+        let restored_mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&restored_mux);
+        let _guard = crate::TestMuxGuard;
+        let restored_window = *restored_mux.new_empty_window(Some("default".to_string()), None);
+        let recording_domain = Arc::new(TestDomain::new());
+        let commands = Arc::clone(&recording_domain.commands);
+        let command_dirs = Arc::clone(&recording_domain.command_dirs);
+        let domain: Arc<dyn Domain> = recording_domain;
+
+        smol::block_on(async {
+            restore_tab(&domain, &saved_tab, tab_size, restored_window, &intents)
+                .await
+                .expect("restore tab");
+        });
+
+        assert_eq!(
+            commands.lock().unwrap().as_slice(),
+            &[vec![
+                "agy".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+                "--conversation".to_string(),
+                conversation_id.to_string(),
+            ]]
+        );
+        assert_eq!(
+            command_dirs.lock().unwrap().as_slice(),
+            &[Some(metadata.declared_cwd)]
+        );
+        let pending = restored_mux.pending_agent_restores.read();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending.values().next().map(|intent| &intent.harness),
+            Some(&AgentHarness::Agy)
         );
     }
 

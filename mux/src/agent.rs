@@ -391,6 +391,7 @@ fn is_harness_tui_program(harness: &AgentHarness, value: &str) -> bool {
         .map(|name| {
             let name = name.to_ascii_lowercase();
             match harness {
+                AgentHarness::Agy => matches!(name.as_str(), "agy" | "agy.exe"),
                 AgentHarness::Claude => matches!(
                     name.as_str(),
                     "claude" | "claude.exe" | "claude.cmd" | "claude.bat" | "claude.js"
@@ -543,8 +544,79 @@ fn normalize_claude_argv(argv: &mut Vec<String>) {
     }
 }
 
+fn normalize_agy_argv(argv: &mut Vec<String>) {
+    let original = std::mem::take(argv);
+    let Some(program) = original.first() else {
+        return;
+    };
+    argv.push(program.clone());
+    let mut index = 1;
+    while index < original.len() {
+        let argument = &original[index];
+        if matches!(
+            argument.as_str(),
+            "-c" | "--continue"
+                | "--new-project"
+                | "-i"
+                | "--prompt-interactive"
+                | "-p"
+                | "--print"
+                | "--prompt"
+        ) {
+            index += 1;
+            continue;
+        }
+        if argument == "--conversation" {
+            index += 1;
+            if original
+                .get(index)
+                .is_some_and(|value| !value.starts_with('-'))
+            {
+                index += 1;
+            }
+            continue;
+        }
+        if argument.starts_with("--conversation=") {
+            index += 1;
+            continue;
+        }
+        if !argument.starts_with('-') {
+            // A bare Agy argument can select a subcommand or supply input.
+            // Replaying it during exact restoration is not safe.
+            index += 1;
+            continue;
+        }
+
+        argv.push(argument.clone());
+        index += 1;
+        let takes_value = matches!(
+            argument
+                .split_once('=')
+                .map_or(argument.as_str(), |pair| pair.0),
+            "--add-dir"
+                | "--agent"
+                | "--effort"
+                | "--input-format"
+                | "--json-schema"
+                | "--log-file"
+                | "--mode"
+                | "--model"
+                | "--output-format"
+                | "--print-timeout"
+                | "--project"
+        );
+        if !argument.contains('=') && takes_value {
+            if let Some(value) = original.get(index) {
+                argv.push(value.clone());
+                index += 1;
+            }
+        }
+    }
+}
+
 fn remove_native_resume_selector(harness: &AgentHarness, argv: &mut Vec<String>) -> bool {
     match harness {
+        AgentHarness::Agy => normalize_agy_argv(argv),
         AgentHarness::Claude => normalize_claude_argv(argv),
         AgentHarness::Codex => {
             if let Some(resume) = argv.iter().position(|arg| arg == "resume") {
@@ -818,6 +890,9 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
             runtime.observer_started_at,
             metadata.adopted_pid,
             metadata.adopted_start_time,
+            expected_session
+                .filter(|expected| expected.harness == AgentHarness::Agy)
+                .map(|expected| expected.session_id.as_str()),
         ),
         AgentHarness::Claude => observe_claude(
             cwd,
@@ -988,12 +1063,18 @@ fn observe_agy(
     _updated_after: Option<DateTime<Utc>>,
     process_id: Option<u32>,
     process_start_time: Option<u64>,
+    expected_conversation_id: Option<&str>,
 ) -> anyhow::Result<Option<HarnessObservation>> {
     let Some(root) = agy_root() else {
         return Ok(None);
     };
-    let Some(transcript) =
-        agy_session_owned_by_process(&root, process_id, process_start_time, preferred_session)?
+    let Some(transcript) = agy_session_owned_by_process(
+        &root,
+        process_id,
+        process_start_time,
+        preferred_session,
+        expected_conversation_id,
+    )?
     else {
         return Ok(None);
     };
@@ -1017,6 +1098,7 @@ fn agy_session_owned_by_process(
     process_id: Option<u32>,
     process_start_time: Option<u64>,
     preferred_session: Option<&str>,
+    expected_conversation_id: Option<&str>,
 ) -> anyhow::Result<Option<PathBuf>> {
     let (Some(process_id), Some(process_start_time)) = (process_id, process_start_time) else {
         return Ok(None);
@@ -1054,6 +1136,9 @@ fn agy_session_owned_by_process(
         if !is_uuid(conversation_id) {
             continue;
         }
+        if expected_conversation_id.is_some_and(|expected| expected != conversation_id) {
+            continue;
+        }
         let transcript = root
             .join("brain")
             .join(conversation_id)
@@ -1081,6 +1166,7 @@ fn agy_session_owned_by_process(
     _process_id: Option<u32>,
     _process_start_time: Option<u64>,
     _preferred_session: Option<&str>,
+    _expected_conversation_id: Option<&str>,
 ) -> anyhow::Result<Option<PathBuf>> {
     Ok(None)
 }
@@ -1815,10 +1901,11 @@ pub fn native_resume_command(
         !session_id.trim().is_empty(),
         "agent session ID must not be empty"
     );
-    if harness == &AgentHarness::Claude {
+    if matches!(harness, AgentHarness::Agy | AgentHarness::Claude) {
         anyhow::ensure!(
             is_uuid(session_id.trim()),
-            "Claude restore requires an exact session UUID"
+            "{:?} restore requires an exact session UUID",
+            harness
         );
     }
     let mut argv = shell_words::split(launch_cmd).context("parsing agent launch command")?;
@@ -1835,6 +1922,7 @@ pub fn native_resume_command(
     );
     argv.push(
         match harness {
+            AgentHarness::Agy => "--conversation",
             AgentHarness::Claude => "--resume",
             AgentHarness::Codex => "resume",
             _ => unreachable!(),
@@ -1986,6 +2074,13 @@ pub fn restorable_session_id(
     path: &Path,
 ) -> anyhow::Result<Option<String>> {
     match harness {
+        AgentHarness::Agy => Ok(path
+            .ancestors()
+            .nth(3)
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .filter(|conversation_id| is_uuid(conversation_id))
+            .map(ToOwned::to_owned)),
         AgentHarness::Claude => claude_session_id(path),
         AgentHarness::Codex => codex_session_id(path),
         _ => Ok(None),
@@ -3544,6 +3639,7 @@ mod test {
             Some(process.pid),
             Some(process.start_time),
             None,
+            None,
         )
         .unwrap();
         assert_eq!(observed.as_deref(), Some(transcript.as_path()));
@@ -3551,6 +3647,7 @@ mod test {
             temp.path(),
             Some(process.pid),
             Some(process.start_time + 1),
+            None,
             None,
         )
         .unwrap()
@@ -3566,6 +3663,28 @@ mod test {
             Some(process.pid),
             Some(process.start_time),
             None,
+            None,
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(
+            agy_session_owned_by_process(
+                temp.path(),
+                Some(process.pid),
+                Some(process.start_time),
+                None,
+                Some(conversation_id),
+            )
+            .unwrap()
+            .as_deref(),
+            Some(transcript.as_path())
+        );
+        assert!(agy_session_owned_by_process(
+            temp.path(),
+            Some(process.pid),
+            Some(process.start_time),
+            None,
+            Some("cccccccc-dddd-4eee-8fff-000000000000"),
         )
         .unwrap()
         .is_none());
@@ -3575,6 +3694,7 @@ mod test {
                 Some(process.pid),
                 Some(process.start_time),
                 transcript.to_str(),
+                None,
             )
             .unwrap()
             .as_deref(),
@@ -3749,6 +3869,38 @@ mod test {
             Some(
                 "/home/mihai/.local/bin/claude --dangerously-skip-permissions --add-dir /home/mihai --add-dir /code --add-dir .git"
             )
+        );
+    }
+
+    #[test]
+    fn agy_restore_recipe_uses_expanded_process_argv_and_removes_session_selectors() {
+        let process = proc_info(
+            "zsh",
+            "/usr/bin/zsh",
+            &["zsh"],
+            1,
+            vec![proc_info(
+                "agy",
+                "/home/mihai/.local/bin/agy",
+                &[
+                    "/home/mihai/.local/bin/agy",
+                    "--dangerously-skip-permissions",
+                    "--add-dir",
+                    "/code",
+                    "--continue",
+                    "--conversation",
+                    "00000000-0000-4000-8000-000000000001",
+                    "--new-project",
+                    "initial input",
+                ],
+                2,
+                vec![],
+            )],
+        );
+
+        assert_eq!(
+            native_restore_launch_command(&AgentHarness::Agy, &process).as_deref(),
+            Some("/home/mihai/.local/bin/agy --dangerously-skip-permissions --add-dir /code")
         );
     }
 
@@ -4502,6 +4654,45 @@ mod test {
                 "--dangerously-skip-permissions",
                 "--resume",
                 "00000000-0000-4000-8000-000000000003",
+            ]
+        );
+    }
+
+    #[test]
+    fn agy_restore_command_uses_the_confirmed_conversation_id() {
+        let conversation_id = "00000000-0000-4000-8000-000000000004";
+        let transcript = Path::new("/tmp/antigravity-cli")
+            .join("brain")
+            .join(conversation_id)
+            .join(".system_generated")
+            .join("logs")
+            .join("transcript.jsonl");
+
+        assert_eq!(
+            restorable_session_id(&AgentHarness::Agy, &transcript)
+                .unwrap()
+                .as_deref(),
+            Some(conversation_id)
+        );
+
+        let command = native_resume_command(
+            &AgentHarness::Agy,
+            "agy --dangerously-skip-permissions --conversation old --continue 'old input'",
+            conversation_id,
+        )
+        .unwrap();
+        let argv = command
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            argv,
+            vec![
+                "agy",
+                "--dangerously-skip-permissions",
+                "--conversation",
+                conversation_id,
             ]
         );
     }

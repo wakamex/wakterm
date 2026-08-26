@@ -6,11 +6,12 @@ Wakterm supports agent harnesses as terminal processes running in PTY panes. It 
 
 Restorable Claude and Codex sessions are restored automatically across
 multiplexer restart and system reboot in their declared working directory,
-resuming the exact confirmed provider session. Claude resumes through its
-native TUI. Codex first resumes through the current shared app-server and uses
-an exact native fallback if that fails. If a restart interrupts an active
-turn, Wakterm restores the session but does not guarantee that the in-flight
-turn continues.
+resuming the exact confirmed provider session. On Linux, confirmed Agy
+conversations have the same restoration guarantee. Agy and Claude resume
+through their native TUIs. Codex first resumes through the current shared
+app-server and uses an exact native fallback if that fails. If a restart
+interrupts an active turn, Wakterm restores the session but does not guarantee
+that the in-flight turn continues.
 
 Agent API v1 provides versioned capability negotiation, catalog queries, authoritative prompt admission, durable event streams, and return request tracking. Structured supervisor backends that preserve the provider native TUI remain the long-term direction. Wakterm-rendered agent presentation is not the normal product direction. This document defines the lifecycle boundaries and guarantees.
 
@@ -87,6 +88,11 @@ per-conversation presence lock, then observes that conversation's persistent
 transcript. Wakterm does not select an Agy conversation by modification time or
 working directory alone.
 
+A restorable Agy pane persists the conversation UUID confirmed by that lock.
+Restoration invokes the current Agy launcher with `--conversation <uuid>` and
+rebinds the Wakterm agent identity only after the new process incarnation owns
+the presence lock for the same UUID.
+
 Process IDs are incarnation identifiers only. When a PID is recorded, its
 start time must also match so PID reuse cannot attach stale metadata to an
 unrelated process. Neither value is a durable session identity.
@@ -153,9 +159,9 @@ launch command does not.
 Native restoration has one shared provider boundary: identify a restorable
 harness, extract its stable session ID, normalize its concrete process argv,
 construct its exact resume invocation, and confirm the session after launch.
-Claude and Codex implement that boundary. Provider-specific managed transports
-remain optional preparation paths layered on the same persisted restore
-intent.
+Agy, Claude, and Codex implement that boundary. Provider-specific managed
+transports remain optional preparation paths layered on the same persisted
+restore intent.
 
 The provider session identity is authoritative for recovery. File names,
 timestamps, titles, and command lines are supporting evidence unless a
@@ -257,7 +263,7 @@ The provider stance is:
 
 | Provider | Starting preference | Reason |
 | --- | --- | --- |
-| Agy | Native observed PTY; investigate structured supervision | The interactive TUI exposes exact conversation presence and a persistent transcript; stream JSON and state callbacks apply to managed launches rather than attachment to an existing TUI |
+| Agy | Native observed and restorable PTY; investigate structured supervision | The interactive TUI exposes exact conversation presence and a persistent transcript; stream JSON and state callbacks apply to managed launches rather than attachment to an existing TUI |
 | Gemini | Native TUI; investigate same-session supervision | Direct ACP makes the client the UI unless Gemini supports concurrent native-TUI attachment |
 | OpenCode | Native TUI; investigate same-session supervision | Direct ACP is not sufficient if it replaces the provider TUI |
 | Claude | Native observed and restorable PTY | Remote Control preserves the TUI but exposes no supported local observer; reverse-engineered `--sdk-url`, SDK, and ACP paths are headless, cloud-constrained, or infer state from a PTY |

@@ -1,8 +1,9 @@
 # Claude and Agy restart failures on Fedora
 
-## Observed failures
+## Failures observed before the fixes
 
-The mux restart on 2026-08-26 exposed two separate gaps.
+The mux restart on 2026-08-26 exposed two separate gaps. The service PATH and
+Agy restore changes described below were then implemented as separate commits.
 
 | Harness | Saved exact session | Restore command available | Failure |
 | --- | --- | --- | --- |
@@ -112,29 +113,30 @@ maps the lock UUID to:
 ```
 
 That evidence is sufficient to derive the stable conversation UUID while the
-process is alive. It is currently used for observation, not restoration.
+process is alive. At the failing revision, it was used for observation but not
+restoration.
 
-Three current gates exclude Agy from recovery:
+At the failing revision, three gates excluded Agy from recovery:
 
-- `agent_restore_intent_for_pane` returns an intent only for Claude and Codex.
-- `restorable_session_id` extracts IDs only for Claude and Codex.
-- `native_resume_command` and `register_agent_restore_intent` accept only Claude
+- `agent_restore_intent_for_pane` returned an intent only for Claude and Codex.
+- `restorable_session_id` extracted IDs only for Claude and Codex.
+- `native_resume_command` and `register_agent_restore_intent` accepted only Claude
   and Codex.
 
-The saved session after restart contains 20 Codex intents and one Claude intent,
+The saved session captured after that restart contained 20 Codex intents and one Claude intent,
 but no Agy intent. Without an intent, layout restoration starts the default
 program for that pane. Wakterm has no expected harness or provider session to
 retry or report, which accounts for the empty Agy pane.
 
 The Agy pane was detected rather than durably registered before the observed
-restart. Detection alone is intentionally not durable. Even an adopted Agy pane
-would still hit the implementation gates above, so adoption by itself does not
-solve the recovery gap.
+restart. Detection alone is intentionally not durable. At that revision, even an
+adopted Agy pane hit the implementation gates above, so adoption by itself did
+not solve the recovery gap.
 
-### Agy fix direction
+### Implemented Agy recovery
 
-Extend the existing native restore boundary instead of adding an Agy-specific
-recovery subsystem:
+The implementation extends the existing native restore boundary instead of
+adding an Agy-specific recovery subsystem:
 
 1. Extract the conversation UUID from the confirmed transcript path.
 2. Persist an Agy restore intent only after the exact process-to-presence-lock
@@ -147,7 +149,7 @@ recovery subsystem:
 6. Retain the intent and show a visible retryable failure if launch or identity
    confirmation fails.
 
-Required regression coverage:
+Regression coverage:
 
 - A confirmed Agy transcript produces the correct conversation UUID.
 - Launch normalization preserves safe options and inserts exactly one
@@ -158,7 +160,7 @@ Required regression coverage:
   never becomes a fresh Agy session or generic shell.
 - A detected but unconfirmed Agy pane remains non-restorable.
 
-## Implementation order
+## Validation order
 
 1. Fix the service executable path and rerun the existing Claude restart test.
 2. Add Agy to the shared native restore pipeline with exact-session confirmation.

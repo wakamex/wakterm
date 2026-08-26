@@ -1456,7 +1456,10 @@ impl Mux {
             pane_id
         );
         anyhow::ensure!(
-            matches!(harness, AgentHarness::Claude | AgentHarness::Codex),
+            matches!(
+                harness,
+                AgentHarness::Agy | AgentHarness::Claude | AgentHarness::Codex
+            ),
             "automatic restore is not implemented for {:?}",
             harness
         );
@@ -1498,7 +1501,10 @@ impl Mux {
         }
         let runtime = self.agent_runtime_by_pane.read().get(&pane_id).cloned()?;
         let harness = runtime.harness;
-        if !matches!(harness, AgentHarness::Claude | AgentHarness::Codex) {
+        if !matches!(
+            harness,
+            AgentHarness::Agy | AgentHarness::Claude | AgentHarness::Codex
+        ) {
             return None;
         }
         let session_path = runtime.session_path.as_deref()?;
