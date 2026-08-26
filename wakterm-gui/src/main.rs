@@ -51,6 +51,7 @@ mod selection;
 mod shapecache;
 mod spawn;
 mod stats;
+mod tab_color_palette;
 mod tab_colors;
 mod tabbar;
 mod termwindow;

@@ -267,13 +267,14 @@ pub struct TabInformation {
     pub needs_attention: bool,
     pub assigned_color: Option<config::RgbaColor>,
     pub window_id: MuxWindowId,
+    pub effective_title: String,
     pub tab_title: String,
 }
 
 impl TabInformation {
     pub fn effective_title(&self) -> String {
-        if !self.tab_title.is_empty() {
-            self.tab_title.clone()
+        if !self.effective_title.is_empty() {
+            self.effective_title.clone()
         } else {
             self.active_pane
                 .as_ref()
@@ -3808,6 +3809,7 @@ impl TermWindow {
         };
         let tab_index = self.get_active_tab_index();
         let last_active_idx = self.get_last_active_tab_index();
+        let effective_titles = mux.effective_tab_titles_for_window(self.mux_window_id);
         let display_titles = mux.display_tab_titles_for_window(self.mux_window_id);
 
         let mut tabs: Vec<TabInformation> = window
@@ -3831,6 +3833,10 @@ impl TermWindow {
                     is_active: tab_index == Some(idx),
                     is_last_active: last_active_idx == Some(idx),
                     window_id: self.mux_window_id,
+                    effective_title: effective_titles
+                        .get(&tab.tab_id())
+                        .cloned()
+                        .unwrap_or_default(),
                     tab_title: display_titles
                         .get(&tab.tab_id())
                         .cloned()
@@ -4042,6 +4048,7 @@ mod test {
             needs_attention: false,
             assigned_color: None,
             window_id: 0,
+            effective_title: tab_title.to_string(),
             tab_title: tab_title.to_string(),
         }
     }
@@ -4050,6 +4057,13 @@ mod test {
     fn effective_title_prefers_explicit_tab_title() {
         let tab = tab_info("my-tab", Some("zsh"));
         assert_eq!(tab.effective_title(), "my-tab");
+    }
+
+    #[test]
+    fn effective_title_ignores_display_decoration() {
+        let mut tab = tab_info("application", Some("zsh"));
+        tab.tab_title = "⠹ application".to_string();
+        assert_eq!(tab.effective_title(), "application");
     }
 
     #[test]

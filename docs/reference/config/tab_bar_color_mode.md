@@ -14,11 +14,17 @@ Possible values are:
 
 When assigning colors, wakterm keys each tab by:
 
-- the explicit tab title, if set
+- the effective title without transient badges, if available. Collision suffixes
+  such as `2` and `3` remain part of the identity
 - otherwise the right-most segment of the active pane cwd
-- otherwise the effective title
+- otherwise the tab ID
 
-`"Assign"` persists these key-to-color assignments across sessions.
+Effective titles and cwd segments share the same name namespace, so a title and
+cwd that both resolve to `x` receive the same color.
+
+`"Assign"` persists these key-to-color assignments across sessions. It uses an
+offline-generated farthest-first sequence and does not reuse an RGB color until
+the 512-color sequence is exhausted.
 
 Generated colors are only applied when your `format-tab-title` callback has
 not already set explicit foreground/background colors for the tab.

@@ -2018,6 +2018,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "generate-tab-color-palettes"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rayon",
+ "sha2",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
