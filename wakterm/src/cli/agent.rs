@@ -61,18 +61,21 @@ enum AgentSubCommand {
     )]
     AdoptDetected(AdoptDetectedAgentCommand),
 
-    #[command(name = "list", about = "list adopted and detected agent panes")]
+    #[command(
+        name = "list",
+        about = "list managed, adopted, and detected agent panes"
+    )]
     List(ListAgentsCommand),
 
     #[command(
         name = "watch",
-        about = "stream latest observer-backed harness messages for adopted and detected agent panes"
+        about = "stream latest observer-backed harness messages for registered and detected agent panes"
     )]
     Watch(WatchAgentsCommand),
 
     #[command(
         name = "inspect",
-        about = "inspect a single adopted or detected agent by name or id"
+        about = "inspect a single registered or detected agent by name or id"
     )]
     Inspect(InspectAgentCommand),
 
@@ -2164,7 +2167,7 @@ impl AdoptDetectedAgentCommand {
             .unwrap_or(detected.metadata.name.as_str());
 
         if let Some(existing) = agents.iter().find(|agent| {
-            matches!(agent.origin, AgentOrigin::Adopted)
+            agent.origin.is_registered()
                 && agent.metadata.name == name
                 && agent.pane_id != detected.pane_id
         }) {
@@ -2203,9 +2206,7 @@ impl AdoptDetectedAgentCommand {
             .await?
             .agents
             .into_iter()
-            .find(|agent| {
-                agent.pane_id == detected.pane_id && matches!(agent.origin, AgentOrigin::Adopted)
-            })
+            .find(|agent| agent.pane_id == detected.pane_id && agent.origin.is_registered())
             .ok_or_else(|| anyhow::anyhow!("agent metadata was set but could not be reloaded"))?;
 
         write_json(&updated)
@@ -2861,6 +2862,7 @@ fn write_agent_table<W: Write>(
             let origin = match agent.origin {
                 AgentOrigin::Adopted => "adopted".to_string(),
                 AgentOrigin::Detected => "detected".to_string(),
+                AgentOrigin::Managed => "managed".to_string(),
             };
             if verbose {
                 vec![
@@ -3517,6 +3519,7 @@ mod test {
     fn agent_list_table_is_compact_by_default_and_verbose_preserves_details() {
         let now = Utc.with_ymd_and_hms(2026, 3, 17, 14, 30, 0).unwrap();
         let mut agent = sample_agent(30, "reviewer");
+        agent.origin = AgentOrigin::Managed;
         agent.runtime.status = AgentStatus::Busy;
         agent.runtime.turn_state = AgentTurnState::WaitingOnAgent;
         agent.runtime.last_turn_completed_at =
@@ -3527,6 +3530,7 @@ mod test {
         let compact = String::from_utf8(compact).unwrap();
         assert!(compact.contains("LAST TURN END"));
         assert!(compact.contains("busy"));
+        assert!(compact.contains("managed"));
         assert!(compact.contains("2h 15m"));
         assert!(!compact.contains("PANEID"));
         assert!(!compact.contains("PROGRESS"));

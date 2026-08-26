@@ -1,6 +1,6 @@
 use crate::agent::{
     codex_complete_tail_offset_from_file, read_codex_output_messages_from_file, AgentHarness,
-    AgentOrigin, AgentSnapshot,
+    AgentSnapshot,
 };
 use crate::agent_admission::{
     AgentAdmissionCandidate, AgentAdmissionCapture, AgentAdmissionReceipt, AgentAdmissionStore,
@@ -324,10 +324,8 @@ impl<'a> AgentService<'a> {
         let agent = self
             .list_agents()
             .into_iter()
-            .find(|agent| {
-                agent.metadata.agent_id == agent_id && matches!(agent.origin, AgentOrigin::Adopted)
-            })
-            .ok_or_else(|| anyhow::anyhow!("no adopted agent with id {agent_id}"))?;
+            .find(|agent| agent.metadata.agent_id == agent_id && agent.origin.is_registered())
+            .ok_or_else(|| anyhow::anyhow!("no registered agent with id {agent_id}"))?;
 
         if agent.runtime.harness != AgentHarness::Codex {
             return Ok(PreparedAgentOutput::Immediate(page(

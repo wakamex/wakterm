@@ -3804,13 +3804,8 @@ impl Mux {
             self.clear_agent_metadata(pane_id);
             return None;
         }
-        self.snapshot_with_runtime(
-            pane_id,
-            (*metadata).clone(),
-            runtime,
-            AgentOrigin::Adopted,
-            None,
-        )
+        let origin = AgentOrigin::for_registered_transport(&runtime.transport);
+        self.snapshot_with_runtime(pane_id, (*metadata).clone(), runtime, origin, None)
     }
 
     fn build_cached_agent_snapshot(
@@ -3820,13 +3815,8 @@ impl Mux {
     ) -> Option<AgentSnapshot> {
         let pane = self.get_pane(pane_id)?;
         let runtime = self.cached_runtime_snapshot_for_agent(pane_id, metadata.as_ref(), &pane);
-        self.snapshot_with_runtime(
-            pane_id,
-            (*metadata).clone(),
-            runtime,
-            AgentOrigin::Adopted,
-            None,
-        )
+        let origin = AgentOrigin::for_registered_transport(&runtime.transport);
+        self.snapshot_with_runtime(pane_id, (*metadata).clone(), runtime, origin, None)
     }
 
     fn build_cached_detected_agent_snapshot(

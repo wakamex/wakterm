@@ -1,6 +1,6 @@
 use crate::agent::{
-    refresh_runtime_from_harness, AgentHarness, AgentMetadata, AgentOrigin, AgentRuntimeSnapshot,
-    AgentSnapshot, AgentStatus, AgentTurnState,
+    refresh_runtime_from_harness, AgentHarness, AgentMetadata, AgentRuntimeSnapshot, AgentSnapshot,
+    AgentStatus, AgentTurnState,
 };
 use crate::agent_request::{AgentRequest, AgentRequestState, AgentRequestStore};
 use crate::pane::PaneId;
@@ -283,7 +283,7 @@ impl Mux {
         let agents = self
             .list_agents_cached()
             .into_iter()
-            .filter(|agent| matches!(agent.origin, AgentOrigin::Adopted))
+            .filter(|agent| agent.origin.is_registered())
             .map(catalog_entry)
             .collect();
         AgentCatalog {
@@ -305,8 +305,7 @@ impl Mux {
             ));
         }
         let target = self.list_agents_cached().into_iter().find(|agent| {
-            matches!(agent.origin, AgentOrigin::Adopted)
-                && agent.metadata.agent_id == request.agent_id
+            agent.origin.is_registered() && agent.metadata.agent_id == request.agent_id
         });
         let Some(target) = target else {
             return AgentAdmissionCapture::Rejected(AgentAdmissionReceipt::rejected(

@@ -37,8 +37,11 @@ These states are not aliases:
   provider's presentation or approval UI.
 - A Wakterm-rendered backend is not a substitute for a provider's native TUI.
 
-`Restorable` describes a lifecycle capability rather than a public origin.
-`App-server TUI` is represented by the `CodexAppServerTui` transport.
+The public `origin` reports `detected` for unregistered discovery, `adopted` for
+a registered PTY owned by its native process, and `managed` when the mux owns
+the structured transport. `Restorable` remains a lifecycle capability rather
+than an origin. `App-server TUI` is represented by the `CodexAppServerTui`
+transport and therefore reports the `managed` origin.
 
 ## Codex app-server TUI transport
 

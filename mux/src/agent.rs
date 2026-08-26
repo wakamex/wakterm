@@ -106,6 +106,20 @@ pub enum AgentOrigin {
     #[default]
     Adopted,
     Detected,
+    Managed,
+}
+
+impl AgentOrigin {
+    pub fn is_registered(&self) -> bool {
+        matches!(self, Self::Adopted | Self::Managed)
+    }
+
+    pub fn for_registered_transport(transport: &AgentTransport) -> Self {
+        match transport {
+            AgentTransport::CodexAppServerTui => Self::Managed,
+            AgentTransport::PlainPty | AgentTransport::ObservedPty => Self::Adopted,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -3262,6 +3276,29 @@ mod test {
     use tempfile::TempDir;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn registered_origin_tracks_transport_ownership() {
+        assert_eq!(
+            AgentOrigin::for_registered_transport(&AgentTransport::PlainPty),
+            AgentOrigin::Adopted
+        );
+        assert_eq!(
+            AgentOrigin::for_registered_transport(&AgentTransport::ObservedPty),
+            AgentOrigin::Adopted
+        );
+        assert_eq!(
+            AgentOrigin::for_registered_transport(&AgentTransport::CodexAppServerTui),
+            AgentOrigin::Managed
+        );
+        assert!(AgentOrigin::Adopted.is_registered());
+        assert!(AgentOrigin::Managed.is_registered());
+        assert!(!AgentOrigin::Detected.is_registered());
+        assert_eq!(
+            serde_json::to_string(&AgentOrigin::Managed).unwrap(),
+            r#""managed""#
+        );
+    }
 
     fn set_env_path(key: &str, path: &Path) {
         unsafe {
