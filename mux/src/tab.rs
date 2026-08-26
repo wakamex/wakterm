@@ -1168,7 +1168,11 @@ impl TabInner {
         self.zoomed = zoomed;
         self.size = size;
 
-        self.resize(size);
+        // This tree came from the remote mux and is already authoritative.
+        // Apply it locally without turning the snapshot into a new ResizeTab
+        // request, which would make two clients echo resize notifications back
+        // and forth indefinitely.
+        self.resize_impl(size, false);
 
         log::debug!(
             "sync tab: {:#?} zoomed: {} {:#?}",
@@ -1507,6 +1511,10 @@ impl TabInner {
     }
 
     fn resize(&mut self, size: TerminalSize) {
+        self.resize_impl(size, true);
+    }
+
+    fn resize_impl(&mut self, size: TerminalSize, send_resize: bool) {
         if size.rows == 0 || size.cols == 0 {
             // Ignore "impossible" resize requests
             return;
@@ -1551,19 +1559,23 @@ impl TabInner {
             // And then resize the individual panes to match
             apply_sizes_from_splits(self.pane.as_mut().unwrap(), &size);
 
-            // Send a batched ResizeTab PDU with all pane sizes at once,
-            // preventing interleaving from individual per-pane PDUs.
-            let mut pane_sizes = Vec::new();
-            collect_pane_sizes(self.pane.as_ref().unwrap(), &size, &mut pane_sizes);
-            if let Some(first_pane) = self.get_active_pane() {
-                first_pane.send_resize_batch(self.id, pane_sizes);
+            if send_resize {
+                // Send a batched ResizeTab PDU with all pane sizes at once,
+                // preventing interleaving from individual per-pane PDUs.
+                let mut pane_sizes = Vec::new();
+                collect_pane_sizes(self.pane.as_ref().unwrap(), &size, &mut pane_sizes);
+                if let Some(first_pane) = self.get_active_pane() {
+                    first_pane.send_resize_batch(self.id, pane_sizes);
+                }
             }
 
             #[cfg(debug_assertions)]
             debug_assert_tree_invariants(self.pane.as_ref().unwrap(), &self.size);
         }
 
-        Mux::try_get().map(|mux| mux.notify_tab_resized(self.id));
+        if send_resize {
+            Mux::try_get().map(|mux| mux.notify_tab_resized(self.id));
+        }
     }
 
     fn apply_pane_size(&mut self, pane_size: TerminalSize, cursor: &mut Cursor) {
@@ -3111,6 +3123,72 @@ mod test {
 
         assert_eq!(left, 44);
         assert_eq!(right, 35);
+    }
+
+    #[test]
+    fn remote_resize_sync_between_two_clients_does_not_echo() {
+        let initial_size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 600,
+            dpi: 96,
+        };
+        let remote_size = TerminalSize {
+            rows: 30,
+            cols: 100,
+            pixel_width: 1000,
+            pixel_height: 750,
+            dpi: 96,
+        };
+        let user_resize = TerminalSize {
+            rows: 40,
+            cols: 120,
+            pixel_width: 1200,
+            pixel_height: 1000,
+            dpi: 96,
+        };
+        let server_tree = |size| {
+            PaneNode::Leaf(PaneEntry {
+                window_id: 1,
+                tab_id: 2,
+                pane_id: 3,
+                agent_metadata: None,
+                title: String::new(),
+                size,
+                working_dir: None,
+                is_active_pane: true,
+                is_zoomed_pane: false,
+                workspace: "default".to_string(),
+                cursor_pos: StableCursorPosition::default(),
+                physical_top: 0,
+                top_row: 0,
+                left_col: 0,
+                tty_name: None,
+            })
+        };
+        let pane_a = RecordingPane::new(1, initial_size);
+        let pane_b = RecordingPane::new(2, initial_size);
+        let client_a = Tab::new(&initial_size);
+        let client_b = Tab::new(&initial_size);
+
+        client_a.sync_with_pane_tree(remote_size, server_tree(remote_size), |_| {
+            pane_a.clone() as Arc<dyn Pane>
+        });
+        client_b.sync_with_pane_tree(remote_size, server_tree(remote_size), |_| {
+            pane_b.clone() as Arc<dyn Pane>
+        });
+        assert!(pane_a.resize_batches.lock().is_empty());
+        assert!(pane_b.resize_batches.lock().is_empty());
+
+        client_a.resize(user_resize);
+        assert_eq!(pane_a.resize_batches.lock().len(), 1);
+
+        client_b.sync_with_pane_tree(user_resize, server_tree(user_resize), |_| {
+            pane_b.clone() as Arc<dyn Pane>
+        });
+        assert_eq!(*pane_b.size.lock(), user_resize);
+        assert!(pane_b.resize_batches.lock().is_empty());
     }
 
     fn check_tree_invariants(tree: &Tree, allocated: &TerminalSize) -> Vec<String> {
