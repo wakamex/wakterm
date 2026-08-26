@@ -227,6 +227,44 @@ pub enum AgentAdmissionCapture {
     Rejected(AgentAdmissionReceipt),
 }
 
+enum AgentAdmissionTarget {
+    Exact(AgentSnapshot),
+    Missing,
+    Unconfirmed,
+    StaleIncarnation,
+}
+
+fn resolve_agent_admission_target(
+    agents: impl IntoIterator<Item = AgentSnapshot>,
+    agent_id: &str,
+    requested_incarnation: &str,
+) -> AgentAdmissionTarget {
+    let mut saw_agent = false;
+    let mut saw_confirmed_incarnation = false;
+
+    for agent in agents {
+        if !agent.origin.is_registered() || agent.metadata.agent_id != agent_id {
+            continue;
+        }
+        saw_agent = true;
+        let Some(current_incarnation) = incarnation_id(&agent.metadata) else {
+            continue;
+        };
+        saw_confirmed_incarnation = true;
+        if current_incarnation == requested_incarnation {
+            return AgentAdmissionTarget::Exact(agent);
+        }
+    }
+
+    if saw_confirmed_incarnation {
+        AgentAdmissionTarget::StaleIncarnation
+    } else if saw_agent {
+        AgentAdmissionTarget::Unconfirmed
+    } else {
+        AgentAdmissionTarget::Missing
+    }
+}
+
 pub fn incarnation_id(metadata: &AgentMetadata) -> Option<String> {
     if let Some(session) = metadata.codex_app_server.as_ref() {
         return Some(format!(
@@ -304,30 +342,34 @@ impl Mux {
                 "request_id and prompt must be non-empty",
             ));
         }
-        let target = self.list_agents_cached().into_iter().find(|agent| {
-            agent.origin.is_registered() && agent.metadata.agent_id == request.agent_id
-        });
-        let Some(target) = target else {
-            return AgentAdmissionCapture::Rejected(AgentAdmissionReceipt::rejected(
-                &request,
-                AgentAdmissionStatus::Unavailable,
-                "the target agent is not available",
-            ));
+        let target = match resolve_agent_admission_target(
+            self.list_agents_cached(),
+            &request.agent_id,
+            &request.incarnation_id,
+        ) {
+            AgentAdmissionTarget::Exact(target) => target,
+            AgentAdmissionTarget::Missing => {
+                return AgentAdmissionCapture::Rejected(AgentAdmissionReceipt::rejected(
+                    &request,
+                    AgentAdmissionStatus::Unavailable,
+                    "the target agent is not available",
+                ));
+            }
+            AgentAdmissionTarget::Unconfirmed => {
+                return AgentAdmissionCapture::Rejected(AgentAdmissionReceipt::rejected(
+                    &request,
+                    AgentAdmissionStatus::Unavailable,
+                    "the target incarnation is not confirmed",
+                ));
+            }
+            AgentAdmissionTarget::StaleIncarnation => {
+                return AgentAdmissionCapture::Rejected(AgentAdmissionReceipt::rejected(
+                    &request,
+                    AgentAdmissionStatus::StaleIncarnation,
+                    "the target incarnation changed",
+                ));
+            }
         };
-        let Some(current_incarnation) = incarnation_id(&target.metadata) else {
-            return AgentAdmissionCapture::Rejected(AgentAdmissionReceipt::rejected(
-                &request,
-                AgentAdmissionStatus::Unavailable,
-                "the target incarnation is not confirmed",
-            ));
-        };
-        if current_incarnation != request.incarnation_id {
-            return AgentAdmissionCapture::Rejected(AgentAdmissionReceipt::rejected(
-                &request,
-                AgentAdmissionStatus::StaleIncarnation,
-                "the target incarnation changed",
-            ));
-        }
         AgentAdmissionCapture::Candidate(AgentAdmissionCandidate {
             request,
             pane_id: target.pane_id,
@@ -718,6 +760,24 @@ mod tests {
         runtime
     }
 
+    fn snapshot(metadata: AgentMetadata, pane_id: PaneId) -> AgentSnapshot {
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Codex;
+        runtime.alive = true;
+        AgentSnapshot {
+            metadata,
+            runtime,
+            pane_id,
+            tab_id: pane_id,
+            window_id: 1,
+            workspace: "default".to_string(),
+            domain_id: 0,
+            origin: crate::agent::AgentOrigin::Adopted,
+            detection_source: None,
+            needs_attention: false,
+        }
+    }
+
     #[test]
     fn managed_codex_incarnation_uses_provider_identity_without_a_pid() {
         let mut metadata = metadata();
@@ -778,6 +838,29 @@ mod tests {
         assert_eq!(receipt.status, AgentAdmissionStatus::Unavailable);
         assert!(receipt.definitive);
         assert_eq!(receipt.prompt_written, Some(false));
+    }
+
+    #[test]
+    fn duplicate_agent_ids_resolve_the_exact_advertised_incarnation() {
+        let mut first = metadata();
+        first.adopted_pid = Some(10);
+        first.adopted_start_time = Some(20);
+        let mut second = metadata();
+        second.name = "second".to_string();
+        second.adopted_pid = Some(30);
+        second.adopted_start_time = Some(40);
+        let requested_incarnation = incarnation_id(&second).unwrap();
+
+        let target = resolve_agent_admission_target(
+            vec![snapshot(first, 21), snapshot(second, 24)],
+            "agent-1",
+            &requested_incarnation,
+        );
+
+        let AgentAdmissionTarget::Exact(target) = target else {
+            panic!("expected exact duplicate-id incarnation match");
+        };
+        assert_eq!(target.pane_id, 24);
     }
 
     #[test]

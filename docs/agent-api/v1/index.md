@@ -18,6 +18,11 @@ stream. Admission is scoped to a stable Wakterm agent ID and opaque current
 incarnation. Native observed sessions use process identity, while managed
 Codex sessions use exact app-server provider identity. A definitive
 non-acceptance means no prompt bytes were written.
+
+Every live catalog entry has a unique agent ID. Wakterm assigns that ID when
+an agent is registered and persists it across restoration. Admission resolves
+the exact catalog agent and incarnation pair rather than selecting by agent ID
+alone.
 An indeterminate result is never safe to retry under a new request ID.
 
 Each catalog entry also contains a fixed-width `pane_id`. It is the smallest

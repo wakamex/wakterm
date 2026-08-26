@@ -1675,6 +1675,27 @@ impl Mux {
         let mut names = self.agent_panes_by_name.write();
         let mut metadata_by_pane = self.agent_metadata_by_pane.write();
 
+        if metadata_by_pane.iter().any(|(existing_pane_id, existing)| {
+            *existing_pane_id != pane_id && existing.agent_id == metadata.agent_id
+        }) {
+            let duplicate = metadata.agent_id.clone();
+            loop {
+                metadata.agent_id = uuid::Uuid::new_v4().to_string();
+                if !metadata_by_pane
+                    .values()
+                    .any(|existing| existing.agent_id == metadata.agent_id)
+                {
+                    break;
+                }
+            }
+            log::warn!(
+                "replaced duplicate agent id {} on pane {} with {}",
+                duplicate,
+                pane_id,
+                metadata.agent_id
+            );
+        }
+
         if let Some(existing_pane_id) = names.get(&metadata.name).copied() {
             anyhow::ensure!(
                 existing_pane_id == pane_id,
@@ -2536,7 +2557,7 @@ impl Mux {
         let created_at = candidate.created_at;
         let pane_id = candidate.pane_id;
         let metadata = AgentMetadata {
-            agent_id: format!("detected-pane-{pane_id}"),
+            agent_id: uuid::Uuid::new_v4().to_string(),
             name,
             launch_cmd: candidate.launch_cmd,
             declared_cwd: candidate.declared_cwd,
@@ -10310,6 +10331,58 @@ mod test {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].metadata.name, "beta");
         assert_eq!(agents[0].pane_id, pane_a.pane_id());
+    }
+
+    #[test]
+    fn duplicate_restored_agent_ids_are_reminted_once() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab_a = Arc::new(Tab::new(&size));
+        let pane_a = FakePane::new(51, size, domain.id);
+        tab_a.assign_pane(&pane_a);
+        mux.add_tab_and_active_pane(&tab_a).unwrap();
+        mux.add_tab_to_window(&tab_a, window_id).unwrap();
+        let tab_b = Arc::new(Tab::new(&size));
+        let pane_b = FakePane::new(52, size, domain.id);
+        tab_b.assign_pane(&pane_b);
+        mux.add_tab_and_active_pane(&tab_b).unwrap();
+        mux.add_tab_to_window(&tab_b, window_id).unwrap();
+
+        let mut first = sample_agent_metadata("first");
+        first.agent_id = "detected-pane-25".to_string();
+        let mut second = sample_agent_metadata("second");
+        second.agent_id = first.agent_id.clone();
+        mux.restore_agent_metadata(pane_a.pane_id(), first).unwrap();
+        mux.restore_agent_metadata(pane_b.pane_id(), second)
+            .unwrap();
+
+        let first = mux.get_agent_metadata_for_pane(pane_a.pane_id()).unwrap();
+        let second = mux.get_agent_metadata_for_pane(pane_b.pane_id()).unwrap();
+        assert_eq!(first.agent_id, "detected-pane-25");
+        assert_ne!(second.agent_id, first.agent_id);
+        assert!(uuid::Uuid::parse_str(&second.agent_id).is_ok());
+        assert_eq!(
+            mux.agent_api_catalog()
+                .agents
+                .into_iter()
+                .map(|agent| agent.agent_id)
+                .collect::<HashSet<_>>()
+                .len(),
+            2
+        );
     }
 
     #[test]
