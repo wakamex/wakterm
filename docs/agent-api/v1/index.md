@@ -69,6 +69,8 @@ records an explicit plan artifact, currently Claude `ExitPlanMode`.
 For Codex app-server TUI sessions, completed agent-message items and turns are
 committed from the live app-server notification stream. This includes sessions
 restored after a mux restart and does not require catalog or prompt activity.
+The authoritative status returned by app-server resume initializes the restored
+catalog entry, so an idle session can accept prompt admission immediately.
 
 Gemini observation accepts both legacy JSON conversation snapshots and the
 current append-only JSONL format. Duplicate JSONL records update the same

@@ -1264,6 +1264,7 @@ impl Mux {
     }
 
     pub(crate) fn apply_codex_app_server_notification(&self, message: &serde_json::Value) {
+        self.codex_app_server.record_status_notification(message);
         codex_app_server::apply_notification_to_runtime(self, message);
     }
 
@@ -1323,6 +1324,8 @@ impl Mux {
                         Some(format!("shared Codex app-server recovery failed: {error}"));
                 } else {
                     runtime.observer_error = None;
+                    self.codex_app_server
+                        .prime_runtime(&thread.session.thread_id, runtime);
                 }
                 runtime.observed_at = Utc::now();
             }
@@ -1751,6 +1754,10 @@ impl Mux {
             .remove(&pane_id)
             .unwrap_or_else(|| AgentRuntimeSnapshot::new(&metadata));
         prime_runtime_for_new_agent(&mut runtime, &metadata, foreground_process_name.as_deref());
+        if let Some(session) = metadata.codex_app_server.as_ref() {
+            self.codex_app_server
+                .prime_runtime(&session.thread_id, &mut runtime);
+        }
         self.install_agent_metadata_runtime(pane_id, metadata, runtime)?;
 
         self.refresh_agent_runtime_for_pane_with_update(
@@ -10382,6 +10389,81 @@ mod test {
                 .collect::<HashSet<_>>()
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn restored_app_server_idle_status_allows_immediate_admission() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new(53, size, domain.id);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        mux.codex_app_server
+            .record_thread_status(&serde_json::json!({
+                "id": "thread-restored-idle",
+                "status": {"type": "idle"}
+            }));
+
+        let mut metadata = sample_agent_metadata("restored-idle");
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "thread-restored-idle".to_string(),
+            session_id: "session-restored-idle".to_string(),
+            executable: "codex".to_string(),
+            version: "codex-cli test".to_string(),
+            tui_args: vec![],
+        });
+        mux.restore_agent_metadata(pane_id, metadata.clone())
+            .unwrap();
+
+        let runtime = mux.agent_runtime_by_pane.read()[&pane_id].clone();
+        assert_eq!(
+            runtime.turn_state,
+            crate::agent::AgentTurnState::WaitingOnUser
+        );
+        assert_eq!(runtime.status, crate::agent::AgentStatus::Idle);
+
+        let request = crate::agent_admission::AgentPromptAdmissionRequest {
+            request_id: "restored-idle-request".to_string(),
+            agent_id: metadata.agent_id.clone(),
+            incarnation_id: crate::agent_admission::incarnation_id(&metadata).unwrap(),
+            prompt: "continue".to_string(),
+            paste: false,
+            return_final: false,
+            timeout_ms: 0,
+        };
+        let crate::agent_admission::AgentAdmissionCapture::Candidate(candidate) =
+            mux.capture_agent_admission(request)
+        else {
+            panic!("restored idle app-server agent should be an admission candidate");
+        };
+        assert_eq!(
+            candidate.runtime.turn_state,
+            crate::agent::AgentTurnState::WaitingOnUser
+        );
+        let receipt = mux
+            .validate_agent_admission(&candidate)
+            .expect("fake pane should fail only at its unsupported atomic-write boundary");
+        assert_eq!(
+            receipt.status,
+            crate::agent_admission::AgentAdmissionStatus::Unsupported
         );
     }
 

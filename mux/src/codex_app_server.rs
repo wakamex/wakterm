@@ -227,6 +227,7 @@ impl Connection {
 
 pub struct CodexAppServer {
     state: Mutex<State>,
+    thread_status_by_id: Mutex<HashMap<String, Value>>,
 }
 
 struct State {
@@ -252,6 +253,7 @@ impl CodexAppServer {
                 )),
                 recovered_once: false,
             }),
+            thread_status_by_id: Mutex::new(HashMap::new()),
         }
     }
 
@@ -295,6 +297,7 @@ impl CodexAppServer {
             .and_then(Value::as_str)
             .context("Codex response omitted thread.sessionId")?
             .to_string();
+        self.record_thread_status(thread);
         if let Some(expected) = request.resume_thread_id.as_deref() {
             anyhow::ensure!(
                 thread_id == expected,
@@ -334,6 +337,7 @@ impl CodexAppServer {
 
     pub fn mark_disconnected(&self) {
         self.state.lock().connection = None;
+        self.thread_status_by_id.lock().clear();
     }
 
     pub fn recover(&self, threads: &[RecoveryThread]) -> anyhow::Result<HashMap<String, String>> {
@@ -368,6 +372,7 @@ impl CodexAppServer {
                         == Some(thread.session.session_id.as_str()),
                     "Codex app-server recovered a different session"
                 );
+                self.record_thread_status(restored);
                 connection.request(
                     "thread/name/set",
                     json!({"threadId": thread.session.thread_id, "name": thread.name}),
@@ -379,6 +384,51 @@ impl CodexAppServer {
             }
         }
         Ok(failures)
+    }
+
+    pub(crate) fn record_thread_status(&self, thread: &Value) {
+        let Some(thread_id) = thread.get("id").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(status) = thread.get("status") else {
+            return;
+        };
+        self.thread_status_by_id
+            .lock()
+            .insert(thread_id.to_string(), status.clone());
+    }
+
+    pub(crate) fn record_status_notification(&self, message: &Value) {
+        let method = message.get("method").and_then(Value::as_str);
+        let Some(thread_id) = message.pointer("/params/threadId").and_then(Value::as_str) else {
+            return;
+        };
+        if method == Some("thread/closed") {
+            self.thread_status_by_id.lock().remove(thread_id);
+            return;
+        }
+        if method != Some("thread/status/changed") {
+            return;
+        }
+        let Some(status) = message.pointer("/params/status") else {
+            return;
+        };
+        self.thread_status_by_id
+            .lock()
+            .insert(thread_id.to_string(), status.clone());
+    }
+
+    pub(crate) fn prime_runtime(
+        &self,
+        thread_id: &str,
+        runtime: &mut crate::agent::AgentRuntimeSnapshot,
+    ) {
+        let Some(status) = self.thread_status_by_id.lock().get(thread_id).cloned() else {
+            return;
+        };
+        runtime.observed_at = Utc::now();
+        apply_thread_status(runtime, &status);
+        finalize_runtime_snapshot(runtime);
     }
 }
 
@@ -781,27 +831,7 @@ pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
                 }
             }
             "thread/status/changed" => {
-                match params.pointer("/status/type").and_then(Value::as_str) {
-                    Some("active") => {
-                        runtime.turn_state = AgentTurnState::WaitingOnAgent;
-                        runtime.attention_reason = None;
-                        runtime.observer_error = None;
-                        if matches!(runtime.turn_phase.as_deref(), Some("systemError")) {
-                            runtime.turn_phase = Some("running".to_string());
-                        }
-                    }
-                    Some("idle") => {
-                        runtime.turn_state = AgentTurnState::WaitingOnUser;
-                        runtime.observer_error = None;
-                        if matches!(runtime.turn_phase.as_deref(), Some("systemError")) {
-                            runtime.turn_phase = None;
-                        }
-                    }
-                    Some("systemError") => {
-                        runtime.turn_phase = Some("systemError".to_string());
-                    }
-                    _ => {}
-                }
+                apply_thread_status(runtime, params.get("status").unwrap_or(&Value::Null));
             }
             "item/started" => {
                 runtime.turn_state = AgentTurnState::WaitingOnAgent;
@@ -847,6 +877,30 @@ pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
         if let Some((_, _, tab_id)) = mux.resolve_pane_id(pane_id) {
             mux.notify_tab_title_changed(tab_id);
         }
+    }
+}
+
+fn apply_thread_status(runtime: &mut crate::agent::AgentRuntimeSnapshot, status: &Value) {
+    match status.get("type").and_then(Value::as_str) {
+        Some("active") => {
+            runtime.turn_state = AgentTurnState::WaitingOnAgent;
+            runtime.attention_reason = None;
+            runtime.observer_error = None;
+            if matches!(runtime.turn_phase.as_deref(), Some("systemError")) {
+                runtime.turn_phase = Some("running".to_string());
+            }
+        }
+        Some("idle") => {
+            runtime.turn_state = AgentTurnState::WaitingOnUser;
+            runtime.observer_error = None;
+            if matches!(runtime.turn_phase.as_deref(), Some("systemError")) {
+                runtime.turn_phase = None;
+            }
+        }
+        Some("systemError") => {
+            runtime.turn_phase = Some("systemError".to_string());
+        }
+        _ => {}
     }
 }
 
