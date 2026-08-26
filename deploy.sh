@@ -67,6 +67,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 SESSION_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/wakterm/session.json"
+PREVIOUS_SESSION_FILE="$SESSION_FILE.prev"
 LEGACY_SESSION_FILE="${XDG_RUNTIME_DIR:-/run/user/$UID}/wakterm/session.json"
 CURRENT_HEAD="$(git -C "$REPO_ROOT" rev-parse --short=8 HEAD)"
 
@@ -124,7 +125,7 @@ restart_via_user_service() {
 
     if $WIPE_SESSION; then
         systemctl --user stop "$unit"
-        rm -f "$SESSION_FILE" "$LEGACY_SESSION_FILE"
+        rm -f "$SESSION_FILE" "$PREVIOUS_SESSION_FILE" "$LEGACY_SESSION_FILE"
         echo "  Stopped $unit"
         echo "  Removed $SESSION_FILE"
         systemctl --user start "$unit"
@@ -198,7 +199,7 @@ if $RESTART; then
             wait_for_exit "$PID"
             echo "  Killed PID $PID"
             if $WIPE_SESSION; then
-                rm -f "$SESSION_FILE" "$LEGACY_SESSION_FILE"
+                rm -f "$SESSION_FILE" "$PREVIOUS_SESSION_FILE" "$LEGACY_SESSION_FILE"
                 echo "  Removed $SESSION_FILE"
             fi
             echo ""
@@ -216,7 +217,7 @@ if $RESTART; then
         else
             echo "  No running mux server found"
             if $WIPE_SESSION; then
-                rm -f "$SESSION_FILE" "$LEGACY_SESSION_FILE"
+                rm -f "$SESSION_FILE" "$PREVIOUS_SESSION_FILE" "$LEGACY_SESSION_FILE"
                 echo "  Removed $SESSION_FILE"
             fi
         fi

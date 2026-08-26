@@ -919,6 +919,10 @@ fn read_from_pane_pty(
             // this pane right now, so don't!
             promise::spawn::spawn_into_main_thread(async move {
                 let mux = Mux::get();
+                mux.record_agent_pane_exit(pane_id);
+                if crate::session_persistence::shutdown_in_progress() {
+                    return;
+                }
                 log::trace!("checking for dead windows after EOF on pane {}", pane_id);
                 mux.prune_dead_windows();
             })
@@ -927,6 +931,10 @@ fn read_from_pane_pty(
         ExitBehavior::Close => {
             promise::spawn::spawn_into_main_thread(async move {
                 let mux = Mux::get();
+                mux.record_agent_pane_exit(pane_id);
+                if crate::session_persistence::shutdown_in_progress() {
+                    return;
+                }
                 mux.remove_pane(pane_id);
             })
             .detach();
@@ -1506,6 +1514,31 @@ impl Mux {
             restored_metadata.launch_cmd = default_launch_cmd_for_harness(&harness)?.to_string();
         }
         Some((harness, restored_metadata, session_id))
+    }
+
+    pub(crate) fn pane_has_cached_agent_restore_intent(&self, pane_id: PaneId) -> bool {
+        if self.pending_agent_restores.read().contains_key(&pane_id) {
+            return true;
+        }
+        if self
+            .get_agent_metadata_for_pane(pane_id)
+            .is_some_and(|metadata| metadata.codex_app_server.is_some())
+        {
+            return true;
+        }
+        self.agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .is_some_and(|runtime| {
+                matches!(runtime.harness, AgentHarness::Claude | AgentHarness::Codex)
+                    && runtime.session_path.is_some()
+            })
+    }
+
+    pub(crate) fn tab_has_cached_agent_restore_intent(&self, tab: &Tab) -> bool {
+        tab.iter_panes_ignoring_zoom()
+            .iter()
+            .any(|position| self.pane_has_cached_agent_restore_intent(position.pane.pane_id()))
     }
 
     pub fn set_mirrored_agent_metadata(&self, pane_id: PaneId, metadata: Option<&AgentMetadata>) {
@@ -2999,6 +3032,39 @@ impl Mux {
                 runtime.observed_at = now;
             },
         );
+    }
+
+    fn record_agent_pane_exit(&self, pane_id: PaneId) {
+        let Some(metadata) = self.get_agent_metadata_for_pane(pane_id) else {
+            return;
+        };
+        let tab_id = self.resolve_pane_id(pane_id).map(|(_, _, tab_id)| tab_id);
+        let observed_at = Utc::now();
+        let mut runtimes = self.agent_runtime_by_pane.write();
+        let mut runtime = runtimes
+            .remove(&pane_id)
+            .unwrap_or_else(|| AgentRuntimeSnapshot::new(metadata.as_ref()));
+        let before_title = Self::title_fingerprint(&runtime);
+        runtime.alive = false;
+        runtime.observed_at = observed_at;
+        runtime.foreground_process_name = None;
+        finalize_runtime_snapshot(&mut runtime);
+        runtime.status = derive_runtime_status(&runtime);
+        let after_title = Self::title_fingerprint(&runtime);
+        runtimes.insert(pane_id, runtime);
+        drop(runtimes);
+        let _ = self
+            .agent_observer_tx
+            .send(AgentObserverCommand::Unavailable {
+                metadata: (*metadata).clone(),
+                observed_at,
+                reason: "pane_exited".to_string(),
+            });
+        if before_title != after_title {
+            if let Some(tab_id) = tab_id {
+                self.notify_tab_title_changed(tab_id);
+            }
+        }
     }
 
     fn refresh_agent_runtime_for_pane_with_update<F>(
@@ -5000,6 +5066,10 @@ impl Mux {
     }
 
     pub fn prune_dead_windows(&self) {
+        if crate::session_persistence::shutdown_in_progress() {
+            log::trace!("prune_dead_windows: shutdown in progress");
+            return;
+        }
         if Activity::count() > 0 {
             log::trace!("prune_dead_windows: Activity::count={}", Activity::count());
             return;
@@ -5029,7 +5099,13 @@ impl Mux {
                 .tabs
                 .read()
                 .iter()
-                .filter_map(|(&id, tab)| if tab.is_dead() { Some(id) } else { None })
+                .filter_map(|(&id, tab)| {
+                    if tab.is_dead() && !self.tab_has_cached_agent_restore_intent(tab) {
+                        Some(id)
+                    } else {
+                        None
+                    }
+                })
                 .collect();
         }
 

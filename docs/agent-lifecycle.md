@@ -117,6 +117,10 @@ Automatic restoration must resume the intended provider session or report a
 visible failure. It must never silently replace an expected harness with a
 fresh shell or silently start a new provider session.
 
+An exited restorable pane remains in the recoverable layout until the pane or
+tab is explicitly closed. Process exit updates live agent status but does not
+discard its restore intent.
+
 ### Durable restore intent
 
 A restorable agent needs enough persisted intent to reconstruct an exact

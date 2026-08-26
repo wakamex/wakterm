@@ -384,7 +384,7 @@ impl Window {
                 if tab.prune_dead_panes() {
                     invalidated = true;
                 }
-                if tab.is_dead() {
+                if tab.is_dead() && !Mux::get().tab_has_cached_agent_restore_intent(tab) {
                     Some(tab.tab_id())
                 } else {
                     None

@@ -11,11 +11,13 @@ use crate::codex_app_server::{PrepareCodexLaunch, PreparedCodexLaunch};
 use crate::pane::PaneId;
 use crate::tab::PaneNode;
 use crate::Mux;
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use portable_pty::CommandBuilder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::thread;
@@ -82,6 +84,22 @@ const AUTO_SAVE_INTERVAL: Duration = Duration::from_secs(60);
 
 static AUTO_SAVE_TX: OnceLock<SyncSender<()>> = OnceLock::new();
 static SAVE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static LAST_COMMITTED_SESSION: LazyLock<Mutex<Option<Vec<u8>>>> =
+    LazyLock::new(|| Mutex::new(None));
+static SHUTDOWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+pub fn begin_shutdown() {
+    SHUTDOWN_IN_PROGRESS.store(true, Ordering::Release);
+}
+
+pub fn shutdown_in_progress() -> bool {
+    SHUTDOWN_IN_PROGRESS.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+fn end_shutdown_for_test() {
+    SHUTDOWN_IN_PROGRESS.store(false, Ordering::Release);
+}
 
 struct AutoSaveSchedule {
     debounce: Duration,
@@ -183,17 +201,12 @@ fn session_path() -> PathBuf {
     config::DATA_DIR.join("session.json")
 }
 
-fn legacy_session_path() -> PathBuf {
-    config::RUNTIME_DIR.join("session.json")
+fn previous_session_path() -> PathBuf {
+    config::DATA_DIR.join("session.json.prev")
 }
 
-fn session_path_for_load() -> PathBuf {
-    let path = session_path();
-    if path.exists() {
-        path
-    } else {
-        legacy_session_path()
-    }
+fn legacy_session_path() -> PathBuf {
+    config::RUNTIME_DIR.join("session.json")
 }
 
 fn build_saved_session(mux: &Mux) -> SavedSession {
@@ -337,10 +350,14 @@ pub fn save_session() -> anyhow::Result<PathBuf> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating session directory {}", parent.display()))?;
     }
-    let json = serde_json::to_string_pretty(&session).context("serializing session")?;
-
-    std::fs::write(&path, &json)
-        .with_context(|| format!("writing session to {}", path.display()))?;
+    let json = serde_json::to_vec_pretty(&session).context("serializing session")?;
+    let mut last_committed = LAST_COMMITTED_SESSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !commit_serialized_session(&path, &previous_session_path(), &json, &mut last_committed)? {
+        log::debug!("Session unchanged: {}", path.display());
+        return Ok(path);
+    }
 
     let total_tabs: usize = session.windows.iter().map(|w| w.tabs.len()).sum();
     log::info!(
@@ -353,27 +370,82 @@ pub fn save_session() -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
+fn commit_serialized_session(
+    path: &std::path::Path,
+    previous_path: &std::path::Path,
+    bytes: &[u8],
+    last_committed: &mut Option<Vec<u8>>,
+) -> anyhow::Result<bool> {
+    if last_committed.is_none() {
+        *last_committed = read_valid_session_bytes(path)?;
+    }
+    if last_committed.as_deref() == Some(bytes) {
+        return Ok(false);
+    }
+    if let Some(previous) = last_committed.as_deref() {
+        write_atomic_file(previous_path, previous)?;
+    }
+    write_atomic_file(path, bytes)?;
+    sync_parent_directory(path)?;
+    *last_committed = Some(bytes.to_vec());
+    Ok(true)
+}
+
+fn read_valid_session_bytes(path: &std::path::Path) -> anyhow::Result<Option<Vec<u8>>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
+    let session: SavedSession = match serde_json::from_slice(&bytes) {
+        Ok(session) => session,
+        Err(_) => return Ok(None),
+    };
+    Ok((session.version == SESSION_VERSION).then_some(bytes))
+}
+
+fn write_atomic_file(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("{} has no parent directory", path.display()))?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating temporary file in {}", parent.display()))?;
+    temp.write_all(bytes)
+        .with_context(|| format!("writing temporary session for {}", path.display()))?;
+    temp.as_file_mut()
+        .sync_all()
+        .with_context(|| format!("syncing temporary session for {}", path.display()))?;
+    temp.persist(path)
+        .map_err(|err| err.error)
+        .with_context(|| format!("replacing {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(path: &std::path::Path) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("{} has no parent directory", path.display()))?;
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .with_context(|| format!("syncing session directory {}", parent.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &std::path::Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
 /// Load a saved session from disk (if it exists).
 pub fn load_session() -> anyhow::Result<Option<SavedSession>> {
-    let path = session_path_for_load();
-    if !path.exists() {
+    let Some((path, session)) = load_first_valid_session([
+        session_path(),
+        previous_session_path(),
+        legacy_session_path(),
+    ])?
+    else {
         return Ok(None);
-    }
-
-    let json = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading session from {}", path.display()))?;
-
-    let session: SavedSession = serde_json::from_str(&json)
-        .with_context(|| format!("parsing session from {}", path.display()))?;
-
-    if session.version != SESSION_VERSION {
-        log::warn!(
-            "Session file version {} != expected {}, ignoring",
-            session.version,
-            SESSION_VERSION
-        );
-        return Ok(None);
-    }
+    };
 
     let total_tabs: usize = session.windows.iter().map(|w| w.tabs.len()).sum();
     log::info!(
@@ -386,14 +458,53 @@ pub fn load_session() -> anyhow::Result<Option<SavedSession>> {
     Ok(Some(session))
 }
 
+fn load_first_valid_session(
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> anyhow::Result<Option<(PathBuf, SavedSession)>> {
+    let mut failures = Vec::new();
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+        match std::fs::read(&path)
+            .with_context(|| format!("reading session from {}", path.display()))
+            .and_then(|json| {
+                serde_json::from_slice::<SavedSession>(&json)
+                    .with_context(|| format!("parsing session from {}", path.display()))
+            }) {
+            Ok(session) if session.version == SESSION_VERSION => {
+                return Ok(Some((path, session)));
+            }
+            Ok(session) => failures.push(anyhow!(
+                "session file {} has version {}, expected {}",
+                path.display(),
+                session.version,
+                SESSION_VERSION
+            )),
+            Err(err) => failures.push(err),
+        }
+    }
+    if let Some(err) = failures.pop() {
+        return Err(err.context("no valid saved session fallback"));
+    }
+    Ok(None)
+}
+
 /// Remove the saved session file (after successful restore or on clean exit).
 pub fn clear_session() -> anyhow::Result<()> {
-    for path in [session_path(), legacy_session_path()] {
+    for path in [
+        session_path(),
+        previous_session_path(),
+        legacy_session_path(),
+    ] {
         if path.exists() {
             std::fs::remove_file(&path)
                 .with_context(|| format!("removing session file {}", path.display()))?;
         }
     }
+    *LAST_COMMITTED_SESSION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     Ok(())
 }
 
@@ -861,6 +972,10 @@ mod test {
     fn automatic_session_uses_durable_data_directory() {
         assert_eq!(session_path(), config::DATA_DIR.join("session.json"));
         assert_eq!(
+            previous_session_path(),
+            config::DATA_DIR.join("session.json.prev")
+        );
+        assert_eq!(
             legacy_session_path(),
             config::RUNTIME_DIR.join("session.json")
         );
@@ -893,9 +1008,101 @@ mod test {
         assert!(schedule.take_save_due(start + Duration::from_secs(120)));
     }
 
+    #[test]
+    fn atomic_session_commit_skips_unchanged_bytes_and_keeps_previous_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("session.json");
+        let previous = dir.path().join("session.json.prev");
+        let first = serde_json::to_vec(&SavedSession {
+            version: SESSION_VERSION,
+            windows: Vec::new(),
+            agent_restore_intents: Vec::new(),
+        })
+        .unwrap();
+        let second = serde_json::to_vec(&SavedSession {
+            version: SESSION_VERSION,
+            windows: vec![SavedWindow {
+                workspace: "default".to_string(),
+                tabs: Vec::new(),
+            }],
+            agent_restore_intents: Vec::new(),
+        })
+        .unwrap();
+        let mut committed = None;
+
+        assert!(commit_serialized_session(&current, &previous, &first, &mut committed).unwrap());
+        assert!(!previous.exists());
+        assert!(!commit_serialized_session(&current, &previous, &first, &mut committed).unwrap());
+        assert!(commit_serialized_session(&current, &previous, &second, &mut committed).unwrap());
+        assert_eq!(std::fs::read(&current).unwrap(), second);
+        assert_eq!(std::fs::read(&previous).unwrap(), first);
+    }
+
+    #[test]
+    fn session_load_falls_back_to_previous_valid_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("session.json");
+        let previous = dir.path().join("session.json.prev");
+        std::fs::write(&current, b"incomplete").unwrap();
+        let expected = SavedSession {
+            version: SESSION_VERSION,
+            windows: Vec::new(),
+            agent_restore_intents: Vec::new(),
+        };
+        std::fs::write(&previous, serde_json::to_vec(&expected).unwrap()).unwrap();
+
+        let (loaded_path, loaded) = load_first_valid_session([current, previous.clone()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded_path, previous);
+        assert_eq!(loaded.version, SESSION_VERSION);
+    }
+
+    #[test]
+    #[ignore]
+    fn session_commit_performance_workload() {
+        let dir = match std::env::var_os("WAKTERM_SESSION_BENCH_DIR") {
+            Some(path) => tempfile::tempdir_in(path).unwrap(),
+            None => tempfile::tempdir().unwrap(),
+        };
+        let current = dir.path().join("session.json");
+        let previous = dir.path().join("session.json.prev");
+        let mut bytes = vec![b'x'; 63 * 1024];
+        let mut committed = Some(bytes.clone());
+
+        let unchanged_iterations = 10_000;
+        let unchanged_started = Instant::now();
+        for _ in 0..unchanged_iterations {
+            assert!(
+                !commit_serialized_session(&current, &previous, &bytes, &mut committed,).unwrap()
+            );
+        }
+        let unchanged_elapsed = unchanged_started.elapsed();
+
+        let changed_iterations = 100;
+        let changed_started = Instant::now();
+        for iteration in 0..changed_iterations {
+            bytes[0] = iteration as u8;
+            assert!(
+                commit_serialized_session(&current, &previous, &bytes, &mut committed,).unwrap()
+            );
+        }
+        let changed_elapsed = changed_started.elapsed();
+
+        eprintln!(
+            "session_commit_workload bytes={} unchanged_iterations={} unchanged_ns={} changed_iterations={} changed_ns={}",
+            bytes.len(),
+            unchanged_iterations,
+            unchanged_elapsed.as_nanos(),
+            changed_iterations,
+            changed_elapsed.as_nanos(),
+        );
+    }
+
     struct TestPane {
         id: crate::pane::PaneId,
         size: Mutex<TerminalSize>,
+        dead: bool,
     }
 
     impl TestPane {
@@ -903,6 +1110,15 @@ mod test {
             Arc::new(Self {
                 id,
                 size: Mutex::new(size),
+                dead: false,
+            })
+        }
+
+        fn new_dead(id: crate::pane::PaneId, size: TerminalSize) -> Arc<dyn Pane> {
+            Arc::new(Self {
+                id,
+                size: Mutex::new(size),
+                dead: true,
             })
         }
     }
@@ -1066,7 +1282,7 @@ mod test {
         }
 
         fn is_dead(&self) -> bool {
-            false
+            self.dead
         }
 
         fn palette(&self) -> ColorPalette {
@@ -1098,6 +1314,91 @@ mod test {
             pixel_height: rows * 18,
             dpi: 96,
         }
+    }
+
+    struct ShutdownStateGuard;
+
+    impl Drop for ShutdownStateGuard {
+        fn drop(&mut self) {
+            end_shutdown_for_test();
+        }
+    }
+
+    #[test]
+    fn shutdown_keeps_dead_panes_in_recoverable_layout_until_explicit_close() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _mux_guard = crate::TestMuxGuard;
+        let window_id = *mux.new_empty_window(Some("default".to_string()), None);
+        let tab_size = size(120, 40);
+        let tab = Arc::new(Tab::new(&tab_size));
+        let pane = TestPane::new_dead(alloc_pane_id(), tab_size);
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        begin_shutdown();
+        let _shutdown_guard = ShutdownStateGuard;
+        mux.prune_dead_windows();
+
+        assert!(mux.get_tab(tab.tab_id()).is_some());
+        assert_eq!(mux.get_window(window_id).unwrap().len(), 1);
+
+        mux.remove_tab(tab.tab_id());
+        assert!(mux.get_tab(tab.tab_id()).is_none());
+    }
+
+    #[test]
+    fn restorable_pane_exit_keeps_layout_until_explicit_close() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _mux_guard = crate::TestMuxGuard;
+        let window_id = *mux.new_empty_window(Some("default".to_string()), None);
+        let tab_size = size(120, 40);
+
+        let restorable_tab = Arc::new(Tab::new(&tab_size));
+        let restorable_pane = TestPane::new_dead(alloc_pane_id(), tab_size);
+        let restorable_pane_id = restorable_pane.pane_id();
+        restorable_tab.assign_pane(&restorable_pane);
+        mux.add_tab_and_active_pane(&restorable_tab).unwrap();
+        mux.add_tab_to_window(&restorable_tab, window_id).unwrap();
+        let mut metadata = sample_agent_metadata("restorable");
+        metadata.codex_app_server = Some(CodexAppServerSession {
+            thread_id: "exact-thread".to_string(),
+            session_id: "exact-session".to_string(),
+            executable: "codex".to_string(),
+            version: "codex-cli current".to_string(),
+            tui_args: Vec::new(),
+        });
+        mux.set_agent_metadata(restorable_pane_id, metadata)
+            .unwrap();
+
+        let disposable_tab = Arc::new(Tab::new(&tab_size));
+        let disposable_pane = TestPane::new_dead(alloc_pane_id(), tab_size);
+        disposable_tab.assign_pane(&disposable_pane);
+        mux.add_tab_and_active_pane(&disposable_tab).unwrap();
+        mux.add_tab_to_window(&disposable_tab, window_id).unwrap();
+
+        mux.record_agent_pane_exit(restorable_pane_id);
+        mux.prune_dead_windows();
+
+        assert!(mux.get_tab(restorable_tab.tab_id()).is_some());
+        assert!(mux.get_tab(disposable_tab.tab_id()).is_none());
+        let runtime = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&restorable_pane_id)
+            .cloned()
+            .unwrap();
+        assert!(!runtime.alive);
+        assert_eq!(runtime.status, crate::agent::AgentStatus::Exited);
+
+        mux.remove_tab(restorable_tab.tab_id());
+        assert!(mux.get_tab(restorable_tab.tab_id()).is_none());
     }
 
     fn sample_agent_metadata(name: &str) -> AgentMetadata {

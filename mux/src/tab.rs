@@ -1961,13 +1961,15 @@ impl TabInner {
                     // <https://github.com/wakamex/wakterm/issues/4030>
                     let in_mux = mux.get_pane(pane.pane_id()).is_some();
                     let dead = pane.is_dead();
+                    let restorable = mux.pane_has_cached_agent_restore_intent(pane.pane_id());
                     log::trace!(
-                        "prune_dead_panes: pane_id={} dead={} in_mux={}",
+                        "prune_dead_panes: pane_id={} dead={} in_mux={} restorable={}",
                         pane.pane_id(),
                         dead,
-                        in_mux
+                        in_mux,
+                        restorable,
                     );
-                    dead || !in_mux
+                    (dead && !restorable) || !in_mux
                 },
                 true,
             )

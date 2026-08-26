@@ -49,6 +49,7 @@ termwiz-funcs.workspace = true
 termwiz.workspace = true
 textwrap.workspace = true
 thiserror.workspace = true
+tempfile.workspace = true
 url.workspace = true
 uuid = { workspace=true, features=["v4", "fast-rng"] }
 wakterm-dynamic.workspace = true
@@ -69,7 +70,6 @@ winapi = { workspace=true, features = [
 [dev-dependencies]
 criterion.workspace = true
 k9.workspace = true
-tempfile.workspace = true
 
 [[bench]]
 name = "pane_output"

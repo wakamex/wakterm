@@ -252,6 +252,7 @@ fn run() -> anyhow::Result<()> {
             Signals::new([signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT])?;
         thread::spawn(move || {
             if signals.forever().next().is_some() {
+                mux::session_persistence::begin_shutdown();
                 SHUTDOWN_FLAG.store(true, std::sync::atomic::Ordering::Relaxed);
                 promise::spawn::spawn_into_main_thread(async {}).detach();
             }
