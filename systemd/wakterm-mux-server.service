@@ -4,6 +4,7 @@ Description=wakterm mux server
 [Service]
 Type=simple
 WorkingDirectory=%h
+Environment="PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 EnvironmentFile=-%h/.config/wakterm-mux-server.env
 ExecStart=__WAKTERM_MUX_SERVER_BIN__
 KillMode=mixed
