@@ -14,8 +14,10 @@ available. Consumers must still negotiate the live capability before reading.
 
 The implemented v1 boundary is capability negotiation, the agent catalog,
 authoritative prompt admission, and the existing return-request terminal
-stream. Admission is scoped to a stable Wakterm agent ID and opaque process
-incarnation. A definitive non-acceptance means no prompt bytes were written.
+stream. Admission is scoped to a stable Wakterm agent ID and opaque current
+incarnation. Native observed sessions use process identity, while managed
+Codex sessions use exact app-server provider identity. A definitive
+non-acceptance means no prompt bytes were written.
 An indeterminate result is never safe to retry under a new request ID.
 
 Each catalog entry also contains a fixed-width `pane_id`. It is the smallest
@@ -27,7 +29,7 @@ persist them as agent identity, process identity, or an idempotency key.
 The durable event page provides:
 
 - durable increasing sequence order
-- agent, process-incarnation, and exact turn identity
+- agent, current-incarnation, and exact turn identity
 - distinct assistant, plan, turn, observer, and agent-lifecycle events
 - catalog ordering through `as_of_event_sequence`
 - explicit bounded-retention metadata and `cursor_too_old` recovery

@@ -1433,6 +1433,7 @@ mod test {
             vec!["latest-codex", "resume", thread_id]
         );
         assert_eq!(restored.intent.metadata.launch_cmd, "latest-codex");
+        assert!(crate::agent_admission::incarnation_id(&restored.intent.metadata).is_some());
         assert_eq!(restored.intent.metadata.adopted_pid, None);
         assert_eq!(restored.intent.metadata.adopted_start_time, None);
         assert_eq!(

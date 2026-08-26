@@ -1072,9 +1072,10 @@ mod test {
     fn restored_app_server_notifications_produce_durable_agent_events() {
         let mux = Mux::new(None);
         mux.start_agent_event_runtime_epoch().unwrap();
-        let mut metadata = metadata("restored", "thread-restored");
-        metadata.adopted_pid = Some(42);
-        metadata.adopted_start_time = Some(84);
+        let metadata = metadata("restored", "thread-restored");
+        assert!(metadata.adopted_pid.is_none());
+        assert!(metadata.adopted_start_time.is_none());
+        assert!(crate::agent_admission::incarnation_id(&metadata).is_some());
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         runtime.harness = crate::agent::AgentHarness::Codex;
         runtime.alive = true;

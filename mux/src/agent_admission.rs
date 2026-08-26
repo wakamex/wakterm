@@ -178,6 +178,9 @@ pub struct AgentAdmissionCandidate {
 
 impl AgentAdmissionCandidate {
     pub fn refresh(mut self) -> Self {
+        if self.metadata.codex_app_server.is_some() {
+            return self;
+        }
         let process_matches = self
             .metadata
             .adopted_pid
@@ -225,6 +228,18 @@ pub enum AgentAdmissionCapture {
 }
 
 pub fn incarnation_id(metadata: &AgentMetadata) -> Option<String> {
+    if let Some(session) = metadata.codex_app_server.as_ref() {
+        return Some(format!(
+            "{:x}",
+            Sha256::digest(
+                format!(
+                    "{}\0codex-app-server\0{}\0{}",
+                    metadata.agent_id, session.thread_id, session.session_id
+                )
+                .as_bytes()
+            )
+        ));
+    }
     Some(incarnation_id_from_parts(
         &metadata.agent_id,
         metadata.adopted_pid?,
@@ -304,14 +319,14 @@ impl Mux {
             return AgentAdmissionCapture::Rejected(AgentAdmissionReceipt::rejected(
                 &request,
                 AgentAdmissionStatus::Unavailable,
-                "the target process incarnation is not confirmed",
+                "the target incarnation is not confirmed",
             ));
         };
         if current_incarnation != request.incarnation_id {
             return AgentAdmissionCapture::Rejected(AgentAdmissionReceipt::rejected(
                 &request,
                 AgentAdmissionStatus::StaleIncarnation,
-                "the target process incarnation changed",
+                "the target incarnation changed",
             ));
         }
         AgentAdmissionCapture::Candidate(AgentAdmissionCandidate {
@@ -341,7 +356,7 @@ impl Mux {
             return Some(AgentAdmissionReceipt::rejected(
                 request,
                 AgentAdmissionStatus::StaleIncarnation,
-                "the target process incarnation changed",
+                "the target incarnation changed",
             ));
         }
         if self.agent_input_generation(candidate.pane_id) != candidate.input_generation {
@@ -702,6 +717,44 @@ mod tests {
         runtime.status = AgentStatus::Idle;
         runtime.turn_state = AgentTurnState::WaitingOnUser;
         runtime
+    }
+
+    #[test]
+    fn managed_codex_incarnation_uses_provider_identity_without_a_pid() {
+        let mut metadata = metadata();
+        metadata.adopted_pid = None;
+        metadata.adopted_start_time = None;
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "thread-managed".to_string(),
+            session_id: "session-managed".to_string(),
+            executable: "codex".to_string(),
+            version: "codex-cli test".to_string(),
+            tui_args: vec![],
+        });
+        let incarnation = incarnation_id(&metadata).expect("managed provider incarnation");
+
+        metadata.adopted_pid = Some(42);
+        metadata.adopted_start_time = Some(84);
+        assert_eq!(
+            incarnation_id(&metadata).as_deref(),
+            Some(incarnation.as_str())
+        );
+        metadata.adopted_pid = None;
+        metadata.adopted_start_time = None;
+
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Codex;
+        runtime.transport = crate::agent::AgentTransport::CodexAppServerTui;
+        runtime.alive = true;
+        let candidate = AgentAdmissionCandidate {
+            request: request("request-managed", "work"),
+            pane_id: 7,
+            metadata,
+            runtime,
+            input_generation: 0,
+        }
+        .refresh();
+        assert!(candidate.runtime.alive);
     }
 
     #[test]

@@ -88,6 +88,11 @@ Process IDs are incarnation identifiers only. When a PID is recorded, its
 start time must also match so PID reuse cannot attach stale metadata to an
 unrelated process. Neither value is a durable session identity.
 
+A managed Codex app-server pane derives its incarnation from the stable
+Wakterm agent ID and exact app-server thread and session IDs. This identity is
+available while a restored native TUI is starting and does not depend on a
+temporary process ID.
+
 Automatic adoption may promote a detected pane only after a confirmed session
 match. If the harness exits back to a shell, stale automatically adopted state
 must be cleared instead of making the shell look like a live agent.
