@@ -1577,9 +1577,6 @@ impl Mux {
             }
             None => {
                 self.mirrored_agent_cwd_by_pane.write().remove(&pane_id);
-                self.mirrored_agent_snapshot_by_pane
-                    .write()
-                    .remove(&pane_id);
             }
         }
     }

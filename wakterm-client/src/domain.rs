@@ -2910,7 +2910,7 @@ mod test {
     }
 
     #[test]
-    fn remote_status_snapshot_replaces_only_its_domain() {
+    fn remote_status_snapshot_survives_reconcile_and_replaces_only_its_domain() {
         let _test_lock = TEST_MUX_LOCK.lock();
         ensure_test_executor();
         let mux = Arc::new(Mux::new(None));
@@ -2923,7 +2923,7 @@ mod test {
         apply_panes(
             &mux,
             inner.clone(),
-            client_id,
+            client_id.clone(),
             panes_response(vec![tab], 101, 1001),
         );
 
@@ -2966,6 +2966,17 @@ mod test {
         let local_tab_id = inner.remote_to_local_tab_id(101).unwrap();
         let local_pane_id = inner.remote_to_local_pane_id(1001).unwrap();
         assert!(mux.get_agent_metadata_for_pane(local_pane_id).is_none());
+        assert_eq!(
+            mux.visible_harness_icons_for_tab(local_tab_id, None),
+            vec![AgentHarness::Codex]
+        );
+
+        apply_panes(
+            &mux,
+            inner.clone(),
+            client_id,
+            panes_response(vec![leaf(1, 101, 1001, size(120, 40), true)], 101, 1001),
+        );
         assert_eq!(
             mux.visible_harness_icons_for_tab(local_tab_id, None),
             vec![AgentHarness::Codex]
