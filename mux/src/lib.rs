@@ -2678,6 +2678,10 @@ impl Mux {
         refresh_policy: AgentRefreshPolicy,
         schedule_trailing_refresh: bool,
     ) {
+        if metadata.codex_app_server.is_some() {
+            return;
+        }
+
         let now = Utc::now();
         let adopted = !self.detected_agent_panes.read().contains(&pane_id);
         let requires_lossless_observation = adopted
@@ -2751,6 +2755,17 @@ impl Mux {
     }
 
     fn apply_agent_observer_update(&self, update: AgentObserverUpdate) {
+        if self
+            .get_agent_metadata_for_pane(update.pane_id)
+            .is_some_and(|metadata| metadata.codex_app_server.is_some())
+        {
+            self.agent_observer_state_by_pane
+                .write()
+                .remove(&update.pane_id);
+            counter!("mux.agent_observer.refresh.dropped_app_server.rate").increment(1);
+            return;
+        }
+
         let schedule_trailing_refresh = update.schedule_trailing_refresh;
         let next_request = {
             let mut observer_state_by_pane = self.agent_observer_state_by_pane.write();
@@ -10493,6 +10508,157 @@ mod test {
         assert_eq!(
             receipt.status,
             crate::agent_admission::AgentAdmissionStatus::Unsupported
+        );
+    }
+
+    #[test]
+    fn stale_observer_update_cannot_reopen_completed_app_server_turn() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        mux.start_agent_event_runtime_epoch().unwrap();
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new(54, size, domain.id);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let mut metadata = sample_agent_metadata("observer-race");
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "thread-observer-race".to_string(),
+            session_id: "session-observer-race".to_string(),
+            executable: "codex".to_string(),
+            version: "codex-cli test".to_string(),
+            tui_args: vec![],
+        });
+        mux.restore_agent_metadata(pane_id, metadata.clone())
+            .unwrap();
+        assert!(mux
+            .agent_observer_state_by_pane
+            .read()
+            .get(&pane_id)
+            .is_none());
+
+        mux.apply_codex_app_server_notification(&serde_json::json!({
+            "method": "turn/started",
+            "params": {
+                "threadId": "thread-observer-race",
+                "turn": {"id": "turn-observer-race"}
+            }
+        }));
+        let stale_running_runtime = mux.agent_runtime_by_pane.read()[&pane_id].clone();
+        assert_eq!(
+            stale_running_runtime.turn_state,
+            crate::agent::AgentTurnState::WaitingOnAgent
+        );
+        mux.agent_observer_state_by_pane.write().insert(
+            pane_id,
+            AgentObserverState {
+                latest_generation: 1,
+                inflight_generation: Some(1),
+                ..AgentObserverState::default()
+            },
+        );
+
+        mux.apply_codex_app_server_notification(&serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thread-observer-race",
+                "turn": {
+                    "id": "turn-observer-race",
+                    "status": "completed",
+                    "items": [{
+                        "id": "message-observer-race",
+                        "type": "agentMessage",
+                        "text": "done"
+                    }]
+                }
+            }
+        }));
+
+        let final_sequence = (0..100)
+            .find_map(|_| {
+                let page = mux.agent_event_store.read_page(0, 100).unwrap();
+                page.events
+                    .iter()
+                    .find(|event| {
+                        event.kind == crate::agent_event::AgentEventKind::TurnFinal
+                            && event.turn_id.as_deref() == Some("turn-observer-race")
+                    })
+                    .map(|event| event.sequence)
+                    .or_else(|| {
+                        std::thread::sleep(Duration::from_millis(10));
+                        None
+                    })
+            })
+            .expect("app-server final was not persisted");
+        assert!(final_sequence > 0);
+
+        mux.apply_agent_observer_update(AgentObserverUpdate {
+            pane_id,
+            generation: 1,
+            runtime: stale_running_runtime,
+            queue_delay: Duration::ZERO,
+            refresh_elapsed: Duration::ZERO,
+            schedule_trailing_refresh: false,
+        });
+
+        let runtime = mux.agent_runtime_by_pane.read()[&pane_id].clone();
+        assert_eq!(runtime.status, crate::agent::AgentStatus::Idle);
+        assert_eq!(
+            runtime.turn_state,
+            crate::agent::AgentTurnState::WaitingOnUser
+        );
+        assert_eq!(
+            runtime.observed_turn.as_ref().map(|turn| &turn.outcome),
+            Some(&crate::agent::AgentObservedTurnOutcome::Completed)
+        );
+        assert!(mux
+            .agent_observer_state_by_pane
+            .read()
+            .get(&pane_id)
+            .is_none());
+
+        let catalog_agent = mux
+            .agent_api_catalog()
+            .agents
+            .into_iter()
+            .find(|agent| agent.agent_id == metadata.agent_id)
+            .expect("catalog agent");
+        assert_eq!(catalog_agent.status, "idle");
+        assert_eq!(catalog_agent.turn_state, "waiting_on_user");
+
+        let request = crate::agent_admission::AgentPromptAdmissionRequest {
+            request_id: "observer-race-request".to_string(),
+            agent_id: metadata.agent_id.clone(),
+            incarnation_id: crate::agent_admission::incarnation_id(&metadata).unwrap(),
+            prompt: "continue".to_string(),
+            paste: false,
+            return_final: true,
+            timeout_ms: 0,
+        };
+        let crate::agent_admission::AgentAdmissionCapture::Candidate(candidate) =
+            mux.capture_agent_admission(request)
+        else {
+            panic!("completed app-server agent should be an admission candidate");
+        };
+        assert_eq!(candidate.runtime.status, crate::agent::AgentStatus::Idle);
+        assert_eq!(
+            candidate.runtime.turn_state,
+            crate::agent::AgentTurnState::WaitingOnUser
         );
     }
 
