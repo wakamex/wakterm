@@ -833,9 +833,43 @@ fn prepare_restore_for_entry(
     let Some(intent) = restore_intents.get(&entry.pane_id) else {
         return Ok(None);
     };
-    Ok(Some(prepare_agent_restore(intent, |request| {
+    let mut prepared = prepare_agent_restore(intent, |request| {
         Mux::get().prepare_codex_app_server_launch(request)
-    })?))
+    })?;
+    prepared.command = restored_harness_then_shell(prepared.command)?;
+    Ok(Some(prepared))
+}
+
+#[cfg(unix)]
+fn restored_harness_then_shell(command: CommandBuilder) -> anyhow::Result<CommandBuilder> {
+    let shell = command
+        .get_env("SHELL")
+        .filter(|shell| !shell.is_empty())
+        .unwrap_or_else(|| std::ffi::OsStr::new("/bin/sh"))
+        .to_owned();
+    let invocation = command
+        .get_argv()
+        .iter()
+        .map(|arg| {
+            arg.to_str()
+                .context("restored harness argument is not valid UTF-8")
+                .map(shell_words::quote)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .join(" ");
+    Ok(CommandBuilder::from_argv(vec![
+        shell.clone(),
+        "-l".into(),
+        "-i".into(),
+        "-c".into(),
+        format!("{invocation}; exec \"$0\" -l").into(),
+        shell,
+    ]))
+}
+
+#[cfg(windows)]
+fn restored_harness_then_shell(command: CommandBuilder) -> anyhow::Result<CommandBuilder> {
+    Ok(command)
 }
 
 fn prepare_agent_restore(
@@ -968,6 +1002,30 @@ mod test {
     use wakterm_term::color::ColorPalette;
     use wakterm_term::{KeyCode, KeyModifiers, MouseEvent, StableRowIndex, TerminalSize};
 
+    fn expected_restored_spawn(argv: Vec<String>) -> Vec<Vec<String>> {
+        #[cfg(unix)]
+        {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+            let invocation = argv
+                .iter()
+                .map(|arg| shell_words::quote(arg))
+                .collect::<Vec<_>>()
+                .join(" ");
+            vec![vec![
+                shell.clone(),
+                "-l".to_string(),
+                "-i".to_string(),
+                "-c".to_string(),
+                format!("{invocation}; exec \"$0\" -l"),
+                shell,
+            ]]
+        }
+        #[cfg(windows)]
+        {
+            vec![argv]
+        }
+    }
+
     #[test]
     fn automatic_session_uses_durable_data_directory() {
         assert_eq!(session_path(), config::DATA_DIR.join("session.json"));
@@ -979,6 +1037,24 @@ mod test {
             legacy_session_path(),
             config::RUNTIME_DIR.join("session.json")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restored_harness_runs_as_a_shell_child() {
+        let mut command =
+            CommandBuilder::from_argv(vec!["codex".into(), "argument with spaces".into()]);
+        command.env("SHELL", "/usr/bin/zsh");
+        let wrapped = restored_harness_then_shell(command).unwrap();
+        let argv = wrapped
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(&argv[..4], &["/usr/bin/zsh", "-l", "-i", "-c"]);
+        assert_eq!(argv[4], "codex 'argument with spaces'; exec \"$0\" -l");
+        assert_eq!(argv[5], "/usr/bin/zsh");
     }
 
     #[test]
@@ -2020,11 +2096,11 @@ mod test {
 
         assert_eq!(
             commands.lock().unwrap().as_slice(),
-            &[vec![
+            expected_restored_spawn(vec![
                 "codex".to_string(),
                 "resume".to_string(),
                 "resume-session".to_string(),
-            ]]
+            ])
         );
         assert_eq!(
             command_dirs.lock().unwrap().as_slice(),
@@ -2101,12 +2177,12 @@ mod test {
 
         assert_eq!(
             commands.lock().unwrap().as_slice(),
-            &[vec![
+            expected_restored_spawn(vec![
                 "claude".to_string(),
                 "--dangerously-skip-permissions".to_string(),
                 "--resume".to_string(),
                 session_id.to_string(),
-            ]]
+            ])
         );
         assert_eq!(
             command_dirs.lock().unwrap().as_slice(),
@@ -2191,12 +2267,12 @@ mod test {
 
         assert_eq!(
             commands.lock().unwrap().as_slice(),
-            &[vec![
+            expected_restored_spawn(vec![
                 "agy".to_string(),
                 "--dangerously-skip-permissions".to_string(),
                 "--conversation".to_string(),
                 conversation_id.to_string(),
-            ]]
+            ])
         );
         assert_eq!(
             command_dirs.lock().unwrap().as_slice(),

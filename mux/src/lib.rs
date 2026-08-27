@@ -1804,6 +1804,9 @@ impl Mux {
             }
             return None;
         };
+        if let Some(session) = metadata.codex_app_server.as_ref() {
+            self.codex_app_server.unsubscribe(&session.thread_id);
+        }
         let _ = self
             .agent_observer_tx
             .send(AgentObserverCommand::Unavailable {

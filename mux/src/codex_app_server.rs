@@ -33,14 +33,84 @@ fn initialize_params() -> Value {
     })
 }
 
-fn metadata_only_resume_params(thread_id: &str, cwd: &str) -> Value {
+fn codex_setting_value(value: &str) -> &str {
+    match value {
+        "on-failure" => "onFailure",
+        "on-request" => "onRequest",
+        "read-only" => "readOnly",
+        "workspace-write" => "workspaceWrite",
+        "danger-full-access" => "dangerFullAccess",
+        value => value,
+    }
+}
+
+fn apply_tui_settings(params: &mut serde_json::Map<String, Value>, args: &[String]) {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        let (name, inline_value) = arg
+            .split_once('=')
+            .map(|(name, value)| (name, Some(value)))
+            .unwrap_or((arg, None));
+        match name {
+            "-a" | "--ask-for-approval" => {
+                if let Some(value) =
+                    inline_value.or_else(|| args.get(index + 1).map(String::as_str))
+                {
+                    params.insert(
+                        "approvalPolicy".to_string(),
+                        Value::String(codex_setting_value(value).to_string()),
+                    );
+                }
+                if inline_value.is_none() {
+                    index += 1;
+                }
+            }
+            "-s" | "--sandbox" => {
+                if let Some(value) =
+                    inline_value.or_else(|| args.get(index + 1).map(String::as_str))
+                {
+                    params.insert(
+                        "sandbox".to_string(),
+                        Value::String(codex_setting_value(value).to_string()),
+                    );
+                }
+                if inline_value.is_none() {
+                    index += 1;
+                }
+            }
+            "--dangerously-bypass-approvals-and-sandbox" => {
+                params.insert(
+                    "approvalPolicy".to_string(),
+                    Value::String("never".to_string()),
+                );
+                params.insert(
+                    "sandbox".to_string(),
+                    Value::String("dangerFullAccess".to_string()),
+                );
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+}
+
+fn metadata_only_resume_params(thread_id: &str, cwd: &str, tui_args: &[String]) -> Value {
     // Wakterm follows live notifications and does not consume hydrated turn
     // history. Keeping it out of resume responses also bounds frame size.
-    json!({
+    let mut params = json!({
         "threadId": thread_id,
         "cwd": cwd,
         "excludeTurns": true
-    })
+    });
+    apply_tui_settings(params.as_object_mut().unwrap(), tui_args);
+    params
+}
+
+fn thread_start_params(cwd: &str, tui_args: &[String]) -> Value {
+    let mut params = json!({"cwd": cwd, "serviceName": "wakterm"});
+    apply_tui_settings(params.as_object_mut().unwrap(), tui_args);
+    params
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -276,12 +346,12 @@ impl CodexAppServer {
         let result = if let Some(thread_id) = request.resume_thread_id.as_deref() {
             connection.request(
                 "thread/resume",
-                metadata_only_resume_params(thread_id, &request.cwd),
+                metadata_only_resume_params(thread_id, &request.cwd, &request.tui_args),
             )?
         } else {
             connection.request(
                 "thread/start",
-                json!({"cwd": request.cwd, "serviceName": "wakterm"}),
+                thread_start_params(&request.cwd, &request.tui_args),
             )?
         };
         let thread = result
@@ -322,7 +392,7 @@ impl CodexAppServer {
         ];
         native_argv.push(thread_id.clone());
         native_argv.extend(request.tui_args.clone());
-        let argv = native_tui_retry_argv(&native_argv);
+        let argv = native_tui_argv(&native_argv);
         Ok(PreparedCodexLaunch {
             argv,
             session: CodexAppServerSession {
@@ -338,6 +408,21 @@ impl CodexAppServer {
     pub fn mark_disconnected(&self) {
         self.state.lock().connection = None;
         self.thread_status_by_id.lock().clear();
+    }
+
+    pub fn unsubscribe(&self, thread_id: &str) {
+        self.thread_status_by_id.lock().remove(thread_id);
+        let connection = self.state.lock().connection.clone();
+        let thread_id = thread_id.to_string();
+        if let Some(connection) = connection {
+            thread::spawn(move || {
+                if let Err(err) =
+                    connection.request("thread/unsubscribe", json!({"threadId": thread_id}))
+                {
+                    log::warn!("Could not unsubscribe from Codex thread: {err:#}");
+                }
+            });
+        }
     }
 
     pub fn recover(&self, threads: &[RecoveryThread]) -> anyhow::Result<HashMap<String, String>> {
@@ -357,7 +442,11 @@ impl CodexAppServer {
             let recovered = (|| {
                 let result = connection.request(
                     "thread/resume",
-                    metadata_only_resume_params(&thread.session.thread_id, &thread.cwd),
+                    metadata_only_resume_params(
+                        &thread.session.thread_id,
+                        &thread.cwd,
+                        &thread.session.tui_args,
+                    ),
                 )?;
                 let restored = result
                     .get("thread")
@@ -631,23 +720,12 @@ fn codex_socket_url(path: &Path) -> String {
 }
 
 #[cfg(unix)]
-fn native_tui_retry_argv(native_argv: &[String]) -> Vec<String> {
-    let native_command = native_argv
-        .iter()
-        .map(|arg| shell_quote(arg))
-        .collect::<Vec<_>>()
-        .join(" ");
-    vec![
-        "/bin/bash".to_string(),
-        "-c".to_string(),
-        format!(
-            "{native_command}; status=$?; if [ \"$status\" -eq 0 ]; then exit 0; fi; sleep 1; exec {native_command}"
-        ),
-    ]
+fn native_tui_argv(native_argv: &[String]) -> Vec<String> {
+    native_argv.to_vec()
 }
 
 #[cfg(windows)]
-fn native_tui_retry_argv(native_argv: &[String]) -> Vec<String> {
+fn native_tui_argv(native_argv: &[String]) -> Vec<String> {
     let invocation = native_argv
         .iter()
         .map(|arg| powershell_quote(arg))
@@ -673,11 +751,6 @@ fn native_tui_retry_argv(native_argv: &[String]) -> Vec<String> {
 #[cfg(windows)]
 fn powershell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
-}
-
-#[cfg(unix)]
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn read_messages(
@@ -936,11 +1009,60 @@ mod test {
     fn opts_into_metadata_only_thread_resume() {
         assert_eq!(initialize_params()["capabilities"]["experimentalApi"], true);
         assert_eq!(
-            metadata_only_resume_params("thread-id", "/code/project"),
+            metadata_only_resume_params("thread-id", "/code/project", &[]),
             json!({
                 "threadId": "thread-id",
                 "cwd": "/code/project",
                 "excludeTurns": true
+            })
+        );
+    }
+
+    #[test]
+    fn initial_thread_requests_apply_saved_authority_settings() {
+        let args = vec![
+            "-a".to_string(),
+            "never".to_string(),
+            "-s".to_string(),
+            "danger-full-access".to_string(),
+        ];
+        assert_eq!(
+            metadata_only_resume_params("thread-id", "/code/project", &args),
+            json!({
+                "threadId": "thread-id",
+                "cwd": "/code/project",
+                "excludeTurns": true,
+                "approvalPolicy": "never",
+                "sandbox": "dangerFullAccess"
+            })
+        );
+        assert_eq!(
+            thread_start_params(
+                "/code/project",
+                &["--dangerously-bypass-approvals-and-sandbox".to_string()]
+            ),
+            json!({
+                "cwd": "/code/project",
+                "serviceName": "wakterm",
+                "approvalPolicy": "never",
+                "sandbox": "dangerFullAccess"
+            })
+        );
+        assert_eq!(
+            metadata_only_resume_params(
+                "thread-id",
+                "/code/project",
+                &[
+                    "--ask-for-approval=on-request".to_string(),
+                    "--sandbox=workspace-write".to_string(),
+                ]
+            ),
+            json!({
+                "threadId": "thread-id",
+                "cwd": "/code/project",
+                "excludeTurns": true,
+                "approvalPolicy": "onRequest",
+                "sandbox": "workspaceWrite"
             })
         );
     }
@@ -1246,9 +1368,9 @@ mod test {
 
     #[cfg(unix)]
     #[test]
-    fn shell_quote_preserves_arbitrary_arguments() {
-        assert_eq!(shell_quote("plain"), "'plain'");
-        assert_eq!(shell_quote("a'b c"), "'a'\\''b c'");
+    fn native_tui_uses_the_exact_process_on_unix() {
+        let native = vec!["codex".to_string(), "resume".to_string()];
+        assert_eq!(native_tui_argv(&native), native);
     }
 
     #[cfg(windows)]
@@ -1259,7 +1381,7 @@ mod test {
             "unix://C:/Users/Mihai/wakterm.sock"
         );
         assert_eq!(powershell_quote("a'b c"), "'a''b c'");
-        let argv = native_tui_retry_argv(&[
+        let argv = native_tui_argv(&[
             r"C:\Program Files\Codex\codex.exe".to_string(),
             "resume".to_string(),
             "thread-id".to_string(),

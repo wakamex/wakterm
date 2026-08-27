@@ -70,8 +70,10 @@ Automatic restoration is a new-process boundary. Wakterm optimistically
 resumes every restorable Codex thread through the current shared app-server,
 even when the previous process was adopted from an observed PTY or used an
 older Codex version. The returned thread identity must exactly match the saved
-thread. If managed resume fails, Wakterm uses the exact native resume recipe;
-neither path may create a replacement session.
+thread. Saved approval and sandbox arguments are applied when the app-server
+first starts or resumes the thread, before the native TUI attaches. If managed
+resume fails, Wakterm uses the exact native resume recipe; neither path may
+create a replacement session.
 
 ## Detection and confirmed adoption
 
@@ -173,13 +175,15 @@ For each expected harness pane, restoration should:
 
 1. Load and validate the persisted restore intent.
 2. Verify that the provider executable and referenced session are available.
-3. Construct the provider's exact resume invocation. A supervised native TUI
-   may use a minimal shell wrapper only when it provides a bounded reconnect
-   after its mux-owned backend restarts.
+3. Construct the provider's exact resume invocation.
 4. Spawn the TUI in the restored pane and declared working directory.
 5. Observe the new process incarnation.
 6. Confirm that it opened the expected provider session.
 7. Bind the existing Wakterm agent ID to the new pane only after confirmation.
+
+On Unix, the restored TUI runs as a foreground job of the user's interactive
+login shell. The harness remains the foreground process while it runs, and
+exiting it returns the pane to that login shell instead of closing it.
 
 If any step fails, keep the layout recoverable, surface the failure, and retain
 enough intent for an explicit retry. A failure pane or equivalent diagnostic
