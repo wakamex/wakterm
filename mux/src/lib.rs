@@ -1623,6 +1623,29 @@ impl Mux {
         }
     }
 
+    /// Atomically replace one remote domain's agent status snapshot.
+    /// Readers see either the complete old snapshot or the complete new one.
+    pub fn replace_mirrored_agent_snapshots_for_domain(
+        &self,
+        domain_id: DomainId,
+        snapshots: Vec<AgentSnapshot>,
+    ) {
+        debug_assert!(
+            snapshots
+                .iter()
+                .all(|snapshot| snapshot.domain_id == domain_id),
+            "mirrored agent snapshot belongs to a different domain"
+        );
+
+        let mut current = self.mirrored_agent_snapshot_by_pane.write();
+        current.retain(|_, snapshot| snapshot.domain_id != domain_id);
+        current.extend(
+            snapshots
+                .into_iter()
+                .map(|snapshot| (snapshot.pane_id, snapshot)),
+        );
+    }
+
     pub fn mirrored_agent_snapshots_for_window(&self, window_id: WindowId) -> Vec<AgentSnapshot> {
         self.mirrored_agent_snapshot_by_pane
             .read()

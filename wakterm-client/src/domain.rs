@@ -1240,16 +1240,10 @@ impl ClientDomain {
             agent.tab_id = local_tab_id;
             agent.window_id = local_window_id;
             agent.domain_id = inner.local_domain_id;
-            translated_agents.push((local_pane_id, agent));
+            translated_agents.push(agent);
         }
 
-        let pane_mappings = inner.remote_to_local_pane.lock().unwrap().clone();
-        for local_pane_id in pane_mappings.values() {
-            mux.set_mirrored_agent_snapshot(*local_pane_id, None);
-        }
-        for (local_pane_id, agent) in translated_agents {
-            mux.set_mirrored_agent_snapshot(local_pane_id, Some(agent));
-        }
+        mux.replace_mirrored_agent_snapshots_for_domain(inner.local_domain_id, translated_agents);
     }
 
     /// Debounce bursts of resync requests. If a resync is already in
@@ -2913,6 +2907,102 @@ mod test {
             mux.approximate_tab_process_rss(local_tab_b),
             Some(42_000_000)
         );
+    }
+
+    #[test]
+    fn remote_status_snapshot_replaces_only_its_domain() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        ensure_test_executor();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let (_domain, inner, client_id, _view_id) =
+            install_client_domain(&mux, "atomic-status-refresh");
+        let tab = leaf(1, 101, 1001, size(120, 40), true);
+        apply_panes(
+            &mux,
+            inner.clone(),
+            client_id,
+            panes_response(vec![tab], 101, 1001),
+        );
+
+        let metadata = AgentMetadata {
+            agent_id: "detected-pane-1001".to_string(),
+            name: "project_codex".to_string(),
+            launch_cmd: "codex".to_string(),
+            declared_cwd: "/code/project".to_string(),
+            adopted_pid: None,
+            adopted_start_time: None,
+            created_at: "2026-08-27T12:00:00Z".parse().unwrap(),
+            repo_root: Some("/code/project".to_string()),
+            worktree: None,
+            branch: Some("main".to_string()),
+            managed_checkout: false,
+            codex_app_server: None,
+        };
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Codex;
+        let remote_agent = AgentSnapshot {
+            metadata,
+            runtime,
+            pane_id: 1001,
+            tab_id: 101,
+            window_id: 1,
+            workspace: "default".to_string(),
+            domain_id: 99,
+            origin: AgentOrigin::Detected,
+            detection_source: None,
+            needs_attention: false,
+        };
+
+        ClientDomain::process_remote_status_snapshot(
+            inner.as_ref(),
+            vec![remote_agent.clone()],
+            HashMap::new(),
+        );
+
+        let local_window_id = inner.remote_to_local_window(1).unwrap();
+        let local_tab_id = inner.remote_to_local_tab_id(101).unwrap();
+        let local_pane_id = inner.remote_to_local_pane_id(1001).unwrap();
+        assert!(mux.get_agent_metadata_for_pane(local_pane_id).is_none());
+        assert_eq!(
+            mux.visible_harness_icons_for_tab(local_tab_id, None),
+            vec![AgentHarness::Codex]
+        );
+
+        let mut other_domain_agent = mux
+            .mirrored_agent_snapshots_for_window(local_window_id)
+            .into_iter()
+            .next()
+            .unwrap();
+        other_domain_agent.pane_id = local_pane_id + 10_000;
+        other_domain_agent.domain_id = inner.local_domain_id + 10_000;
+        mux.set_mirrored_agent_snapshot(
+            other_domain_agent.pane_id,
+            Some(other_domain_agent.clone()),
+        );
+
+        ClientDomain::process_remote_status_snapshot(
+            inner.as_ref(),
+            vec![remote_agent],
+            HashMap::new(),
+        );
+
+        let mirrored = mux.mirrored_agent_snapshots_for_window(local_window_id);
+        assert_eq!(mirrored.len(), 2);
+        assert!(mirrored.iter().any(|agent| agent.pane_id == local_pane_id));
+        assert!(mirrored
+            .iter()
+            .any(|agent| agent.pane_id == other_domain_agent.pane_id));
+        assert_eq!(
+            mux.visible_harness_icons_for_tab(local_tab_id, None),
+            vec![AgentHarness::Codex]
+        );
+
+        ClientDomain::process_remote_status_snapshot(inner.as_ref(), Vec::new(), HashMap::new());
+        let mirrored = mux.mirrored_agent_snapshots_for_window(local_window_id);
+        assert_eq!(mirrored, vec![other_domain_agent]);
     }
 
     #[test]
