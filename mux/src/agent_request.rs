@@ -266,14 +266,6 @@ impl AgentRequest {
             self.updated_at = now;
         }
 
-        if turn.user_message_count != 1 {
-            self.finish(
-                AgentRequestState::Indeterminate,
-                now,
-                "the correlated provider turn received additional user input",
-            );
-            return;
-        }
         match turn.outcome {
             AgentObservedTurnOutcome::Running => {}
             AgentObservedTurnOutcome::Aborted => self.finish(
@@ -636,6 +628,97 @@ mod tests {
         request.reconcile(Some(&metadata), Some(&observed), Utc::now());
         assert_eq!(request.state, AgentRequestState::Completed);
         assert_eq!(request.final_message.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn steering_within_the_bound_provider_turn_preserves_correlation() {
+        let metadata = metadata();
+        let runtime = runtime();
+        let mut request = AgentRequest::new(
+            "request-1".to_string(),
+            &metadata,
+            7,
+            &runtime,
+            "do work",
+            true,
+            0,
+            None,
+        )
+        .unwrap();
+        request.mark_submitted();
+
+        let mut correlated = turn(
+            "turn-2",
+            11,
+            Some("do work"),
+            AgentObservedTurnOutcome::Running,
+        );
+        let mut observed = runtime.clone();
+        observed.observed_turn = Some(correlated.clone());
+        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
+        assert_eq!(request.state, AgentRequestState::Bound);
+
+        correlated.latest_cursor = Some(12);
+        correlated.user_message_count = 2;
+        observed.observed_turn = Some(correlated.clone());
+        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
+        assert_eq!(request.state, AgentRequestState::Bound);
+
+        correlated.outcome = AgentObservedTurnOutcome::Completed;
+        correlated.completed_at = Some(Utc::now());
+        correlated.latest_cursor = Some(14);
+        correlated.final_message = Some("done after steering".to_string());
+        observed.observed_turn = Some(correlated);
+        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
+
+        assert_eq!(request.state, AgentRequestState::Completed);
+        assert_eq!(
+            request.final_message.as_deref(),
+            Some("done after steering")
+        );
+    }
+
+    #[test]
+    fn advancing_beyond_the_bound_provider_turn_is_indeterminate() {
+        let metadata = metadata();
+        let runtime = runtime();
+        let mut request = AgentRequest::new(
+            "request-1".to_string(),
+            &metadata,
+            7,
+            &runtime,
+            "do work",
+            true,
+            0,
+            None,
+        )
+        .unwrap();
+        request.mark_submitted();
+
+        let mut observed = runtime.clone();
+        observed.observed_turn = Some(turn(
+            "turn-2",
+            11,
+            Some("do work"),
+            AgentObservedTurnOutcome::Running,
+        ));
+        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
+        assert_eq!(request.state, AgentRequestState::Bound);
+
+        observed.observed_turn = Some(turn(
+            "turn-3",
+            15,
+            Some("different turn"),
+            AgentObservedTurnOutcome::Completed,
+        ));
+        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
+
+        assert_eq!(request.state, AgentRequestState::Indeterminate);
+        assert_eq!(
+            request.detail.as_deref(),
+            Some("agent advanced beyond the correlated provider turn")
+        );
+        assert!(request.final_message.is_none());
     }
 
     #[test]

@@ -126,12 +126,13 @@ Wakterm binds a request only when all of these facts match:
 - the provider starts a new turn after the armed observer cursor
 - the first user message hash matches the submitted prompt
 - the bound provider turn ID remains stable through completion
-- no additional user message is added to the correlated turn
 
 A mismatch becomes `indeterminate`. Wakterm never substitutes a later final
 message. A request persisted before input but not durably marked submitted at a
 mux crash also becomes `indeterminate`, which prevents a post-restart prompt
 from satisfying it accidentally.
+
+Steering messages within the same bound provider turn preserve correlation. They do not replace the matched initial prompt or authorize a final from a different provider turn.
 
 Codex session discovery first checks rollout files actually held open by the
 adopted process tree and verifies the adopted process start time and declared
