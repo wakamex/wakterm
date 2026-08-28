@@ -149,6 +149,7 @@ synopsis_commands=(
   "agent launch codex"
   "agent adopt"
   "agent adopt-detected"
+  "agent promote-codex"
   "agent list"
   "agent watch"
   "agent inspect"

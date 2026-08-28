@@ -3,8 +3,8 @@ use crate::agent::{
     default_launch_cmd_for_harness, derive_runtime_status, detect_harness_process,
     finalize_runtime_snapshot, infer_harness, native_restore_launch_command,
     prime_runtime_for_new_agent, refresh_runtime_from_harness_with_expected_session,
-    restorable_session_id, AgentHarness, AgentMetadata, AgentOrigin, AgentRuntimeSnapshot,
-    AgentSnapshot, AgentTabBadgeState, ExpectedAgentSession,
+    remote_codex_tui, restorable_session_id, AgentHarness, AgentMetadata, AgentOrigin,
+    AgentRuntimeSnapshot, AgentSnapshot, AgentTabBadgeState, ExpectedAgentSession,
 };
 use crate::agent_event::AgentEventStore;
 use crate::agent_request::{AgentRequest, AgentRequestState, AgentRequestStore};
@@ -1280,6 +1280,75 @@ impl Mux {
         self.codex_app_server.prepare(request)
     }
 
+    pub fn promote_connected_codex_app_server(
+        &self,
+        pane_id: PaneId,
+        expected_thread_id: &str,
+    ) -> anyhow::Result<AgentMetadata> {
+        let existing = self
+            .get_agent_metadata_for_pane(pane_id)
+            .with_context(|| format!("pane {pane_id} must be adopted before managed promotion"))?;
+        let existing_origin = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .map(|runtime| AgentOrigin::for_registered_transport(&runtime.transport))
+            .context("adopted agent runtime is missing")?;
+        anyhow::ensure!(
+            existing_origin == AgentOrigin::Adopted,
+            "agent {} must be adopted before managed promotion",
+            existing.name
+        );
+        anyhow::ensure!(
+            existing.codex_app_server.is_none(),
+            "agent {} is already managed by the Codex app-server",
+            existing.name
+        );
+        let pane = self
+            .get_pane(pane_id)
+            .with_context(|| format!("pane {pane_id} is invalid"))?;
+        anyhow::ensure!(!pane.is_dead(), "pane {pane_id} is not live");
+        let before = pane
+            .get_foreground_process_info(CachePolicy::FetchImmediate)
+            .as_ref()
+            .and_then(remote_codex_tui)
+            .context("live pane is not an exact remote Codex resume TUI")?;
+        anyhow::ensure!(
+            before.thread_id == expected_thread_id,
+            "live Codex TUI is attached to thread {}, not {}",
+            before.thread_id,
+            expected_thread_id
+        );
+
+        let prepared = self.codex_app_server.attach_existing(
+            codex_app_server::PrepareCodexLaunch {
+                name: existing.name.clone(),
+                cwd: existing.declared_cwd.clone(),
+                resume_thread_id: Some(expected_thread_id.to_string()),
+                tui_args: before.tui_args.clone(),
+            },
+            &before.endpoint,
+        )?;
+
+        let after = pane
+            .get_foreground_process_info(CachePolicy::FetchImmediate)
+            .as_ref()
+            .and_then(remote_codex_tui)
+            .context("remote Codex TUI exited while promotion was being verified")?;
+        anyhow::ensure!(
+            after == before,
+            "remote Codex TUI changed while promotion was being verified"
+        );
+
+        let mut metadata = (*existing).clone();
+        metadata.launch_cmd = prepared.session.executable.clone();
+        metadata.adopted_pid = None;
+        metadata.adopted_start_time = None;
+        metadata.codex_app_server = Some(prepared.session);
+        self.set_managed_codex_metadata_with_initial_refresh(pane_id, metadata.clone())?;
+        Ok(metadata)
+    }
+
     pub(crate) fn apply_codex_app_server_notification(&self, message: &serde_json::Value) {
         self.codex_app_server.record_status_notification(message);
         codex_app_server::apply_notification_to_runtime(self, message);
@@ -1803,6 +1872,45 @@ impl Mux {
         }
         self.install_agent_metadata_runtime(pane_id, metadata, runtime)?;
 
+        self.refresh_agent_runtime_for_pane_with_update(
+            pane_id,
+            false,
+            AgentRefreshPolicy::Throttled,
+            |_| {},
+        );
+        self.notify(MuxNotification::AgentMetadataChanged {
+            pane_id,
+            metadata: self
+                .get_agent_metadata_for_pane(pane_id)
+                .map(|metadata| (*metadata).clone()),
+        });
+        if let Some(tab_id) = tab_id {
+            self.notify_tab_title_changed(tab_id);
+        }
+        Ok(())
+    }
+
+    fn set_managed_codex_metadata_with_initial_refresh(
+        &self,
+        pane_id: PaneId,
+        metadata: AgentMetadata,
+    ) -> anyhow::Result<()> {
+        debug_assert!(metadata.codex_app_server.is_some());
+        let tab_id = self.resolve_pane_id(pane_id).map(|(_, _, tab_id)| tab_id);
+        let foreground_process_name = self
+            .get_pane(pane_id)
+            .and_then(|pane| pane.get_foreground_process_name(CachePolicy::AllowStale));
+        let mut runtime = self
+            .agent_runtime_by_pane
+            .write()
+            .remove(&pane_id)
+            .unwrap_or_else(|| AgentRuntimeSnapshot::new(&metadata));
+        prime_runtime_for_new_agent(&mut runtime, &metadata, foreground_process_name.as_deref());
+        if let Some(session) = metadata.codex_app_server.as_ref() {
+            self.codex_app_server
+                .prime_runtime(&session.thread_id, &mut runtime);
+        }
+        self.install_agent_metadata_runtime_without_process_identity(pane_id, metadata, runtime)?;
         self.refresh_agent_runtime_for_pane_with_update(
             pane_id,
             false,
@@ -6895,6 +7003,124 @@ mod test {
             managed_checkout: false,
             codex_app_server: None,
         }
+    }
+
+    #[test]
+    fn managed_codex_promotion_rejects_thread_and_endpoint_mismatches_without_mutation() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let thread_id = "01a02767-c120-77b2-88a1-4e17c93a7549";
+        let pane = FakePane::new_detected(
+            501,
+            size,
+            domain.id,
+            "codex",
+            "/code/wakterm",
+            "/usr/local/bin/codex",
+            &[
+                "/usr/local/bin/codex",
+                "resume",
+                "--remote",
+                "unix:///tmp/not-the-mux-app-server.sock",
+                thread_id,
+            ],
+        );
+        let pane_id = pane.pane_id();
+        let tab = Arc::new(Tab::new(&size));
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.set_agent_metadata(pane_id, sample_agent_metadata("remote-codex"))
+            .unwrap();
+
+        let wrong_thread = mux
+            .promote_connected_codex_app_server(pane_id, "01a02767-c120-77b2-88a1-4e17c93a7550")
+            .unwrap_err();
+        assert!(wrong_thread.to_string().contains("attached to thread"));
+        assert!(mux
+            .get_agent_metadata_for_pane(pane_id)
+            .unwrap()
+            .codex_app_server
+            .is_none());
+
+        let wrong_endpoint = mux
+            .promote_connected_codex_app_server(pane_id, thread_id)
+            .unwrap_err();
+        assert!(wrong_endpoint
+            .to_string()
+            .contains("different app-server endpoint"));
+        assert!(mux
+            .get_agent_metadata_for_pane(pane_id)
+            .unwrap()
+            .codex_app_server
+            .is_none());
+    }
+
+    #[test]
+    fn managed_codex_promotion_persists_exact_restore_identity() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let pane = FakePane::new_detected(
+            502,
+            size,
+            domain.id,
+            "codex",
+            "/code/wakterm",
+            "/usr/local/bin/codex",
+            &["/usr/local/bin/codex"],
+        );
+        let pane_id = pane.pane_id();
+        let tab = Arc::new(Tab::new(&size));
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        let mut metadata = sample_agent_metadata("remote-codex");
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "01a02767-c120-77b2-88a1-4e17c93a7549".to_string(),
+            session_id: "01a02767-c120-77b2-88a1-4e17c93a7549".to_string(),
+            executable: "/usr/local/bin/codex".to_string(),
+            version: "codex-cli test".to_string(),
+            tui_args: vec!["--dangerously-bypass-approvals-and-sandbox".to_string()],
+        });
+
+        mux.set_managed_codex_metadata_with_initial_refresh(pane_id, metadata.clone())
+            .unwrap();
+
+        let agent = mux
+            .list_agents()
+            .into_iter()
+            .find(|agent| agent.pane_id == pane_id)
+            .unwrap();
+        assert_eq!(agent.origin, AgentOrigin::Managed);
+        assert_eq!(agent.metadata, metadata);
+        let (harness, restored, session_id) = mux.agent_restore_intent_for_pane(pane_id).unwrap();
+        assert_eq!(harness, AgentHarness::Codex);
+        assert_eq!(restored, metadata);
+        assert_eq!(session_id, "01a02767-c120-77b2-88a1-4e17c93a7549");
     }
 
     struct TestConfigGuard;

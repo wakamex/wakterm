@@ -573,6 +573,7 @@ pdu! {
     AgentMetadataChanged: 97,
     GetPaneStatus: 98,
     GetPaneStatusResponse: 99,
+    PromoteCodexAppServer: 100,
 }
 
 impl Pdu {
@@ -597,7 +598,8 @@ impl Pdu {
             | Self::SubmitAgentRequest(_)
             | Self::AdmitAgentPrompt(_)
             | Self::CancelAgentRequest(_)
-            | Self::PrepareCodexLaunch(_) => true,
+            | Self::PrepareCodexLaunch(_)
+            | Self::PromoteCodexAppServer(_) => true,
             _ => false,
         }
     }
@@ -954,6 +956,12 @@ pub struct SetAgentMetadata {
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct ClearAgentMetadata {
     pub pane_id: PaneId,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct PromoteCodexAppServer {
+    pub pane_id: PaneId,
+    pub thread_id: String,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
@@ -1931,6 +1939,10 @@ mod test {
                 sampled_at_ms: 1_777_000_000_000,
                 agents: vec![],
                 tab_rss_bytes: HashMap::from([(7, 42_000_000)]),
+            }),
+            Pdu::PromoteCodexAppServer(PromoteCodexAppServer {
+                pane_id: 9,
+                thread_id: "01a02767-c120-77b2-88a1-4e17c93a7549".to_string(),
             }),
         ] {
             let mut encoded = Vec::new();

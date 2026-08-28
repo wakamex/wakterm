@@ -1865,6 +1865,11 @@ impl Client {
     );
     rpc!(set_agent_metadata, SetAgentMetadata, UnitResponse);
     rpc!(clear_agent_metadata, ClearAgentMetadata, UnitResponse);
+    rpc!(
+        promote_codex_app_server,
+        PromoteCodexAppServer,
+        UnitResponse
+    );
     rpc!(get_image_cell, GetImageCell, GetImageCellResponse);
     rpc!(set_configured_palette_for_pane, SetPalette, UnitResponse);
     rpc!(set_tab_title, TabTitleChanged, UnitResponse);

@@ -315,16 +315,46 @@ impl CodexAppServer {
 
     pub fn prepare(&self, request: PrepareCodexLaunch) -> anyhow::Result<PreparedCodexLaunch> {
         validate_tui_args(&request.tui_args)?;
-        if let Some(thread_id) = request.resume_thread_id.as_deref() {
-            let parsed = uuid::Uuid::parse_str(thread_id)
-                .context("--resume must be an exact Codex thread UUID")?;
-            anyhow::ensure!(
-                parsed.to_string() == thread_id,
-                "--resume must use the canonical exact Codex thread UUID"
-            );
-        }
+        validate_resume_thread_id(request.resume_thread_id.as_deref())?;
         let mut state = self.state.lock();
         ensure_running(&mut state)?;
+        self.prepare_connected(&mut state, request)
+    }
+
+    pub fn attach_existing(
+        &self,
+        request: PrepareCodexLaunch,
+        expected_endpoint: &str,
+    ) -> anyhow::Result<PreparedCodexLaunch> {
+        validate_tui_args(&request.tui_args)?;
+        validate_resume_thread_id(request.resume_thread_id.as_deref())?;
+        anyhow::ensure!(
+            request.resume_thread_id.is_some(),
+            "connected Codex promotion requires an exact thread UUID"
+        );
+        let mut state = self.state.lock();
+        anyhow::ensure!(
+            codex_socket_url(&state.socket_path) == expected_endpoint,
+            "live Codex TUI is connected to a different app-server endpoint"
+        );
+        let child_alive = state
+            .child
+            .as_mut()
+            .map(|child| child.try_wait().map(|status| status.is_none()))
+            .transpose()?
+            .unwrap_or(false);
+        anyhow::ensure!(
+            child_alive && state.connection.is_some(),
+            "mux-owned Codex app-server is not currently connected"
+        );
+        self.prepare_connected(&mut state, request)
+    }
+
+    fn prepare_connected(
+        &self,
+        state: &mut State,
+        request: PrepareCodexLaunch,
+    ) -> anyhow::Result<PreparedCodexLaunch> {
         let connection = state
             .connection
             .as_ref()
@@ -694,6 +724,19 @@ fn validate_tui_args(args: &[String]) -> anyhow::Result<()> {
         }
         bail!("unsupported Codex option {arg}");
     }
+    Ok(())
+}
+
+fn validate_resume_thread_id(thread_id: Option<&str>) -> anyhow::Result<()> {
+    let Some(thread_id) = thread_id else {
+        return Ok(());
+    };
+    let parsed =
+        uuid::Uuid::parse_str(thread_id).context("--resume must be an exact Codex thread UUID")?;
+    anyhow::ensure!(
+        parsed.to_string() == thread_id,
+        "--resume must use the canonical exact Codex thread UUID"
+    );
     Ok(())
 }
 
@@ -1098,6 +1141,78 @@ mod test {
         assert_eq!(first_rx.recv().unwrap().unwrap()["thread"], "one");
         assert_eq!(second_rx.recv().unwrap().unwrap()["thread"], "two");
         assert!(connection.pending.lock().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attaches_only_to_an_already_running_exact_thread() {
+        let thread_id = "01a02767-c120-77b2-88a1-4e17c93a7549";
+        let (writer, peer) = UnixStream::pair().unwrap();
+        let connection = Arc::new(Connection {
+            writer: Mutex::new(writer),
+            pending: Mutex::new(HashMap::new()),
+            next_id: AtomicU64::new(1),
+        });
+        let responder_connection = Arc::clone(&connection);
+        let responder = thread::spawn(move || {
+            let mut requests = 0;
+            read_messages(peer, |opcode, payload| {
+                assert_eq!(opcode, 1);
+                let request: Value = serde_json::from_slice(&payload).unwrap();
+                let id = request["id"].as_u64().unwrap();
+                match request["method"].as_str().unwrap() {
+                    "thread/resume" => responder_connection.dispatch(json!({
+                        "id": id,
+                        "result": {
+                            "thread": {
+                                "id": thread_id,
+                                "sessionId": thread_id,
+                                "status": {"type": "idle"}
+                            }
+                        }
+                    })),
+                    "thread/name/set" => {
+                        responder_connection.dispatch(json!({"id": id, "result": {}}))
+                    }
+                    method => panic!("unexpected request {}", method),
+                }
+                requests += 1;
+                requests < 2
+            })
+            .unwrap();
+        });
+
+        let server = CodexAppServer::new(9001);
+        let endpoint = {
+            let mut state = server.state.lock();
+            let endpoint = codex_socket_url(&state.socket_path);
+            state.child = Some(Command::new("sleep").arg("60").spawn().unwrap());
+            state.connection = Some(connection);
+            state.executable = Some("/usr/local/bin/codex".to_string());
+            state.version = Some("codex-cli test".to_string());
+            endpoint
+        };
+        let prepared = server
+            .attach_existing(
+                PrepareCodexLaunch {
+                    name: "wakterm_codex".to_string(),
+                    cwd: "/code/wakterm".to_string(),
+                    resume_thread_id: Some(thread_id.to_string()),
+                    tui_args: vec!["--dangerously-bypass-approvals-and-sandbox".to_string()],
+                },
+                &endpoint,
+            )
+            .unwrap();
+        responder.join().unwrap();
+
+        assert_eq!(prepared.session.thread_id, thread_id);
+        assert_eq!(prepared.session.session_id, thread_id);
+        assert_eq!(prepared.session.executable, "/usr/local/bin/codex");
+        assert_eq!(prepared.session.version, "codex-cli test");
+        assert_eq!(
+            server.thread_status_by_id.lock().get(thread_id),
+            Some(&json!({"type": "idle"}))
+        );
     }
 
     #[test]

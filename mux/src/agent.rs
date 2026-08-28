@@ -45,6 +45,15 @@ pub struct CodexAppServerSession {
     pub tui_args: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteCodexTui {
+    pub pid: u32,
+    pub start_time: u64,
+    pub endpoint: String,
+    pub thread_id: String,
+    pub tui_args: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AgentHarness {
     #[default]
@@ -424,6 +433,34 @@ fn harness_tui_process<'a>(
         .children
         .values()
         .find_map(|child| harness_tui_process(harness, child))
+}
+
+pub fn remote_codex_tui(process: &LocalProcessInfo) -> Option<RemoteCodexTui> {
+    let process = harness_tui_process(&AgentHarness::Codex, process)?;
+    let resume = process.argv.iter().position(|arg| arg == "resume")?;
+    let args = process.argv.get(resume + 1..)?;
+    let (endpoint, thread_id, tui_args) = match args {
+        [remote, endpoint, thread_id, tui_args @ ..] if remote == "--remote" => {
+            (endpoint.clone(), thread_id.clone(), tui_args.to_vec())
+        }
+        [remote, thread_id, tui_args @ ..] if remote.starts_with("--remote=") => (
+            remote.trim_start_matches("--remote=").to_string(),
+            thread_id.clone(),
+            tui_args.to_vec(),
+        ),
+        _ => return None,
+    };
+    let parsed = uuid::Uuid::parse_str(&thread_id).ok()?;
+    if parsed.to_string() != thread_id || !endpoint.starts_with("unix://") {
+        return None;
+    }
+    Some(RemoteCodexTui {
+        pid: process.pid,
+        start_time: process.start_time,
+        endpoint,
+        thread_id,
+        tui_args,
+    })
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -3796,6 +3833,66 @@ mod test {
             native_restore_launch_command(&AgentHarness::Codex, &process).as_deref(),
             Some("/usr/local/bin/codex -a never -s danger-full-access")
         );
+    }
+
+    #[test]
+    fn identifies_exact_remote_codex_tui_in_process_tree() {
+        let thread_id = "01a02767-c120-77b2-88a1-4e17c93a7549";
+        let process = proc_info(
+            "zsh",
+            "/usr/bin/zsh",
+            &["zsh"],
+            1,
+            vec![proc_info(
+                "codex",
+                "/usr/local/bin/codex",
+                &[
+                    "/usr/local/bin/codex",
+                    "resume",
+                    "--remote",
+                    "unix:///run/user/1000/wakterm/codex-app-server.sock",
+                    thread_id,
+                    "--dangerously-bypass-approvals-and-sandbox",
+                ],
+                2,
+                vec![],
+            )],
+        );
+
+        assert_eq!(
+            remote_codex_tui(&process),
+            Some(RemoteCodexTui {
+                pid: 2,
+                start_time: 2,
+                endpoint: "unix:///run/user/1000/wakterm/codex-app-server.sock".to_string(),
+                thread_id: thread_id.to_string(),
+                tui_args: vec!["--dangerously-bypass-approvals-and-sandbox".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn remote_codex_tui_requires_managed_resume_shape_and_canonical_thread() {
+        for argv in [
+            vec!["codex", "resume", "01a02767-c120-77b2-88a1-4e17c93a7549"],
+            vec![
+                "codex",
+                "resume",
+                "--remote",
+                "unix:///tmp/other.sock",
+                "not-a-thread",
+            ],
+            vec![
+                "codex",
+                "resume",
+                "--remote",
+                "https://example.test/rpc",
+                "01a02767-c120-77b2-88a1-4e17c93a7549",
+            ],
+        ] {
+            let process = proc_info("codex", "/usr/bin/codex", &argv, 2, vec![]);
+            assert_eq!(remote_codex_tui(&process), None, "accepted {argv:?}");
+        }
     }
 
     #[test]

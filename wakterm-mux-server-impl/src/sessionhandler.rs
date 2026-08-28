@@ -989,6 +989,17 @@ impl SessionHandler {
                 })
                 .detach();
             }
+            Pdu::PromoteCodexAppServer(PromoteCodexAppServer { pane_id, thread_id }) => {
+                spawn_into_main_thread(async move {
+                    let result = promise::spawn::spawn_into_new_thread(move || {
+                        Mux::get().promote_connected_codex_app_server(pane_id, &thread_id)?;
+                        Ok(Pdu::UnitResponse(UnitResponse {}))
+                    })
+                    .await;
+                    send_response(result);
+                })
+                .detach();
+            }
 
             Pdu::RenameWorkspace(RenameWorkspace {
                 old_workspace,

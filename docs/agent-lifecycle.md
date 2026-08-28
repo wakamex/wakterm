@@ -58,13 +58,7 @@ current pane and returns to its shell when Codex exits. `--new-tab` explicitly
 creates a separate tab instead. Invocations outside Wakterm must use
 `--new-tab`, because there is no current Wakterm PTY to own the TUI.
 
-This transport intentionally keeps the native provider UI. It does not render
-a Wakterm agent UI or attach a live existing PTY to the app-server. Manually
-launched Codex processes remain on the observed-PTY path while they are live.
-The shared process has one executable, version, `CODEX_HOME`, authentication
-identity, environment policy, feature set, and remote Code Mode host. Launches
-that need a different process-wide configuration must use a different mux or
-the observed-PTY path.
+This transport intentionally keeps the native provider UI. A Codex TUI already connected to the mux-owned app-server can be promoted explicitly with `wakterm agent promote-codex`. Promotion requires an adopted pane and an exact thread UUID, verifies that the live process uses that thread and the current mux-owned socket, attaches the mux protocol client to the same thread, then verifies that the process did not change before persisting managed metadata. Other manually launched Codex processes remain on the observed-PTY path while they are live. The shared process has one executable, version, `CODEX_HOME`, authentication identity, environment policy, feature set, and remote Code Mode host. Launches that need a different process-wide configuration must use a different mux or the observed-PTY path.
 
 Automatic restoration is a new-process boundary. Wakterm optimistically
 resumes every restorable Codex thread through the current shared app-server,

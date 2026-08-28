@@ -10,6 +10,7 @@ Supported harnesses include Agy, Claude, Codex, Gemini, and OpenCode.
 - `wakterm agent launch codex`: launch Codex through a mux-supervised app-server transport
 - `wakterm agent adopt`: adopt an existing pane as an agent with explicit metadata
 - `wakterm agent adopt-detected`: promote a detected harness pane into persistent agent metadata
+- `wakterm agent promote-codex`: promote an adopted remote Codex TUI into managed app-server metadata
 - `wakterm agent list`: list adopted and detected agent panes
 - `wakterm agent watch`: stream latest observer-backed harness messages
 - `wakterm agent inspect`: inspect a single adopted or detected agent
@@ -139,6 +140,18 @@ Adopts an existing pane or promotes a detected harness pane into persistent agen
 
 ```console
 {% include "../../generated/cli-help/cmd-synopsis-wakterm-agent-adopt-detected--help.txt" %}
+```
+
+## `wakterm agent promote-codex`
+
+Promotes an adopted Codex TUI that is already connected to the current mux-owned app-server. The command requires the exact live thread UUID and fails without changing metadata if the pane process, thread, or socket does not match.
+
+```console
+{% include "../../generated/cli-help/cmd-synopsis-wakterm-agent-promote-codex--help.txt" %}
+```
+
+```sh
+wakterm agent promote-codex wakterm_codex --thread 01a02767-c120-77b2-88a1-4e17c93a7549
 ```
 
 ## `wakterm agent send`

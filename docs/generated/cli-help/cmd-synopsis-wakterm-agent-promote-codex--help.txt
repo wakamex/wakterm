@@ -1,0 +1,10 @@
+promote an adopted remote Codex TUI into managed app-server metadata
+
+Usage: wakterm agent promote-codex --thread <THREAD_ID> <TARGET>
+
+Arguments:
+  <TARGET>  Adopted agent name, stable id, or pane id
+
+Options:
+      --thread <THREAD_ID>  Exact Codex thread UUID shown in the live remote TUI command
+  -h, --help                Print help

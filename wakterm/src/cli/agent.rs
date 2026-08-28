@@ -62,6 +62,12 @@ enum AgentSubCommand {
     AdoptDetected(AdoptDetectedAgentCommand),
 
     #[command(
+        name = "promote-codex",
+        about = "promote an adopted remote Codex TUI into managed app-server metadata"
+    )]
+    PromoteCodex(PromoteCodexCommand),
+
+    #[command(
         name = "list",
         about = "list managed, adopted, and detected agent panes"
     )]
@@ -128,6 +134,7 @@ impl AgentCommand {
             },
             AgentSubCommand::Adopt(cmd) => cmd.run(client).await,
             AgentSubCommand::AdoptDetected(cmd) => cmd.run(client).await,
+            AgentSubCommand::PromoteCodex(cmd) => cmd.run(client).await,
             AgentSubCommand::List(cmd) => cmd.run(client).await,
             AgentSubCommand::Watch(cmd) => cmd.run(client).await,
             AgentSubCommand::Inspect(cmd) => cmd.run(client).await,
@@ -2209,6 +2216,57 @@ impl AdoptDetectedAgentCommand {
             .find(|agent| agent.pane_id == detected.pane_id && agent.origin.is_registered())
             .ok_or_else(|| anyhow::anyhow!("agent metadata was set but could not be reloaded"))?;
 
+        write_json(&updated)
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
+pub struct PromoteCodexCommand {
+    /// Adopted agent name, stable id, or pane id
+    target: String,
+
+    /// Exact Codex thread UUID shown in the live remote TUI command
+    #[arg(long, value_name = "THREAD_ID")]
+    thread: String,
+}
+
+impl PromoteCodexCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        let agents = client.list_agents().await?.agents;
+        let agent = find_agent(&agents, &self.target)
+            .cloned()
+            .with_context(|| format!("no agent named or identified by {}", self.target))?;
+        anyhow::ensure!(
+            agent.origin == AgentOrigin::Adopted,
+            "agent {} must be adopted before managed promotion",
+            agent.metadata.name
+        );
+        anyhow::ensure!(
+            agent.metadata.codex_app_server.is_none(),
+            "agent {} is already managed by the Codex app-server",
+            agent.metadata.name
+        );
+        client
+            .promote_codex_app_server(codec::PromoteCodexAppServer {
+                pane_id: agent.pane_id,
+                thread_id: self.thread.clone(),
+            })
+            .await?;
+        let updated = client
+            .list_agents()
+            .await?
+            .agents
+            .into_iter()
+            .find(|candidate| candidate.pane_id == agent.pane_id)
+            .context("promoted agent could not be reloaded")?;
+        anyhow::ensure!(
+            updated
+                .metadata
+                .codex_app_server
+                .as_ref()
+                .is_some_and(|session| session.thread_id == self.thread),
+            "promoted agent did not retain the requested Codex thread"
+        );
         write_json(&updated)
     }
 }
@@ -4721,6 +4779,25 @@ mod test {
         };
         assert_eq!(command.harness, Some(AgentStartHarness::Codex));
         assert_eq!(command.cmd.as_deref(), Some("codex --profile fast"));
+    }
+
+    #[test]
+    fn promote_codex_parser_requires_explicit_thread() {
+        let thread_id = "01a02767-c120-77b2-88a1-4e17c93a7549";
+        let parsed = AgentCommand::try_parse_from([
+            "agent",
+            "promote-codex",
+            "wakterm_codex",
+            "--thread",
+            thread_id,
+        ])
+        .unwrap();
+        let AgentSubCommand::PromoteCodex(command) = parsed.sub else {
+            panic!("expected promote-codex command");
+        };
+        assert_eq!(command.target, "wakterm_codex");
+        assert_eq!(command.thread, thread_id);
+        assert!(AgentCommand::try_parse_from(["agent", "promote-codex", "wakterm_codex"]).is_err());
     }
 
     #[test]
