@@ -1350,7 +1350,7 @@ impl Mux {
     }
 
     pub(crate) fn apply_codex_app_server_notification(&self, message: &serde_json::Value) {
-        self.codex_app_server.record_status_notification(message);
+        self.codex_app_server.record_notification(message);
         codex_app_server::apply_notification_to_runtime(self, message);
     }
 
@@ -10840,9 +10840,17 @@ mod test {
         mux.add_tab_to_window(&tab, window_id).unwrap();
 
         mux.codex_app_server
-            .record_thread_status(&serde_json::json!({
-                "id": "thread-restored-idle",
-                "status": {"type": "idle"}
+            .record_thread_bootstrap(&serde_json::json!({
+                "thread": {
+                    "id": "thread-restored-idle",
+                    "status": {"type": "idle"}
+                },
+                "initialTurnsPage": {
+                    "data": [
+                        {"id": "running", "completedAt": null},
+                        {"id": "previous", "completedAt": 1_777_000_002}
+                    ]
+                }
             }));
 
         let mut metadata = sample_agent_metadata("restored-idle");
@@ -10862,6 +10870,10 @@ mod test {
             crate::agent::AgentTurnState::WaitingOnUser
         );
         assert_eq!(runtime.status, crate::agent::AgentStatus::Idle);
+        assert_eq!(
+            runtime.last_turn_completed_at,
+            Utc.timestamp_opt(1_777_000_002, 0).single()
+        );
 
         let request = crate::agent_admission::AgentPromptAdmissionRequest {
             request_id: "restored-idle-request".to_string(),

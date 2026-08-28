@@ -5,7 +5,7 @@ use crate::agent::{
 use crate::Mux;
 use anyhow::{bail, Context};
 use base64::Engine;
-use chrono::Utc;
+use chrono::{DateTime, TimeZone, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -87,7 +87,12 @@ fn metadata_only_resume_params(thread_id: &str, cwd: &str, tui_args: &[String]) 
     let mut params = json!({
         "threadId": thread_id,
         "cwd": cwd,
-        "excludeTurns": true
+        "excludeTurns": true,
+        "initialTurnsPage": {
+            "limit": 2,
+            "sortDirection": "desc",
+            "itemsView": "notLoaded"
+        }
     });
     apply_tui_settings(params.as_object_mut().unwrap(), tui_args);
     params
@@ -283,7 +288,13 @@ impl Connection {
 
 pub struct CodexAppServer {
     state: Mutex<State>,
-    thread_status_by_id: Mutex<HashMap<String, Value>>,
+    thread_runtime_seed_by_id: Mutex<HashMap<String, ThreadRuntimeSeed>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ThreadRuntimeSeed {
+    status: Value,
+    last_turn_completed_at: Option<DateTime<Utc>>,
 }
 
 struct State {
@@ -309,7 +320,7 @@ impl CodexAppServer {
                 )),
                 recovered_once: false,
             }),
-            thread_status_by_id: Mutex::new(HashMap::new()),
+            thread_runtime_seed_by_id: Mutex::new(HashMap::new()),
         }
     }
 
@@ -383,7 +394,7 @@ impl CodexAppServer {
             .and_then(Value::as_str)
             .context("Codex response omitted thread.sessionId")?
             .to_string();
-        self.record_thread_status(thread);
+        self.record_thread_bootstrap(&result);
         if let Some(expected) = request.resume_thread_id.as_deref() {
             anyhow::ensure!(
                 thread_id == expected,
@@ -423,11 +434,11 @@ impl CodexAppServer {
 
     pub fn mark_disconnected(&self) {
         self.state.lock().connection = None;
-        self.thread_status_by_id.lock().clear();
+        self.thread_runtime_seed_by_id.lock().clear();
     }
 
     pub fn unsubscribe(&self, thread_id: &str) {
-        self.thread_status_by_id.lock().remove(thread_id);
+        self.thread_runtime_seed_by_id.lock().remove(thread_id);
         let connection = self.state.lock().connection.clone();
         let thread_id = thread_id.to_string();
         if let Some(connection) = connection {
@@ -477,7 +488,7 @@ impl CodexAppServer {
                         == Some(thread.session.session_id.as_str()),
                     "Codex app-server recovered a different session"
                 );
-                self.record_thread_status(restored);
+                self.record_thread_bootstrap(&result);
                 connection.request(
                     "thread/name/set",
                     json!({"threadId": thread.session.thread_id, "name": thread.name}),
@@ -491,25 +502,42 @@ impl CodexAppServer {
         Ok(failures)
     }
 
-    pub(crate) fn record_thread_status(&self, thread: &Value) {
+    pub(crate) fn record_thread_bootstrap(&self, result: &Value) {
+        let Some(thread) = result.get("thread") else {
+            return;
+        };
         let Some(thread_id) = thread.get("id").and_then(Value::as_str) else {
             return;
         };
         let Some(status) = thread.get("status") else {
             return;
         };
-        self.thread_status_by_id
-            .lock()
-            .insert(thread_id.to_string(), status.clone());
+        self.thread_runtime_seed_by_id.lock().insert(
+            thread_id.to_string(),
+            ThreadRuntimeSeed {
+                status: status.clone(),
+                last_turn_completed_at: newest_completed_turn_at(result),
+            },
+        );
     }
 
-    pub(crate) fn record_status_notification(&self, message: &Value) {
+    pub(crate) fn record_notification(&self, message: &Value) {
         let method = message.get("method").and_then(Value::as_str);
         let Some(thread_id) = message.pointer("/params/threadId").and_then(Value::as_str) else {
             return;
         };
         if method == Some("thread/closed") {
-            self.thread_status_by_id.lock().remove(thread_id);
+            self.thread_runtime_seed_by_id.lock().remove(thread_id);
+            return;
+        }
+        if method == Some("turn/completed") {
+            let completed_at = message
+                .pointer("/params/turn/completedAt")
+                .and_then(timestamp_seconds)
+                .unwrap_or_else(Utc::now);
+            if let Some(seed) = self.thread_runtime_seed_by_id.lock().get_mut(thread_id) {
+                seed.last_turn_completed_at = Some(completed_at);
+            }
             return;
         }
         if method != Some("thread/status/changed") {
@@ -518,9 +546,14 @@ impl CodexAppServer {
         let Some(status) = message.pointer("/params/status") else {
             return;
         };
-        self.thread_status_by_id
+        self.thread_runtime_seed_by_id
             .lock()
-            .insert(thread_id.to_string(), status.clone());
+            .entry(thread_id.to_string())
+            .and_modify(|seed| seed.status = status.clone())
+            .or_insert_with(|| ThreadRuntimeSeed {
+                status: status.clone(),
+                last_turn_completed_at: None,
+            });
     }
 
     pub(crate) fn prime_runtime(
@@ -528,13 +561,31 @@ impl CodexAppServer {
         thread_id: &str,
         runtime: &mut crate::agent::AgentRuntimeSnapshot,
     ) {
-        let Some(status) = self.thread_status_by_id.lock().get(thread_id).cloned() else {
+        let Some(seed) = self
+            .thread_runtime_seed_by_id
+            .lock()
+            .get(thread_id)
+            .cloned()
+        else {
             return;
         };
         runtime.observed_at = Utc::now();
-        apply_thread_status(runtime, &status);
+        apply_thread_status(runtime, &seed.status);
+        runtime.last_turn_completed_at = seed.last_turn_completed_at;
         finalize_runtime_snapshot(runtime);
     }
+}
+
+fn timestamp_seconds(value: &Value) -> Option<DateTime<Utc>> {
+    Utc.timestamp_opt(value.as_i64()?, 0).single()
+}
+
+fn newest_completed_turn_at(result: &Value) -> Option<DateTime<Utc>> {
+    result
+        .pointer("/initialTurnsPage/data")
+        .and_then(Value::as_array)?
+        .iter()
+        .find_map(|turn| turn.get("completedAt").and_then(timestamp_seconds))
 }
 
 impl Drop for CodexAppServer {
@@ -1042,7 +1093,12 @@ mod test {
             json!({
                 "threadId": "thread-id",
                 "cwd": "/code/project",
-                "excludeTurns": true
+                "excludeTurns": true,
+                "initialTurnsPage": {
+                    "limit": 2,
+                    "sortDirection": "desc",
+                    "itemsView": "notLoaded"
+                }
             })
         );
     }
@@ -1061,6 +1117,11 @@ mod test {
                 "threadId": "thread-id",
                 "cwd": "/code/project",
                 "excludeTurns": true,
+                "initialTurnsPage": {
+                    "limit": 2,
+                    "sortDirection": "desc",
+                    "itemsView": "notLoaded"
+                },
                 "approvalPolicy": "never",
                 "sandbox": "danger-full-access"
             })
@@ -1090,6 +1151,11 @@ mod test {
                 "threadId": "thread-id",
                 "cwd": "/code/project",
                 "excludeTurns": true,
+                "initialTurnsPage": {
+                    "limit": 2,
+                    "sortDirection": "desc",
+                    "itemsView": "notLoaded"
+                },
                 "approvalPolicy": "on-request",
                 "sandbox": "workspace-write"
             })
@@ -1161,16 +1227,34 @@ mod test {
                 let request: Value = serde_json::from_slice(&payload).unwrap();
                 let id = request["id"].as_u64().unwrap();
                 match request["method"].as_str().unwrap() {
-                    "thread/resume" => responder_connection.dispatch(json!({
-                        "id": id,
-                        "result": {
-                            "thread": {
-                                "id": thread_id,
-                                "sessionId": thread_id,
-                                "status": {"type": "idle"}
+                    "thread/resume" => {
+                        assert_eq!(
+                            request["params"]["initialTurnsPage"],
+                            json!({
+                                "limit": 2,
+                                "sortDirection": "desc",
+                                "itemsView": "notLoaded"
+                            })
+                        );
+                        responder_connection.dispatch(json!({
+                            "id": id,
+                            "result": {
+                                "thread": {
+                                    "id": thread_id,
+                                    "sessionId": thread_id,
+                                    "status": {"type": "idle"}
+                                },
+                                "initialTurnsPage": {
+                                    "data": [
+                                        {"id": "running", "completedAt": null},
+                                        {"id": "completed", "completedAt": 1_777_000_002}
+                                    ],
+                                    "nextCursor": null,
+                                    "backwardsCursor": null
+                                }
                             }
-                        }
-                    })),
+                        }))
+                    }
                     "thread/name/set" => {
                         responder_connection.dispatch(json!({"id": id, "result": {}}))
                     }
@@ -1209,9 +1293,58 @@ mod test {
         assert_eq!(prepared.session.session_id, thread_id);
         assert_eq!(prepared.session.executable, "/usr/local/bin/codex");
         assert_eq!(prepared.session.version, "codex-cli test");
+        let seed = server
+            .thread_runtime_seed_by_id
+            .lock()
+            .get(thread_id)
+            .cloned()
+            .unwrap();
+        assert_eq!(seed.status, json!({"type": "idle"}));
         assert_eq!(
-            server.thread_status_by_id.lock().get(thread_id),
-            Some(&json!({"type": "idle"}))
+            seed.last_turn_completed_at,
+            Utc.timestamp_opt(1_777_000_002, 0).single()
+        );
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata("attached", thread_id));
+        server.prime_runtime(thread_id, &mut runtime);
+        assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(runtime.last_turn_completed_at, seed.last_turn_completed_at);
+    }
+
+    #[test]
+    fn live_completion_advances_the_cached_runtime_seed() {
+        let server = CodexAppServer::new(9002);
+        let thread_id = "thread-live-completion";
+        server.record_thread_bootstrap(&json!({
+            "thread": {
+                "id": thread_id,
+                "status": {"type": "active"}
+            },
+            "initialTurnsPage": {
+                "data": [{"id": "previous", "completedAt": 1_777_000_002}]
+            }
+        }));
+        server.record_notification(&json!({
+            "method": "turn/completed",
+            "params": {
+                "threadId": thread_id,
+                "turn": {"id": "latest", "completedAt": 1_777_000_010}
+            }
+        }));
+        server.record_notification(&json!({
+            "method": "thread/status/changed",
+            "params": {
+                "threadId": thread_id,
+                "status": {"type": "idle"}
+            }
+        }));
+
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata("live", thread_id));
+        server.prime_runtime(thread_id, &mut runtime);
+
+        assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(
+            runtime.last_turn_completed_at,
+            Utc.timestamp_opt(1_777_000_010, 0).single()
         );
     }
 

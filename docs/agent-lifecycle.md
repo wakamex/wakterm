@@ -69,6 +69,8 @@ first starts or resumes the thread, before the native TUI attaches. If managed
 resume fails, Wakterm uses the exact native resume recipe; neither path may
 create a replacement session.
 
+Managed Codex restoration also recovers the newest completed-turn timestamp in the resume exchange, so `LAST TURN END` remains available after restart. A thread with no completed turn reports `-`.
+
 ## Detection and confirmed adoption
 
 Detection may use process trees, foreground process information, terminal
