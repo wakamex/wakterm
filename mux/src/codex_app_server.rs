@@ -33,17 +33,6 @@ fn initialize_params() -> Value {
     })
 }
 
-fn codex_setting_value(value: &str) -> &str {
-    match value {
-        "on-failure" => "onFailure",
-        "on-request" => "onRequest",
-        "read-only" => "readOnly",
-        "workspace-write" => "workspaceWrite",
-        "danger-full-access" => "dangerFullAccess",
-        value => value,
-    }
-}
-
 fn apply_tui_settings(params: &mut serde_json::Map<String, Value>, args: &[String]) {
     let mut index = 0;
     while index < args.len() {
@@ -59,7 +48,7 @@ fn apply_tui_settings(params: &mut serde_json::Map<String, Value>, args: &[Strin
                 {
                     params.insert(
                         "approvalPolicy".to_string(),
-                        Value::String(codex_setting_value(value).to_string()),
+                        Value::String(value.to_string()),
                     );
                 }
                 if inline_value.is_none() {
@@ -70,10 +59,7 @@ fn apply_tui_settings(params: &mut serde_json::Map<String, Value>, args: &[Strin
                 if let Some(value) =
                     inline_value.or_else(|| args.get(index + 1).map(String::as_str))
                 {
-                    params.insert(
-                        "sandbox".to_string(),
-                        Value::String(codex_setting_value(value).to_string()),
-                    );
+                    params.insert("sandbox".to_string(), Value::String(value.to_string()));
                 }
                 if inline_value.is_none() {
                     index += 1;
@@ -86,7 +72,7 @@ fn apply_tui_settings(params: &mut serde_json::Map<String, Value>, args: &[Strin
                 );
                 params.insert(
                     "sandbox".to_string(),
-                    Value::String("dangerFullAccess".to_string()),
+                    Value::String("danger-full-access".to_string()),
                 );
             }
             _ => {}
@@ -1033,7 +1019,7 @@ mod test {
                 "cwd": "/code/project",
                 "excludeTurns": true,
                 "approvalPolicy": "never",
-                "sandbox": "dangerFullAccess"
+                "sandbox": "danger-full-access"
             })
         );
         assert_eq!(
@@ -1045,7 +1031,7 @@ mod test {
                 "cwd": "/code/project",
                 "serviceName": "wakterm",
                 "approvalPolicy": "never",
-                "sandbox": "dangerFullAccess"
+                "sandbox": "danger-full-access"
             })
         );
         assert_eq!(
@@ -1061,8 +1047,8 @@ mod test {
                 "threadId": "thread-id",
                 "cwd": "/code/project",
                 "excludeTurns": true,
-                "approvalPolicy": "onRequest",
-                "sandbox": "workspaceWrite"
+                "approvalPolicy": "on-request",
+                "sandbox": "workspace-write"
             })
         );
     }
@@ -1410,6 +1396,32 @@ mod test {
 
         assert_eq!(resumed.session.thread_id, thread_id);
         assert!(!resumed.session.session_id.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires the installed Codex app-server"]
+    fn real_installed_codex_accepts_authority_settings() {
+        let root = tempfile::tempdir().unwrap();
+        let server = CodexAppServer::new(usize::MAX - 2);
+        let prepared = server
+            .prepare(PrepareCodexLaunch {
+                name: "wakterm-real-authority-smoke".to_string(),
+                cwd: root.path().to_string_lossy().to_string(),
+                resume_thread_id: None,
+                tui_args: vec![
+                    "-a".to_string(),
+                    "never".to_string(),
+                    "-s".to_string(),
+                    "danger-full-access".to_string(),
+                ],
+            })
+            .unwrap();
+        assert!(!prepared.session.thread_id.is_empty());
+
+        let mut state = server.state.lock();
+        let child = state.child.as_mut().unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 
     #[test]
