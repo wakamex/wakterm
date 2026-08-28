@@ -629,6 +629,11 @@ struct AgentObserverRequest {
 
 enum AgentObserverCommand {
     Refresh(AgentObserverRequest),
+    PrimeAdoption {
+        metadata: AgentMetadata,
+        runtime: AgentRuntimeSnapshot,
+        result_tx: Sender<anyhow::Result<()>>,
+    },
     CodexAppServerNotification {
         metadata: AgentMetadata,
         runtime: AgentRuntimeSnapshot,
@@ -1070,6 +1075,18 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                     }
                 })
                 .detach();
+            }
+            AgentObserverCommand::PrimeAdoption {
+                metadata,
+                runtime,
+                result_tx,
+            } => {
+                let result = event_writer
+                    .as_mut()
+                    .context("agent event writer is unavailable")
+                    .and_then(|writer| writer.observe_agent(&metadata, &runtime));
+                writer_failed = result.is_err();
+                let _ = result_tx.send(result);
             }
             AgentObserverCommand::Unavailable {
                 metadata,
@@ -2606,6 +2623,30 @@ impl Mux {
             managed_checkout: false,
             codex_app_server: None,
         };
+        let (result_tx, result_rx) = mpsc::channel();
+        if self
+            .agent_observer_tx
+            .send(AgentObserverCommand::PrimeAdoption {
+                metadata: metadata.clone(),
+                runtime: runtime.clone(),
+                result_tx,
+            })
+            .is_err()
+        {
+            log::error!("agent observer worker is no longer available");
+            return None;
+        }
+        match result_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                log::warn!("could not prime durable events for adopted pane {pane_id}: {err:#}");
+                return None;
+            }
+            Err(err) => {
+                log::error!("agent observer worker dropped adoption result: {err}");
+                return None;
+            }
+        }
         if self
             .install_agent_metadata_runtime_without_process_identity(pane_id, metadata, runtime)
             .is_ok()
@@ -6888,12 +6929,11 @@ mod test {
     {
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while !ready() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for {}",
-                context
-            );
-            executor.tick().expect("run queued main-thread work");
+            let now = std::time::Instant::now();
+            assert!(now < deadline, "timed out waiting for {}", context);
+            executor
+                .tick_timeout(deadline - now)
+                .expect("run queued main-thread work");
         }
     }
 
@@ -9313,6 +9353,119 @@ mod test {
             mux.get_agent_metadata_for_pane(pane_id)
                 .and_then(|metadata| metadata.adopted_pid),
             Some(1)
+        );
+        unsafe {
+            std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn filesystem_artifact_event_adopts_and_publishes_later_final() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        }
+        let _config = TestConfigGuard::new_with_auto_adopt("attention", "🤖 ", true);
+
+        let session_dir = temp.path().join("2026").join("03").join("21");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let session = session_dir.join("rollout-filesystem-watcher.jsonl");
+        std::fs::write(
+            &session,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-direct-adopted\",\"cwd\":\"/tmp/filesystem-watcher-project\"}}\n",
+                "{\"ordinal\":1,\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-direct-adopted\",\"collaboration_mode_kind\":\"default\"}}\n",
+                "{\"ordinal\":2,\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:01Z\",\"payload\":{\"type\":\"agent_message\",\"phase\":\"commentary\"}}\n"
+            ),
+        )
+        .unwrap();
+        let _owned_session = std::fs::File::open(&session).unwrap();
+
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        mux.start_agent_event_runtime_epoch().unwrap();
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let mut process = LocalProcessInfo::with_root_pid(std::process::id()).unwrap();
+        process.name = "codex".to_string();
+        process.executable = PathBuf::from("/usr/bin/codex");
+        process.argv = vec!["codex".to_string()];
+        process.cwd = PathBuf::from("/tmp/filesystem-watcher-project");
+        let pane: Arc<dyn Pane> = Arc::new(FakePane {
+            id: 157,
+            size: Mutex::new(size),
+            domain_id: domain.id,
+            title: "codex".to_string(),
+            cwd: Some(FakePane::test_file_url("/tmp/filesystem-watcher-project")),
+            foreground_process_name: Some("/usr/bin/codex".to_string()),
+            foreground_process_info: Some(process),
+            foreground_process_root_pid: None,
+            foreground_process_info_calls: None,
+        });
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        mux.record_agent_output(pane_id);
+        assert!(mux.agent_adoption_candidates.read().contains_key(&pane_id));
+
+        wait_for_main_thread_work(
+            &executor,
+            || mux.get_agent_metadata_for_pane(pane_id).is_some(),
+            "direct Codex session adoption",
+        );
+
+        assert_eq!(
+            mux.get_agent_metadata_for_pane(pane_id)
+                .and_then(|metadata| metadata.adopted_pid),
+            Some(std::process::id())
+        );
+
+        let after_adoption = mux.agent_event_store.latest_sequence();
+        let mut session_file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&session)
+            .unwrap();
+        session_file
+            .write_all(
+                concat!(
+                    "{\"ordinal\":3,\"type\":\"response_item\",\"timestamp\":\"2026-03-21T12:00:02Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done without another prompt\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-direct-adopted\"}}}\n",
+                    "{\"ordinal\":4,\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:03Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-direct-adopted\",\"last_agent_message\":\"done without another prompt\"}}\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        session_file.sync_data().unwrap();
+
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_event_store
+                    .read_page(after_adoption, 100)
+                    .unwrap()
+                    .events
+                    .iter()
+                    .any(|event| {
+                        event.kind == crate::agent_event::AgentEventKind::TurnFinal
+                            && event.turn_id.as_deref() == Some("turn-direct-adopted")
+                    })
+            },
+            "adopted Codex final from filesystem watcher",
         );
         unsafe {
             std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");

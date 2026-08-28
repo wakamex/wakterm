@@ -1,10 +1,11 @@
 use anyhow::{anyhow, Result};
 use async_executor::Executor;
-use flume::{bounded, unbounded, Receiver, TryRecvError};
+use flume::{bounded, unbounded, Receiver, RecvTimeoutError, TryRecvError};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
+use std::time::Duration;
 
 pub use async_task::{Runnable, Task};
 pub type SpawnFunc = Box<dyn FnOnce() + Send>;
@@ -220,6 +221,17 @@ impl SimpleExecutor {
             Err(err) => anyhow::bail!("while waiting for events: {:?}", err),
         };
         Ok(())
+    }
+
+    pub fn tick_timeout(&self, timeout: Duration) -> anyhow::Result<bool> {
+        match self.rx.recv_timeout(timeout) {
+            Ok(func) => {
+                func();
+                Ok(true)
+            }
+            Err(RecvTimeoutError::Timeout) => Ok(false),
+            Err(err) => anyhow::bail!("while waiting for events: {:?}", err),
+        }
     }
 }
 
