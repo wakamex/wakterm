@@ -1526,7 +1526,11 @@ impl Mux {
         pane_id: PaneId,
         metadata: AgentMetadata,
     ) -> anyhow::Result<()> {
-        self.set_agent_metadata_with_initial_refresh(pane_id, metadata)
+        if metadata.codex_app_server.is_some() {
+            self.set_managed_codex_metadata_with_initial_refresh(pane_id, metadata)
+        } else {
+            self.set_agent_metadata_with_initial_refresh(pane_id, metadata)
+        }
     }
 
     pub fn register_agent_restore_intent(
@@ -10899,6 +10903,102 @@ mod test {
         assert_eq!(
             receipt.status,
             crate::agent_admission::AgentAdmissionStatus::Unsupported
+        );
+    }
+
+    #[test]
+    fn restored_managed_codex_survives_shell_to_tui_process_transition() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let (initial_shell, _) = FakePane::new_detected_counted(
+            55,
+            size,
+            domain.id,
+            "zsh",
+            "/code/restored-managed",
+            "/usr/bin/zsh",
+            &["zsh", "-l", "-i", "-c", "codex resume --remote ..."],
+        );
+        let pane_id = initial_shell.pane_id();
+        let initial_shell: Arc<dyn Pane> = initial_shell;
+        tab.assign_pane(&initial_shell);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let mut metadata = sample_agent_metadata("restored_managed");
+        metadata.declared_cwd = "/code/restored-managed".to_string();
+        metadata.adopted_pid = None;
+        metadata.adopted_start_time = None;
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "thread-restored-managed".to_string(),
+            session_id: "session-restored-managed".to_string(),
+            executable: "/usr/local/bin/codex".to_string(),
+            version: "codex-cli test".to_string(),
+            tui_args: vec!["-a".to_string(), "never".to_string()],
+        });
+        mux.restore_agent_metadata(pane_id, metadata.clone())
+            .unwrap();
+
+        let restored = mux.get_agent_metadata_for_pane(pane_id).unwrap();
+        assert_eq!(restored.adopted_pid, None);
+        assert_eq!(restored.adopted_start_time, None);
+
+        let (mut remote_tui, _) = FakePane::new_detected_counted(
+            pane_id,
+            size,
+            domain.id,
+            "codex",
+            "/code/restored-managed",
+            "/usr/local/bin/codex",
+            &[
+                "codex",
+                "resume",
+                "--remote",
+                "unix:///run/user/1000/wakterm/codex-app-server.sock",
+                "thread-restored-managed",
+            ],
+        );
+        let process = Arc::get_mut(&mut remote_tui)
+            .expect("remote TUI pane is uniquely owned")
+            .foreground_process_info
+            .as_mut()
+            .expect("remote TUI process info");
+        process.pid = 2;
+        process.start_time = 2;
+        mux.panes
+            .write()
+            .insert(pane_id, remote_tui as Arc<dyn Pane>);
+
+        mux.record_agent_output(pane_id);
+
+        let agent = mux
+            .list_agents()
+            .into_iter()
+            .find(|agent| agent.pane_id == pane_id)
+            .expect("managed agent remains registered after the TUI starts");
+        assert_eq!(agent.origin, AgentOrigin::Managed);
+        assert_eq!(agent.metadata.agent_id, metadata.agent_id);
+        assert_eq!(
+            agent
+                .metadata
+                .codex_app_server
+                .as_ref()
+                .map(|session| session.thread_id.as_str()),
+            Some("thread-restored-managed")
         );
     }
 
