@@ -3,10 +3,11 @@ use crate::agent::{
     default_launch_cmd_for_harness, derive_runtime_status, detect_harness_process,
     finalize_runtime_snapshot, infer_harness, native_restore_launch_command,
     prime_runtime_for_new_agent, refresh_runtime_from_harness_with_expected_session,
-    remote_codex_tui, restorable_session_id, AgentHarness, AgentMetadata, AgentOrigin,
-    AgentRuntimeSnapshot, AgentSnapshot, AgentTabBadgeState, ExpectedAgentSession,
+    remote_codex_tui, restorable_session_id, AgentHarness, AgentMetadata, AgentObservedTurn,
+    AgentObservedTurnOutcome, AgentOrigin, AgentRuntimeSnapshot, AgentSnapshot, AgentTabBadgeState,
+    ExpectedAgentSession,
 };
-use crate::agent_event::AgentEventStore;
+use crate::agent_event::{AgentEventRuntimeUpdate, AgentEventStore};
 use crate::agent_request::{
     AgentRequest, AgentRequestCorrelation, AgentRequestState, AgentRequestStore,
 };
@@ -1051,9 +1052,15 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                 );
                 if request.adopted {
                     if let Some(writer) = event_writer.as_mut() {
-                        if let Err(err) = writer.observe_agent(&request.metadata, &runtime) {
-                            log::error!("failed to persist agent observation events: {err:#}");
-                            writer_failed = true;
+                        match writer.observe_agent(&request.metadata, &runtime) {
+                            Ok(Some(update)) => {
+                                apply_agent_event_runtime_update(&mut runtime, update)
+                            }
+                            Ok(None) => {}
+                            Err(err) => {
+                                log::error!("failed to persist agent observation events: {err:#}");
+                                writer_failed = true;
+                            }
                         }
                     }
                 }
@@ -1086,7 +1093,7 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                 let result = event_writer
                     .as_mut()
                     .context("agent event writer is unavailable")
-                    .and_then(|writer| writer.observe_agent(&metadata, &runtime));
+                    .and_then(|writer| writer.observe_agent(&metadata, &runtime).map(|_| ()));
                 writer_failed = result.is_err();
                 let _ = result_tx.send(result);
             }
@@ -1121,6 +1128,55 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
             event_writer = None;
         }
     }
+}
+
+fn apply_agent_event_runtime_update(
+    runtime: &mut AgentRuntimeSnapshot,
+    update: AgentEventRuntimeUpdate,
+) {
+    if runtime
+        .observed_turn
+        .as_ref()
+        .is_some_and(|turn| turn.provider_turn_id != update.turn_id)
+    {
+        return;
+    }
+
+    runtime.observed_at = runtime.observed_at.max(update.observed_at);
+    runtime.turn_state = update.turn_state;
+    let completed = !matches!(&update.outcome, AgentObservedTurnOutcome::Running);
+    if completed {
+        runtime.last_turn_completed_at = Some(update.observed_at);
+        runtime.turn_phase = Some(
+            if matches!(&update.outcome, AgentObservedTurnOutcome::Completed) {
+                "complete"
+            } else {
+                "aborted"
+            }
+            .to_string(),
+        );
+    }
+
+    if let Some(turn) = runtime.observed_turn.as_mut() {
+        turn.outcome = update.outcome;
+        turn.completed_at = completed.then_some(update.observed_at);
+        if update.final_message.is_some() {
+            turn.final_message = update.final_message;
+        }
+    } else {
+        runtime.observed_turn = Some(AgentObservedTurn {
+            provider_turn_id: update.turn_id,
+            outcome: update.outcome,
+            started_at: None,
+            completed_at: completed.then_some(update.observed_at),
+            started_cursor: None,
+            latest_cursor: None,
+            primary_user_message_sha256: None,
+            user_message_count: 0,
+            final_message: update.final_message,
+        });
+    }
+    finalize_runtime_snapshot(runtime);
 }
 
 lazy_static::lazy_static! {
@@ -9719,6 +9775,173 @@ mod test {
         unsafe {
             std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn durable_final_reconciles_the_same_running_catalog_snapshot() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout-observer-split-read.jsonl");
+        std::fs::write(
+            &session,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-split-read\",\"cwd\":\"/tmp/observer-split-read\"}}\n",
+                "{\"ordinal\":1,\"type\":\"event_msg\",\"timestamp\":\"2026-08-28T16:32:29Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-split-read\",\"collaboration_mode_kind\":\"default\"}}\n"
+            ),
+        )
+        .unwrap();
+        let mut session_file = std::fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&session)
+            .unwrap();
+
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        mux.start_agent_event_runtime_epoch().unwrap();
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let process = LocalProcessInfo::with_root_pid(std::process::id()).unwrap();
+        let pane: Arc<dyn Pane> = Arc::new(FakePane {
+            id: 16_001,
+            size: Mutex::new(size),
+            domain_id: domain.id,
+            title: "codex".to_string(),
+            cwd: Some(FakePane::test_file_url("/tmp/observer-split-read")),
+            foreground_process_name: Some("/usr/bin/codex".to_string()),
+            foreground_process_info: Some(process.clone()),
+            foreground_process_root_pid: None,
+            foreground_process_info_calls: None,
+        });
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let metadata = AgentMetadata {
+            agent_id: "agent-observer-split-read".to_string(),
+            name: "observer_split_read".to_string(),
+            launch_cmd: "codex".to_string(),
+            declared_cwd: "/tmp/observer-split-read".to_string(),
+            adopted_pid: Some(std::process::id()),
+            adopted_start_time: Some(process.start_time),
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+            codex_app_server: None,
+        };
+        let mut running = AgentRuntimeSnapshot::new(&metadata);
+        running.harness = AgentHarness::Codex;
+        running.transport = crate::agent::AgentTransport::ObservedPty;
+        running.foreground_process_name = Some("/usr/bin/codex".to_string());
+        running.alive = true;
+        running.session_path = Some(session.to_string_lossy().into_owned());
+        running.turn_state = crate::agent::AgentTurnState::WaitingOnAgent;
+        running.status = crate::agent::AgentStatus::Busy;
+        running.observed_turn = Some(AgentObservedTurn {
+            provider_turn_id: "turn-split-read".to_string(),
+            outcome: AgentObservedTurnOutcome::Running,
+            started_at: Some(Utc.with_ymd_and_hms(2026, 8, 28, 16, 32, 29).unwrap()),
+            completed_at: None,
+            started_cursor: Some(1),
+            latest_cursor: Some(1),
+            primary_user_message_sha256: None,
+            user_message_count: 1,
+            final_message: None,
+        });
+        mux.install_agent_metadata_runtime_without_process_identity(
+            pane_id,
+            metadata.clone(),
+            running.clone(),
+        )
+        .unwrap();
+
+        let mut writer = mux.agent_event_store.writer().unwrap();
+        writer.observe_agent(&metadata, &running).unwrap();
+        let baseline = mux.agent_event_store.latest_sequence();
+
+        session_file
+            .write_all(
+                concat!(
+                    "{\"ordinal\":2,\"type\":\"response_item\",\"timestamp\":\"2026-08-28T16:33:14.312Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"completed during the split read\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-split-read\"}}}\n",
+                    "{\"ordinal\":3,\"type\":\"event_msg\",\"timestamp\":\"2026-08-28T16:33:14.340Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-split-read\",\"last_agent_message\":\"completed during the split read\"}}\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        session_file.sync_data().unwrap();
+
+        let update = writer
+            .observe_agent(&metadata, &running)
+            .unwrap()
+            .expect("durable provider transition");
+        assert!(mux
+            .agent_event_store
+            .read_page(baseline, 100)
+            .unwrap()
+            .events
+            .iter()
+            .any(|event| event.kind == crate::agent_event::AgentEventKind::TurnFinal));
+
+        apply_agent_event_runtime_update(&mut running, update);
+        mux.agent_observer_state_by_pane.write().insert(
+            pane_id,
+            AgentObserverState {
+                latest_generation: 1,
+                inflight_generation: Some(1),
+                ..AgentObserverState::default()
+            },
+        );
+        mux.apply_agent_observer_update(AgentObserverUpdate {
+            pane_id,
+            generation: 1,
+            runtime: running,
+            queue_delay: Duration::ZERO,
+            refresh_elapsed: Duration::ZERO,
+            schedule_trailing_refresh: false,
+        });
+
+        let catalog_agent = mux
+            .agent_api_catalog()
+            .agents
+            .into_iter()
+            .find(|agent| agent.agent_id == metadata.agent_id)
+            .expect("catalog agent");
+        assert_eq!(catalog_agent.status, "idle");
+        assert_eq!(catalog_agent.turn_state, "waiting_on_user");
+
+        let request = crate::agent_admission::AgentPromptAdmissionRequest {
+            request_id: "observer-split-read-request".to_string(),
+            agent_id: metadata.agent_id.clone(),
+            incarnation_id: crate::agent_admission::incarnation_id(&metadata).unwrap(),
+            prompt: "continue".to_string(),
+            paste: false,
+            return_final: false,
+            timeout_ms: 0,
+        };
+        let crate::agent_admission::AgentAdmissionCapture::Candidate(candidate) =
+            mux.capture_agent_admission(request)
+        else {
+            panic!("durably completed agent should be an admission candidate");
+        };
+        assert_eq!(
+            candidate.runtime.turn_state,
+            crate::agent::AgentTurnState::WaitingOnUser
+        );
     }
 
     #[test]

@@ -1,4 +1,7 @@
-use crate::agent::{read_gemini_conversation, AgentHarness, AgentMetadata, AgentRuntimeSnapshot};
+use crate::agent::{
+    read_gemini_conversation, AgentHarness, AgentMetadata, AgentObservedTurnOutcome,
+    AgentRuntimeSnapshot, AgentTurnState,
+};
 use crate::agent_admission::incarnation_id;
 use anyhow::{anyhow, bail, Context};
 use chrono::{DateTime, Utc};
@@ -137,6 +140,15 @@ struct PendingEvent {
     outcome: Option<String>,
     recoverable: Option<bool>,
     detail: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentEventRuntimeUpdate {
+    pub turn_id: String,
+    pub turn_state: AgentTurnState,
+    pub observed_at: DateTime<Utc>,
+    pub outcome: AgentObservedTurnOutcome,
+    pub final_message: Option<String>,
 }
 
 impl PendingEvent {
@@ -345,7 +357,7 @@ impl AgentEventStore {
     ) -> anyhow::Result<()> {
         let result = (|| {
             let mut writer = self.writer()?;
-            writer.observe_agent(metadata, runtime)
+            writer.observe_agent(metadata, runtime).map(|_| ())
         })();
         self.live.store(result.is_ok(), Ordering::Release);
         result
@@ -356,9 +368,9 @@ impl AgentEventStore {
         conn: &mut Connection,
         metadata: &AgentMetadata,
         runtime: &AgentRuntimeSnapshot,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<AgentEventRuntimeUpdate>> {
         let Some(current_incarnation) = incarnation_id(metadata) else {
-            return Ok(());
+            return Ok(None);
         };
         let loaded_state = load_projection(&conn, &metadata.agent_id)?.unwrap_or_default();
         let mut state = loaded_state.clone();
@@ -404,6 +416,7 @@ impl AgentEventStore {
             state.lifecycle = Some(lifecycle.to_string());
         }
 
+        let mut runtime_update = None;
         if runtime.alive {
             if let (Some(session_path), false) = (
                 runtime.session_path.as_deref(),
@@ -412,6 +425,7 @@ impl AgentEventStore {
                 match project_provider_events(&runtime.harness, session_path, state.cursor.clone())
                 {
                     Ok(projected) => {
+                        runtime_update = provider_runtime_update(&projected.events);
                         pending.extend(
                             projected
                                 .events
@@ -465,7 +479,7 @@ impl AgentEventStore {
         }
 
         if state == loaded_state && pending.is_empty() {
-            return Ok(());
+            return Ok(runtime_update);
         }
 
         let tx = conn.transaction()?;
@@ -481,7 +495,7 @@ impl AgentEventStore {
         tx.commit()?;
         let latest = latest_sequence(&conn)?;
         self.publish_latest_sequence(latest);
-        Ok(())
+        Ok(runtime_update)
     }
 
     pub fn record_unavailable(
@@ -692,7 +706,7 @@ impl AgentEventWriter {
         &mut self,
         metadata: &AgentMetadata,
         runtime: &AgentRuntimeSnapshot,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<AgentEventRuntimeUpdate>> {
         let result = self
             .store
             .observe_agent_inner(&mut self.conn, metadata, runtime);
@@ -732,6 +746,41 @@ impl AgentEventWriter {
         self.store.live.store(result.is_ok(), Ordering::Release);
         result
     }
+}
+
+fn provider_runtime_update(events: &[PendingEvent]) -> Option<AgentEventRuntimeUpdate> {
+    let mut update = None;
+    for event in events {
+        let Some(turn_id) = event.turn_id.as_deref() else {
+            continue;
+        };
+        match event.kind {
+            AgentEventKind::TurnStarted => {
+                update = Some(AgentEventRuntimeUpdate {
+                    turn_id: turn_id.to_string(),
+                    turn_state: AgentTurnState::WaitingOnAgent,
+                    observed_at: event.observed_at,
+                    outcome: AgentObservedTurnOutcome::Running,
+                    final_message: None,
+                });
+            }
+            AgentEventKind::TurnFinal => {
+                update = Some(AgentEventRuntimeUpdate {
+                    turn_id: turn_id.to_string(),
+                    turn_state: AgentTurnState::WaitingOnUser,
+                    observed_at: event.observed_at,
+                    outcome: if event.outcome.as_deref() == Some("completed") {
+                        AgentObservedTurnOutcome::Completed
+                    } else {
+                        AgentObservedTurnOutcome::Aborted
+                    },
+                    final_message: event.text.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+    update
 }
 
 impl AgentEventStore {

@@ -66,6 +66,8 @@ Claude `end_turn`, a persisted Gemini response message, or OpenCode
 intermediate and never a final. Plans are emitted separately when the provider
 records an explicit plan artifact, currently Claude `ExitPlanMode`.
 
+For observer-backed sessions, a durable provider turn transition updates the catalog and admission snapshot in the same observation. A committed `waiting_on_user` transition therefore makes the exact agent idle without waiting for terminal input or unrelated API activity.
+
 For Codex app-server TUI sessions, completed agent-message items and turns are
 committed from the live app-server notification stream. This includes sessions
 restored after a mux restart and does not require catalog or prompt activity.
