@@ -1,6 +1,6 @@
 use crate::agent::{
     refresh_runtime_from_harness, AgentHarness, AgentMetadata, AgentRuntimeSnapshot, AgentSnapshot,
-    AgentStatus, AgentTurnState,
+    AgentStatus, AgentTransport, AgentTurnState,
 };
 use crate::agent_request::{AgentRequest, AgentRequestState, AgentRequestStore};
 use crate::pane::PaneId;
@@ -174,6 +174,8 @@ pub struct AgentAdmissionCandidate {
     pub metadata: AgentMetadata,
     pub runtime: AgentRuntimeSnapshot,
     pub input_generation: u64,
+    pub event_sequence: u64,
+    pub event_stream_live: bool,
 }
 
 impl AgentAdmissionCandidate {
@@ -201,18 +203,33 @@ impl AgentAdmissionCandidate {
         }
         let deadline_at = (self.request.timeout_ms != 0)
             .then(|| Utc::now() + chrono::Duration::milliseconds(self.request.timeout_ms as i64));
-        AgentRequest::new(
-            self.request.request_id.clone(),
-            &self.metadata,
-            self.pane_id,
-            &self.runtime,
-            &self.request.prompt,
-            self.request.paste,
-            self.request.timeout_ms,
-            deadline_at,
-        )
-        .map(Some)
-        .map_err(|err| {
+        let request = if matches!(self.runtime.transport, AgentTransport::CodexAppServerTui) {
+            AgentRequest::new_managed_codex(
+                self.request.request_id.clone(),
+                &self.metadata,
+                self.pane_id,
+                &self.runtime,
+                self.request.incarnation_id.clone(),
+                self.event_sequence,
+                self.event_stream_live,
+                &self.request.prompt,
+                self.request.paste,
+                self.request.timeout_ms,
+                deadline_at,
+            )
+        } else {
+            AgentRequest::new(
+                self.request.request_id.clone(),
+                &self.metadata,
+                self.pane_id,
+                &self.runtime,
+                &self.request.prompt,
+                self.request.paste,
+                self.request.timeout_ms,
+                deadline_at,
+            )
+        };
+        request.map(Some).map_err(|err| {
             AgentAdmissionReceipt::rejected(
                 &self.request,
                 AgentAdmissionStatus::ObserverFailure,
@@ -301,11 +318,15 @@ pub fn request_matches_admission(
         &request.prompt,
         request.paste,
         request.timeout_ms,
-    ) && incarnation_id_from_parts(
-        &stored.target_agent_id,
-        stored.target_pid,
-        stored.target_process_start_time,
-    ) == request.incarnation_id
+    ) && if stored.target_incarnation_id.is_empty() {
+        incarnation_id_from_parts(
+            &stored.target_agent_id,
+            stored.target_pid,
+            stored.target_process_start_time,
+        ) == request.incarnation_id
+    } else {
+        stored.target_incarnation_id == request.incarnation_id
+    }
 }
 
 impl Mux {
@@ -376,6 +397,8 @@ impl Mux {
             metadata: target.metadata.clone(),
             runtime: target.runtime,
             input_generation: self.agent_input_generation(target.pane_id),
+            event_sequence: self.agent_event_store.latest_sequence(),
+            event_stream_live: self.agent_event_store.is_live(),
         })
     }
 
@@ -811,9 +834,57 @@ mod tests {
             metadata,
             runtime,
             input_generation: 0,
+            event_sequence: 0,
+            event_stream_live: true,
         }
         .refresh();
         assert!(candidate.runtime.alive);
+    }
+
+    #[test]
+    fn managed_codex_can_prepare_return_final_from_durable_event_head() {
+        let mut metadata = metadata();
+        metadata.adopted_pid = None;
+        metadata.adopted_start_time = None;
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "thread-managed".to_string(),
+            session_id: "session-managed".to_string(),
+            executable: "codex".to_string(),
+            version: "codex-cli test".to_string(),
+            tui_args: vec![],
+        });
+        let incarnation = incarnation_id(&metadata).unwrap();
+        let mut request = request("request-managed-return", "work");
+        request.incarnation_id = incarnation.clone();
+        request.return_final = true;
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Codex;
+        runtime.transport = AgentTransport::CodexAppServerTui;
+        runtime.status = AgentStatus::Idle;
+        runtime.turn_state = AgentTurnState::WaitingOnUser;
+        runtime.alive = true;
+        let candidate = AgentAdmissionCandidate {
+            request,
+            pane_id: 7,
+            metadata,
+            runtime,
+            input_generation: 0,
+            event_sequence: 42,
+            event_stream_live: true,
+        };
+
+        let nested = candidate
+            .proposed_return_request()
+            .expect("managed return-final baseline")
+            .expect("return-final request");
+        assert_eq!(
+            nested.correlation,
+            crate::agent_request::AgentRequestCorrelation::CodexAppServerEvents
+        );
+        assert_eq!(nested.target_incarnation_id, incarnation);
+        assert_eq!(nested.baseline_cursor, 42);
+        assert_eq!(nested.reconciled_event_sequence, 42);
+        assert!(request_matches_admission(&nested, &candidate.request));
     }
 
     #[test]
@@ -887,6 +958,8 @@ mod tests {
             metadata: metadata(),
             runtime,
             input_generation: 0,
+            event_sequence: 0,
+            event_stream_live: true,
         };
 
         let Err(receipt) = candidate.proposed_return_request() else {

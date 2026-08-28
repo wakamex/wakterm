@@ -72,6 +72,8 @@ restored after a mux restart and does not require catalog or prompt activity.
 The authoritative status returned by app-server resume initializes the restored
 catalog entry, so an idle session can accept prompt admission immediately.
 
+Return-final admission uses the same request and receipt contract for observer-backed Codex PTYs and managed Codex app-server sessions. An observer-backed request is correlated through its exact process, provider session, cursor, prompt hash, and provider turn. A managed request arms the durable event sequence for its exact app-server thread and session, binds the first subsequent provider turn, and accepts only that turn's durable final.
+
 Gemini observation accepts both legacy JSON conversation snapshots and the
 current append-only JSONL format. Duplicate JSONL records update the same
 durable provider message, incomplete trailing records wait for the next

@@ -7,7 +7,9 @@ use crate::agent::{
     AgentRuntimeSnapshot, AgentSnapshot, AgentTabBadgeState, ExpectedAgentSession,
 };
 use crate::agent_event::AgentEventStore;
-use crate::agent_request::{AgentRequest, AgentRequestState, AgentRequestStore};
+use crate::agent_request::{
+    AgentRequest, AgentRequestCorrelation, AgentRequestState, AgentRequestStore,
+};
 use crate::client::{ClientId, ClientInfo, ClientViewId, ClientViewState, ClientWindowViewState};
 use crate::pane::{CachePolicy, Pane, PaneId};
 use crate::ssh_agent::AgentProxy;
@@ -3161,6 +3163,23 @@ impl Mux {
                 .get(&request.target_pane_id)
                 .cloned();
             request.reconcile(metadata.as_deref(), runtime.as_ref(), now);
+            if matches!(
+                request.correlation,
+                AgentRequestCorrelation::CodexAppServerEvents
+            ) && !request.state.is_terminal()
+            {
+                loop {
+                    let cursor = request.reconciled_event_sequence;
+                    let page = self.agent_event_store.read_page(cursor, 256)?;
+                    request.reconcile_managed_event_page(&page, now);
+                    if request.state.is_terminal()
+                        || request.reconciled_event_sequence <= cursor
+                        || request.reconciled_event_sequence >= page.latest_sequence
+                    {
+                        break;
+                    }
+                }
+            }
             if request != before {
                 self.agent_request_store.save(&mut request)?;
             }
@@ -10999,6 +11018,128 @@ mod test {
                 .as_ref()
                 .map(|session| session.thread_id.as_str()),
             Some("thread-restored-managed")
+        );
+    }
+
+    #[test]
+    fn managed_codex_return_request_completes_from_durable_app_server_events() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        mux.start_agent_event_runtime_epoch().unwrap();
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new(56, size, domain.id);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let mut metadata = sample_agent_metadata("managed-return");
+        metadata.adopted_pid = None;
+        metadata.adopted_start_time = None;
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "thread-managed-return".to_string(),
+            session_id: "session-managed-return".to_string(),
+            executable: "codex".to_string(),
+            version: "codex-cli test".to_string(),
+            tui_args: vec![],
+        });
+        let incarnation = crate::agent_admission::incarnation_id(&metadata).unwrap();
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Codex;
+        runtime.transport = crate::agent::AgentTransport::CodexAppServerTui;
+        runtime.turn_state = crate::agent::AgentTurnState::WaitingOnUser;
+        runtime.status = crate::agent::AgentStatus::Idle;
+        runtime.alive = true;
+        mux.install_agent_metadata_runtime_without_process_identity(
+            pane_id,
+            metadata.clone(),
+            runtime.clone(),
+        )
+        .unwrap();
+
+        let baseline = mux.agent_event_store.latest_sequence();
+        let mut request = AgentRequest::new_managed_codex(
+            "managed-return-request".to_string(),
+            &metadata,
+            pane_id,
+            &runtime,
+            incarnation,
+            baseline,
+            true,
+            "do work",
+            false,
+            0,
+            None,
+        )
+        .unwrap();
+        mux.agent_request_store.create(&request).unwrap();
+        request.mark_submitted();
+        mux.agent_request_store.save(&mut request).unwrap();
+
+        mux.apply_codex_app_server_notification(&serde_json::json!({
+            "method": "turn/started",
+            "params": {
+                "threadId": "thread-managed-return",
+                "turn": {"id": "turn-managed-return", "startedAt": 1_777_000_000}
+            }
+        }));
+        mux.apply_codex_app_server_notification(&serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thread-managed-return",
+                "turn": {
+                    "id": "turn-managed-return",
+                    "status": "completed",
+                    "completedAt": 1_777_000_002,
+                    "items": [{
+                        "id": "message-managed-return",
+                        "type": "agentMessage",
+                        "text": "managed exact final"
+                    }]
+                }
+            }
+        }));
+
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_event_store
+                    .read_page(baseline, 100)
+                    .is_ok_and(|page| {
+                        page.events.iter().any(|event| {
+                            event.kind == crate::agent_event::AgentEventKind::TurnFinal
+                                && event.turn_id.as_deref() == Some("turn-managed-return")
+                        })
+                    })
+            },
+            "managed return-final durable events",
+        );
+
+        let completed = mux
+            .get_agent_request("managed-return-request")
+            .unwrap()
+            .expect("managed return request");
+        assert_eq!(completed.state, AgentRequestState::Completed);
+        assert_eq!(
+            completed.provider_turn_id.as_deref(),
+            Some("turn-managed-return")
+        );
+        assert_eq!(
+            completed.final_message.as_deref(),
+            Some("managed exact final")
         );
     }
 

@@ -4,18 +4,13 @@
 the prompt to the native harness pane, submits it, waits briefly for observer
 acknowledgement, and prints structured JSON.
 
-For an idle Codex agent with a confirmed observer session, `--return-final`
-creates a durable asynchronous return request:
+For an idle Codex agent with an exact observer-backed PTY session or managed app-server session, `--return-final` creates a durable asynchronous return request:
 
 ```sh
 wakterm agent send zola --return-final "Complete phases 2 and 3"
 ```
 
-The command registers the exact correlation boundary, submits the prompt, and
-exits. Its JSON receipt contains `reply_pending: true`, the request ID, target
-process incarnation, observer session path, baseline provider turn, and armed
-cursor. It does not keep a CLI process or RPC socket open for the delegated
-turn.
+The command registers the exact correlation boundary, submits the prompt, and exits. Its JSON receipt contains `reply_pending: true`, the request ID, target incarnation, correlation source, baseline provider turn when available, and armed cursor. Observer-backed PTYs use the provider-file cursor. Managed app-server sessions use the durable Agent API event sequence. The command does not keep a CLI process or RPC socket open for the delegated turn.
 
 Use a caller-generated UUID when another durable system owns the request:
 
@@ -75,12 +70,7 @@ The structured receipt classifies `accepted`, `busy`, `unsupported`,
 may have been partial. Callers must not retry an indeterminate request under a
 new ID.
 
-An idle target whose observer has not produced a cursor for its completed
-baseline turn is a definitive `observer_failure` with
-`prompt_written: false`. It is not `busy`, because no active target turn was
-observed, and it is not a delivery failure, because Wakterm did not attempt the
-pane write. A caller may choose an explicit one-way admission while
-return-final correlation is unavailable.
+An idle observer-backed target whose observer has not produced a cursor for its completed baseline turn is a definitive `observer_failure` with `prompt_written: false`. A managed target receives the same classification when the durable Agent API event stream is unavailable. It is not `busy`, because no active target turn was observed, and it is not a delivery failure, because Wakterm did not attempt the pane write. A caller may choose an explicit one-way admission while return-final correlation is unavailable.
 
 The caller owns the request ID. Repeating the same ID, process incarnation,
 prompt bytes, paste mode, return mode, and timeout cannot write the prompt a
@@ -118,7 +108,9 @@ idempotent without reading provider session files.
 
 ## Correlation safety
 
-Wakterm binds a request only when all of these facts match:
+Every return request requires the same exact target incarnation, authoritative idle state immediately before the atomic prompt write, and one stable provider turn through completion.
+
+Observer-backed Codex PTYs additionally require:
 
 - the same adopted process ID and process start time remain attached
 - the same exact observer session remains attached
@@ -127,10 +119,14 @@ Wakterm binds a request only when all of these facts match:
 - the first user message hash matches the submitted prompt
 - the bound provider turn ID remains stable through completion
 
-A mismatch becomes `indeterminate`. Wakterm never substitutes a later final
-message. A request persisted before input but not durably marked submitted at a
-mux crash also becomes `indeterminate`, which prevents a post-restart prompt
-from satisfying it accidentally.
+Managed Codex app-server sessions instead require:
+
+- the same exact app-server thread ID and session ID remain attached
+- the durable Agent API event stream is live at admission
+- the first new provider turn starts after the armed durable event sequence
+- the same provider turn ID supplies the durable final
+
+A mismatch becomes `indeterminate`. Wakterm never substitutes a later final message. A request persisted before input but not durably marked submitted at a mux crash also becomes `indeterminate`, which prevents a post-restart prompt from satisfying it accidentally.
 
 Steering messages within the same bound provider turn preserve correlation. They do not replace the matched initial prompt or authorize a final from a different provider turn.
 
@@ -139,9 +135,7 @@ adopted process tree and verifies the adopted process start time and declared
 working directory. A reused pane can no longer remain attached to an older
 rollout merely because that file was the previous preferred observer session.
 
-The current return mode is Codex-only because Codex rollout records expose a
-stable provider turn ID and ordinal cursor. Other harnesses need equivalent
-evidence before they can safely support this primitive.
+The current return mode is Codex-only because Codex rollout records and app-server notifications expose stable provider turn IDs with exact cursor boundaries. Other harnesses need equivalent evidence before they can safely support this primitive.
 
 One PTY limitation remains: byte delivery and the durable submitted marker
 cannot be a single transaction. Wakterm resolves a crash in that narrow window

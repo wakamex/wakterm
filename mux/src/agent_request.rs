@@ -2,6 +2,7 @@ use crate::agent::{
     AgentHarness, AgentMetadata, AgentObservedTurn, AgentObservedTurnOutcome, AgentRuntimeSnapshot,
     AgentTransport, AgentTurnState,
 };
+use crate::agent_event::{AgentEventKind, AgentEventPage, AgentEventStatus};
 use crate::pane::PaneId;
 use anyhow::{bail, Context};
 use chrono::{DateTime, Utc};
@@ -22,6 +23,14 @@ pub enum AgentRequestState {
     Cancelled,
     DeliveryFailed,
     Indeterminate,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRequestCorrelation {
+    #[default]
+    ObservedPty,
+    CodexAppServerEvents,
 }
 
 impl AgentRequestState {
@@ -45,11 +54,17 @@ pub struct AgentRequest {
     pub target_agent_name: String,
     pub target_pane_id: PaneId,
     pub target_harness: AgentHarness,
+    #[serde(default)]
+    pub correlation: AgentRequestCorrelation,
+    #[serde(default)]
+    pub target_incarnation_id: String,
     pub target_pid: u32,
     pub target_process_start_time: u64,
     pub target_session_path: String,
     pub baseline_provider_turn_id: String,
     pub baseline_cursor: u64,
+    #[serde(default)]
+    pub reconciled_event_sequence: u64,
     pub baseline_user_message_count: u32,
     /// Exact submitted UTF-8 bytes. Older persisted requests lack this field
     /// and retain the legacy correlation-hash replay behavior.
@@ -92,6 +107,8 @@ impl AgentRequest {
             target_agent_name: metadata.name.clone(),
             target_pane_id: pane_id,
             target_harness: runtime.harness.clone(),
+            correlation: AgentRequestCorrelation::ObservedPty,
+            target_incarnation_id: String::new(),
             target_pid: metadata.adopted_pid.expect("baseline was validated"),
             target_process_start_time: metadata.adopted_start_time.expect("baseline was validated"),
             target_session_path: runtime
@@ -100,7 +117,62 @@ impl AgentRequest {
                 .expect("baseline was validated"),
             baseline_provider_turn_id: turn.provider_turn_id.clone(),
             baseline_cursor: turn.latest_cursor.expect("baseline was validated"),
+            reconciled_event_sequence: 0,
             baseline_user_message_count: turn.user_message_count,
+            submission_sha256: submission_sha256(prompt),
+            prompt_sha256: prompt_sha256(prompt),
+            submission_paste,
+            timeout_ms,
+            state: AgentRequestState::Registered,
+            provider_turn_id: None,
+            created_at: now,
+            updated_at: now,
+            deadline_at,
+            completed_at: None,
+            final_message: None,
+            detail: None,
+            terminal_event_sequence: None,
+        })
+    }
+
+    pub fn new_managed_codex(
+        request_id: String,
+        metadata: &AgentMetadata,
+        pane_id: PaneId,
+        runtime: &AgentRuntimeSnapshot,
+        target_incarnation_id: String,
+        baseline_event_sequence: u64,
+        event_stream_live: bool,
+        prompt: &str,
+        submission_paste: bool,
+        timeout_ms: u64,
+        deadline_at: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<Self> {
+        validate_managed_baseline(metadata, runtime, event_stream_live)?;
+        let session = metadata
+            .codex_app_server
+            .as_ref()
+            .expect("managed baseline was validated");
+        let now = Utc::now();
+        Ok(Self {
+            request_id,
+            target_agent_id: metadata.agent_id.clone(),
+            target_agent_name: metadata.name.clone(),
+            target_pane_id: pane_id,
+            target_harness: runtime.harness.clone(),
+            correlation: AgentRequestCorrelation::CodexAppServerEvents,
+            target_incarnation_id,
+            target_pid: 0,
+            target_process_start_time: 0,
+            target_session_path: managed_session_identity(session),
+            baseline_provider_turn_id: runtime
+                .observed_turn
+                .as_ref()
+                .map(|turn| turn.provider_turn_id.clone())
+                .unwrap_or_default(),
+            baseline_cursor: baseline_event_sequence,
+            reconciled_event_sequence: baseline_event_sequence,
+            baseline_user_message_count: 0,
             submission_sha256: submission_sha256(prompt),
             prompt_sha256: prompt_sha256(prompt),
             submission_paste,
@@ -168,14 +240,24 @@ impl AgentRequest {
         let Some(metadata) = metadata else {
             return;
         };
-        if metadata.agent_id != self.target_agent_id
-            || metadata.adopted_pid != Some(self.target_pid)
-            || metadata.adopted_start_time != Some(self.target_process_start_time)
-        {
+        let identity_matches = match self.correlation {
+            AgentRequestCorrelation::ObservedPty => {
+                metadata.agent_id == self.target_agent_id
+                    && metadata.adopted_pid == Some(self.target_pid)
+                    && metadata.adopted_start_time == Some(self.target_process_start_time)
+            }
+            AgentRequestCorrelation::CodexAppServerEvents => {
+                metadata.agent_id == self.target_agent_id
+                    && metadata.codex_app_server.as_ref().is_some_and(|session| {
+                        managed_session_identity(session) == self.target_session_path
+                    })
+            }
+        };
+        if !identity_matches {
             self.finish(
                 AgentRequestState::Indeterminate,
                 now,
-                "target process incarnation changed",
+                "target agent incarnation changed",
             );
             return;
         }
@@ -188,6 +270,19 @@ impl AgentRequest {
                 now,
                 "target agent exited before the correlated turn completed",
             );
+            return;
+        }
+        if matches!(
+            self.correlation,
+            AgentRequestCorrelation::CodexAppServerEvents
+        ) {
+            if !matches!(runtime.transport, AgentTransport::CodexAppServerTui) {
+                self.finish(
+                    AgentRequestState::Indeterminate,
+                    now,
+                    "target managed transport changed after prompt submission",
+                );
+            }
             return;
         }
         let Some(session_path) = runtime.session_path.as_deref() else {
@@ -205,6 +300,102 @@ impl AgentRequest {
             return;
         };
         self.reconcile_turn(turn, now);
+    }
+
+    pub fn reconcile_managed_event_page(&mut self, page: &AgentEventPage, now: DateTime<Utc>) {
+        if self.state.is_terminal()
+            || !matches!(
+                self.correlation,
+                AgentRequestCorrelation::CodexAppServerEvents
+            )
+        {
+            return;
+        }
+        if page.status == AgentEventStatus::CursorTooOld {
+            self.finish(
+                AgentRequestState::Indeterminate,
+                now,
+                "durable agent event cursor expired before the correlated turn completed",
+            );
+            return;
+        }
+
+        for event in &page.events {
+            self.reconciled_event_sequence = self.reconciled_event_sequence.max(event.sequence);
+            if event.agent_id != self.target_agent_id
+                || event.incarnation_id != self.target_incarnation_id
+            {
+                continue;
+            }
+            let Some(turn_id) = event.turn_id.as_deref() else {
+                continue;
+            };
+            if turn_id == self.baseline_provider_turn_id {
+                continue;
+            }
+            match event.kind {
+                AgentEventKind::TurnStarted => {
+                    if let Some(bound) = self.provider_turn_id.as_deref() {
+                        if turn_id != bound {
+                            self.finish(
+                                AgentRequestState::Indeterminate,
+                                now,
+                                "agent advanced beyond the correlated provider turn",
+                            );
+                            return;
+                        }
+                    } else {
+                        self.provider_turn_id = Some(turn_id.to_string());
+                        self.state = AgentRequestState::Bound;
+                        self.updated_at = now;
+                    }
+                }
+                AgentEventKind::TurnFinal => {
+                    let Some(bound) = self.provider_turn_id.as_deref() else {
+                        self.finish(
+                            AgentRequestState::Indeterminate,
+                            now,
+                            "provider turn completed without a durable start boundary",
+                        );
+                        return;
+                    };
+                    if turn_id != bound {
+                        self.finish(
+                            AgentRequestState::Indeterminate,
+                            now,
+                            "agent advanced beyond the correlated provider turn",
+                        );
+                        return;
+                    }
+                    if event.outcome.as_deref() == Some("completed") {
+                        if let Some(message) = event.text.clone() {
+                            self.state = AgentRequestState::Completed;
+                            self.completed_at = Some(event.observed_at);
+                            self.final_message = Some(message);
+                            self.detail = None;
+                            self.updated_at = now;
+                        } else {
+                            self.finish(
+                                AgentRequestState::Indeterminate,
+                                now,
+                                "provider completed the correlated turn without a final assistant message",
+                            );
+                        }
+                    } else {
+                        self.finish(
+                            AgentRequestState::Aborted,
+                            event.observed_at,
+                            "the correlated provider turn was aborted",
+                        );
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+        self.reconciled_event_sequence = self
+            .reconciled_event_sequence
+            .max(page.next_after_sequence.unwrap_or(page.latest_sequence));
     }
 
     fn reconcile_turn(&mut self, turn: &AgentObservedTurn, now: DateTime<Utc>) {
@@ -338,6 +529,33 @@ fn validate_baseline(
         bail!("--return-final requires an observer cursor for the baseline turn");
     }
     Ok(())
+}
+
+fn validate_managed_baseline(
+    metadata: &AgentMetadata,
+    runtime: &AgentRuntimeSnapshot,
+    event_stream_live: bool,
+) -> anyhow::Result<()> {
+    if !matches!(runtime.harness, AgentHarness::Codex)
+        || !matches!(runtime.transport, AgentTransport::CodexAppServerTui)
+        || metadata.codex_app_server.is_none()
+    {
+        bail!("--return-final requires an exact managed Codex app-server session");
+    }
+    if !matches!(runtime.turn_state, AgentTurnState::WaitingOnUser) {
+        bail!("--return-final requires an idle agent");
+    }
+    if !event_stream_live {
+        bail!("--return-final requires the durable agent event stream");
+    }
+    Ok(())
+}
+
+fn managed_session_identity(session: &crate::agent::CodexAppServerSession) -> String {
+    format!(
+        "codex-app-server:{}:{}",
+        session.thread_id, session.session_id
+    )
 }
 
 #[derive(Clone)]
@@ -593,6 +811,142 @@ mod tests {
         runtime
     }
 
+    fn managed_metadata() -> AgentMetadata {
+        let mut metadata = metadata();
+        metadata.adopted_pid = None;
+        metadata.adopted_start_time = None;
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "thread-managed".to_string(),
+            session_id: "session-managed".to_string(),
+            executable: "codex".to_string(),
+            version: "codex-cli test".to_string(),
+            tui_args: vec![],
+        });
+        metadata
+    }
+
+    fn managed_runtime(metadata: &AgentMetadata) -> AgentRuntimeSnapshot {
+        let mut runtime = AgentRuntimeSnapshot::new(metadata);
+        runtime.harness = AgentHarness::Codex;
+        runtime.transport = AgentTransport::CodexAppServerTui;
+        runtime.turn_state = AgentTurnState::WaitingOnUser;
+        runtime.alive = true;
+        runtime
+    }
+
+    fn managed_event(
+        sequence: u64,
+        kind: AgentEventKind,
+        turn_id: &str,
+        outcome: Option<&str>,
+        text: Option<&str>,
+    ) -> crate::agent_event::AgentEvent {
+        crate::agent_event::AgentEvent {
+            sequence,
+            event_id: format!("event-{sequence}"),
+            kind,
+            agent_id: "agent-1".to_string(),
+            incarnation_id: "incarnation-managed".to_string(),
+            observed_at: Utc::now(),
+            turn_id: Some(turn_id.to_string()),
+            lifecycle: None,
+            reason: None,
+            turn_state: None,
+            text: text.map(str::to_string),
+            outcome: outcome.map(str::to_string),
+            recoverable: None,
+            detail: None,
+        }
+    }
+
+    fn managed_page(events: Vec<crate::agent_event::AgentEvent>) -> AgentEventPage {
+        let latest_sequence = events.last().map(|event| event.sequence).unwrap_or(10);
+        AgentEventPage {
+            schema: crate::agent_event::AGENT_EVENT_SCHEMA.to_string(),
+            status: AgentEventStatus::Ok,
+            requested_after_sequence: 10,
+            oldest_available_sequence: 1,
+            latest_sequence,
+            next_after_sequence: events.last().map(|event| event.sequence),
+            events,
+            recovery: None,
+        }
+    }
+
+    #[test]
+    fn managed_app_server_events_complete_the_exact_correlated_turn() {
+        let metadata = managed_metadata();
+        let runtime = managed_runtime(&metadata);
+        let mut request = AgentRequest::new_managed_codex(
+            "request-managed".to_string(),
+            &metadata,
+            7,
+            &runtime,
+            "incarnation-managed".to_string(),
+            10,
+            true,
+            "do work",
+            false,
+            0,
+            None,
+        )
+        .unwrap();
+        request.mark_submitted();
+
+        request.reconcile_managed_event_page(
+            &managed_page(vec![
+                managed_event(11, AgentEventKind::TurnStarted, "turn-managed", None, None),
+                managed_event(
+                    12,
+                    AgentEventKind::TurnFinal,
+                    "turn-managed",
+                    Some("completed"),
+                    Some("exact final"),
+                ),
+            ]),
+            Utc::now(),
+        );
+
+        assert_eq!(request.state, AgentRequestState::Completed);
+        assert_eq!(request.provider_turn_id.as_deref(), Some("turn-managed"));
+        assert_eq!(request.final_message.as_deref(), Some("exact final"));
+    }
+
+    #[test]
+    fn managed_app_server_events_reject_a_different_provider_turn() {
+        let metadata = managed_metadata();
+        let runtime = managed_runtime(&metadata);
+        let mut request = AgentRequest::new_managed_codex(
+            "request-managed-different-turn".to_string(),
+            &metadata,
+            7,
+            &runtime,
+            "incarnation-managed".to_string(),
+            10,
+            true,
+            "do work",
+            false,
+            0,
+            None,
+        )
+        .unwrap();
+        request.mark_submitted();
+
+        request.reconcile_managed_event_page(
+            &managed_page(vec![
+                managed_event(11, AgentEventKind::TurnStarted, "turn-managed", None, None),
+                managed_event(12, AgentEventKind::TurnStarted, "turn-other", None, None),
+            ]),
+            Utc::now(),
+        );
+
+        assert_eq!(request.state, AgentRequestState::Indeterminate);
+        assert_eq!(
+            request.detail.as_deref(),
+            Some("agent advanced beyond the correlated provider turn")
+        );
+    }
+
     #[test]
     fn binds_only_matching_prompt_after_armed_cursor() {
         let metadata = metadata();
@@ -719,6 +1073,63 @@ mod tests {
             Some("agent advanced beyond the correlated provider turn")
         );
         assert!(request.final_message.is_none());
+    }
+
+    #[test]
+    fn managed_app_server_events_ignore_a_late_baseline_turn_commit() {
+        let metadata = managed_metadata();
+        let mut runtime = managed_runtime(&metadata);
+        runtime.observed_turn = Some(AgentObservedTurn {
+            completed_at: Some(Utc::now()),
+            final_message: Some("previous final".to_string()),
+            ..turn(
+                "turn-baseline",
+                10,
+                Some("previous prompt"),
+                AgentObservedTurnOutcome::Completed,
+            )
+        });
+        let mut request = AgentRequest::new_managed_codex(
+            "request-managed-late-baseline".to_string(),
+            &metadata,
+            7,
+            &runtime,
+            "incarnation-managed".to_string(),
+            10,
+            true,
+            "do work",
+            false,
+            0,
+            None,
+        )
+        .unwrap();
+        request.mark_submitted();
+
+        request.reconcile_managed_event_page(
+            &managed_page(vec![
+                managed_event(11, AgentEventKind::TurnStarted, "turn-baseline", None, None),
+                managed_event(
+                    12,
+                    AgentEventKind::TurnFinal,
+                    "turn-baseline",
+                    Some("completed"),
+                    Some("previous final"),
+                ),
+                managed_event(13, AgentEventKind::TurnStarted, "turn-new", None, None),
+                managed_event(
+                    14,
+                    AgentEventKind::TurnFinal,
+                    "turn-new",
+                    Some("completed"),
+                    Some("new final"),
+                ),
+            ]),
+            Utc::now(),
+        );
+
+        assert_eq!(request.state, AgentRequestState::Completed);
+        assert_eq!(request.provider_turn_id.as_deref(), Some("turn-new"));
+        assert_eq!(request.final_message.as_deref(), Some("new final"));
     }
 
     #[test]
