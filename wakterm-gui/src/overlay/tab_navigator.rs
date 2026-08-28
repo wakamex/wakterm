@@ -24,25 +24,25 @@ const TABLE_PREFIX_WIDTH: usize = ICON_GUTTER_WIDTH + 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NavigatorView {
+    All,
     Visible,
     Parked,
-    All,
 }
 
 impl NavigatorView {
     fn next(self) -> Self {
         match self {
+            Self::All => Self::Visible,
             Self::Visible => Self::Parked,
             Self::Parked => Self::All,
-            Self::All => Self::Visible,
         }
     }
 
     fn previous(self) -> Self {
         match self {
+            Self::All => Self::Parked,
             Self::Visible => Self::All,
             Self::Parked => Self::Visible,
-            Self::All => Self::Parked,
         }
     }
 }
@@ -69,7 +69,6 @@ pub struct TabNavigatorRow {
     title: String,
     parked: bool,
     pane_count: usize,
-    workspace: String,
     cwd: String,
     branch: Option<String>,
     agent_names: Vec<String>,
@@ -79,45 +78,6 @@ pub struct TabNavigatorRow {
     last_response: Option<DateTime<Utc>>,
     rss_bytes: Option<u64>,
     panes: Vec<TabNavigatorPaneRow>,
-}
-
-impl TabNavigatorRow {
-    fn search_text(&self) -> String {
-        let panes = self
-            .panes
-            .iter()
-            .map(|pane| {
-                format!(
-                    "{} {} {} {} {}",
-                    pane.pane_id,
-                    pane.identity,
-                    pane.cwd,
-                    pane.status,
-                    pane.harness_icons
-                        .iter()
-                        .map(|icon| icon.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        format!(
-            "{} {} {} {} {} {} {} {}",
-            self.title,
-            self.workspace,
-            self.cwd,
-            self.branch.as_deref().unwrap_or_default(),
-            self.status,
-            self.agent_names.join(" "),
-            self.harness_icons
-                .iter()
-                .map(|icon| icon.as_str())
-                .collect::<Vec<_>>()
-                .join(" "),
-            panes,
-        )
-    }
 }
 
 pub struct TabNavigatorArgs {
@@ -207,7 +167,6 @@ fn snapshot_rows(window_id: WindowId) -> anyhow::Result<Vec<TabNavigatorRow>> {
     let window = mux
         .get_window(window_id)
         .ok_or_else(|| anyhow::anyhow!("no such window {window_id}"))?;
-    let workspace = window.get_workspace().to_string();
     let remote_domain_ids = window
         .iter()
         .flat_map(|tab| tab.iter_panes_ignoring_zoom())
@@ -292,7 +251,6 @@ fn snapshot_rows(window_id: WindowId) -> anyhow::Result<Vec<TabNavigatorRow>> {
             title: titles.get(&tab_id).cloned().unwrap_or_default(),
             parked: window.is_tab_parked(tab_id),
             pane_count: tab.count_panes().unwrap_or_default(),
-            workspace: workspace.clone(),
             cwd,
             branch,
             agent_names,
@@ -415,7 +373,7 @@ impl NavigatorState {
     fn new(args: TabNavigatorArgs) -> Self {
         let mut state = Self {
             args,
-            view: NavigatorView::Visible,
+            view: NavigatorView::All,
             sort: NavigatorSort::TabOrder,
             dense: true,
             query: String::new(),
@@ -444,7 +402,7 @@ impl NavigatorState {
             })
             .filter_map(|(idx, row)| {
                 let score = match pattern.as_ref() {
-                    Some(pattern) => matcher_score(pattern, &row.search_text())?,
+                    Some(pattern) => matcher_score(pattern, &row.title)?,
                     None => 0,
                 };
                 Some((idx, score))
@@ -858,9 +816,9 @@ impl NavigatorState {
         }
 
         let view = match self.view {
-            NavigatorView::Visible => "[Visible] Parked All",
-            NavigatorView::Parked => "Visible [Parked] All",
-            NavigatorView::All => "Visible Parked [All]",
+            NavigatorView::All => "[All] Visible Parked",
+            NavigatorView::Visible => "All [Visible] Parked",
+            NavigatorView::Parked => "All Visible [Parked]",
         };
         let sort = match self.sort {
             NavigatorSort::TabOrder => "[Tab order] Response",
@@ -1125,7 +1083,6 @@ mod test {
             title: title.to_string(),
             parked,
             pane_count: 2,
-            workspace: "project-workspace".to_string(),
             cwd: "/code/project".to_string(),
             branch: Some("agent/review".to_string()),
             agent_names: vec!["reviewer".to_string()],
@@ -1156,11 +1113,11 @@ mod test {
 
     #[test]
     fn visibility_navigation_cycles_in_display_order() {
+        assert_eq!(NavigatorView::All.next(), NavigatorView::Visible);
         assert_eq!(NavigatorView::Visible.next(), NavigatorView::Parked);
         assert_eq!(NavigatorView::Parked.next(), NavigatorView::All);
-        assert_eq!(NavigatorView::All.next(), NavigatorView::Visible);
-        assert_eq!(NavigatorView::Visible.previous(), NavigatorView::All);
         assert_eq!(NavigatorView::All.previous(), NavigatorView::Parked);
+        assert_eq!(NavigatorView::Visible.previous(), NavigatorView::All);
         assert_eq!(NavigatorView::Parked.previous(), NavigatorView::Visible);
     }
 
@@ -1250,11 +1207,13 @@ mod test {
     }
 
     #[test]
-    fn search_indexes_every_documented_row_field() {
+    fn search_matches_only_the_tab_title() {
         let mut state = state(vec![row(10, "project-title", false)]);
+        state.query = "project-title".to_string();
+        state.rebuild(None);
+        assert_eq!(state.filtered, vec![0]);
+
         for query in [
-            "project-title",
-            "project-workspace",
             "/code/project",
             "agent/review",
             "waiting",
@@ -1263,11 +1222,8 @@ mod test {
         ] {
             state.query = query.to_string();
             state.rebuild(None);
-            assert_eq!(state.filtered, vec![0], "query {query:?}");
+            assert!(state.filtered.is_empty(), "query {:?}", query);
         }
-        state.query = "definitely-absent".to_string();
-        state.rebuild(None);
-        assert!(state.filtered.is_empty());
     }
 
     #[test]
@@ -1278,6 +1234,10 @@ mod test {
         new.last_response = Some(Utc.with_ymd_and_hms(2026, 8, 20, 11, 0, 0).unwrap());
         let mut state = state(vec![old, new]);
 
+        assert_eq!(state.view, NavigatorView::All);
+        assert_eq!(state.filtered, vec![0, 1]);
+        state.view = NavigatorView::Visible;
+        state.rebuild(None);
         assert_eq!(state.filtered, vec![0]);
         state.view = NavigatorView::Parked;
         state.rebuild(None);
