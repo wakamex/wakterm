@@ -1,4 +1,4 @@
-use crate::customglyph::harness_icon_stack_glyph;
+use crate::customglyph::{harness_icon_stack_glyph, HARNESS_ICON_STACK_CELL_WIDTH};
 use crate::overlay::selector::{matcher_pattern, matcher_score};
 use crate::termwindow::TabHarnessIcon;
 use chrono::{DateTime, Utc};
@@ -19,8 +19,9 @@ use termwiz::surface::{Change, Position};
 use termwiz::terminal::Terminal;
 use termwiz_funcs::{pad_left, pad_right, truncate_right};
 
-const ICON_GUTTER_WIDTH: usize = 3;
-const TABLE_PREFIX_WIDTH: usize = ICON_GUTTER_WIDTH + 2;
+const ICON_GUTTER_WIDTH: usize = HARNESS_ICON_STACK_CELL_WIDTH;
+const TAB_TABLE_PREFIX_WIDTH: usize = ICON_GUTTER_WIDTH + 3;
+const PANE_TABLE_PREFIX_WIDTH: usize = ICON_GUTTER_WIDTH + 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NavigatorView {
@@ -565,9 +566,6 @@ impl NavigatorState {
         if row.parked {
             title.push_str(" [parked]");
         }
-        if row.needs_attention {
-            title.push_str(" [attention]");
-        }
         title
     }
 
@@ -628,8 +626,8 @@ impl NavigatorState {
         cwd_desired = cwd_desired.min(60);
         branch_desired = branch_desired.min(20);
 
-        let title = 8.min(width.saturating_sub(TABLE_PREFIX_WIDTH).max(1));
-        let mut used = TABLE_PREFIX_WIDTH.saturating_add(title);
+        let title = 7.min(width.saturating_sub(TAB_TABLE_PREFIX_WIDTH).max(1));
+        let mut used = TAB_TABLE_PREFIX_WIDTH.saturating_add(title);
         let status = fit_column(&mut used, width, status_desired);
         let last = fit_column(&mut used, width, last_desired);
         let cwd = fit_column(&mut used, width, 12.min(cwd_desired.max(1)));
@@ -686,10 +684,10 @@ impl NavigatorState {
         let id = id_desired;
         let identity = 8.min(
             width
-                .saturating_sub(TABLE_PREFIX_WIDTH + id + COLUMN_GAP)
+                .saturating_sub(PANE_TABLE_PREFIX_WIDTH + id + COLUMN_GAP)
                 .max(1),
         );
-        let mut used = TABLE_PREFIX_WIDTH.saturating_add(id + COLUMN_GAP + identity);
+        let mut used = PANE_TABLE_PREFIX_WIDTH.saturating_add(id + COLUMN_GAP + identity);
         let status = if used.saturating_add(COLUMN_GAP + status_desired) <= width {
             used += COLUMN_GAP + status_desired;
             Some(status_desired)
@@ -718,7 +716,7 @@ impl NavigatorState {
 
     fn format_header(columns: NavigatorColumns) -> String {
         let mut line = format!(
-            "{}  {}",
+            "{}   {}",
             " ".repeat(ICON_GUTTER_WIDTH),
             fitted_cell("TAB", columns.title, false)
         );
@@ -733,9 +731,10 @@ impl NavigatorState {
 
     fn format_tab_line(row: &TabNavigatorRow, selected: bool, columns: NavigatorColumns) -> String {
         let mut line = format!(
-            "{}{} {}",
+            "{}{}{} {}",
             Self::icon_gutter(&row.harness_icons),
             if selected { ">" } else { " " },
+            if row.needs_attention { "!" } else { " " },
             fitted_cell(&Self::compact_title(row), columns.title, false)
         );
         append_column(&mut line, &row.status, columns.status, false);
@@ -1157,6 +1156,13 @@ mod test {
             display_column(&first, "one"),
             display_column(&second, "a-longer-title")
         );
+        assert_eq!(
+            display_column(&header, "TAB"),
+            display_column(&first, "one")
+        );
+        assert_eq!(first.chars().nth(ICON_GUTTER_WIDTH + 1), Some('!'));
+        assert_eq!(second.chars().nth(ICON_GUTTER_WIDTH + 1), Some(' '));
+        assert!(!first.contains("[attention]"));
         assert_eq!(
             column_width(&NavigatorState::icon_gutter(
                 &state.args.rows[1].harness_icons,

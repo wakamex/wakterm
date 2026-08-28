@@ -249,6 +249,35 @@ pub const HARNESS_ICON_GEMINI: char = '\u{e002}';
 pub const HARNESS_ICON_OPENCODE: char = '\u{e003}';
 pub const HARNESS_ICON_AGY: char = '\u{e004}';
 pub const HARNESS_ICON_STACK_BASE: u32 = 0xe010;
+pub const HARNESS_ICON_STACK_CELL_WIDTH: usize = 3;
+
+const HARNESS_ICON_OVERLAP: f32 = 0.65;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HarnessIconStackLayout {
+    icon_size: f32,
+    stride: f32,
+    x_offset: f32,
+}
+
+fn harness_icon_stack_layout(
+    cell_width: f32,
+    cell_height: f32,
+    icon_count: usize,
+) -> HarnessIconStackLayout {
+    let buffer_width = cell_width * HARNESS_ICON_STACK_CELL_WIDTH as f32;
+    let overlap_count = icon_count.saturating_sub(1) as f32;
+    let span = 1.0 + overlap_count * HARNESS_ICON_OVERLAP;
+    let icon_size = (cell_height - 2.0).max(1.0).min(buffer_width / span);
+    let stride = icon_size * HARNESS_ICON_OVERLAP;
+    let stack_width = icon_size + overlap_count * stride;
+
+    HarnessIconStackLayout {
+        icon_size,
+        stride,
+        x_offset: ((buffer_width - stack_width) / 2.0).max(0.0),
+    }
+}
 
 pub fn harness_icon_stack_glyph(mask: u8) -> Option<char> {
     let mask = mask & 0x1f;
@@ -6291,7 +6320,9 @@ impl GlyphCache {
                 strike_row: 0,
                 cell_size: cell_size.clone(),
             },
-            BlockKey::HarnessIconStack(_) => render_metrics.scale_cell_width(3.),
+            BlockKey::HarnessIconStack(_) => {
+                render_metrics.scale_cell_width(HARNESS_ICON_STACK_CELL_WIDTH as f64)
+            }
             _ => render_metrics.clone(),
         };
 
@@ -6312,8 +6343,14 @@ impl GlyphCache {
                 } else {
                     PolyAA::MoarPixels
                 };
-                let icon_metrics = render_metrics;
-                let stride = icon_metrics.cell_size.width as f32 * 0.65;
+                let layout = harness_icon_stack_layout(
+                    render_metrics.cell_size.width as f32,
+                    render_metrics.cell_size.height as f32,
+                    mask.count_ones() as usize,
+                );
+                let icon_metrics = render_metrics.scale_cell_width(
+                    layout.icon_size as f64 / render_metrics.cell_size.width as f64,
+                );
                 let icon_polys = [
                     (1, HARNESS_ICON_CLAUDE_POLY),
                     (2, HARNESS_ICON_CODEX_POLY),
@@ -6327,12 +6364,12 @@ impl GlyphCache {
                         continue;
                     }
                     self.draw_polys_at(
-                        icon_metrics,
+                        &icon_metrics,
                         polys,
                         &mut buffer,
                         aa,
                         BlendMode::default(),
-                        icon_index as f32 * stride,
+                        layout.x_offset + icon_index as f32 * layout.stride,
                     );
                     icon_index += 1;
                 }
@@ -7231,5 +7268,18 @@ mod test {
                 Some(BlockKey::HarnessIconStack(mask))
             );
         }
+    }
+
+    #[test]
+    fn harness_icon_stack_uses_row_height_and_fits_its_gutter() {
+        let single = harness_icon_stack_layout(10.0, 22.0, 1);
+        assert_eq!(single.icon_size, 20.0);
+        assert_eq!(single.stride, 13.0);
+        assert_eq!(single.x_offset, 5.0);
+
+        let five = harness_icon_stack_layout(10.0, 22.0, 5);
+        let stack_width = five.icon_size + 4.0 * five.stride;
+        assert!((stack_width - 30.0).abs() < 0.001);
+        assert_eq!(five.x_offset, 0.0);
     }
 }
