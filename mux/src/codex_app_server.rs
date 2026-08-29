@@ -416,6 +416,8 @@ impl CodexAppServer {
             "resume".to_string(),
             "--remote".to_string(),
             endpoint,
+            "-C".to_string(),
+            request.cwd.clone(),
         ];
         native_argv.push(thread_id.clone());
         native_argv.extend(request.tui_args.clone());
@@ -1228,6 +1230,7 @@ mod test {
                 let id = request["id"].as_u64().unwrap();
                 match request["method"].as_str().unwrap() {
                     "thread/resume" => {
+                        assert_eq!(request["params"]["cwd"], "/code/wakterm");
                         assert_eq!(
                             request["params"]["initialTurnsPage"],
                             json!({
@@ -1293,6 +1296,19 @@ mod test {
         assert_eq!(prepared.session.session_id, thread_id);
         assert_eq!(prepared.session.executable, "/usr/local/bin/codex");
         assert_eq!(prepared.session.version, "codex-cli test");
+        assert_eq!(
+            prepared.argv,
+            vec![
+                "/usr/local/bin/codex",
+                "resume",
+                "--remote",
+                endpoint.as_str(),
+                "-C",
+                "/code/wakterm",
+                thread_id,
+                "--dangerously-bypass-approvals-and-sandbox",
+            ]
+        );
         let seed = server
             .thread_runtime_seed_by_id
             .lock()

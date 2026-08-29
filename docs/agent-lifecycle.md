@@ -53,6 +53,8 @@ the distinct Codex thread ID and session ID. Each pane runs `codex resume`
 against that socket, so input, rendering, approvals, and native interaction
 remain Codex TUI responsibilities.
 
+The native TUI receives the pane's declared working directory explicitly. Its session picker therefore starts with the same working-directory filter as a normal Codex TUI, even though multiple panes share one app-server.
+
 When invoked inside a Wakterm pane, the command runs the native TUI in that
 current pane and returns to its shell when Codex exits. `--new-tab` explicitly
 creates a separate tab instead. Invocations outside Wakterm must use
