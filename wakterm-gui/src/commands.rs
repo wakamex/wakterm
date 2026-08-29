@@ -1105,13 +1105,13 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             icon: Some("md_close_box_outline"),
         },
         ParkCurrentTab => CommandDef {
-            brief: "Park current Tab".into(),
+            brief: "Hide current Tab".into(),
             doc: "Hides the current tab while keeping all of its panes and processes running."
                 .into(),
             keys: vec![(Modifiers::CTRL | Modifiers::SHIFT, "S".into())],
             args: &[ArgType::ActiveTab],
             menubar: &["Shell"],
-            icon: Some("md_archive_arrow_down_outline"),
+            icon: Some("md_eye_off_outline"),
         },
         CloseCurrentPane { confirm: true } => CommandDef {
             brief: "Close current Pane".into(),
@@ -1676,7 +1676,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
         },
         ActivateNextTabNeedingAttention => CommandDef {
             brief: "Review next agent response".into(),
-            doc: "Activates the newest unseen agent response, including parked tabs.".into(),
+            doc: "Activates the newest unseen agent response, including hidden tabs.".into(),
             keys: vec![],
             args: &[ArgType::ActiveWindow],
             menubar: &["Window", "Select Tab"],

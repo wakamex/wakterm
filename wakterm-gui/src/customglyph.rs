@@ -248,6 +248,7 @@ pub const HARNESS_ICON_CODEX: char = '\u{e001}';
 pub const HARNESS_ICON_GEMINI: char = '\u{e002}';
 pub const HARNESS_ICON_OPENCODE: char = '\u{e003}';
 pub const HARNESS_ICON_AGY: char = '\u{e004}';
+pub const TAB_HIDDEN_ICON: char = '\u{e005}';
 pub const HARNESS_ICON_STACK_BASE: u32 = 0xe010;
 pub const HARNESS_ICON_STACK_CELL_WIDTH: usize = 3;
 
@@ -287,6 +288,41 @@ pub fn harness_icon_stack_glyph(mask: u8) -> Option<char> {
         char::from_u32(HARNESS_ICON_STACK_BASE + mask as u32)
     }
 }
+
+pub const TAB_HIDDEN_ICON_POLY: &[Poly] = &[
+    Poly {
+        path: &[
+            PolyCommand::MoveTo(BlockCoord::Frac(1, 10), BlockCoord::Frac(1, 2)),
+            PolyCommand::QuadTo {
+                control: (BlockCoord::Frac(1, 2), BlockCoord::Frac(1, 10)),
+                to: (BlockCoord::Frac(9, 10), BlockCoord::Frac(1, 2)),
+            },
+            PolyCommand::QuadTo {
+                control: (BlockCoord::Frac(1, 2), BlockCoord::Frac(9, 10)),
+                to: (BlockCoord::Frac(1, 10), BlockCoord::Frac(1, 2)),
+            },
+            PolyCommand::Close,
+        ],
+        intensity: BlockAlpha::Full,
+        style: PolyStyle::Outline,
+    },
+    Poly {
+        path: &[PolyCommand::Circle {
+            center: (BlockCoord::Frac(1, 2), BlockCoord::Frac(1, 2)),
+            radius: BlockCoord::Frac(1, 7),
+        }],
+        intensity: BlockAlpha::Full,
+        style: PolyStyle::Outline,
+    },
+    Poly {
+        path: &[
+            PolyCommand::MoveTo(BlockCoord::Frac(1, 8), BlockCoord::Frac(1, 8)),
+            PolyCommand::LineTo(BlockCoord::Frac(7, 8), BlockCoord::Frac(7, 8)),
+        ],
+        intensity: BlockAlpha::Full,
+        style: PolyStyle::Outline,
+    },
+];
 
 // Epsilon-1 simplification of the traced Antigravity mark: 35 points.
 pub const HARNESS_ICON_AGY_POLY: &[Poly] = &[Poly {
@@ -1830,6 +1866,7 @@ impl BlockKey {
             x if x == HARNESS_ICON_CODEX as u32 => Self::Poly(HARNESS_ICON_CODEX_POLY),
             x if x == HARNESS_ICON_GEMINI as u32 => Self::Poly(HARNESS_ICON_GEMINI_POLY),
             x if x == HARNESS_ICON_OPENCODE as u32 => Self::Poly(HARNESS_ICON_OPENCODE_POLY),
+            x if x == TAB_HIDDEN_ICON as u32 => Self::Poly(TAB_HIDDEN_ICON_POLY),
             // [─] BOX DRAWINGS LIGHT HORIZONTAL
             0x2500 => Self::Poly(&[Poly {
                 path: &[
@@ -7268,6 +7305,14 @@ mod test {
                 Some(BlockKey::HarnessIconStack(mask))
             );
         }
+    }
+
+    #[test]
+    fn hidden_tab_glyph_uses_native_vector() {
+        assert_eq!(
+            BlockKey::from_char(TAB_HIDDEN_ICON),
+            Some(BlockKey::Poly(TAB_HIDDEN_ICON_POLY))
+        );
     }
 
     #[test]

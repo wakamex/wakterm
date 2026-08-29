@@ -16,7 +16,7 @@ wakterm keeps the core WezTerm terminal foundation, with extra focus on multiple
 - [Measured idle overhead](headless-mux-benchmark.md): 34.44 MiB PSS to restore and hold 20 workspace tabs and 7 shell splits, with 0.0016% of one core
 - [Shared Codex app-server benchmark](codex-app-server-benchmark.md): 46.4% less PSS and 89.2% less idle CPU across 20 Codex TUIs
 - Versioned [Agent API v1](agent-api/v1/index.md) with capability negotiation, catalog, authoritative prompt admission, and durable event streams
-- [Parked tabs and dedicated tab navigator](reference/lua/keyassignment/ShowTabNavigator.md) (`Ctrl-Shift-E` / `Cmd-E` and `Ctrl-Shift-S` / `Cmd-Shift-S`)
+- [Hidden tabs and dedicated tab navigator](reference/lua/keyassignment/ShowTabNavigator.md) (`Ctrl-Shift-E` / `Cmd-E` and `Ctrl-Shift-S` / `Cmd-Shift-S`)
 - Agent attention indicators with subtle icon pulse and shared turn review acknowledgement across clients
 - Automatic tab naming from active agent directories with collision disambiguation
 - Native harness icons and generated per-tab background colors in the tab bar

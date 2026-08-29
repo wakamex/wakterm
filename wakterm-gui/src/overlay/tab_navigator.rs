@@ -1,4 +1,6 @@
-use crate::customglyph::{harness_icon_stack_glyph, HARNESS_ICON_STACK_CELL_WIDTH};
+use crate::customglyph::{
+    harness_icon_stack_glyph, HARNESS_ICON_STACK_CELL_WIDTH, TAB_HIDDEN_ICON,
+};
 use crate::overlay::selector::{matcher_pattern, matcher_score};
 use crate::termwindow::TabHarnessIcon;
 use chrono::{DateTime, Utc};
@@ -20,30 +22,30 @@ use termwiz::terminal::Terminal;
 use termwiz_funcs::{pad_left, pad_right, truncate_right};
 
 const ICON_GUTTER_WIDTH: usize = HARNESS_ICON_STACK_CELL_WIDTH;
-const TAB_TABLE_PREFIX_WIDTH: usize = ICON_GUTTER_WIDTH + 3;
+const TAB_TABLE_PREFIX_WIDTH: usize = ICON_GUTTER_WIDTH + 4;
 const PANE_TABLE_PREFIX_WIDTH: usize = ICON_GUTTER_WIDTH + 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NavigatorView {
     All,
     Visible,
-    Parked,
+    Hidden,
 }
 
 impl NavigatorView {
     fn next(self) -> Self {
         match self {
             Self::All => Self::Visible,
-            Self::Visible => Self::Parked,
-            Self::Parked => Self::All,
+            Self::Visible => Self::Hidden,
+            Self::Hidden => Self::All,
         }
     }
 
     fn previous(self) -> Self {
         match self {
-            Self::All => Self::Parked,
+            Self::All => Self::Hidden,
             Self::Visible => Self::All,
-            Self::Parked => Self::Visible,
+            Self::Hidden => Self::Visible,
         }
     }
 }
@@ -398,7 +400,7 @@ impl NavigatorState {
             .enumerate()
             .filter(|(_, row)| match self.view {
                 NavigatorView::Visible => !row.parked,
-                NavigatorView::Parked => row.parked,
+                NavigatorView::Hidden => row.parked,
                 NavigatorView::All => true,
             })
             .filter_map(|(idx, row)| {
@@ -458,13 +460,14 @@ impl NavigatorState {
         let window_id = self.args.window_id;
         let tab_id = row.tab_id;
         let was_parked = row.parked;
+        let action = if was_parked { "show" } else { "hide" };
         match on_main_thread(move || Mux::get().set_tab_parked(window_id, tab_id, !was_parked)) {
             Ok(_) => {
                 self.refresh();
                 tab_id == self.args.host_tab_id && !was_parked
             }
             Err(err) => {
-                self.message = Some(format!("Cannot change parked state: {err:#}"));
+                self.message = Some(format!("Cannot {action} tab: {err:#}"));
                 false
             }
         }
@@ -561,14 +564,6 @@ impl NavigatorState {
         }
     }
 
-    fn compact_title(row: &TabNavigatorRow) -> String {
-        let mut title = row.title.clone();
-        if row.parked {
-            title.push_str(" [parked]");
-        }
-        title
-    }
-
     fn pane_identity(pane: &TabNavigatorPaneRow) -> String {
         let identity = if pane.identity.is_empty() {
             "terminal"
@@ -608,7 +603,7 @@ impl NavigatorState {
         let mut panes_desired = column_width("PANES");
         let mut rss_desired = column_width("MEMORY");
         for row in rows {
-            title_desired = title_desired.max(column_width(&Self::compact_title(row)));
+            title_desired = title_desired.max(column_width(&row.title));
             status_desired = status_desired.max(column_width(&row.status));
             last_desired =
                 last_desired.max(column_width(&Self::format_relative_time(row.last_response)));
@@ -716,7 +711,7 @@ impl NavigatorState {
 
     fn format_header(columns: NavigatorColumns) -> String {
         let mut line = format!(
-            "{}   {}",
+            "{}    {}",
             " ".repeat(ICON_GUTTER_WIDTH),
             fitted_cell("TAB", columns.title, false)
         );
@@ -731,11 +726,12 @@ impl NavigatorState {
 
     fn format_tab_line(row: &TabNavigatorRow, selected: bool, columns: NavigatorColumns) -> String {
         let mut line = format!(
-            "{}{}{} {}",
+            "{}{}{}{} {}",
             Self::icon_gutter(&row.harness_icons),
             if selected { ">" } else { " " },
             if row.needs_attention { "!" } else { " " },
-            fitted_cell(&Self::compact_title(row), columns.title, false)
+            if row.parked { TAB_HIDDEN_ICON } else { ' ' },
+            fitted_cell(&row.title, columns.title, false)
         );
         append_column(&mut line, &row.status, columns.status, false);
         append_column(
@@ -815,9 +811,9 @@ impl NavigatorState {
         }
 
         let view = match self.view {
-            NavigatorView::All => "[All] Visible Parked",
-            NavigatorView::Visible => "All [Visible] Parked",
-            NavigatorView::Parked => "All Visible [Parked]",
+            NavigatorView::All => "[All] Visible Hidden",
+            NavigatorView::Visible => "All [Visible] Hidden",
+            NavigatorView::Hidden => "All Visible [Hidden]",
         };
         let sort = match self.sort {
             NavigatorSort::TabOrder => "[Tab order] Response",
@@ -914,7 +910,7 @@ impl NavigatorState {
         changes.push(Change::Text("\r\n".to_string()));
         changes.push(Change::Text(truncate_right(
             &format!(
-                "enter activate   ctrl+shift+s park   ctrl+x close   left/right view   ctrl+r sort   ctrl+o {}   esc clear/exit",
+                "enter activate   ctrl+shift+s hide/show   ctrl+x close   left/right view   ctrl+r sort   ctrl+o {}   esc clear/exit",
                 if self.dense { "comfortable" } else { "dense" }
             ),
             width,
@@ -1113,11 +1109,11 @@ mod test {
     #[test]
     fn visibility_navigation_cycles_in_display_order() {
         assert_eq!(NavigatorView::All.next(), NavigatorView::Visible);
-        assert_eq!(NavigatorView::Visible.next(), NavigatorView::Parked);
-        assert_eq!(NavigatorView::Parked.next(), NavigatorView::All);
-        assert_eq!(NavigatorView::All.previous(), NavigatorView::Parked);
+        assert_eq!(NavigatorView::Visible.next(), NavigatorView::Hidden);
+        assert_eq!(NavigatorView::Hidden.next(), NavigatorView::All);
+        assert_eq!(NavigatorView::All.previous(), NavigatorView::Hidden);
         assert_eq!(NavigatorView::Visible.previous(), NavigatorView::All);
-        assert_eq!(NavigatorView::Parked.previous(), NavigatorView::Visible);
+        assert_eq!(NavigatorView::Hidden.previous(), NavigatorView::Visible);
     }
 
     #[test]
@@ -1126,7 +1122,7 @@ mod test {
         short.harness_icons.clear();
         short.status = "busy".to_string();
         short.cwd = "/a".to_string();
-        let mut long = row(20, "a-longer-title", false);
+        let mut long = row(20, "a-longer-title", true);
         long.harness_icons = vec![TabHarnessIcon::Claude, TabHarnessIcon::Codex];
         long.needs_attention = false;
         long.cwd = "/code/a-longer-project".to_string();
@@ -1162,7 +1158,14 @@ mod test {
         );
         assert_eq!(first.chars().nth(ICON_GUTTER_WIDTH + 1), Some('!'));
         assert_eq!(second.chars().nth(ICON_GUTTER_WIDTH + 1), Some(' '));
+        assert_eq!(first.chars().nth(ICON_GUTTER_WIDTH + 2), Some(' '));
+        assert_eq!(
+            second.chars().nth(ICON_GUTTER_WIDTH + 2),
+            Some(TAB_HIDDEN_ICON)
+        );
         assert!(!first.contains("[attention]"));
+        assert!(!second.contains("[parked]"));
+        assert!(!second.contains("[hidden]"));
         assert_eq!(
             column_width(&NavigatorState::icon_gutter(
                 &state.args.rows[1].harness_icons,
@@ -1175,7 +1178,7 @@ mod test {
         assert!(wide.branch.is_some());
         assert!(wide.panes.is_some());
         assert!(wide.rss.is_some());
-        let narrow = state.columns(28);
+        let narrow = state.columns(29);
         assert!(narrow.status.is_some());
         assert!(narrow.last.is_some());
         assert!(narrow.cwd.is_none());
@@ -1245,7 +1248,7 @@ mod test {
         state.view = NavigatorView::Visible;
         state.rebuild(None);
         assert_eq!(state.filtered, vec![0]);
-        state.view = NavigatorView::Parked;
+        state.view = NavigatorView::Hidden;
         state.rebuild(None);
         assert_eq!(state.filtered, vec![1]);
         state.view = NavigatorView::All;
