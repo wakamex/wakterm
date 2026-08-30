@@ -286,7 +286,7 @@ TOC = [
         ],
     ),
     Page(
-        "Config & Lua",
+        "Configuration Reference",
         "reference/lua/index.md",
         children=[
             Gen(

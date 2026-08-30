@@ -1,4 +1,4 @@
-# Lua Reference
+# Configuration Reference
 
 wakterm provides Lua 5.4 as a configuration language. This section documents
 the various lua functions and types that are provided to the configuration
@@ -15,4 +15,3 @@ return config
 ## Full List of Configuration Options
 
 [Config Options](../config/index.md) has a list of the main configuration options.
-
