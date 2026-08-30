@@ -1,9 +1,6 @@
-# Configuration Reference
+# Lua API Reference
 
-wakterm provides Lua 5.4 as a configuration language. This section documents
-the various lua functions and types that are provided to the configuration
-file. These are provided by the `wakterm` module that must be imported into
-your configuration file:
+Wakterm provides Lua 5.4 as a configuration language. This section documents the Lua functions and types available to the configuration file through the `wakterm` module:
 
 ```lua
 local wakterm = require 'wakterm'
@@ -12,6 +9,6 @@ config.font = wakterm.font 'JetBrains Mono'
 return config
 ```
 
-## Full List of Configuration Options
+## Configuration options
 
 [Config Options](../config/index.md) has a list of the main configuration options.
