@@ -2,44 +2,9 @@
 
 This is an actively maintained fork of [wezterm/wezterm](https://github.com/wezterm/wezterm), extending it with fixes and features for daily mux server usage. I also took the opportunity to make agent harnesses first-class citizens 🤖.
 
-### What's changed
+Current features and documentation: [wakterm.org](https://wakterm.org/)
 
-See [CHANGELOG-FORK.md](CHANGELOG-FORK.md) for the detailed fork fix history.
-
-**Session persistence**
-- Auto-saves tab layout, split tree structure, working directories, and titles every 60s and on SIGTERM
-- Auto-restores on startup with correct nested splits, proportional sizing, and active-tab selection
-- `wakterm cli save-layout` / `wakterm cli restore-layout` for exact Rust-backed manual snapshots, replay, and active-tab restore
-- Mux server memory monitoring: logs RSS and per-pane buffer sizes every 60s (at `WAKTERM_LOG=info`)
-- Fixed upstream OOM where stuck SynchronizedOutput caused unbounded memory growth ([details](docs/mux-server-memory.md))
-
-**Agent harnesses**
-- Agy, Claude, Codex, Gemini, and OpenCode are first-class citizens
-- Start them directly with `wakterm agent start agy|claude|codex|gemini|opencode`
-- Launch Codex through the mux-owned app-server with `wakterm agent launch codex`
-- Watch live progress across running harnesses with `wakterm agent watch` or `wakterm agent list -f`
-- Run experimental normalized Codex shadow reads with opaque cursors using `wakterm agent output`
-- Send prompts and interrupts through wakterm while keeping the real harness UI in the pane
-- Tab title tells you if an agent is waiting on you, or if it's your turn (configurable)
-
-**Usability**
-- macOS remembers window position and size across restarts via native `NSWindow` autosave
-- Divider drags, window resizes, and spawned panes agree on the same layout more often
-- Multi-client sessions are much less prone to flickering, jumpy redraws, and resize feedback loops
-- User-set titles (via Ctrl+Shift+<) are no longer overwritten by terminal escape sequences
-
-**6 new default key bindings:**
-
-| Key | Action |
-|-----|--------|
-| Ctrl+Shift+D (Cmd+D) | Close current pane |
-| Shift+Home | Scroll to top |
-| Shift+End | Scroll to bottom |
-| Ctrl+Shift+O (Cmd+O) | Rotate panes clockwise |
-| Ctrl+Shift+E (Cmd+E) | Tab navigator |
-| Ctrl+Shift+< (Cmd+<) | Rename current tab |
-
-Full hotkey reference: [Default Key Assignments](docs/config/default-keys.md)
+Historical fork notes: [CHANGELOG-FORK.md](CHANGELOG-FORK.md)
 
 ---
 
