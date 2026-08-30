@@ -407,7 +407,6 @@ source="
   assets/wakterm.desktop
   assets/wakterm.appdata.xml
   assets/icon/terminal.png
-  assets/icon/wakterm-icon.svg
   termwiz/data/wakterm.terminfo
 "
 builddir="\$srcdir"
@@ -425,9 +424,7 @@ package() {
   install -Dm644 -t "\$pkgdir"/usr/share/applications "\$srcdir"/wakterm.desktop
   install -Dm644 -t "\$pkgdir"/usr/share/metainfo "\$srcdir"/wakterm.appdata.xml
   install -Dm644 "\$srcdir"/terminal.png "\$pkgdir"/usr/share/pixmaps/wakterm.png
-  install -Dm644 "\$srcdir"/wakterm-icon.svg "\$pkgdir"/usr/share/pixmaps/wakterm.svg
   install -Dm644 "\$srcdir"/terminal.png "\$pkgdir"/usr/share/icons/hicolor/128x128/apps/wakterm.png
-  install -Dm644 "\$srcdir"/wakterm-icon.svg "\$pkgdir"/usr/share/icons/hicolor/scalable/apps/wakterm.svg
   install -Dm644 "\$builddir"/wakterm.terminfo "\$pkgdir"/usr/share/terminfo/w/wakterm
 }
 EOF

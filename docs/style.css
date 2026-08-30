@@ -166,7 +166,7 @@ textarea {
   width: 2.4rem;
   height: 2.4rem;
   flex: 0 0 auto;
-  background: url("favicon.svg") center / contain no-repeat;
+  background: url("favicon.png") center / contain no-repeat;
   content: "";
 }
 

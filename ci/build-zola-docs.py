@@ -474,8 +474,7 @@ def copy_assets() -> int:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         count += 1
-    shutil.copy2(PROJECT / "assets/icon/terminal.png", STATIC / "favicon.png")
-    shutil.copy2(PROJECT / "assets/icon/wakterm-icon.svg", STATIC / "favicon.svg")
+    shutil.copy2(PROJECT / "assets/icon/wakterm-icon.png", STATIC / "favicon.png")
     fonts = STATIC / "fonts"
     fonts.mkdir()
     shutil.copy2(PROJECT / "assets/fonts/SymbolsNerdFontMono-Regular.ttf", fonts)

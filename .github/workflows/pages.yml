@@ -8,7 +8,7 @@ on:
       - "docs/**"
       - "assets/fonts/SymbolsNerdFontMono-Regular.ttf"
       - "assets/icon/terminal.png"
-      - "assets/icon/wakterm-icon.svg"
+      - "assets/icon/wakterm-icon.png"
       - "ci/build-docs.sh"
       - "ci/build-zola-docs.py"
       - "ci/generate-docs.py"
