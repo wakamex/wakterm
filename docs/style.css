@@ -839,6 +839,12 @@ kbd {
   }
 }
 
+@media (min-width: 52.01rem) {
+  .prose > h2:first-of-type + ul {
+    max-width: none;
+  }
+}
+
 @media (max-width: 52rem) {
   html {
     scroll-padding-top: 1rem;
