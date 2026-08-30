@@ -282,9 +282,10 @@ textarea {
   margin: 1.35rem 0 0.45rem;
   color: var(--docs-muted);
   font-family: var(--wakterm-mono-font);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   font-weight: 700;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.07em;
+  line-height: 1.3;
   text-transform: uppercase;
 }
 
@@ -364,14 +365,10 @@ textarea {
   padding: clamp(1.5rem, 4vw, 3.75rem) clamp(1.25rem, 5vw, 5rem);
 }
 
-.content > article {
-  max-width: 108rem;
-}
-
 .content > article > h1,
 .content article:not(:has(> h1)) .prose > h1:first-of-type {
   display: block;
-  max-width: 24ch;
+  max-width: none;
   margin: 0 0 0.75rem;
   padding-bottom: 0.5rem;
   color: var(--wakterm-heading);
@@ -425,11 +422,6 @@ textarea {
   overflow-wrap: anywhere;
 }
 
-.prose > :where(p, ul, ol, blockquote, dl),
-.prose > :where(h2, h3, h4, h5, h6) {
-  max-width: 76ch;
-}
-
 .prose > p:first-child {
   color: var(--docs-muted);
   font-size: 1.12em;
@@ -471,7 +463,6 @@ textarea {
 }
 
 .prose hr {
-  max-width: 76ch;
   margin: 2.5rem 0;
   border: 0;
   border-top: 1px solid var(--wakterm-rule-strong);
@@ -590,7 +581,6 @@ kbd {
 }
 
 .prose figure {
-  max-width: min(100%, 80rem);
   margin: 1.5rem 0;
 }
 
@@ -603,7 +593,6 @@ kbd {
 }
 
 .prose figcaption {
-  max-width: 76ch;
   margin-top: 0.55rem;
   color: var(--docs-muted);
   font-size: 0.82rem;
@@ -644,7 +633,6 @@ kbd {
 
 .admonition,
 .markdown-alert {
-  max-width: 76ch;
   margin: 1.35rem 0;
   padding: 0.8rem 1rem;
   background: var(--docs-surface);
@@ -834,14 +822,7 @@ kbd {
   .toc {
     float: none;
     width: auto;
-    max-width: 76ch;
     margin: 1.25rem 0;
-  }
-}
-
-@media (min-width: 52.01rem) {
-  .prose > h2:first-of-type + ul {
-    max-width: none;
   }
 }
 
