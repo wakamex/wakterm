@@ -245,7 +245,7 @@ old_route	new_route	old_source	new_source
 /config/lua/config/wsl_domains.html	/reference/config/wsl-domains/	docs/config/lua/config/wsl_domains.md	docs/reference/config/wsl_domains.md
 /config/lua/config/xim_im_name.html	/reference/config/xim-im-name/	docs/config/lua/config/xim_im_name.md	docs/reference/config/xim_im_name.md
 /config/lua/ExecDomain.html	/reference/lua/execdomain/	docs/config/lua/ExecDomain.md	docs/reference/lua/ExecDomain.md
-/config/lua/general.html	/reference/lua/	docs/config/lua/general.md	docs/reference/lua/index.md
+/config/lua/general.html	/reference/configuration/	docs/config/lua/general.md	docs/reference/configuration.md
 /config/lua/gui-events/gui-attached.html	/reference/lua/gui-events/gui-attached/	docs/config/lua/gui-events/gui-attached.md	docs/reference/lua/gui-events/gui-attached.md
 /config/lua/gui-events/gui-startup.html	/reference/lua/gui-events/gui-startup/	docs/config/lua/gui-events/gui-startup.md	docs/reference/lua/gui-events/gui-startup.md
 /config/lua/gui-events/index.html	/reference/lua/gui-events/	docs/config/lua/gui-events/index.markdown	docs/reference/lua/gui-events/index.markdown

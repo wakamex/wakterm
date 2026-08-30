@@ -285,7 +285,7 @@ old_route	new_route
 /config/lua/config/window_padding.html	/reference/config/window-padding/
 /config/lua/config/wsl_domains.html	/reference/config/wsl-domains/
 /config/lua/config/xim_im_name.html	/reference/config/xim-im-name/
-/config/lua/general.html	/reference/lua/
+/config/lua/general.html	/reference/configuration/
 /config/lua/gui-events/gui-attached.html	/reference/lua/gui-events/gui-attached/
 /config/lua/gui-events/gui-startup.html	/reference/lua/gui-events/gui-startup/
 /config/lua/gui-events/index.html	/reference/lua/gui-events/
@@ -640,6 +640,7 @@ old_route	new_route
 /multiplexing.html	/multiplexing/
 /mux-server-memory.html	/mux-server-memory/
 /quickselect.html	/quickselect/
+/reference/lua/	/reference/configuration/
 /recipes/hyperlinks.html	/guides/recipes/hyperlinks/
 /recipes/index.html	/guides/recipes/
 /recipes/passing-data.html	/guides/recipes/passing-data/

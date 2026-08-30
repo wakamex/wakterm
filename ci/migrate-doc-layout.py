@@ -33,7 +33,7 @@ def destination(path: PurePosixPath) -> PurePosixPath:
     if value.startswith("config/lua/"):
         relative = path.relative_to("config/lua")
         if relative == PurePosixPath("general.md"):
-            return PurePosixPath("reference/lua/index.md")
+            return PurePosixPath("reference/configuration.md")
         return PurePosixPath("reference/lua") / relative
     if value.startswith("config/") and path.suffix == ".md":
         return PurePosixPath("guides/configuration") / path.relative_to("config")
