@@ -343,7 +343,6 @@ struct AgentArtifactWatcherState {
     discovery_panes_by_root: HashMap<PathBuf, HashSet<PaneId>>,
     artifact_paths_by_pane: HashMap<PaneId, Vec<PathBuf>>,
     panes_by_artifact_path: HashMap<PathBuf, HashSet<PaneId>>,
-    last_hint_at_by_pane: HashMap<PaneId, Instant>,
 }
 
 fn normalize_agent_artifact_path(path: &Path) -> PathBuf {
@@ -411,7 +410,6 @@ impl AgentArtifactWatcherState {
             discovery_panes_by_root: HashMap::new(),
             artifact_paths_by_pane: HashMap::new(),
             panes_by_artifact_path: HashMap::new(),
-            last_hint_at_by_pane: HashMap::new(),
         }
     }
 
@@ -527,7 +525,6 @@ impl AgentArtifactWatcherState {
     fn unwatch_pane(&mut self, pane_id: PaneId) {
         self.remove_confirmed_artifact(pane_id);
         let Some(roots) = self.roots_by_pane.remove(&pane_id) else {
-            self.last_hint_at_by_pane.remove(&pane_id);
             return;
         };
 
@@ -560,10 +557,9 @@ impl AgentArtifactWatcherState {
                 }
             }
         }
-        self.last_hint_at_by_pane.remove(&pane_id);
     }
 
-    fn matching_panes(&mut self, event_paths: &[PathBuf]) -> Vec<PaneId> {
+    fn matching_panes(&self, event_paths: &[PathBuf]) -> Vec<PaneId> {
         let mut matched = HashSet::new();
         for event_path in event_paths {
             if let Some(panes) = self.panes_by_artifact_path.get(event_path) {
@@ -584,36 +580,20 @@ impl AgentArtifactWatcherState {
             }
         }
 
-        self.debounce_matching_panes(matched)
+        let mut panes = matched.into_iter().collect::<Vec<_>>();
+        panes.sort_unstable();
+        panes
     }
 
-    fn all_watched_panes(&mut self) -> Vec<PaneId> {
-        let matched = self
+    fn all_watched_panes(&self) -> Vec<PaneId> {
+        let mut panes = self
             .roots_by_pane
             .keys()
             .chain(self.artifact_paths_by_pane.keys())
             .copied()
-            .collect();
-        self.debounce_matching_panes(matched)
-    }
-
-    fn debounce_matching_panes(&mut self, matched: HashSet<PaneId>) -> Vec<PaneId> {
-        let now = Instant::now();
-        let mut panes = matched
-            .into_iter()
-            .filter(|pane_id| {
-                let should_hint = self
-                    .last_hint_at_by_pane
-                    .get(pane_id)
-                    .map(|last| now.duration_since(*last) >= AGENT_ARTIFACT_HINT_DEBOUNCE)
-                    .unwrap_or(true);
-                if should_hint {
-                    self.last_hint_at_by_pane.insert(*pane_id, now);
-                }
-                should_hint
-            })
             .collect::<Vec<_>>();
         panes.sort_unstable();
+        panes.dedup();
         panes
     }
 }
@@ -2620,14 +2600,9 @@ impl Mux {
         AgentRestoreOutcome::Completed
     }
 
-    #[cfg(test)]
-    fn handle_agent_artifact_event(&self, paths: Vec<PathBuf>) {
-        self.handle_agent_artifact_batch(paths, false);
-    }
-
     fn handle_agent_artifact_batch(&self, paths: Vec<PathBuf>, refresh_all: bool) {
         let pane_ids = {
-            let mut watcher = self.agent_artifact_watcher.lock();
+            let watcher = self.agent_artifact_watcher.lock();
             if refresh_all {
                 watcher.all_watched_panes()
             } else {
@@ -6254,7 +6229,6 @@ mod test {
         let started = Instant::now();
         let mut candidates = 0usize;
         for _ in 0..100_000 {
-            watcher.last_hint_at_by_pane.clear();
             candidates += watcher.matching_panes(&event).len();
         }
         eprintln!(
@@ -6318,7 +6292,6 @@ mod test {
             )]),
             artifact_paths_by_pane: HashMap::new(),
             panes_by_artifact_path: HashMap::new(),
-            last_hint_at_by_pane: HashMap::new(),
         }
     }
 
@@ -6356,10 +6329,27 @@ mod test {
         );
 
         watcher.set_confirmed_artifact(confirmed, &AgentHarness::Claude, None);
-        watcher.last_hint_at_by_pane.clear();
         assert_eq!(
             watcher.matching_panes(&[root.join("new-session.jsonl")]),
             vec![confirmed, unconfirmed],
+        );
+    }
+
+    #[test]
+    fn consecutive_artifact_batches_retain_the_confirmed_pane() {
+        let root = Path::new("/tmp/wakterm-artifact-consecutive-routing");
+        let pane_id = alloc_pane_id();
+        let session = root.join("session.jsonl");
+        let mut watcher = artifact_watcher_for_routing_test(root, &[pane_id]);
+        watcher.set_confirmed_artifact(pane_id, &AgentHarness::Codex, session.to_str());
+
+        assert_eq!(
+            watcher.matching_panes(std::slice::from_ref(&session)),
+            vec![pane_id]
+        );
+        assert_eq!(
+            watcher.matching_panes(std::slice::from_ref(&session)),
+            vec![pane_id]
         );
     }
 
@@ -10016,7 +10006,7 @@ mod test {
         runtime.alive = true;
         mux.install_agent_metadata_runtime_without_process_identity(pane_id, metadata, runtime)
             .unwrap();
-        mux.handle_agent_artifact_event(vec![session.clone()]);
+        mux.handle_agent_artifact_batch(vec![session.clone()], false);
 
         wait_for_main_thread_work(
             &executor,
