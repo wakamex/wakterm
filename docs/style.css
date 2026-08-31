@@ -687,21 +687,25 @@ kbd {
 }
 
 .edit-link {
-  padding: 0.42rem 0.62rem;
-  color: var(--wakterm-navy);
-  background: var(--wakterm-gold);
-  border: 1px solid var(--wakterm-gold-deep);
+  padding: 0;
+  color: var(--docs-muted);
+  background: transparent;
+  border: 0;
   font-family: var(--wakterm-mono-font);
   font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-decoration: none;
-  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-decoration-color: color-mix(in srgb, currentColor 55%, transparent);
+  text-underline-offset: 0.18em;
 }
 
-.edit-link:visited,
+.edit-link:visited {
+  color: var(--docs-muted);
+}
+
 .edit-link:hover {
-  color: var(--wakterm-navy);
+  color: var(--wakterm-blue-deep);
+  text-decoration-color: currentColor;
 }
 
 .last-updated,
