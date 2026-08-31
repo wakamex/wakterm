@@ -5,7 +5,7 @@ use crate::agent::{
     prime_runtime_for_new_agent, refresh_runtime_from_harness_with_expected_session,
     remote_codex_tui, restorable_session_id, AgentHarness, AgentMetadata, AgentObservedTurn,
     AgentObservedTurnOutcome, AgentOrigin, AgentRuntimeSnapshot, AgentSnapshot, AgentTabBadgeState,
-    ExpectedAgentSession,
+    AgentTransport, AgentTurnState, ExpectedAgentSession,
 };
 use crate::agent_event::{AgentEventRuntimeUpdate, AgentEventStore};
 use crate::agent_request::{
@@ -1390,6 +1390,114 @@ impl Mux {
     pub(crate) fn apply_codex_app_server_notification(&self, message: &serde_json::Value) {
         self.codex_app_server.record_notification(message);
         codex_app_server::apply_notification_to_runtime(self, message);
+    }
+
+    pub(crate) fn rebind_codex_app_server_pane(
+        &self,
+        old_thread_id: &str,
+        new_thread_id: &str,
+        new_session_id: &str,
+        bootstrap: &serde_json::Value,
+    ) -> anyhow::Result<PaneId> {
+        anyhow::ensure!(
+            old_thread_id != new_thread_id,
+            "Codex TUI thread did not change"
+        );
+        let (pane_id, mut metadata) = {
+            let metadata_by_pane = self.agent_metadata_by_pane.read();
+            let mut matches = metadata_by_pane
+                .iter()
+                .filter(|(_, metadata)| {
+                    metadata
+                        .codex_app_server
+                        .as_ref()
+                        .is_some_and(|session| session.thread_id == old_thread_id)
+                })
+                .map(|(pane_id, metadata)| (*pane_id, (**metadata).clone()));
+            let matched = matches.next().with_context(|| {
+                format!("no managed pane is bound to Codex thread {old_thread_id}")
+            })?;
+            anyhow::ensure!(
+                matches.next().is_none(),
+                "multiple managed panes are bound to Codex thread {old_thread_id}"
+            );
+            matched
+        };
+        anyhow::ensure!(
+            !self
+                .agent_metadata_by_pane
+                .read()
+                .iter()
+                .any(|(other_pane_id, other)| {
+                    *other_pane_id != pane_id
+                        && other
+                            .codex_app_server
+                            .as_ref()
+                            .is_some_and(|session| session.thread_id == new_thread_id)
+                }),
+            "Codex thread {new_thread_id} is already bound to another pane"
+        );
+
+        let session = metadata
+            .codex_app_server
+            .as_mut()
+            .expect("matched metadata has a Codex app-server session");
+        session.thread_id = new_thread_id.to_string();
+        session.session_id = new_session_id.to_string();
+        self.codex_app_server.record_thread_bootstrap(bootstrap);
+        self.agent_metadata_by_pane
+            .write()
+            .insert(pane_id, Arc::new(metadata));
+
+        if let Some(runtime) = self.agent_runtime_by_pane.write().get_mut(&pane_id) {
+            runtime.transport = AgentTransport::CodexAppServerTui;
+            runtime.harness = AgentHarness::Codex;
+            runtime.harness_mode = Some("app-server-tui".to_string());
+            runtime.session_path = None;
+            runtime.turn_state = AgentTurnState::Unknown;
+            runtime.turn_phase = None;
+            runtime.attention_reason = None;
+            runtime.progress_summary = None;
+            runtime.observed_turn = None;
+            runtime.last_turn_completed_at = None;
+            runtime.observer_error = None;
+            runtime.observed_at = Utc::now();
+            self.codex_app_server.prime_runtime(new_thread_id, runtime);
+            finalize_runtime_snapshot(runtime);
+            runtime.status = derive_runtime_status(runtime);
+        }
+
+        self.codex_app_server.unsubscribe(old_thread_id);
+        crate::session_persistence::request_session_save();
+        self.notify(MuxNotification::AgentMetadataChanged {
+            pane_id,
+            metadata: self
+                .get_agent_metadata_for_pane(pane_id)
+                .map(|metadata| (*metadata).clone()),
+        });
+        if let Some((_, _, tab_id)) = self.resolve_pane_id(pane_id) {
+            self.notify_tab_title_changed(tab_id);
+        }
+        Ok(pane_id)
+    }
+
+    pub(crate) fn apply_codex_tui_notification(
+        &self,
+        thread_id: &str,
+        message: &serde_json::Value,
+    ) {
+        if codex_app_server::notification_thread_id(message) != Some(thread_id) {
+            return;
+        }
+        if !self.agent_metadata_by_pane.read().values().any(|metadata| {
+            metadata
+                .codex_app_server
+                .as_ref()
+                .is_some_and(|session| session.thread_id == thread_id)
+        }) {
+            return;
+        }
+        self.apply_codex_app_server_notification(message);
     }
 
     pub(crate) fn persist_codex_app_server_notification(

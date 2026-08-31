@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::io::{Read, Write};
+use std::net::Shutdown;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,7 +20,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use wakterm_uds::UnixStream;
+use wakterm_uds::{UnixListener, UnixStream};
 
 const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 
@@ -289,6 +290,8 @@ impl Connection {
 pub struct CodexAppServer {
     state: Mutex<State>,
     thread_runtime_seed_by_id: Mutex<HashMap<String, ThreadRuntimeSeed>>,
+    next_tui_proxy_id: AtomicU64,
+    tui_proxy_paths: Mutex<Vec<PathBuf>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -321,6 +324,8 @@ impl CodexAppServer {
                 recovered_once: false,
             }),
             thread_runtime_seed_by_id: Mutex::new(HashMap::new()),
+            next_tui_proxy_id: AtomicU64::new(1),
+            tui_proxy_paths: Mutex::new(Vec::new()),
         }
     }
 
@@ -329,7 +334,7 @@ impl CodexAppServer {
         validate_resume_thread_id(request.resume_thread_id.as_deref())?;
         let mut state = self.state.lock();
         ensure_running(&mut state)?;
-        self.prepare_connected(&mut state, request)
+        self.prepare_connected(&mut state, request, true)
     }
 
     pub fn attach_existing(
@@ -358,13 +363,14 @@ impl CodexAppServer {
             child_alive && state.connection.is_some(),
             "mux-owned Codex app-server is not currently connected"
         );
-        self.prepare_connected(&mut state, request)
+        self.prepare_connected(&mut state, request, false)
     }
 
     fn prepare_connected(
         &self,
         state: &mut State,
         request: PrepareCodexLaunch,
+        proxy_tui: bool,
     ) -> anyhow::Result<PreparedCodexLaunch> {
         let connection = state
             .connection
@@ -410,7 +416,11 @@ impl CodexAppServer {
         )?;
         let executable = state.executable.clone().unwrap();
         let version = state.version.clone().unwrap();
-        let endpoint = codex_socket_url(&state.socket_path);
+        let endpoint = if proxy_tui {
+            self.start_tui_proxy(&state.socket_path, &thread_id)?
+        } else {
+            codex_socket_url(&state.socket_path)
+        };
         let mut native_argv = vec![
             executable.clone(),
             "resume".to_string(),
@@ -432,6 +442,47 @@ impl CodexAppServer {
                 tui_args: request.tui_args,
             },
         })
+    }
+
+    fn start_tui_proxy(&self, upstream_path: &Path, thread_id: &str) -> anyhow::Result<String> {
+        let proxy_id = self.next_tui_proxy_id.fetch_add(1, Ordering::Relaxed);
+        let proxy_path =
+            config::RUNTIME_DIR.join(format!("codex-tui-{}-{proxy_id}.sock", std::process::id()));
+        if proxy_path.exists() {
+            std::fs::remove_file(&proxy_path)
+                .with_context(|| format!("removing stale {}", proxy_path.display()))?;
+        }
+        let listener = UnixListener::bind(&proxy_path)
+            .with_context(|| format!("binding Codex TUI proxy {}", proxy_path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&proxy_path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        self.tui_proxy_paths.lock().push(proxy_path.clone());
+        let upstream_path = upstream_path.to_path_buf();
+        let current_thread_id = Arc::new(Mutex::new(thread_id.to_string()));
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let client = match stream {
+                    Ok(client) => client,
+                    Err(err) => {
+                        log::warn!("Codex TUI proxy accept failed: {err:#}");
+                        break;
+                    }
+                };
+                let upstream_path = upstream_path.clone();
+                let current_thread_id = Arc::clone(&current_thread_id);
+                thread::spawn(move || {
+                    if let Err(err) =
+                        proxy_tui_connection(client, &upstream_path, current_thread_id)
+                    {
+                        log::warn!("Codex TUI proxy connection closed: {err:#}");
+                    }
+                });
+            }
+        });
+        Ok(codex_socket_url(&proxy_path))
     }
 
     pub fn mark_disconnected(&self) {
@@ -600,6 +651,9 @@ impl Drop for CodexAppServer {
         }
         if state.socket_path.exists() {
             let _ = std::fs::remove_file(&state.socket_path);
+        }
+        for path in self.tui_proxy_paths.get_mut().drain(..) {
+            let _ = std::fs::remove_file(path);
         }
     }
 }
@@ -905,6 +959,351 @@ fn read_messages(
     }
 }
 
+#[derive(Clone, Debug)]
+struct PendingTuiThreadChange {
+    requested_thread_id: Option<String>,
+}
+
+impl PendingTuiThreadChange {
+    fn accepts_thread(&self, thread_id: &str) -> bool {
+        self.requested_thread_id
+            .as_deref()
+            .map(|requested| requested == thread_id)
+            .unwrap_or(true)
+    }
+}
+
+struct TuiProxyProtocolState {
+    current_thread_id: String,
+    switched_thread: bool,
+    pending: HashMap<String, PendingTuiThreadChange>,
+    buffered_notifications: Vec<Value>,
+}
+
+impl TuiProxyProtocolState {
+    fn new(thread_id: &str) -> Self {
+        Self {
+            current_thread_id: thread_id.to_string(),
+            switched_thread: false,
+            pending: HashMap::new(),
+            buffered_notifications: Vec::new(),
+        }
+    }
+
+    fn record_client_message(&mut self, message: &Value) {
+        let Some(method) = message.get("method").and_then(Value::as_str) else {
+            return;
+        };
+        if !matches!(method, "thread/start" | "thread/resume" | "thread/fork") {
+            return;
+        }
+        let Some(id) = json_rpc_id(message.get("id")) else {
+            return;
+        };
+        self.pending.insert(
+            id,
+            PendingTuiThreadChange {
+                requested_thread_id: message
+                    .pointer("/params/threadId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            },
+        );
+    }
+
+    fn retain_buffered_for_pending(&mut self) {
+        let remaining = self.pending.values().cloned().collect::<Vec<_>>();
+        self.buffered_notifications.retain(|notification| {
+            notification_thread_id(notification).is_some_and(|thread_id| {
+                remaining
+                    .iter()
+                    .any(|pending| pending.accepts_thread(thread_id))
+            })
+        });
+    }
+
+    fn record_server_message(&mut self, message: &Value) -> TuiProxyDispatch {
+        if message.get("method").is_some() {
+            if let Some(thread_id) = notification_thread_id(message) {
+                if thread_id == self.current_thread_id {
+                    if self.switched_thread {
+                        return TuiProxyDispatch {
+                            transition: None,
+                            notifications: vec![message.clone()],
+                        };
+                    }
+                } else if self
+                    .pending
+                    .values()
+                    .any(|pending| pending.accepts_thread(thread_id))
+                {
+                    self.buffered_notifications.push(message.clone());
+                }
+            }
+            return TuiProxyDispatch::default();
+        }
+
+        let Some(id) = json_rpc_id(message.get("id")) else {
+            return TuiProxyDispatch::default();
+        };
+        let Some(pending) = self.pending.remove(&id) else {
+            return TuiProxyDispatch::default();
+        };
+        if message.get("error").is_some() {
+            self.retain_buffered_for_pending();
+            return TuiProxyDispatch::default();
+        }
+        let Some(thread) = message.pointer("/result/thread") else {
+            self.retain_buffered_for_pending();
+            return TuiProxyDispatch::default();
+        };
+        let Some(new_thread_id) = thread.get("id").and_then(Value::as_str) else {
+            self.retain_buffered_for_pending();
+            return TuiProxyDispatch::default();
+        };
+        if pending
+            .requested_thread_id
+            .as_deref()
+            .is_some_and(|requested| requested != new_thread_id)
+        {
+            self.retain_buffered_for_pending();
+            return TuiProxyDispatch::default();
+        }
+        if new_thread_id == self.current_thread_id {
+            self.retain_buffered_for_pending();
+            return TuiProxyDispatch::default();
+        }
+        let old_thread_id =
+            std::mem::replace(&mut self.current_thread_id, new_thread_id.to_string());
+        self.switched_thread = true;
+        let session_id = thread
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or(new_thread_id)
+            .to_string();
+        let remaining = self.pending.values().cloned().collect::<Vec<_>>();
+        let mut notifications = Vec::new();
+        let mut still_buffered = Vec::new();
+        for notification in std::mem::take(&mut self.buffered_notifications) {
+            let notification_thread = notification_thread_id(&notification);
+            if notification_thread == Some(new_thread_id) {
+                notifications.push(notification);
+            } else if notification_thread.is_some_and(|thread_id| {
+                remaining
+                    .iter()
+                    .any(|pending| pending.accepts_thread(thread_id))
+            }) {
+                still_buffered.push(notification);
+            }
+        }
+        self.buffered_notifications = still_buffered;
+        TuiProxyDispatch {
+            transition: Some(TuiThreadTransition {
+                old_thread_id,
+                new_thread_id: new_thread_id.to_string(),
+                session_id,
+                bootstrap: message.get("result").cloned().unwrap_or(Value::Null),
+            }),
+            notifications,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TuiThreadTransition {
+    old_thread_id: String,
+    new_thread_id: String,
+    session_id: String,
+    bootstrap: Value,
+}
+
+#[derive(Default)]
+struct TuiProxyDispatch {
+    transition: Option<TuiThreadTransition>,
+    notifications: Vec<Value>,
+}
+
+fn json_rpc_id(id: Option<&Value>) -> Option<String> {
+    match id? {
+        Value::String(id) => Some(format!("s:{id}")),
+        Value::Number(id) => Some(format!("n:{id}")),
+        _ => None,
+    }
+}
+
+pub(crate) fn notification_thread_id(message: &Value) -> Option<&str> {
+    message
+        .pointer("/params/threadId")
+        .or_else(|| message.pointer("/params/thread/id"))
+        .and_then(Value::as_str)
+}
+
+fn dispatch_tui_proxy_messages(dispatch: TuiProxyDispatch) {
+    if dispatch.transition.is_none() && dispatch.notifications.is_empty() {
+        return;
+    }
+    promise::spawn::spawn_into_main_thread(async move {
+        let Some(mux) = Mux::try_get() else {
+            return;
+        };
+        apply_tui_proxy_dispatch(&mux, dispatch);
+    })
+    .detach();
+}
+
+fn apply_tui_proxy_dispatch(mux: &Mux, dispatch: TuiProxyDispatch) {
+    let current_thread_id = if let Some(transition) = dispatch.transition {
+        let new_thread_id = transition.new_thread_id.clone();
+        if let Err(err) = mux.rebind_codex_app_server_pane(
+            &transition.old_thread_id,
+            &transition.new_thread_id,
+            &transition.session_id,
+            &transition.bootstrap,
+        ) {
+            log::error!("could not follow Codex TUI thread change: {err:#}");
+            return;
+        }
+        new_thread_id
+    } else {
+        dispatch
+            .notifications
+            .first()
+            .and_then(notification_thread_id)
+            .unwrap_or_default()
+            .to_string()
+    };
+    for notification in dispatch.notifications {
+        mux.apply_codex_tui_notification(&current_thread_id, &notification);
+    }
+}
+
+fn proxy_tui_connection(
+    mut client: UnixStream,
+    upstream_path: &Path,
+    current_thread_id: Arc<Mutex<String>>,
+) -> anyhow::Result<()> {
+    let mut upstream = UnixStream::connect(upstream_path)
+        .with_context(|| format!("connecting TUI proxy to {}", upstream_path.display()))?;
+    relay_http_header(&mut client, &mut upstream)?;
+    relay_http_header(&mut upstream, &mut client)?;
+
+    let state = Arc::new(Mutex::new(TuiProxyProtocolState::new(
+        &current_thread_id.lock(),
+    )));
+    let client_reader = client.try_clone()?;
+    let mut upstream_writer = upstream.try_clone()?;
+    let client_state = Arc::clone(&state);
+    let client_to_upstream = thread::spawn(move || {
+        let result = relay_websocket_frames(client_reader, &mut upstream_writer, |message| {
+            client_state.lock().record_client_message(message);
+        });
+        let _ = upstream_writer.shutdown(Shutdown::Both);
+        result
+    });
+
+    let result = relay_websocket_frames(upstream, &mut client, |message| {
+        let dispatch = state.lock().record_server_message(message);
+        if let Some(transition) = dispatch.transition.as_ref() {
+            *current_thread_id.lock() = transition.new_thread_id.clone();
+        }
+        dispatch_tui_proxy_messages(dispatch);
+    });
+    let _ = client.shutdown(Shutdown::Both);
+    let _ = client_to_upstream.join();
+    result
+}
+
+fn relay_http_header(reader: &mut UnixStream, writer: &mut UnixStream) -> anyhow::Result<()> {
+    let mut header = Vec::new();
+    let mut byte = [0u8; 1];
+    while !header.ends_with(b"\r\n\r\n") {
+        anyhow::ensure!(header.len() < 8192, "WebSocket HTTP header is too large");
+        reader.read_exact(&mut byte)?;
+        header.push(byte[0]);
+    }
+    writer.write_all(&header)?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn relay_websocket_frames(
+    mut reader: UnixStream,
+    writer: &mut UnixStream,
+    mut inspect: impl FnMut(&Value),
+) -> anyhow::Result<()> {
+    let mut fragmented_payload = Vec::new();
+    let mut fragmented_opcode = None;
+    loop {
+        let mut header = [0u8; 2];
+        reader.read_exact(&mut header)?;
+        let finished = header[0] & 0x80 != 0;
+        let opcode = header[0] & 0x0f;
+        let mut raw = header.to_vec();
+        let mut len = (header[1] & 0x7f) as usize;
+        if len == 126 {
+            let mut bytes = [0u8; 2];
+            reader.read_exact(&mut bytes)?;
+            raw.extend_from_slice(&bytes);
+            len = u16::from_be_bytes(bytes) as usize;
+        } else if len == 127 {
+            let mut bytes = [0u8; 8];
+            reader.read_exact(&mut bytes)?;
+            raw.extend_from_slice(&bytes);
+            len = usize::try_from(u64::from_be_bytes(bytes))?;
+        }
+        anyhow::ensure!(
+            len <= MAX_MESSAGE_SIZE,
+            "Codex app-server message exceeds {MAX_MESSAGE_SIZE} bytes"
+        );
+        let masked = header[1] & 0x80 != 0;
+        let mut mask = [0u8; 4];
+        if masked {
+            reader.read_exact(&mut mask)?;
+            raw.extend_from_slice(&mask);
+        }
+        let mut payload = vec![0u8; len];
+        reader.read_exact(&mut payload)?;
+        raw.extend_from_slice(&payload);
+        writer.write_all(&raw)?;
+        writer.flush()?;
+
+        if masked {
+            for (index, byte) in payload.iter_mut().enumerate() {
+                *byte ^= mask[index % 4];
+            }
+        }
+        if opcode == 8 {
+            return Ok(());
+        }
+        if opcode == 0 {
+            let Some(fragmented_opcode_value) = fragmented_opcode else {
+                bail!("unexpected WebSocket continuation");
+            };
+            anyhow::ensure!(
+                fragmented_payload.len() + payload.len() <= MAX_MESSAGE_SIZE,
+                "Codex app-server fragmented message exceeds {MAX_MESSAGE_SIZE} bytes"
+            );
+            fragmented_payload.extend_from_slice(&payload);
+            if finished {
+                if fragmented_opcode_value == 1 {
+                    if let Ok(message) = serde_json::from_slice(&fragmented_payload) {
+                        inspect(&message);
+                    }
+                }
+                fragmented_payload.clear();
+                fragmented_opcode = None;
+            }
+        } else if !finished && opcode < 8 {
+            fragmented_opcode = Some(opcode);
+            fragmented_payload = payload;
+        } else if opcode == 1 {
+            if let Ok(message) = serde_json::from_slice(&payload) {
+                inspect(&message);
+            }
+        }
+    }
+}
+
 pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         return;
@@ -1062,7 +1461,8 @@ fn apply_thread_status(runtime: &mut crate::agent::AgentRuntimeSnapshot, status:
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::agent::{AgentMetadata, AgentRuntimeSnapshot, AgentStatus};
+    use crate::agent::{AgentHarness, AgentMetadata, AgentRuntimeSnapshot, AgentStatus};
+    use crate::agent_event::AgentEventKind;
 
     fn metadata(name: &str, thread_id: &str) -> AgentMetadata {
         AgentMetadata {
@@ -1614,6 +2014,186 @@ mod test {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn tui_proxy_correlates_a_successful_resume_with_its_connection() {
+        let mut state = TuiProxyProtocolState::new("thread-a");
+        state.record_client_message(&json!({
+            "id": 41,
+            "method": "thread/resume",
+            "params": {"threadId": "thread-b"}
+        }));
+        assert!(state
+            .record_server_message(&json!({
+                "method": "turn/started",
+                "params": {"threadId": "thread-b", "turn": {"id": "turn-b"}}
+            }))
+            .notifications
+            .is_empty());
+
+        let dispatch = state.record_server_message(&json!({
+            "id": 41,
+            "result": {
+                "thread": {
+                    "id": "thread-b",
+                    "sessionId": "session-b",
+                    "status": {"type": "active"}
+                }
+            }
+        }));
+        let transition = dispatch.transition.expect("thread transition");
+        assert_eq!(transition.old_thread_id, "thread-a");
+        assert_eq!(transition.new_thread_id, "thread-b");
+        assert_eq!(transition.session_id, "session-b");
+        assert_eq!(dispatch.notifications.len(), 1);
+
+        let next = state.record_server_message(&json!({
+            "method": "item/completed",
+            "params": {
+                "threadId": "thread-b",
+                "turnId": "turn-b",
+                "item": {"id": "message-b", "type": "agentMessage", "text": "answer b"}
+            }
+        }));
+        assert!(next.transition.is_none());
+        assert_eq!(next.notifications.len(), 1);
+        assert!(state
+            .record_server_message(&json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "thread-a",
+                    "turnId": "turn-a",
+                    "item": {"id": "late-a", "type": "agentMessage", "text": "late a"}
+                }
+            }))
+            .notifications
+            .is_empty());
+    }
+
+    #[test]
+    fn durable_output_follows_the_managed_pane_to_a_resumed_thread() {
+        let mux = Mux::new(None);
+        mux.start_agent_event_runtime_epoch().unwrap();
+        let metadata = metadata("switching", "thread-a");
+        let agent_id = metadata.agent_id.clone();
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Codex;
+        runtime.alive = true;
+        mux.agent_metadata_by_pane
+            .write()
+            .insert(23, Arc::new(metadata));
+        mux.agent_runtime_by_pane.write().insert(23, runtime);
+
+        for message in [
+            json!({
+                "method": "turn/started",
+                "params": {"threadId": "thread-a", "turn": {"id": "turn-a"}}
+            }),
+            json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "thread-a",
+                    "turnId": "turn-a",
+                    "item": {"id": "message-a", "type": "agentMessage", "text": "answer a"}
+                }
+            }),
+            json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-a",
+                    "turn": {
+                        "id": "turn-a",
+                        "status": "completed",
+                        "items": [{"id": "message-a", "type": "agentMessage", "text": "answer a"}]
+                    }
+                }
+            }),
+        ] {
+            apply_notification_to_runtime(&mux, &message);
+        }
+
+        let mut proxy = TuiProxyProtocolState::new("thread-a");
+        proxy.record_client_message(&json!({
+            "id": 42,
+            "method": "thread/resume",
+            "params": {"threadId": "thread-b"}
+        }));
+        let early_turn_started = json!({
+            "method": "turn/started",
+            "params": {"threadId": "thread-b", "turn": {"id": "turn-b"}}
+        });
+        assert!(proxy
+            .record_server_message(&early_turn_started)
+            .notifications
+            .is_empty());
+        apply_tui_proxy_dispatch(
+            &mux,
+            proxy.record_server_message(&json!({
+                "id": 42,
+                "result": {
+                    "thread": {
+                        "id": "thread-b",
+                        "sessionId": "session-b",
+                        "status": {"type": "active"}
+                    }
+                }
+            })),
+        );
+        for message in [
+            json!({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "thread-b",
+                    "turnId": "turn-b",
+                    "item": {"id": "message-b", "type": "agentMessage", "text": "answer b"}
+                }
+            }),
+            json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-b",
+                    "turn": {
+                        "id": "turn-b",
+                        "status": "completed",
+                        "items": [{"id": "message-b", "type": "agentMessage", "text": "answer b"}]
+                    }
+                }
+            }),
+        ] {
+            apply_tui_proxy_dispatch(&mux, proxy.record_server_message(&message));
+        }
+
+        let page = (0..100)
+            .find_map(|_| {
+                let page = mux.agent_event_store.read_page(0, 100).unwrap();
+                let messages = page
+                    .events
+                    .iter()
+                    .filter(|event| event.kind == AgentEventKind::AssistantMessage)
+                    .count();
+                if messages == 2 {
+                    Some(page)
+                } else {
+                    std::thread::sleep(Duration::from_millis(10));
+                    None
+                }
+            })
+            .expect("both pane-scoped messages were not persisted");
+        let messages = page
+            .events
+            .iter()
+            .filter(|event| event.kind == AgentEventKind::AssistantMessage)
+            .collect::<Vec<_>>();
+        assert_eq!(messages[0].agent_id, agent_id);
+        assert_eq!(messages[0].text.as_deref(), Some("answer a"));
+        assert_eq!(messages[1].agent_id, agent_id);
+        assert_eq!(messages[1].text.as_deref(), Some("answer b"));
+        assert_ne!(messages[0].incarnation_id, messages[1].incarnation_id);
+        let current = mux.agent_metadata_by_pane.read()[&23].clone();
+        let current_session = current.codex_app_server.as_ref().unwrap();
+        assert_eq!(current_session.thread_id, "thread-b");
+        assert_eq!(current_session.session_id, "session-b");
     }
 
     #[cfg(unix)]

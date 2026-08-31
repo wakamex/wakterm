@@ -74,6 +74,8 @@ restored after a mux restart and does not require catalog or prompt activity.
 The authoritative status returned by app-server resume initializes the restored
 catalog entry, so an idle session can accept prompt admission immediately.
 
+Ordinary event mirroring follows the live pane when its managed Codex TUI starts, resumes, or forks to another provider thread. The stable Wakterm agent ID and pane route continue to receive assistant output, while the exact provider thread and derived incarnation change in the catalog and event provenance. Consumers do not need to replace an event cursor or rediscover the route. Exact prompt admission and return-final correlation still require the current catalog incarnation and provider turn.
+
 Return-final admission uses the same request and receipt contract for observer-backed Codex PTYs and managed Codex app-server sessions. An observer-backed request is correlated through its exact process, provider session, cursor, prompt hash, and provider turn. A managed request arms the durable event sequence for its exact app-server thread and session, binds the first subsequent provider turn, and accepts only that turn's durable final.
 
 Gemini observation accepts both legacy JSON conversation snapshots and the

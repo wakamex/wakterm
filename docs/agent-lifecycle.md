@@ -53,6 +53,8 @@ the distinct Codex thread ID and session ID. Each pane runs `codex resume`
 against that socket, so input, rendering, approvals, and native interaction
 remain Codex TUI responsibilities.
 
+When a managed TUI uses `/resume`, `/fork`, or another provider operation that replaces its active thread, Wakterm follows the successful transition from that exact TUI connection and rebinds the same pane and stable agent ID to the returned thread and session. Passive assistant output therefore continues under the pane's current effective-title route. The provider thread and derived incarnation remain exact provenance and change at the transition, so admission and return-final callers must use a fresh catalog incarnation.
+
 The native TUI receives the pane's declared working directory explicitly. Its session picker therefore starts with the same working-directory filter as a normal Codex TUI, even though multiple panes share one app-server.
 
 When invoked inside a Wakterm pane, the command runs the native TUI in that
