@@ -26,7 +26,7 @@ external_level = "warn"
 skip_prefixes = ["http://", "https://"]
 
 [extra.zola_docs]
-site_name = "Wakterm docs"
+site_name = "Wakterm"
 home_url = ""
 navigation_path = "data/navigation.json"
 navigation_label = "Documentation"
