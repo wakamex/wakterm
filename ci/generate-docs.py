@@ -239,6 +239,7 @@ TOC = [
         "index.md",
         children=[
             Page("Features", "features.md"),
+            Page("What is a Terminal?", "what-is-a-terminal.md"),
             Page("Agent Harness Lifecycle", "agent-lifecycle.md"),
             Page("Agent Prompt Submission", "agent-send.md"),
             Page("Agent API v1 Contract", "agent-api/v1/index.md"),
@@ -247,6 +248,7 @@ TOC = [
             Page("Quick Select Mode", "quickselect.md"),
             Page("Copy Mode", "copymode.md"),
             Page("Hyperlinks", "hyperlinks.md"),
+            Page("Escape Sequences", "escape-sequences.md"),
             Page("Shell Integration", "shell-integration.md"),
             Page("iTerm Image Protocol", "imgcat.md"),
             Page("SSH", "ssh.md"),
@@ -389,14 +391,6 @@ TOC = [
             Page("wakterm show-keys", "cli/reference/show-keys.md"),
             Page("wakterm ssh", "cli/reference/ssh.md"),
             Page("wakterm start", "cli/reference/start.md"),
-        ],
-    ),
-    Page(
-        "Reference",
-        None,
-        children=[
-            Page("Escape Sequences", "escape-sequences.md"),
-            Page("What is a Terminal?", "what-is-a-terminal.md"),
         ],
     ),
     Page(
