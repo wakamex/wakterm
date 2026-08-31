@@ -23,7 +23,7 @@
       <ol>
         <li><a href="{{ get_url(path=config.extra.zola_docs.home_url) | safe }}">{{ config.extra.zola_docs.site_name }}</a></li>
         {% for crumb in page.extra.breadcrumbs %}
-        <li><a href="{{ get_url(path=crumb.path) | safe }}">{{ crumb.title }}</a></li>
+        <li><a href="{{ get_url(path=crumb.path) | safe }}/">{{ crumb.title }}</a></li>
         {% endfor %}
       </ol>
     </nav>
@@ -76,8 +76,8 @@
     {% set page_navigation_enabled = page.extra.page_navigation | default(value=config.extra.zola_docs.page_navigation) %}
     {% if page_navigation_enabled and (page.extra.previous or page.extra.next) %}
     <nav class="page-navigation" aria-label="Page navigation">
-      {% if page.extra.previous %}<a class="previous" href="{{ get_url(path=page.extra.previous.path) | safe }}"><span>{{ config.extra.zola_docs.previous_label }}</span>{{ page.extra.previous.title }}</a>{% endif %}
-      {% if page.extra.next %}<a class="next" href="{{ get_url(path=page.extra.next.path) | safe }}"><span>{{ config.extra.zola_docs.next_label }}</span>{{ page.extra.next.title }}</a>{% endif %}
+      {% if page.extra.previous %}<a class="previous" href="{{ get_url(path=page.extra.previous.path) | safe }}/"><span>{{ config.extra.zola_docs.previous_label }}</span>{{ page.extra.previous.title }}</a>{% endif %}
+      {% if page.extra.next %}<a class="next" href="{{ get_url(path=page.extra.next.path) | safe }}/"><span>{{ config.extra.zola_docs.next_label }}</span>{{ page.extra.next.title }}</a>{% endif %}
     </nav>
     {% endif %}
     {% block page_footer %}{% endblock page_footer %}
