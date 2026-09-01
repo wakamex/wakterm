@@ -20,6 +20,58 @@ use wakterm_term::StableRowIndex;
 const MAX_PENDING_PANE_ALERTS: usize = 256;
 const MAX_AGENT_EVENT_WAIT: Duration = Duration::from_secs(30);
 
+/// Authority established by the transport, before accepting client-supplied
+/// identity metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionAuthority {
+    Host,
+    RestrictedLocal { peer_pid: u32 },
+}
+
+impl ConnectionAuthority {
+    fn permits(&self, pdu: &Pdu) -> bool {
+        if matches!(self, Self::Host) {
+            return true;
+        }
+
+        // Keep this as an explicit passive allowlist. New protocol operations
+        // are denied to restricted local clients until their authority is
+        // reviewed, rather than accidentally becoming another confused deputy.
+        matches!(
+            pdu,
+            Pdu::Ping(_)
+                | Pdu::SetClientId(_)
+                | Pdu::GetClientList(_)
+                | Pdu::ListAgents(_)
+                | Pdu::ListAgentsCached(_)
+                | Pdu::GetAgentApiCapabilities(_)
+                | Pdu::ListAgentApiCatalog(_)
+                | Pdu::GetAgentRequest(_)
+                | Pdu::ListAgentRequestEvents(_)
+                | Pdu::ReadAgentOutput(_)
+                | Pdu::ReadAgentEvents(_)
+                | Pdu::ListPanes(_)
+                | Pdu::GetPaneStatus(_)
+                | Pdu::SearchScrollbackRequest(_)
+                | Pdu::GetPaneDirection(_)
+                | Pdu::GetPaneRenderableDimensions(_)
+                | Pdu::GetPaneRenderChanges(_)
+                | Pdu::GetLines(_)
+                | Pdu::GetImageCell(_)
+                | Pdu::GetCodecVersion(_)
+        )
+    }
+
+    fn denial(&self) -> Option<anyhow::Error> {
+        match self {
+            Self::Host => None,
+            Self::RestrictedLocal { peer_pid } => Some(anyhow!(
+                "local client PID {peer_pid} is confined by a different OS sandbox; mux control operations are denied"
+            )),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct PduSender {
     func: Arc<dyn Fn(QueuedPdu) -> anyhow::Result<()> + Send + Sync>,
@@ -421,6 +473,7 @@ pub struct SessionHandler {
     per_pane: HashMap<TabId, Arc<Mutex<PerPane>>>,
     client_id: Option<Arc<ClientId>>,
     proxy_client_id: Option<ClientId>,
+    authority: ConnectionAuthority,
 }
 
 impl Drop for SessionHandler {
@@ -434,12 +487,21 @@ impl Drop for SessionHandler {
 
 impl SessionHandler {
     pub fn new(to_write_tx: PduSender, render_tx: RenderBatchSender) -> Self {
+        Self::new_with_authority(to_write_tx, render_tx, ConnectionAuthority::Host)
+    }
+
+    pub fn new_with_authority(
+        to_write_tx: PduSender,
+        render_tx: RenderBatchSender,
+        authority: ConnectionAuthority,
+    ) -> Self {
         Self {
             to_write_tx,
             render_scheduler: RenderScheduler::new(render_tx),
             per_pane: HashMap::new(),
             client_id: None,
             proxy_client_id: None,
+            authority,
         }
     }
 
@@ -476,6 +538,23 @@ impl SessionHandler {
         let start = Instant::now();
         let sender = self.to_write_tx.clone();
         let serial = decoded.serial;
+
+        if !self.authority.permits(&decoded.pdu) {
+            let reason = self
+                .authority
+                .denial()
+                .expect("non-host authority must provide a denial reason");
+            log::warn!("Rejected unauthorized mux control request: {reason:#}");
+            if let Err(err) = sender.send(DecodedPdu {
+                pdu: Pdu::ErrorResponse(ErrorResponse {
+                    reason: format!("Error: {reason:#}"),
+                }),
+                serial,
+            }) {
+                log::debug!("connection closed before denial {serial} could be queued: {err:#}");
+            }
+            return;
+        }
 
         if let Some(client_id) = &self.client_id {
             if decoded.pdu.is_user_input() {
@@ -2500,6 +2579,10 @@ mod test {
         }
 
         fn new_unregistered() -> Self {
+            Self::new_unregistered_with_authority(ConnectionAuthority::Host)
+        }
+
+        fn new_unregistered_with_authority(authority: ConnectionAuthority) -> Self {
             let (tx, rx) = smol::channel::unbounded();
             let sender = PduSender::new(move |queued| {
                 tx.try_send(queued.decoded).unwrap();
@@ -2511,7 +2594,7 @@ mod test {
                 Ok(())
             });
             Self {
-                handler: SessionHandler::new(sender, render_sender),
+                handler: SessionHandler::new_with_authority(sender, render_sender, authority),
                 responses: rx,
                 render_batches: render_rx,
             }
@@ -2526,6 +2609,50 @@ mod test {
                 executor.tick().unwrap();
             }
         }
+    }
+
+    #[test]
+    fn restricted_local_connection_is_passive_only() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = SimpleExecutor::new();
+        let mux = test_mux();
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let layout = build_test_layout(&mux);
+        let mut harness =
+            HandlerHarness::new_unregistered_with_authority(ConnectionAuthority::RestrictedLocal {
+                peer_pid: 4242,
+            });
+
+        assert!(matches!(
+            harness.request(&executor, Pdu::ListPanes(ListPanes {})),
+            Pdu::ListPanesResponse(_)
+        ));
+
+        for request in [
+            Pdu::WriteToPane(WriteToPane {
+                pane_id: layout.left_pane_id,
+                data: b"systemctl --user start example.service\n".to_vec(),
+            }),
+            Pdu::SetAgentMetadata(SetAgentMetadata {
+                pane_id: layout.left_pane_id,
+                metadata: sample_agent_metadata("unauthorized"),
+            }),
+            Pdu::GetTlsCreds(GetTlsCreds {}),
+        ] {
+            match harness.request(&executor, request) {
+                Pdu::ErrorResponse(ErrorResponse { reason }) => {
+                    assert!(
+                        reason.contains("mux control operations are denied"),
+                        "{}",
+                        reason
+                    );
+                }
+                other => panic!("expected authority denial, got {:?}", other),
+            }
+        }
+        assert!(mux.list_agents().is_empty());
     }
 
     #[test]

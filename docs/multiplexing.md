@@ -10,6 +10,8 @@ The word local is always relative to the mux host, not necessarily to the human 
 
 Separate clients only share panes, tabs, and windows when they attach to the same explicit domain, such as a unix domain, SSHMUX: domain, or TLS domain. When multiple clients attach to the same domain, the domain contents are shared, while each client keeps its own view state such as local focus and active tab selection.
 
+On Linux, a client connecting from a different user, mount, PID, or IPC namespace receives passive mux access only. It can inspect panes and agent events, but control requests such as terminal input, prompt admission, process launch, pane mutation, and credential retrieval are rejected. Wakterm derives this authority from the kernel's Unix-socket peer credentials and namespaces before reading client-supplied identity fields. This prevents a filesystem-sandboxed process from using a host Wakterm pane as an unrestricted command-execution proxy.
+
 ### Key multiplexer capabilities
 
 - Local layouts can be saved and restored with `wakterm cli save-layout` and `wakterm cli restore-layout`.

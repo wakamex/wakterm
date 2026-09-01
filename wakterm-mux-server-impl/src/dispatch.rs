@@ -1,4 +1,6 @@
-use crate::sessionhandler::{PduSender, QueuedPdu, RenderBatch, RenderBatchSender, SessionHandler};
+use crate::sessionhandler::{
+    ConnectionAuthority, PduSender, QueuedPdu, RenderBatch, RenderBatchSender, SessionHandler,
+};
 use anyhow::Context;
 use async_ossl::AsyncSslStream;
 use codec::Pdu;
@@ -491,11 +493,40 @@ where
     T: std::fmt::Debug,
     T: async_io::IoSafe,
 {
-    let stream = smol::Async::new(stream)?;
-    process_async(stream).await
+    process_with_authority(stream, ConnectionAuthority::Host).await
 }
 
-pub async fn process_async<T>(mut stream: Async<T>) -> anyhow::Result<()>
+pub async fn process_with_authority<T>(
+    stream: T,
+    authority: ConnectionAuthority,
+) -> anyhow::Result<()>
+where
+    T: 'static,
+    T: std::io::Read,
+    T: std::io::Write,
+    T: AsRawDesc,
+    T: std::fmt::Debug,
+    T: async_io::IoSafe,
+{
+    let stream = smol::Async::new(stream)?;
+    process_async_with_authority(stream, authority).await
+}
+
+pub async fn process_async<T>(stream: Async<T>) -> anyhow::Result<()>
+where
+    T: 'static,
+    T: std::io::Read,
+    T: std::io::Write,
+    T: std::fmt::Debug,
+    T: async_io::IoSafe,
+{
+    process_async_with_authority(stream, ConnectionAuthority::Host).await
+}
+
+async fn process_async_with_authority<T>(
+    mut stream: Async<T>,
+    authority: ConnectionAuthority,
+) -> anyhow::Result<()>
 where
     T: 'static,
     T: std::io::Read,
@@ -529,7 +560,7 @@ where
             result
         }
     });
-    let mut handler = SessionHandler::new(pdu_sender, render_sender);
+    let mut handler = SessionHandler::new_with_authority(pdu_sender, render_sender, authority);
 
     let mut subscribed_to_mux = false;
     let mut inflight_control_requests = 0usize;
