@@ -6,11 +6,11 @@ Wakterm is a same-user terminal and multiplexer. Any interface that can write te
 
 On Linux, Wakterm classifies each direct local mux connection before accepting client-supplied metadata. It reads Unix-socket peer credentials, binds namespace inspection to the peer process with a pidfd, and compares the peer's user, mount, PID, and IPC namespaces with the mux server.
 
-A peer in different namespaces receives restricted local authority. Restricted peers may use an explicit passive PDU allowlist, while unlisted and newly added operations are denied by default. They cannot send terminal input, admit prompts, launch processes, mutate panes, or retrieve TLS credentials. Wakterm also replaces their claimed client identity with a server-generated identity, removes SSH-agent socket information, and omits SSH-agent socket paths from client-list responses.
+A peer in different namespaces receives restricted local authority. Restricted peers may use an explicit metadata-only PDU allowlist, while unlisted and newly added operations are denied by default. They can inspect pane layout, titles, agent identity, harness, lifecycle, and resource status. They cannot read terminal contents, scrollback, images, agent prompts, output, requests, or events, and they cannot send terminal input, admit prompts, launch processes, mutate panes, or retrieve TLS credentials. Wakterm also replaces their claimed client identity with a server-generated identity, removes SSH-agent socket information, omits SSH-agent socket paths from client-list responses, and removes output-derived content from agent status responses.
 
 This is an immediate Linux integrity defense against the demonstrated case where a filesystem-sandboxed process used a host Wakterm pane as a command-execution proxy. It is not a complete sandbox boundary.
 
-Passive access is not confidential. It can expose pane contents, scrollback, images, agent catalog records, requests, and events. A caller that must not read terminal or agent data must not receive passive mux access.
+Metadata access still exposes pane titles, working directories, process and harness identity, lifecycle state, layout, and resource status. A caller that must not read that metadata must not receive restricted mux access.
 
 Namespace equality also does not prove that a process is unrestricted. Landlock, SELinux, AppArmor, seccomp, and other confinement can apply without distinct namespaces. Other operating systems currently rely on their existing local socket access controls rather than Linux namespace classification.
 

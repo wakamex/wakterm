@@ -34,7 +34,7 @@ impl ConnectionAuthority {
             return true;
         }
 
-        // Keep this as an explicit passive allowlist. New protocol operations
+        // Keep this as an explicit metadata-only allowlist. New protocol operations
         // are denied to restricted local clients until their authority is
         // reviewed, rather than accidentally becoming another confused deputy.
         matches!(
@@ -46,18 +46,10 @@ impl ConnectionAuthority {
                 | Pdu::ListAgentsCached(_)
                 | Pdu::GetAgentApiCapabilities(_)
                 | Pdu::ListAgentApiCatalog(_)
-                | Pdu::GetAgentRequest(_)
-                | Pdu::ListAgentRequestEvents(_)
-                | Pdu::ReadAgentOutput(_)
-                | Pdu::ReadAgentEvents(_)
                 | Pdu::ListPanes(_)
                 | Pdu::GetPaneStatus(_)
-                | Pdu::SearchScrollbackRequest(_)
                 | Pdu::GetPaneDirection(_)
                 | Pdu::GetPaneRenderableDimensions(_)
-                | Pdu::GetPaneRenderChanges(_)
-                | Pdu::GetLines(_)
-                | Pdu::GetImageCell(_)
                 | Pdu::GetCodecVersion(_)
         )
     }
@@ -69,6 +61,17 @@ impl ConnectionAuthority {
                 "local client PID {peer_pid} is confined by a different OS sandbox; mux control operations are denied"
             )),
         }
+    }
+}
+
+fn redact_agent_content(agents: &mut [mux::agent::AgentSnapshot]) {
+    for agent in agents {
+        if let Some(turn) = &mut agent.runtime.observed_turn {
+            turn.primary_user_message_sha256 = None;
+            turn.final_message = None;
+        }
+        agent.runtime.progress_summary = None;
+        agent.runtime.observer_error = None;
     }
 }
 
@@ -751,13 +754,17 @@ impl SessionHandler {
                 .detach();
             }
             Pdu::ListAgents(ListAgents {}) => {
+                let restricted =
+                    matches!(self.authority, ConnectionAuthority::RestrictedLocal { .. });
                 spawn_into_main_thread(async move {
                     catch(
                         move || {
                             let mux = Mux::get();
-                            Ok(Pdu::ListAgentsResponse(ListAgentsResponse {
-                                agents: mux.agent_service().list_agents(),
-                            }))
+                            let mut agents = mux.agent_service().list_agents();
+                            if restricted {
+                                redact_agent_content(&mut agents);
+                            }
+                            Ok(Pdu::ListAgentsResponse(ListAgentsResponse { agents }))
                         },
                         send_response,
                     )
@@ -765,12 +772,18 @@ impl SessionHandler {
                 .detach();
             }
             Pdu::ListAgentsCached(ListAgentsCached {}) => {
+                let restricted =
+                    matches!(self.authority, ConnectionAuthority::RestrictedLocal { .. });
                 spawn_into_main_thread(async move {
                     catch(
                         move || {
                             let mux = Mux::get();
+                            let mut agents = mux.agent_service().list_agents_cached();
+                            if restricted {
+                                redact_agent_content(&mut agents);
+                            }
                             Ok(Pdu::ListAgentsCachedResponse(ListAgentsCachedResponse {
-                                agents: mux.agent_service().list_agents_cached(),
+                                agents,
                             }))
                         },
                         send_response,
@@ -1040,14 +1053,20 @@ impl SessionHandler {
                 .detach();
             }
             Pdu::GetPaneStatus(GetPaneStatus {}) => {
+                let restricted =
+                    matches!(self.authority, ConnectionAuthority::RestrictedLocal { .. });
                 spawn_into_main_thread(async move {
                     catch(
                         move || {
                             let mux = Mux::get();
                             let status = mux.tab_resource_status();
+                            let mut agents = mux.list_agents_cached();
+                            if restricted {
+                                redact_agent_content(&mut agents);
+                            }
                             Ok(Pdu::GetPaneStatusResponse(GetPaneStatusResponse {
                                 sampled_at_ms: status.sampled_at_ms,
-                                agents: mux.list_agents_cached(),
+                                agents,
                                 tab_rss_bytes: status.tab_rss_bytes,
                             }))
                         },
@@ -2632,7 +2651,7 @@ mod test {
     }
 
     #[test]
-    fn restricted_local_connection_is_passive_only() {
+    fn restricted_local_connection_is_metadata_only() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = SimpleExecutor::new();
         let mux = test_mux();
@@ -2660,6 +2679,42 @@ mod test {
                 metadata: sample_agent_metadata("unauthorized"),
             }),
             Pdu::GetTlsCreds(GetTlsCreds {}),
+            Pdu::GetAgentRequest(GetAgentRequest {
+                request_id: "secret-request".to_string(),
+            }),
+            Pdu::ListAgentRequestEvents(ListAgentRequestEvents {
+                after_sequence: 0,
+                limit: 10,
+            }),
+            Pdu::ReadAgentOutput(ReadAgentOutput {
+                agent_id: "secret-agent".to_string(),
+                cursor: None,
+                limit: 10,
+            }),
+            Pdu::ReadAgentEvents(ReadAgentEvents {
+                after_sequence: 0,
+                limit: 10,
+                wait_ms: 0,
+            }),
+            Pdu::SearchScrollbackRequest(SearchScrollbackRequest {
+                pane_id: layout.left_pane_id,
+                pattern: mux::pane::Pattern::default(),
+                range: 0..1,
+                limit: Some(10),
+            }),
+            Pdu::GetPaneRenderChanges(GetPaneRenderChanges {
+                pane_id: layout.left_pane_id,
+            }),
+            Pdu::GetLines(GetLines {
+                pane_id: layout.left_pane_id,
+                lines: vec![0..1],
+            }),
+            Pdu::GetImageCell(GetImageCell {
+                pane_id: layout.left_pane_id,
+                line_idx: 0,
+                cell_idx: 0,
+                data_hash: [0; 32],
+            }),
         ] {
             match harness.request(&executor, request) {
                 Pdu::ErrorResponse(ErrorResponse { reason }) => {
@@ -2673,6 +2728,44 @@ mod test {
             }
         }
         assert!(mux.list_agents().is_empty());
+    }
+
+    #[test]
+    fn restricted_agent_metadata_redacts_output_derived_content() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let mux = test_mux();
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let layout = build_test_layout(&mux);
+        mux.set_agent_metadata(layout.left_pane_id, sample_agent_metadata("secret"))
+            .unwrap();
+        let mut agents = mux.list_agents();
+        assert_eq!(agents.len(), 1);
+        agents[0].runtime.observed_turn = Some(mux::agent::AgentObservedTurn {
+            provider_turn_id: "turn-secret".to_string(),
+            outcome: mux::agent::AgentObservedTurnOutcome::Completed,
+            started_at: None,
+            completed_at: None,
+            started_cursor: None,
+            latest_cursor: None,
+            primary_user_message_sha256: Some("prompt-hash".to_string()),
+            user_message_count: 1,
+            final_message: Some("private final".to_string()),
+        });
+        agents[0].runtime.progress_summary = Some("private progress".to_string());
+        agents[0].runtime.observer_error = Some("private observer detail".to_string());
+
+        redact_agent_content(&mut agents);
+
+        let runtime = &agents[0].runtime;
+        let turn = runtime.observed_turn.as_ref().unwrap();
+        assert_eq!(turn.primary_user_message_sha256, None);
+        assert_eq!(turn.final_message, None);
+        assert_eq!(runtime.progress_summary, None);
+        assert_eq!(runtime.observer_error, None);
+        assert_eq!(turn.provider_turn_id, "turn-secret");
+        assert_eq!(turn.user_message_count, 1);
     }
 
     #[test]
