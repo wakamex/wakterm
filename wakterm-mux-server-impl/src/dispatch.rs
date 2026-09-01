@@ -484,18 +484,6 @@ where
     Ok(())
 }
 
-pub async fn process<T>(stream: T) -> anyhow::Result<()>
-where
-    T: 'static,
-    T: std::io::Read,
-    T: std::io::Write,
-    T: AsRawDesc,
-    T: std::fmt::Debug,
-    T: async_io::IoSafe,
-{
-    process_with_authority(stream, ConnectionAuthority::Host).await
-}
-
 pub async fn process_with_authority<T>(
     stream: T,
     authority: ConnectionAuthority,
@@ -510,17 +498,6 @@ where
 {
     let stream = smol::Async::new(stream)?;
     process_async_with_authority(stream, authority).await
-}
-
-pub async fn process_async<T>(stream: Async<T>) -> anyhow::Result<()>
-where
-    T: 'static,
-    T: std::io::Read,
-    T: std::io::Write,
-    T: std::fmt::Debug,
-    T: async_io::IoSafe,
-{
-    process_async_with_authority(stream, ConnectionAuthority::Host).await
 }
 
 async fn process_async_with_authority<T>(
@@ -676,7 +653,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        process, subscribe_notification_queue, NotificationQueue, NOTIFICATION_QUEUE_CAPACITY,
+        process_with_authority, subscribe_notification_queue, NotificationQueue,
+        NOTIFICATION_QUEUE_CAPACITY,
     };
     use codec::{Pdu, Ping, SetClientId};
     use mux::client::{ClientId, ClientViewId};
@@ -697,7 +675,13 @@ mod tests {
             .unwrap();
 
         let server_stream = unsafe { UnixStream::from_raw_fd(server_stream.into_raw_fd()) };
-        let handle = std::thread::spawn(move || smol::block_on(process(server_stream)).unwrap());
+        let handle = std::thread::spawn(move || {
+            smol::block_on(process_with_authority(
+                server_stream,
+                crate::sessionhandler::ConnectionAuthority::Host,
+            ))
+            .unwrap()
+        });
 
         let mut client_stream = unsafe { UnixStream::from_raw_fd(client_stream.into_raw_fd()) };
         let pdu = Pdu::SetClientId(SetClientId {
@@ -837,7 +821,13 @@ mod tests {
             .unwrap();
 
         let server_stream = unsafe { UnixStream::from_raw_fd(server_stream.into_raw_fd()) };
-        let handle = std::thread::spawn(move || smol::block_on(process(server_stream)).unwrap());
+        let handle = std::thread::spawn(move || {
+            smol::block_on(process_with_authority(
+                server_stream,
+                crate::sessionhandler::ConnectionAuthority::Host,
+            ))
+            .unwrap()
+        });
         let mut client_stream = unsafe { UnixStream::from_raw_fd(client_stream.into_raw_fd()) };
 
         const REQUESTS: u64 = 512;

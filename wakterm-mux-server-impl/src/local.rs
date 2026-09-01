@@ -3,6 +3,8 @@ use anyhow::{anyhow, Context as _};
 use config::{create_user_owned_dirs, UnixDomain};
 #[cfg(target_os = "linux")]
 use std::convert::TryFrom;
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use wakterm_uds::UnixListener;
 
 pub struct LocalListener {
@@ -73,6 +75,42 @@ fn namespace_identity(pid: &str) -> std::io::Result<NamespaceIdentity> {
 }
 
 #[cfg(target_os = "linux")]
+fn peer_pidfd(stream: &wakterm_uds::UnixStream) -> std::io::Result<OwnedFd> {
+    use std::mem::size_of;
+
+    let mut pidfd: libc::c_int = -1;
+    let mut length = size_of::<libc::c_int>() as libc::socklen_t;
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERPIDFD,
+            (&mut pidfd as *mut libc::c_int).cast(),
+            &mut length,
+        )
+    };
+    if result != 0 || length as usize != size_of::<libc::c_int>() || pidfd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(pidfd) })
+}
+
+#[cfg(target_os = "linux")]
+fn pidfd_is_alive(pidfd: &OwnedFd) -> std::io::Result<bool> {
+    let mut pollfd = libc::pollfd {
+        fd: pidfd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(&mut pollfd, 1, 0) };
+    if result < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(result == 0)
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn classify_linux_peer(
     peer_pid: u32,
     peer_uid: u32,
@@ -90,7 +128,6 @@ fn classify_linux_peer(
 #[cfg(target_os = "linux")]
 fn local_connection_authority(stream: &wakterm_uds::UnixStream) -> ConnectionAuthority {
     use std::mem::{size_of, MaybeUninit};
-    use std::os::fd::AsRawFd;
 
     let mut credentials = MaybeUninit::<libc::ucred>::uninit();
     let mut length = size_of::<libc::ucred>() as libc::socklen_t;
@@ -109,12 +146,34 @@ fn local_connection_authority(stream: &wakterm_uds::UnixStream) -> ConnectionAut
     }
     let credentials = unsafe { credentials.assume_init() };
     let peer_pid = u32::try_from(credentials.pid).unwrap_or(0);
+    let peer_pidfd = match peer_pidfd(stream) {
+        Ok(pidfd) => pidfd,
+        Err(err) => {
+            log::warn!(
+                "Could not bind local mux peer PID {peer_pid} to a pidfd: {err}; denying control authority"
+            );
+            return ConnectionAuthority::RestrictedLocal { peer_pid };
+        }
+    };
+    if !pidfd_is_alive(&peer_pidfd).unwrap_or(false) {
+        log::warn!(
+            "Local mux peer PID {peer_pid} exited before namespace verification; denying control authority"
+        );
+        return ConnectionAuthority::RestrictedLocal { peer_pid };
+    }
+    let peer_namespaces = namespace_identity(&peer_pid.to_string()).ok();
+    if !pidfd_is_alive(&peer_pidfd).unwrap_or(false) {
+        log::warn!(
+            "Local mux peer PID {peer_pid} exited during namespace verification; denying control authority"
+        );
+        return ConnectionAuthority::RestrictedLocal { peer_pid };
+    }
     let authority = classify_linux_peer(
         peer_pid,
         credentials.uid,
         unsafe { libc::geteuid() },
         namespace_identity("self").ok(),
-        namespace_identity(&peer_pid.to_string()).ok(),
+        peer_namespaces,
     );
     if matches!(authority, ConnectionAuthority::RestrictedLocal { .. }) {
         log::warn!(

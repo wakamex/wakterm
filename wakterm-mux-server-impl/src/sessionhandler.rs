@@ -2,7 +2,7 @@ use crate::PKI;
 use anyhow::{anyhow, Context};
 use codec::*;
 use config::TermConfig;
-use mux::client::ClientId;
+use mux::client::{ClientId, ClientViewId};
 use mux::domain::SplitSource;
 use mux::pane::{CachePolicy, Pane, PaneId};
 use mux::renderable::{RenderableDimensions, StableCursorPosition};
@@ -486,10 +486,6 @@ impl Drop for SessionHandler {
 }
 
 impl SessionHandler {
-    pub fn new(to_write_tx: PduSender, render_tx: RenderBatchSender) -> Self {
-        Self::new_with_authority(to_write_tx, render_tx, ConnectionAuthority::Host)
-    }
-
     pub fn new_with_authority(
         to_write_tx: PduSender,
         render_tx: RenderBatchSender,
@@ -606,10 +602,23 @@ impl SessionHandler {
             }
             Pdu::SetClientId(SetClientId {
                 mut client_id,
-                view_id,
-                is_proxy,
+                mut view_id,
+                mut is_proxy,
                 client_version_string,
             }) => {
+                if let ConnectionAuthority::RestrictedLocal { peer_pid } = self.authority {
+                    let mut server_identity = ClientId::new();
+                    server_identity.hostname = "restricted-local".to_string();
+                    server_identity.username = "restricted".to_string();
+                    server_identity.pid = peer_pid;
+                    server_identity.ssh_auth_sock = None;
+                    view_id = ClientViewId(format!(
+                        "restricted-local-{peer_pid}-{}-{}",
+                        server_identity.epoch, server_identity.id
+                    ));
+                    client_id = server_identity;
+                    is_proxy = false;
+                }
                 if is_proxy {
                     if self.proxy_client_id.is_none() {
                         // Copy proxy identity, but don't assign it to the mux;
@@ -720,11 +729,18 @@ impl SessionHandler {
                 .detach();
             }
             Pdu::GetClientList(GetClientList) => {
+                let restricted =
+                    matches!(self.authority, ConnectionAuthority::RestrictedLocal { .. });
                 spawn_into_main_thread(async move {
                     catch(
                         move || {
                             let mux = Mux::get();
-                            let clients = mux.iter_clients();
+                            let mut clients = mux.iter_clients();
+                            if restricted {
+                                for client in &mut clients {
+                                    Arc::make_mut(&mut client.client_id).ssh_auth_sock = None;
+                                }
+                            }
                             Ok(Pdu::GetClientListResponse(GetClientListResponse {
                                 clients,
                             }))
@@ -2569,7 +2585,11 @@ mod test {
                 render_tx.try_send(batch).unwrap();
                 Ok(())
             });
-            let mut handler = SessionHandler::new(sender, render_sender);
+            let mut handler = SessionHandler::new_with_authority(
+                sender,
+                render_sender,
+                ConnectionAuthority::Host,
+            );
             handler.client_id = Some(client_id);
             Self {
                 handler,
@@ -2653,6 +2673,77 @@ mod test {
             }
         }
         assert!(mux.list_agents().is_empty());
+    }
+
+    #[test]
+    fn restricted_local_registration_discards_client_supplied_identity() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = SimpleExecutor::new();
+        let mux = test_mux();
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let mut claimed = ClientId::new();
+        claimed.hostname = "trusted-host".to_string();
+        claimed.username = "trusted-user".to_string();
+        claimed.pid = 7;
+        claimed.ssh_auth_sock = Some("/run/user/1000/ssh-agent.sock".to_string());
+        let claimed_view = ClientViewId("trusted-persistent-view".to_string());
+        let mut harness =
+            HandlerHarness::new_unregistered_with_authority(ConnectionAuthority::RestrictedLocal {
+                peer_pid: 4242,
+            });
+
+        assert!(matches!(
+            harness.request(
+                &executor,
+                Pdu::SetClientId(SetClientId {
+                    client_id: claimed,
+                    view_id: claimed_view.clone(),
+                    is_proxy: true,
+                    client_version_string: None,
+                })
+            ),
+            Pdu::UnitResponse(_)
+        ));
+
+        let clients = mux.iter_clients();
+        assert_eq!(clients.len(), 1);
+        let registered = &clients[0];
+        assert_eq!(registered.client_id.hostname, "restricted-local");
+        assert_eq!(registered.client_id.username, "restricted");
+        assert_eq!(registered.client_id.pid, 4242);
+        assert_eq!(registered.client_id.ssh_auth_sock, None);
+        assert_ne!(registered.view_id.as_ref(), &claimed_view);
+    }
+
+    #[test]
+    fn restricted_local_client_list_hides_ssh_agent_sockets() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = SimpleExecutor::new();
+        let mux = test_mux();
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+
+        let mut host_id = ClientId::new();
+        host_id.ssh_auth_sock = Some("/run/user/1000/ssh-agent.sock".to_string());
+        mux.register_client(
+            Arc::new(host_id),
+            Arc::new(ClientViewId("host-view".to_string())),
+        );
+        let mut harness =
+            HandlerHarness::new_unregistered_with_authority(ConnectionAuthority::RestrictedLocal {
+                peer_pid: 4242,
+            });
+
+        let response = match harness.request(&executor, Pdu::GetClientList(GetClientList)) {
+            Pdu::GetClientListResponse(response) => response,
+            other => panic!("expected GetClientListResponse, got {:?}", other),
+        };
+        assert!(response
+            .clients
+            .iter()
+            .all(|client| client.client_id.ssh_auth_sock.is_none()));
     }
 
     #[test]
