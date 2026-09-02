@@ -68,6 +68,8 @@ records an explicit plan artifact, currently Claude `ExitPlanMode`.
 
 For observer-backed sessions, a durable provider turn transition updates the catalog and admission snapshot in the same observation. A committed `waiting_on_user` transition therefore makes the exact agent idle without waiting for terminal input or unrelated API activity.
 
+Only output from the pane's user-visible primary provider session enters the normalized stream. Internal Codex worker sessions, including subagents, approval reviewers, model graders, summaries, and background feature sessions, cannot replace an observer-backed pane's primary session or emit assistant, final, or lifecycle events for it.
+
 For Codex app-server TUI sessions, completed agent-message items and turns are
 committed from the live app-server notification stream. This includes sessions
 restored after a mux restart and does not require catalog or prompt activity.

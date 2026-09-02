@@ -1528,7 +1528,7 @@ fn observe_codex(
 
     if let Some(preferred_session) = preferred_session {
         let preferred_path = Path::new(preferred_session);
-        if preferred_path.is_file() {
+        if preferred_path.is_file() && codex_session_matches_cwd(preferred_path, cwd)? {
             let modified_at = DateTime::<Utc>::from(fs::metadata(preferred_path)?.modified()?);
             if updated_after
                 .map(|cutoff| modified_at >= cutoff)
@@ -2073,11 +2073,25 @@ fn codex_session_matches_cwd(path: &Path, cwd: &str) -> anyhow::Result<bool> {
         return Ok(false);
     };
     let record: Value = serde_json::from_str(&first_line)?;
-    Ok(record
-        .get("payload")
-        .and_then(|payload| payload.get("cwd"))
-        .and_then(Value::as_str)
-        == Some(cwd))
+    Ok(codex_session_record_is_user_visible(&record)
+        && record
+            .get("payload")
+            .unwrap_or(&record)
+            .get("cwd")
+            .and_then(Value::as_str)
+            == Some(cwd))
+}
+
+fn codex_session_record_is_user_visible(record: &Value) -> bool {
+    let payload = record.get("payload").unwrap_or(&record);
+    match payload.get("thread_source").and_then(Value::as_str) {
+        Some("user") | None => !payload.get("source").is_some_and(|source| {
+            source.as_object().is_some_and(|source| {
+                source.contains_key("subagent") || source.contains_key("internal")
+            })
+        }),
+        Some(_) => false,
+    }
 }
 
 pub fn codex_session_id(path: &Path) -> anyhow::Result<Option<String>> {
@@ -4566,6 +4580,105 @@ mod test {
             Some(expected.to_string_lossy().as_ref())
         );
         assert_eq!(observed.progress_summary.as_deref(), Some("expected"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn observe_codex_ignores_internal_auto_review_session_owned_by_process() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let primary = temp.path().join("rollout-primary.jsonl");
+        let auto_review = temp.path().join("rollout-auto-review.jsonl");
+        fs::write(
+            &primary,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"session_id\":\"session-primary\",\"id\":\"session-primary\",\"cwd\":\"/tmp/process-owned\",\"source\":\"cli\",\"thread_source\":\"user\"}}\n",
+                "{\"ordinal\":1,\"type\":\"event_msg\",\"timestamp\":\"2026-09-02T17:46:30Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-primary\"}}\n",
+                "{\"ordinal\":2,\"type\":\"response_item\",\"timestamp\":\"2026-09-02T17:46:35Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"visible progress\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-primary\"}}}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &auto_review,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"session_id\":\"session-primary\",\"id\":\"session-review\",\"parent_thread_id\":\"session-primary\",\"cwd\":\"/tmp/process-owned\",\"source\":{\"subagent\":{\"other\":\"guardian\"}},\"thread_source\":\"guardian_review\"}}\n",
+                "{\"ordinal\":1,\"type\":\"event_msg\",\"timestamp\":\"2026-09-02T17:46:37Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-review\"}}\n",
+                "{\"ordinal\":2,\"type\":\"response_item\",\"timestamp\":\"2026-09-02T17:46:40Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"outcome\\\":\\\"allow\\\"}\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-review\",\"content_item_kinds\":[\"unknown\"]}}}\n",
+                "{\"ordinal\":3,\"type\":\"event_msg\",\"timestamp\":\"2026-09-02T17:46:40Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-review\",\"last_agent_message\":\"{\\\"outcome\\\":\\\"allow\\\"}\"}}\n"
+            ),
+        )
+        .unwrap();
+        fs::File::open(&primary)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+        fs::File::open(&auto_review)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(2))
+            .unwrap();
+        let _open_primary = fs::File::open(&primary).unwrap();
+        let _open_auto_review = fs::File::open(&auto_review).unwrap();
+        let process_id = std::process::id();
+        let process = LocalProcessInfo::with_root_pid(process_id).unwrap();
+
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        let observed = observe_codex(
+            "/tmp/process-owned",
+            Some(auto_review.to_string_lossy().as_ref()),
+            None,
+            Some(process_id),
+            Some(process.start_time),
+            Some("session-primary"),
+        )
+        .unwrap()
+        .unwrap();
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
+
+        assert_eq!(
+            observed.session_path.as_deref(),
+            Some(primary.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            observed.progress_summary.as_deref(),
+            Some("visible progress")
+        );
+        assert_eq!(
+            observed
+                .observed_turn
+                .as_ref()
+                .map(|turn| turn.provider_turn_id.as_str()),
+            Some("turn-primary")
+        );
+    }
+
+    #[test]
+    fn codex_session_visibility_uses_provider_thread_provenance() {
+        for thread_source in [
+            "subagent",
+            "guardian_review",
+            "memory_consolidation",
+            "ambient_memory",
+        ] {
+            assert!(!codex_session_record_is_user_visible(&serde_json::json!({
+                "type": "session_meta",
+                "payload": {
+                    "source": "cli",
+                    "thread_source": thread_source,
+                }
+            })));
+        }
+        assert!(!codex_session_record_is_user_visible(&serde_json::json!({
+            "type": "session_meta",
+            "payload": {"source": {"subagent": {"other": "grader"}}}
+        })));
+        assert!(codex_session_record_is_user_visible(&serde_json::json!({
+            "type": "session_meta",
+            "payload": {"source": "cli", "thread_source": "user"}
+        })));
+        assert!(codex_session_record_is_user_visible(&serde_json::json!({
+            "type": "session_meta",
+            "payload": {"source": "cli"}
+        })));
     }
 
     #[cfg(target_os = "linux")]
