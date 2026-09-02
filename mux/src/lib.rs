@@ -3735,7 +3735,18 @@ impl Mux {
                 .or_else(|| tab.get_active_pane());
             let automatic = self
                 .aggregate_agent_folder_title_for_tab(tab)
-                .or_else(|| pane.as_ref().map(|pane| pane.get_title()));
+                .or_else(|| {
+                    pane.as_ref().and_then(|pane| {
+                        let title = pane.get_title();
+                        (!title.is_empty()).then_some(title)
+                    })
+                })
+                .or_else(|| {
+                    pane.as_ref().and_then(|pane| {
+                        pane.get_current_working_dir(CachePolicy::AllowStale)
+                            .and_then(|cwd| Self::cwd_leaf_for_tab_title(cwd.as_str()))
+                    })
+                });
             rows.push((tab.tab_id(), explicit, automatic.unwrap_or_default()));
         }
         drop(window);
@@ -10795,6 +10806,44 @@ mod test {
         assert_eq!(
             titles.get(&tab_ids[2]).map(String::as_str),
             Some("wakterm2")
+        );
+    }
+
+    #[test]
+    fn automatic_tab_title_uses_cwd_when_nested_shell_clears_pane_title() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane: Arc<dyn Pane> = FakePane::new_title_only(
+            248,
+            size,
+            domain.id,
+            "",
+            "/code/hyperliquid-participant-feed-re",
+        );
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        assert_eq!(
+            mux.effective_tab_titles_for_window(window_id)
+                .get(&tab.tab_id())
+                .map(String::as_str),
+            Some("hyperliquid-participant-feed-re")
         );
     }
 
