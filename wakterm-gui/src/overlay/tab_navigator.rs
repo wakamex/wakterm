@@ -364,6 +364,7 @@ struct NavigatorState {
     sort: NavigatorSort,
     dense: bool,
     query: String,
+    search_origin_tab_id: Option<TabId>,
     filtered: Vec<usize>,
     selected: usize,
     top_row: usize,
@@ -380,6 +381,7 @@ impl NavigatorState {
             sort: NavigatorSort::TabOrder,
             dense: true,
             query: String::new(),
+            search_origin_tab_id: None,
             filtered: Vec::new(),
             selected: 0,
             top_row: 0,
@@ -435,6 +437,28 @@ impl NavigatorState {
         self.filtered
             .get(self.selected)
             .and_then(|idx| self.args.rows.get(*idx))
+    }
+
+    fn rebuild_after_query_change(&mut self) {
+        self.selected = 0;
+        self.top_row = 0;
+        self.rebuild(None);
+    }
+
+    fn push_query_char(&mut self, c: char) {
+        if self.query.is_empty() && self.search_origin_tab_id.is_none() {
+            self.search_origin_tab_id = self.selected_row().map(|row| row.tab_id);
+        }
+        self.query.push(c);
+        self.rebuild_after_query_change();
+    }
+
+    fn clear_query_and_restore_selection(&mut self) {
+        let restore_tab_id = self.search_origin_tab_id.take();
+        self.query.clear();
+        self.selected = 0;
+        self.top_row = 0;
+        self.rebuild(restore_tab_id);
     }
 
     fn refresh(&mut self) {
@@ -1008,7 +1032,7 @@ impl NavigatorState {
                             ..
                         }) => {
                             self.query.pop();
-                            self.rebuild(None);
+                            self.rebuild_after_query_change();
                         }
                         InputEvent::Key(KeyEvent {
                             key: KeyCode::Escape,
@@ -1017,8 +1041,7 @@ impl NavigatorState {
                             if self.query.is_empty() {
                                 should_exit = true;
                             } else {
-                                self.query.clear();
-                                self.rebuild(None);
+                                self.clear_query_and_restore_selection();
                             }
                         }
                         InputEvent::Key(KeyEvent {
@@ -1027,8 +1050,7 @@ impl NavigatorState {
                         }) if !modifiers.contains(Modifiers::CTRL)
                             && !modifiers.contains(Modifiers::ALT) =>
                         {
-                            self.query.push(c);
-                            self.rebuild(None);
+                            self.push_query_char(c);
                         }
                         InputEvent::Mouse(MouseEvent {
                             y,
@@ -1219,7 +1241,7 @@ mod test {
     fn search_matches_only_the_tab_title() {
         let mut state = state(vec![row(10, "project-title", false)]);
         state.query = "project-title".to_string();
-        state.rebuild(None);
+        state.rebuild_after_query_change();
         assert_eq!(state.filtered, vec![0]);
 
         for query in [
@@ -1230,9 +1252,52 @@ mod test {
             "codex",
         ] {
             state.query = query.to_string();
-            state.rebuild(None);
+            state.rebuild_after_query_change();
             assert!(state.filtered.is_empty(), "query {:?}", query);
         }
+    }
+
+    #[test]
+    fn search_selects_the_best_match_regardless_of_the_previous_position() {
+        let rows = vec![
+            row(10, "aop", false),
+            row(20, "aipocalypse", false),
+            row(30, "waktop", false),
+        ];
+
+        for selected in [0, 2] {
+            let mut state = state(rows.clone());
+            state.selected = selected;
+            state.top_row = selected;
+            for c in "aop".chars() {
+                state.push_query_char(c);
+            }
+
+            assert_eq!(state.selected, 0);
+            assert_eq!(state.top_row, 0);
+            assert_eq!(state.selected_row().unwrap().title, "aop");
+        }
+    }
+
+    #[test]
+    fn clearing_search_restores_the_pre_search_selection() {
+        let mut state = state(vec![
+            row(10, "aop", false),
+            row(20, "aipocalypse", false),
+            row(30, "waktop", false),
+        ]);
+        state.selected = 2;
+        state.top_row = 2;
+
+        for c in "aop".chars() {
+            state.push_query_char(c);
+        }
+        assert_eq!(state.selected_row().unwrap().title, "aop");
+
+        state.clear_query_and_restore_selection();
+        assert!(state.query.is_empty());
+        assert_eq!(state.selected_row().unwrap().title, "waktop");
+        assert_eq!(state.search_origin_tab_id, None);
     }
 
     #[test]
