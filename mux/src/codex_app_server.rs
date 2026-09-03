@@ -997,6 +997,14 @@ impl TuiProxyProtocolState {
         if !matches!(method, "thread/start" | "thread/resume" | "thread/fork") {
             return;
         }
+        if method == "thread/start"
+            && message
+                .pointer("/params/ephemeral")
+                .and_then(Value::as_bool)
+                == Some(true)
+        {
+            return;
+        }
         let Some(id) = json_rpc_id(message.get("id")) else {
             return;
         };
@@ -2069,6 +2077,63 @@ mod test {
             }))
             .notifications
             .is_empty());
+    }
+
+    #[test]
+    fn tui_proxy_does_not_follow_an_ephemeral_thread_start() {
+        let mut state = TuiProxyProtocolState::new("thread-primary");
+        state.record_client_message(&json!({
+            "id": "temporary-structured-title",
+            "method": "thread/start",
+            "params": {
+                "ephemeral": true,
+                "threadSource": {"type": "feature", "name": "system"}
+            }
+        }));
+
+        let dispatch = state.record_server_message(&json!({
+            "id": "temporary-structured-title",
+            "result": {
+                "thread": {
+                    "id": "thread-title-generator",
+                    "sessionId": "thread-title-generator",
+                    "status": {"type": "active"}
+                }
+            }
+        }));
+        assert!(dispatch.transition.is_none());
+        assert!(dispatch.notifications.is_empty());
+        assert!(state
+            .record_server_message(&json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-title-generator",
+                    "turn": {"id": "turn-title", "status": "completed", "items": []}
+                }
+            }))
+            .notifications
+            .is_empty());
+
+        state.record_client_message(&json!({
+            "id": 42,
+            "method": "thread/resume",
+            "params": {"threadId": "thread-visible"}
+        }));
+        let transition = state
+            .record_server_message(&json!({
+                "id": 42,
+                "result": {
+                    "thread": {
+                        "id": "thread-visible",
+                        "sessionId": "session-visible",
+                        "status": {"type": "idle"}
+                    }
+                }
+            }))
+            .transition
+            .expect("visible resume transition");
+        assert_eq!(transition.old_thread_id, "thread-primary");
+        assert_eq!(transition.new_thread_id, "thread-visible");
     }
 
     #[test]
