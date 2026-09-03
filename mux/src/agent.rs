@@ -439,21 +439,33 @@ pub fn remote_codex_tui(process: &LocalProcessInfo) -> Option<RemoteCodexTui> {
     let process = harness_tui_process(&AgentHarness::Codex, process)?;
     let resume = process.argv.iter().position(|arg| arg == "resume")?;
     let args = process.argv.get(resume + 1..)?;
-    let (endpoint, thread_id, tui_args) = match args {
-        [remote, endpoint, thread_id, tui_args @ ..] if remote == "--remote" => {
-            (endpoint.clone(), thread_id.clone(), tui_args.to_vec())
-        }
-        [remote, thread_id, tui_args @ ..] if remote.starts_with("--remote=") => (
-            remote.trim_start_matches("--remote=").to_string(),
-            thread_id.clone(),
-            tui_args.to_vec(),
-        ),
-        _ => return None,
+    let remote = args.iter().position(|arg| {
+        arg == "--remote"
+            || arg
+                .strip_prefix("--remote=")
+                .is_some_and(|value| !value.is_empty())
+    })?;
+    let (endpoint, search_from) = if args[remote] == "--remote" {
+        (args.get(remote + 1)?.clone(), remote + 2)
+    } else {
+        (
+            args[remote].trim_start_matches("--remote=").to_string(),
+            remote + 1,
+        )
     };
-    let parsed = uuid::Uuid::parse_str(&thread_id).ok()?;
-    if parsed.to_string() != thread_id || !endpoint.starts_with("unix://") {
+    if !endpoint.starts_with("unix://") {
         return None;
     }
+    let (thread_index, parsed) = args
+        .iter()
+        .enumerate()
+        .skip(search_from)
+        .find_map(|(index, arg)| uuid::Uuid::parse_str(arg).ok().map(|uuid| (index, uuid)))?;
+    let thread_id = parsed.to_string();
+    if args[thread_index] != thread_id {
+        return None;
+    }
+    let tui_args = args.get(thread_index + 1..)?.to_vec();
     Some(RemoteCodexTui {
         pid: process.pid,
         start_time: process.start_time,
@@ -718,10 +730,34 @@ fn harness_process_is_compatible(
     }
 }
 
-pub fn adopted_agent_matches_process_info(
+pub fn agent_metadata_matches_process_info(
     metadata: &AgentMetadata,
     process: Option<&LocalProcessInfo>,
 ) -> bool {
+    if metadata.codex_app_server.is_some() {
+        let Some(process) = process else {
+            return true;
+        };
+        let Some(remote_tui) = remote_codex_tui(process) else {
+            if metadata.adopted_pid.is_some() {
+                return false;
+            }
+            if harness_tui_process(&AgentHarness::Codex, process).is_some() {
+                return false;
+            }
+            // A restored pane starts as a login shell before execing the
+            // remote TUI. There is no contradictory process identity yet.
+            return true;
+        };
+        return match (metadata.adopted_pid, metadata.adopted_start_time) {
+            (Some(pid), Some(start_time)) => {
+                remote_tui.pid == pid && remote_tui.start_time == start_time
+            }
+            (None, None) => true,
+            _ => false,
+        };
+    }
+
     let Some(adopted_pid) = metadata.adopted_pid else {
         return true;
     };
@@ -3865,6 +3901,8 @@ mod test {
                     "resume",
                     "--remote",
                     "unix:///run/user/1000/wakterm/codex-app-server.sock",
+                    "-C",
+                    "/code/wakterm",
                     thread_id,
                     "--dangerously-bypass-approvals-and-sandbox",
                 ],

@@ -1,5 +1,5 @@
 use crate::agent::{
-    adopted_agent_matches_process_info, agent_observer_artifact_paths, agent_observer_watch_roots,
+    agent_metadata_matches_process_info, agent_observer_artifact_paths, agent_observer_watch_roots,
     default_launch_cmd_for_harness, derive_runtime_status, detect_harness_process,
     finalize_runtime_snapshot, infer_harness, native_restore_launch_command,
     prime_runtime_for_new_agent, refresh_runtime_from_harness_with_expected_session,
@@ -3363,8 +3363,12 @@ impl Mux {
             self.get_pane(pane_id),
         ) {
             let process = pane.get_foreground_process_info(CachePolicy::AllowStale);
-            if !adopted_agent_matches_process_info(metadata.as_ref(), process.as_ref()) {
+            if !agent_metadata_matches_process_info(metadata.as_ref(), process.as_ref()) {
                 self.clear_agent_metadata(pane_id);
+            } else if metadata.codex_app_server.is_some() && metadata.adopted_pid.is_none() {
+                if let Some(remote_tui) = process.as_ref().and_then(remote_codex_tui) {
+                    self.confirm_managed_codex_frontend(pane_id, &remote_tui);
+                }
             }
         }
 
@@ -3397,6 +3401,33 @@ impl Mux {
                 runtime.observed_at = now;
             },
         );
+    }
+
+    fn confirm_managed_codex_frontend(
+        &self,
+        pane_id: PaneId,
+        remote_tui: &crate::agent::RemoteCodexTui,
+    ) {
+        let metadata = {
+            let mut metadata_by_pane = self.agent_metadata_by_pane.write();
+            let Some(current) = metadata_by_pane.get(&pane_id) else {
+                return;
+            };
+            if current.codex_app_server.is_none() || current.adopted_pid.is_some() {
+                return;
+            }
+            let mut metadata = (**current).clone();
+            metadata.adopted_pid = Some(remote_tui.pid);
+            metadata.adopted_start_time = Some(remote_tui.start_time);
+            let metadata = Arc::new(metadata);
+            metadata_by_pane.insert(pane_id, Arc::clone(&metadata));
+            metadata
+        };
+        self.notify(MuxNotification::AgentMetadataChanged {
+            pane_id,
+            metadata: Some((*metadata).clone()),
+        });
+        crate::session_persistence::request_session_save();
     }
 
     pub fn record_agent_terminal_progress(
@@ -4192,7 +4223,7 @@ impl Mux {
         let pane = self.get_pane(pane_id)?;
         let runtime = self.runtime_snapshot_for_agent(pane_id, metadata.as_ref(), &pane);
         let foreground_process_info = pane.get_foreground_process_info(CachePolicy::AllowStale);
-        if !adopted_agent_matches_process_info(metadata.as_ref(), foreground_process_info.as_ref())
+        if !agent_metadata_matches_process_info(metadata.as_ref(), foreground_process_info.as_ref())
             && runtime.session_path.is_none()
         {
             self.clear_agent_metadata(pane_id);
@@ -7279,7 +7310,13 @@ mod test {
             "codex",
             "/code/wakterm",
             "/usr/local/bin/codex",
-            &["/usr/local/bin/codex"],
+            &[
+                "/usr/local/bin/codex",
+                "resume",
+                "--remote",
+                "unix:///run/user/1000/wakterm/codex-app-server.sock",
+                "01a02767-c120-77b2-88a1-4e17c93a7549",
+            ],
         );
         let pane_id = pane.pane_id();
         let tab = Arc::new(Tab::new(&size));
@@ -7297,6 +7334,7 @@ mod test {
 
         mux.set_managed_codex_metadata_with_initial_refresh(pane_id, metadata.clone())
             .unwrap();
+        mux.record_agent_output(pane_id);
 
         let agent = mux
             .list_agents()
@@ -7304,10 +7342,12 @@ mod test {
             .find(|agent| agent.pane_id == pane_id)
             .unwrap();
         assert_eq!(agent.origin, AgentOrigin::Managed);
-        assert_eq!(agent.metadata, metadata);
+        assert_eq!(agent.metadata.codex_app_server, metadata.codex_app_server);
+        assert_eq!(agent.metadata.adopted_pid, Some(1));
+        assert_eq!(agent.metadata.adopted_start_time, Some(1));
         let (harness, restored, session_id) = mux.agent_restore_intent_for_pane(pane_id).unwrap();
         assert_eq!(harness, AgentHarness::Codex);
-        assert_eq!(restored, metadata);
+        assert_eq!(restored, agent.metadata);
         assert_eq!(session_id, "01a02767-c120-77b2-88a1-4e17c93a7549");
     }
 
@@ -9792,8 +9832,8 @@ mod test {
             &session,
             concat!(
                 "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-direct-adopted\",\"cwd\":\"/tmp/filesystem-watcher-project\"}}\n",
-                "{\"ordinal\":1,\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-direct-adopted\",\"collaboration_mode_kind\":\"default\"}}\n",
-                "{\"ordinal\":2,\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:01Z\",\"payload\":{\"type\":\"agent_message\",\"phase\":\"commentary\"}}\n"
+                "{\"ordinal\":1,\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T11:59:58Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-before-adoption\",\"collaboration_mode_kind\":\"default\"}}\n",
+                "{\"ordinal\":2,\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T11:59:59Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-before-adoption\",\"last_agent_message\":\"ready\"}}\n"
             ),
         )
         .unwrap();
@@ -9835,6 +9875,19 @@ mod test {
         mux.add_tab_and_active_pane(&tab).unwrap();
         mux.add_tab_to_window(&tab, window_id).unwrap();
 
+        let mut stale_managed = sample_agent_metadata("stale-managed");
+        stale_managed.declared_cwd = "/tmp/filesystem-watcher-project".to_string();
+        stale_managed.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "01a0607f-56c6-75e3-a910-462c5afee4cd".to_string(),
+            session_id: "01a0607f-56c6-75e3-a910-462c5afee4cd".to_string(),
+            executable: "/usr/bin/codex".to_string(),
+            version: "codex-cli test".to_string(),
+            tui_args: vec!["-a".to_string(), "never".to_string()],
+        });
+        let stale_agent_id = stale_managed.agent_id.clone();
+        mux.restore_agent_metadata(pane_id, stale_managed).unwrap();
+        tab.set_title("re-gpt");
+
         mux.record_agent_output(pane_id);
         assert!(mux.agent_adoption_candidates.read().contains_key(&pane_id));
 
@@ -9844,13 +9897,14 @@ mod test {
             "direct Codex session adoption",
         );
 
-        assert_eq!(
-            mux.get_agent_metadata_for_pane(pane_id)
-                .and_then(|metadata| metadata.adopted_pid),
-            Some(std::process::id())
-        );
-
+        let adopted = mux.get_agent_metadata_for_pane(pane_id).unwrap();
+        assert_eq!(adopted.adopted_pid, Some(std::process::id()));
+        assert_ne!(adopted.agent_id, stale_agent_id);
+        assert_eq!(adopted.codex_app_server, None);
+        assert_eq!(tab.get_title(), "re-gpt");
+        let adopted_agent_id = adopted.agent_id.clone();
         let after_adoption = mux.agent_event_store.latest_sequence();
+
         let mut session_file = std::fs::OpenOptions::new()
             .append(true)
             .open(&session)
@@ -9858,8 +9912,10 @@ mod test {
         session_file
             .write_all(
                 concat!(
-                    "{\"ordinal\":3,\"type\":\"response_item\",\"timestamp\":\"2026-03-21T12:00:02Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done without another prompt\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-direct-adopted\"}}}\n",
-                    "{\"ordinal\":4,\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:03Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-direct-adopted\",\"last_agent_message\":\"done without another prompt\"}}\n"
+                    "{\"ordinal\":3,\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-direct-adopted\",\"collaboration_mode_kind\":\"default\"}}\n",
+                    "{\"ordinal\":4,\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:01Z\",\"payload\":{\"type\":\"user_message\",\"message\":\"repeat your last message before I sent .\"}}\n",
+                    "{\"ordinal\":5,\"type\":\"response_item\",\"timestamp\":\"2026-03-21T12:00:02Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done without another prompt\"}],\"internal_chat_message_metadata_passthrough\":{\"turn_id\":\"turn-direct-adopted\"}}}\n",
+                    "{\"ordinal\":6,\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T12:00:03Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-direct-adopted\",\"last_agent_message\":\"done without another prompt\"}}\n"
                 )
                 .as_bytes(),
             )
@@ -9876,11 +9932,32 @@ mod test {
                     .iter()
                     .any(|event| {
                         event.kind == crate::agent_event::AgentEventKind::TurnFinal
+                            && event.agent_id == adopted_agent_id
                             && event.turn_id.as_deref() == Some("turn-direct-adopted")
                     })
             },
             "adopted Codex final from filesystem watcher",
         );
+        let events = mux
+            .agent_event_store
+            .read_page(after_adoption, 100)
+            .unwrap()
+            .events;
+        assert!(events.iter().any(|event| {
+            event.agent_id == adopted_agent_id
+                && event.kind == crate::agent_event::AgentEventKind::TurnStarted
+                && event.turn_id.as_deref() == Some("turn-direct-adopted")
+        }));
+        assert!(events.iter().any(|event| {
+            event.agent_id == adopted_agent_id
+                && event.kind == crate::agent_event::AgentEventKind::AssistantMessage
+                && event.text.as_deref() == Some("done without another prompt")
+        }));
+        assert!(events.iter().any(|event| {
+            event.agent_id == adopted_agent_id
+                && event.kind == crate::agent_event::AgentEventKind::TurnStateChanged
+                && event.turn_state.as_deref() == Some("waiting_on_user")
+        }));
         unsafe {
             std::env::remove_var("WAKTERM_AGENT_CODEX_DIR");
         }
@@ -11296,7 +11373,7 @@ mod test {
     }
 
     #[test]
-    fn restored_managed_codex_survives_shell_to_tui_process_transition() {
+    fn restored_managed_codex_tracks_shell_to_tui_to_shell_transition() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
         let domain = Arc::new(FakeDomain::new());
@@ -11333,8 +11410,8 @@ mod test {
         metadata.adopted_pid = None;
         metadata.adopted_start_time = None;
         metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
-            thread_id: "thread-restored-managed".to_string(),
-            session_id: "session-restored-managed".to_string(),
+            thread_id: "01a02767-c120-77b2-88a1-4e17c93a7549".to_string(),
+            session_id: "01a02767-c120-77b2-88a1-4e17c93a7549".to_string(),
             executable: "/usr/local/bin/codex".to_string(),
             version: "codex-cli test".to_string(),
             tui_args: vec!["-a".to_string(), "never".to_string()],
@@ -11358,7 +11435,7 @@ mod test {
                 "resume",
                 "--remote",
                 "unix:///run/user/1000/wakterm/codex-app-server.sock",
-                "thread-restored-managed",
+                "01a02767-c120-77b2-88a1-4e17c93a7549",
             ],
         );
         let process = Arc::get_mut(&mut remote_tui)
@@ -11387,8 +11464,55 @@ mod test {
                 .codex_app_server
                 .as_ref()
                 .map(|session| session.thread_id.as_str()),
-            Some("thread-restored-managed")
+            Some("01a02767-c120-77b2-88a1-4e17c93a7549")
         );
+        assert_eq!(agent.metadata.adopted_pid, Some(2));
+        assert_eq!(agent.metadata.adopted_start_time, Some(2));
+
+        let (mut stopped_tui, _) = FakePane::new_detected_counted(
+            pane_id,
+            size,
+            domain.id,
+            "codex",
+            "/code/restored-managed",
+            "/usr/local/bin/codex",
+            &[
+                "codex",
+                "resume",
+                "--remote",
+                "unix:///run/user/1000/wakterm/codex-app-server.sock",
+                "01a02767-c120-77b2-88a1-4e17c93a7549",
+            ],
+        );
+        let process = Arc::get_mut(&mut stopped_tui)
+            .expect("stopped TUI pane is uniquely owned")
+            .foreground_process_info
+            .as_mut()
+            .expect("stopped TUI process info");
+        process.pid = 2;
+        process.start_time = 2;
+        process.status = LocalProcessStatus::Stop;
+        mux.panes
+            .write()
+            .insert(pane_id, stopped_tui as Arc<dyn Pane>);
+        mux.record_agent_output(pane_id);
+        assert!(mux.get_agent_metadata_for_pane(pane_id).is_some());
+
+        let (returned_shell, _) = FakePane::new_detected_counted(
+            pane_id,
+            size,
+            domain.id,
+            "zsh",
+            "/code/restored-managed",
+            "/usr/bin/zsh",
+            &["zsh", "-l"],
+        );
+        mux.panes
+            .write()
+            .insert(pane_id, returned_shell as Arc<dyn Pane>);
+        mux.record_agent_output(pane_id);
+
+        assert!(mux.get_agent_metadata_for_pane(pane_id).is_none());
     }
 
     #[test]
