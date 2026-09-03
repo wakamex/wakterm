@@ -694,6 +694,14 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             menubar: &["View"],
             icon: Some("md_fullscreen"),
         },
+        ToggleTabBarPosition => CommandDef {
+            brief: "Toggle tab bar position".into(),
+            doc: "Moves the tab bar between the top and bottom of the current window.".into(),
+            keys: vec![(Modifiers::CTRL.union(Modifiers::SHIFT), "a".into())],
+            args: &[ArgType::ActiveWindow],
+            menubar: &["View"],
+            icon: None,
+        },
         ToggleAlwaysOnTop => CommandDef {
             brief: "Toggle always on Top".into(),
             doc: "Toggles the window between floating and non-floating states to stay on top of other windows.".into(),
@@ -2109,6 +2117,7 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         IncreaseFontSize,
         ResetFontSize,
         ResetFontAndWindowSize,
+        ToggleTabBarPosition,
         ScrollByPage(NotNan::new(-1.0).unwrap()),
         ScrollByPage(NotNan::new(1.0).unwrap()),
         ScrollToTop,
@@ -2196,4 +2205,24 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         // ----------------- Misc
         OpenLinkAtMouseCursor,
     ];
+}
+
+#[cfg(test)]
+mod test {
+    use super::{compute_default_actions, derive_command_from_key_assignment, ArgType};
+    use config::keyassignment::KeyAssignment;
+    use window::Modifiers;
+
+    #[test]
+    fn tab_bar_position_toggle_has_the_default_window_binding() {
+        let action = KeyAssignment::ToggleTabBarPosition;
+        let command = derive_command_from_key_assignment(&action).unwrap();
+
+        assert_eq!(command.args, &[ArgType::ActiveWindow]);
+        assert_eq!(
+            command.keys,
+            vec![(Modifiers::CTRL.union(Modifiers::SHIFT), "a".into())]
+        );
+        assert!(compute_default_actions().contains(&action));
+    }
 }

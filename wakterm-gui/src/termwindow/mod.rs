@@ -94,6 +94,36 @@ use prevcursor::PrevCursorPos;
 
 const ATLAS_SIZE: usize = 128;
 
+fn tab_bar_position_override(
+    overrides: &Value,
+    at_bottom: bool,
+    configured_at_bottom: bool,
+) -> anyhow::Result<Value> {
+    let mut overrides = match overrides {
+        Value::Null => wakterm_dynamic::Object::default(),
+        Value::Object(overrides) => overrides.clone(),
+        value => {
+            return Err(anyhow!(
+                "window config overrides must be an object, got {}",
+                value.variant_name()
+            ));
+        }
+    };
+    let key = Value::String("tab_bar_at_bottom".to_string());
+
+    if at_bottom == configured_at_bottom {
+        overrides.remove(&key);
+    } else {
+        overrides.insert(key, Value::Bool(at_bottom));
+    }
+
+    if overrides.is_empty() {
+        Ok(Value::Null)
+    } else {
+        Ok(Value::Object(overrides))
+    }
+}
+
 lazy_static::lazy_static! {
     static ref WINDOW_CLASS: Mutex<String> = Mutex::new(wakterm_gui_subcommands::DEFAULT_WINDOW_CLASS.to_owned());
     static ref POSITION: Mutex<Option<GuiPosition>> = Mutex::new(None);
@@ -1957,6 +1987,17 @@ impl TermWindow {
 }
 
 impl TermWindow {
+    fn toggle_tab_bar_position(&mut self) -> anyhow::Result<()> {
+        let at_bottom = !self.config.tab_bar_at_bottom;
+        self.config_overrides = tab_bar_position_override(
+            &self.config_overrides,
+            at_bottom,
+            configuration().tab_bar_at_bottom,
+        )?;
+        self.config_was_reloaded();
+        Ok(())
+    }
+
     fn palette(&mut self) -> &ColorPalette {
         if self.palette.is_none() {
             self.palette
@@ -2952,6 +2993,9 @@ impl TermWindow {
             }
             ToggleFullScreen => {
                 self.window.as_ref().unwrap().toggle_fullscreen();
+            }
+            ToggleTabBarPosition => {
+                self.toggle_tab_bar_position()?;
             }
             ToggleAlwaysOnTop => {
                 let window = self.window.clone().unwrap();
@@ -4015,8 +4059,34 @@ impl Drop for TermWindow {
 
 #[cfg(test)]
 mod test {
-    use super::{default_window_title, PaneInformation, Progress, TabInformation};
+    use super::{
+        default_window_title, tab_bar_position_override, PaneInformation, Progress, TabInformation,
+    };
     use std::collections::HashMap;
+    use wakterm_dynamic::Value;
+
+    #[test]
+    fn tab_bar_position_toggle_returns_to_the_configured_position() {
+        let bottom_override = tab_bar_position_override(&Value::Null, true, false).unwrap();
+        let Value::Object(bottom) = &bottom_override else {
+            panic!("expected a window config override");
+        };
+        assert_eq!(
+            bottom.get_by_str("tab_bar_at_bottom"),
+            Some(&Value::Bool(true))
+        );
+
+        assert_eq!(
+            tab_bar_position_override(&bottom_override, false, false).unwrap(),
+            Value::Null
+        );
+
+        let top_override = tab_bar_position_override(&Value::Null, false, true).unwrap();
+        assert_eq!(
+            tab_bar_position_override(&top_override, true, true).unwrap(),
+            Value::Null
+        );
+    }
 
     fn pane_with_title(title: &str) -> PaneInformation {
         PaneInformation {

@@ -536,6 +536,7 @@ pub enum KeyAssignment {
     SpawnTab(SpawnTabDomain),
     SpawnWindow,
     ToggleFullScreen,
+    ToggleTabBarPosition,
     ToggleAlwaysOnTop,
     ToggleAlwaysOnBottom,
     SetWindowLevel(WindowLevel),
