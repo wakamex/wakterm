@@ -53,17 +53,38 @@ fn us_layout_shift(s: &str) -> String {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn pane_navigation_keys(key: &str) -> Vec<(Modifiers, String)> {
-    vec![
-        (Modifiers::CTRL.union(Modifiers::SHIFT), key.into()),
-        (Modifiers::SUPER.union(Modifiers::ALT), key.into()),
-    ]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum KeyBindingPlatform {
+    Linux,
+    MacOs,
+    Windows,
 }
 
-#[cfg(not(target_os = "macos"))]
-fn pane_navigation_keys(key: &str) -> Vec<(Modifiers, String)> {
-    vec![(Modifiers::CTRL.union(Modifiers::SHIFT), key.into())]
+impl KeyBindingPlatform {
+    pub fn current() -> Self {
+        #[cfg(target_os = "macos")]
+        return Self::MacOs;
+        #[cfg(target_os = "windows")]
+        return Self::Windows;
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        return Self::Linux;
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Linux => "linux",
+            Self::MacOs => "macos",
+            Self::Windows => "windows",
+        }
+    }
+}
+
+fn pane_navigation_keys(platform: KeyBindingPlatform, key: &str) -> Vec<(Modifiers, String)> {
+    let mut keys = vec![(Modifiers::CTRL.union(Modifiers::SHIFT), key.into())];
+    if platform == KeyBindingPlatform::MacOs {
+        keys.push((Modifiers::SUPER.union(Modifiers::ALT), key.into()));
+    }
+    keys
 }
 
 /// `CommandDef` defines a command in the UI.
@@ -119,7 +140,11 @@ impl CommandDef {
     ///
     /// The synthesis here requires that the defaults in
     /// the keymap below use the lowercase form of single characters!
-    fn permute_keys(&self, config: &ConfigHandle) -> Vec<(Modifiers, KeyCode)> {
+    fn permute_keys(
+        &self,
+        config: &ConfigHandle,
+        include_super_fallback: bool,
+    ) -> Vec<(Modifiers, KeyCode)> {
         let mut keys = vec![];
 
         for (mods, label) in &self.keys {
@@ -136,7 +161,7 @@ impl CommandDef {
 
             keys.push((mods, key.clone()));
 
-            if mods == Modifiers::SUPER {
+            if mods == Modifiers::SUPER && include_super_fallback {
                 // We want each SUPER/CMD version of the keys to also have
                 // CTRL+SHIFT version(s) for environments where SUPER/CMD
                 // is reserved for the window manager.
@@ -155,13 +180,31 @@ impl CommandDef {
         keys
     }
 
-    /// Produces the list of default key assignments and actions.
-    /// Used by the InputMap.
-    pub fn default_key_assignments(
+    pub fn default_key_assignments_for_platform(
         config: &ConfigHandle,
+        platform: KeyBindingPlatform,
     ) -> Vec<(Modifiers, KeyCode, KeyAssignment)> {
+        if config.disable_default_key_bindings {
+            return vec![];
+        }
+
+        let commands = Self::expanded_commands_for_platform(config, platform);
         let mut result = vec![];
-        for cmd in Self::expanded_commands(config) {
+
+        // Register declared shortcuts and their shift-normalization variants
+        // before synthesized SUPER-to-CTRL-SHIFT fallbacks. This prevents a
+        // fallback for SUPER-M from displacing an explicit CTRL-SHIFT-M.
+        for cmd in &commands {
+            let Some(def) = derive_command_from_key_assignment_for_platform(&cmd.action, platform)
+            else {
+                continue;
+            };
+            for (mods, code) in def.permute_keys(config, false) {
+                result.push((mods, code, cmd.action.clone()));
+            }
+        }
+
+        for cmd in commands {
             for (mods, code) in cmd.keys {
                 result.push((mods, code.clone(), cmd.action.clone()));
             }
@@ -173,8 +216,9 @@ impl CommandDef {
         action: KeyAssignment,
         config: &ConfigHandle,
         is_built_in: bool,
+        platform: KeyBindingPlatform,
     ) -> Option<ExpandedCommand> {
-        match derive_command_from_key_assignment(&action) {
+        match derive_command_from_key_assignment_for_platform(&action, platform) {
             None => {
                 if is_built_in {
                     log::warn!(
@@ -187,7 +231,7 @@ impl CommandDef {
                 let keys = if is_built_in && config.disable_default_key_bindings {
                     vec![]
                 } else {
-                    def.permute_keys(config)
+                    def.permute_keys(config, true)
                 };
                 Some(ExpandedCommand {
                     brief: def.brief.into(),
@@ -203,10 +247,17 @@ impl CommandDef {
 
     /// Produces the complete set of expanded commands.
     pub fn expanded_commands(config: &ConfigHandle) -> Vec<ExpandedCommand> {
+        Self::expanded_commands_for_platform(config, KeyBindingPlatform::current())
+    }
+
+    pub fn expanded_commands_for_platform(
+        config: &ConfigHandle,
+        platform: KeyBindingPlatform,
+    ) -> Vec<ExpandedCommand> {
         let mut result = vec![];
 
-        for action in compute_default_actions() {
-            if let Some(command) = Self::expand_action(action, config, true) {
+        for action in compute_default_actions(platform) {
+            if let Some(command) = Self::expand_action(action, config, true, platform) {
                 result.push(command);
             }
         }
@@ -627,6 +678,13 @@ fn label_string(action: &KeyAssignment, candidate: String) -> String {
 /// This function will be called for the result of compute_default_actions(),
 /// but can also be used to describe user-provided commands
 pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<CommandDef> {
+    derive_command_from_key_assignment_for_platform(action, KeyBindingPlatform::current())
+}
+
+fn derive_command_from_key_assignment_for_platform(
+    action: &KeyAssignment,
+    platform: KeyBindingPlatform,
+) -> Option<CommandDef> {
     Some(match action {
         PasteFrom(ClipboardPasteSource::PrimarySelection) => CommandDef {
             brief: "Paste primary selection".into(),
@@ -1116,7 +1174,14 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
             brief: "Hide current Tab".into(),
             doc: "Hides the current tab while keeping all of its panes and processes running."
                 .into(),
-            keys: vec![(Modifiers::CTRL | Modifiers::SHIFT, "S".into())],
+            keys: vec![(
+                if platform == KeyBindingPlatform::MacOs {
+                    Modifiers::SUPER | Modifiers::SHIFT
+                } else {
+                    Modifiers::CTRL | Modifiers::SHIFT
+                },
+                "S".into(),
+            )],
             args: &[ArgType::ActiveTab],
             menubar: &["Shell"],
             icon: Some("md_eye_off_outline"),
@@ -1605,7 +1670,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
         ActivatePaneDirection(PaneDirection::Left) => CommandDef {
             brief: "Activate Pane Left".into(),
             doc: "Activates the pane to the left of the current pane".into(),
-            keys: pane_navigation_keys("LeftArrow"),
+            keys: pane_navigation_keys(platform, "LeftArrow"),
             args: &[ArgType::ActivePane],
             menubar: &["Window", "Select Pane"],
             icon: Some("fa_long_arrow_left"),
@@ -1613,7 +1678,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
         ActivatePaneDirection(PaneDirection::Right) => CommandDef {
             brief: "Activate Pane Right".into(),
             doc: "Activates the pane to the right of the current pane".into(),
-            keys: pane_navigation_keys("RightArrow"),
+            keys: pane_navigation_keys(platform, "RightArrow"),
             args: &[ArgType::ActivePane],
             menubar: &["Window", "Select Pane"],
             icon: Some("fa_long_arrow_right"),
@@ -1621,7 +1686,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
         ActivatePaneDirection(PaneDirection::Up) => CommandDef {
             brief: "Activate Pane Up".into(),
             doc: "Activates the pane to the top of the current pane".into(),
-            keys: pane_navigation_keys("UpArrow"),
+            keys: pane_navigation_keys(platform, "UpArrow"),
             args: &[ArgType::ActivePane],
             menubar: &["Window", "Select Pane"],
             icon: Some("fa_long_arrow_up"),
@@ -1629,7 +1694,7 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
         ActivatePaneDirection(PaneDirection::Down) => CommandDef {
             brief: "Activate Pane Down".into(),
             doc: "Activates the pane to the bottom of the current pane".into(),
-            keys: pane_navigation_keys("DownArrow"),
+            keys: pane_navigation_keys(platform, "DownArrow"),
             args: &[ArgType::ActivePane],
             menubar: &["Window", "Select Pane"],
             icon: Some("fa_long_arrow_down"),
@@ -2073,15 +2138,14 @@ pub fn derive_command_from_key_assignment(action: &KeyAssignment) -> Option<Comm
 
 /// Returns a list of key assignment actions that should be
 /// included in the default key assignments and command palette.
-fn compute_default_actions() -> Vec<KeyAssignment> {
+fn compute_default_actions(platform: KeyBindingPlatform) -> Vec<KeyAssignment> {
     // These are ordered by their position within the various menus
-    return vec![
-        // ----------------- wakterm
-        ReloadConfiguration,
-        #[cfg(target_os = "macos")]
-        HideApplication,
-        #[cfg(target_os = "macos")]
-        QuitApplication,
+    let mut actions = vec![ReloadConfiguration];
+    if platform == KeyBindingPlatform::MacOs {
+        actions.push(HideApplication);
+        actions.push(QuitApplication);
+    }
+    actions.extend([
         // ----------------- Shell
         SpawnTab(SpawnTabDomain::CurrentPaneDomain),
         SpawnWindow,
@@ -2098,11 +2162,13 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         CloseCurrentPane { confirm: true },
         DetachDomain(SpawnTabDomain::CurrentPaneDomain),
         ResetTerminal,
+    ]);
+    if platform != KeyBindingPlatform::MacOs {
+        actions.push(PasteFrom(ClipboardPasteSource::PrimarySelection));
+        actions.push(CopyTo(ClipboardCopyDestination::PrimarySelection));
+    }
+    actions.extend([
         // ----------------- Edit
-        #[cfg(not(target_os = "macos"))]
-        PasteFrom(ClipboardPasteSource::PrimarySelection),
-        #[cfg(not(target_os = "macos"))]
-        CopyTo(ClipboardCopyDestination::PrimarySelection),
         CopyTo(ClipboardCopyDestination::Clipboard),
         PasteFrom(ClipboardPasteSource::Clipboard),
         ClearScrollback(ScrollbackEraseMode::ScrollbackOnly),
@@ -2204,12 +2270,15 @@ fn compute_default_actions() -> Vec<KeyAssignment> {
         ShowDebugOverlay,
         // ----------------- Misc
         OpenLinkAtMouseCursor,
-    ];
+    ]);
+    actions
 }
 
 #[cfg(test)]
 mod test {
-    use super::{compute_default_actions, derive_command_from_key_assignment, ArgType};
+    use super::{
+        compute_default_actions, derive_command_from_key_assignment, ArgType, KeyBindingPlatform,
+    };
     use config::keyassignment::KeyAssignment;
     use window::Modifiers;
 
@@ -2223,6 +2292,6 @@ mod test {
             command.keys,
             vec![(Modifiers::CTRL.union(Modifiers::SHIFT), "a".into())]
         );
-        assert!(compute_default_actions().contains(&action));
+        assert!(compute_default_actions(KeyBindingPlatform::current()).contains(&action));
     }
 }

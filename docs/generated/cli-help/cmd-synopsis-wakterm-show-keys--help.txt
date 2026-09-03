@@ -5,4 +5,6 @@ Usage: wakterm show-keys [OPTIONS]
 Options:
       --lua                    Show the keys as lua config statements
       --key-table <KEY_TABLE>  In lua mode, show only the named key table
+      --json                   Show built-in command metadata and default keys as JSON
+      --platform <PLATFORM>    Select the target platform for the JSON export [possible values: linux, macos, windows]
   -h, --help                   Print help

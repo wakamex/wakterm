@@ -105,6 +105,10 @@ render_synopsis() {
   "$NARROW_BIN" "$WAKTERM_BIN" "$@" | "$STRIP_BIN" | trim_file
 }
 
+render_default_keys() {
+  python3 ci/generate-default-keys.py "$WAKTERM_BIN"
+}
+
 for shell in bash zsh fish ; do
   generate_file "assets/shell-completion/$shell" render_shell_completion "$shell"
 done
@@ -113,6 +117,8 @@ for mode in copy_mode search_mode ; do
   fname="docs/generated/key-tables/default-$(echo $mode | tr _ -)-key-table.markdown"
   generate_file "$fname" render_key_table "$mode"
 done
+
+generate_file "docs/guides/configuration/default-keys.md" render_default_keys
 
 synopsis_commands=(
   ""

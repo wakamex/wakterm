@@ -877,6 +877,18 @@ fn maybe_show_configuration_error_window() {
 }
 
 fn run_show_keys(config: config::ConfigHandle, cmd: &ShowKeysCommand) -> anyhow::Result<()> {
+    if cmd.json {
+        let platform = match cmd.platform {
+            Some(ShowKeysPlatform::Linux) => commands::KeyBindingPlatform::Linux,
+            Some(ShowKeysPlatform::Macos) => commands::KeyBindingPlatform::MacOs,
+            Some(ShowKeysPlatform::Windows) => commands::KeyBindingPlatform::Windows,
+            None => commands::KeyBindingPlatform::current(),
+        };
+        let catalog = crate::inputmap::InputMap::default_command_catalog(platform)?;
+        serde_json::to_writer_pretty(std::io::stdout().lock(), &catalog)?;
+        println!();
+        return Ok(());
+    }
     let map = crate::inputmap::InputMap::new(&config);
     if cmd.lua {
         map.dump_config(cmd.key_table.as_deref());

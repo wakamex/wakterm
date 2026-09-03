@@ -1,4 +1,4 @@
-inspect a single adopted or detected agent by name or id
+inspect a single registered or detected agent by name or id
 
 Usage: wakterm agent inspect <TARGET>
 

@@ -114,7 +114,9 @@ _arguments "${_arguments_options[@]}" : \
 (show-keys)
 _arguments "${_arguments_options[@]}" : \
 '--key-table=[In lua mode, show only the named key table]:KEY_TABLE:_default' \
-'--lua[Show the keys as lua config statements]' \
+'--platform=[Select the target platform for the JSON export]:PLATFORM:(linux macos windows)' \
+'(--json)--lua[Show the keys as lua config statements]' \
+'(--lua --key-table)--json[Show built-in command metadata and default keys as JSON]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
@@ -256,6 +258,14 @@ _arguments "${_arguments_options[@]}" : \
 ':target -- Detected agent name, synthetic id, or pane id:_default' \
 && ret=0
 ;;
+(promote-codex)
+_arguments "${_arguments_options[@]}" : \
+'--thread=[Exact Codex thread UUID shown in the live remote TUI command]:THREAD_ID:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Adopted agent name, stable id, or pane id:_default' \
+&& ret=0
+;;
 (list)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Controls the output format. "table" and "json" are possible formats]:FORMAT:_default' \
@@ -296,6 +306,8 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--after=[Return events strictly after this durable global sequence]:AFTER_SEQUENCE:_default' \
 '--limit=[Maximum events to return]:LIMIT:_default' \
+'--wait-ms=[Maximum server wait at the stream head]:WAIT_MS:_default' \
+'--follow[Keep the connection open and stream event pages as JSON lines]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
@@ -486,6 +498,10 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (adopt-detected)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(promote-codex)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -819,6 +835,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(promote-codex)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (list)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -1104,6 +1124,14 @@ _arguments "${_arguments_options[@]}" : \
 ':target -- Detected agent name, synthetic id, or pane id:_default' \
 && ret=0
 ;;
+(promote-codex)
+_arguments "${_arguments_options[@]}" : \
+'--thread=[Exact Codex thread UUID shown in the live remote TUI command]:THREAD_ID:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Adopted agent name, stable id, or pane id:_default' \
+&& ret=0
+;;
 (list)
 _arguments "${_arguments_options[@]}" : \
 '--format=[Controls the output format. "table" and "json" are possible formats]:FORMAT:_default' \
@@ -1144,6 +1172,8 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--after=[Return events strictly after this durable global sequence]:AFTER_SEQUENCE:_default' \
 '--limit=[Maximum events to return]:LIMIT:_default' \
+'--wait-ms=[Maximum server wait at the stream head]:WAIT_MS:_default' \
+'--follow[Keep the connection open and stream event pages as JSON lines]' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
@@ -1334,6 +1364,10 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (adopt-detected)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(promote-codex)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -1580,6 +1614,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(promote-codex)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (list)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -1788,6 +1826,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(promote-codex)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (list)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -1929,9 +1971,10 @@ _wakterm__agent_commands() {
 'launch:launch an agent through a mux-owned transport' \
 'adopt:adopt an existing pane as an agent' \
 'adopt-detected:promote a detected harness pane into persistent agent metadata' \
-'list:list adopted and detected agent panes' \
-'watch:stream latest observer-backed harness messages for adopted and detected agent panes' \
-'inspect:inspect a single adopted or detected agent by name or id' \
+'promote-codex:promote an adopted remote Codex TUI into managed app-server metadata' \
+'list:list managed, adopted, and detected agent panes' \
+'watch:stream latest observer-backed harness messages for registered and detected agent panes' \
+'inspect:inspect a single registered or detected agent by name or id' \
 'output:read experimental normalized agent output for shadow comparison' \
 'events:read durable normalized Agent API events' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
@@ -1988,9 +2031,10 @@ _wakterm__agent__help_commands() {
 'launch:launch an agent through a mux-owned transport' \
 'adopt:adopt an existing pane as an agent' \
 'adopt-detected:promote a detected harness pane into persistent agent metadata' \
-'list:list adopted and detected agent panes' \
-'watch:stream latest observer-backed harness messages for adopted and detected agent panes' \
-'inspect:inspect a single adopted or detected agent by name or id' \
+'promote-codex:promote an adopted remote Codex TUI into managed app-server metadata' \
+'list:list managed, adopted, and detected agent panes' \
+'watch:stream latest observer-backed harness messages for registered and detected agent panes' \
+'inspect:inspect a single registered or detected agent by name or id' \
 'output:read experimental normalized agent output for shadow comparison' \
 'events:read durable normalized Agent API events' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
@@ -2076,6 +2120,11 @@ _wakterm__agent__help__list_commands() {
 _wakterm__agent__help__output_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm agent help output commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__promote-codex_commands] )) ||
+_wakterm__agent__help__promote-codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help promote-codex commands' commands "$@"
 }
 (( $+functions[_wakterm__agent__help__request_commands] )) ||
 _wakterm__agent__help__request_commands() {
@@ -2171,6 +2220,11 @@ _wakterm__agent__list_commands() {
 _wakterm__agent__output_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm agent output commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__promote-codex_commands] )) ||
+_wakterm__agent__promote-codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent promote-codex commands' commands "$@"
 }
 (( $+functions[_wakterm__agent__request_commands] )) ||
 _wakterm__agent__request_commands() {
@@ -2308,9 +2362,10 @@ _wakterm__cli__agent_commands() {
 'launch:launch an agent through a mux-owned transport' \
 'adopt:adopt an existing pane as an agent' \
 'adopt-detected:promote a detected harness pane into persistent agent metadata' \
-'list:list adopted and detected agent panes' \
-'watch:stream latest observer-backed harness messages for adopted and detected agent panes' \
-'inspect:inspect a single adopted or detected agent by name or id' \
+'promote-codex:promote an adopted remote Codex TUI into managed app-server metadata' \
+'list:list managed, adopted, and detected agent panes' \
+'watch:stream latest observer-backed harness messages for registered and detected agent panes' \
+'inspect:inspect a single registered or detected agent by name or id' \
 'output:read experimental normalized agent output for shadow comparison' \
 'events:read durable normalized Agent API events' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
@@ -2367,9 +2422,10 @@ _wakterm__cli__agent__help_commands() {
 'launch:launch an agent through a mux-owned transport' \
 'adopt:adopt an existing pane as an agent' \
 'adopt-detected:promote a detected harness pane into persistent agent metadata' \
-'list:list adopted and detected agent panes' \
-'watch:stream latest observer-backed harness messages for adopted and detected agent panes' \
-'inspect:inspect a single adopted or detected agent by name or id' \
+'promote-codex:promote an adopted remote Codex TUI into managed app-server metadata' \
+'list:list managed, adopted, and detected agent panes' \
+'watch:stream latest observer-backed harness messages for registered and detected agent panes' \
+'inspect:inspect a single registered or detected agent by name or id' \
 'output:read experimental normalized agent output for shadow comparison' \
 'events:read durable normalized Agent API events' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
@@ -2455,6 +2511,11 @@ _wakterm__cli__agent__help__list_commands() {
 _wakterm__cli__agent__help__output_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli agent help output commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__promote-codex_commands] )) ||
+_wakterm__cli__agent__help__promote-codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help promote-codex commands' commands "$@"
 }
 (( $+functions[_wakterm__cli__agent__help__request_commands] )) ||
 _wakterm__cli__agent__help__request_commands() {
@@ -2550,6 +2611,11 @@ _wakterm__cli__agent__list_commands() {
 _wakterm__cli__agent__output_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli agent output commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__promote-codex_commands] )) ||
+_wakterm__cli__agent__promote-codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent promote-codex commands' commands "$@"
 }
 (( $+functions[_wakterm__cli__agent__request_commands] )) ||
 _wakterm__cli__agent__request_commands() {
@@ -2692,9 +2758,10 @@ _wakterm__cli__help__agent_commands() {
 'launch:launch an agent through a mux-owned transport' \
 'adopt:adopt an existing pane as an agent' \
 'adopt-detected:promote a detected harness pane into persistent agent metadata' \
-'list:list adopted and detected agent panes' \
-'watch:stream latest observer-backed harness messages for adopted and detected agent panes' \
-'inspect:inspect a single adopted or detected agent by name or id' \
+'promote-codex:promote an adopted remote Codex TUI into managed app-server metadata' \
+'list:list managed, adopted, and detected agent panes' \
+'watch:stream latest observer-backed harness messages for registered and detected agent panes' \
+'inspect:inspect a single registered or detected agent by name or id' \
 'output:read experimental normalized agent output for shadow comparison' \
 'events:read durable normalized Agent API events' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
@@ -2774,6 +2841,11 @@ _wakterm__cli__help__agent__list_commands() {
 _wakterm__cli__help__agent__output_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli help agent output commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__promote-codex_commands] )) ||
+_wakterm__cli__help__agent__promote-codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent promote-codex commands' commands "$@"
 }
 (( $+functions[_wakterm__cli__help__agent__request_commands] )) ||
 _wakterm__cli__help__agent__request_commands() {
@@ -3017,9 +3089,10 @@ _wakterm__help__agent_commands() {
 'launch:launch an agent through a mux-owned transport' \
 'adopt:adopt an existing pane as an agent' \
 'adopt-detected:promote a detected harness pane into persistent agent metadata' \
-'list:list adopted and detected agent panes' \
-'watch:stream latest observer-backed harness messages for adopted and detected agent panes' \
-'inspect:inspect a single adopted or detected agent by name or id' \
+'promote-codex:promote an adopted remote Codex TUI into managed app-server metadata' \
+'list:list managed, adopted, and detected agent panes' \
+'watch:stream latest observer-backed harness messages for registered and detected agent panes' \
+'inspect:inspect a single registered or detected agent by name or id' \
 'output:read experimental normalized agent output for shadow comparison' \
 'events:read durable normalized Agent API events' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
@@ -3099,6 +3172,11 @@ _wakterm__help__agent__list_commands() {
 _wakterm__help__agent__output_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help agent output commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__promote-codex_commands] )) ||
+_wakterm__help__agent__promote-codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent promote-codex commands' commands "$@"
 }
 (( $+functions[_wakterm__help__agent__request_commands] )) ||
 _wakterm__help__agent__request_commands() {
@@ -3204,9 +3282,10 @@ _wakterm__help__cli__agent_commands() {
 'launch:launch an agent through a mux-owned transport' \
 'adopt:adopt an existing pane as an agent' \
 'adopt-detected:promote a detected harness pane into persistent agent metadata' \
-'list:list adopted and detected agent panes' \
-'watch:stream latest observer-backed harness messages for adopted and detected agent panes' \
-'inspect:inspect a single adopted or detected agent by name or id' \
+'promote-codex:promote an adopted remote Codex TUI into managed app-server metadata' \
+'list:list managed, adopted, and detected agent panes' \
+'watch:stream latest observer-backed harness messages for registered and detected agent panes' \
+'inspect:inspect a single registered or detected agent by name or id' \
 'output:read experimental normalized agent output for shadow comparison' \
 'events:read durable normalized Agent API events' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
@@ -3286,6 +3365,11 @@ _wakterm__help__cli__agent__list_commands() {
 _wakterm__help__cli__agent__output_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help cli agent output commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__promote-codex_commands] )) ||
+_wakterm__help__cli__agent__promote-codex_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent promote-codex commands' commands "$@"
 }
 (( $+functions[_wakterm__help__cli__agent__request_commands] )) ||
 _wakterm__help__cli__agent__request_commands() {

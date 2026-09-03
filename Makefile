@@ -49,9 +49,9 @@ update-derived:
 		ci/update-derived-files.sh
 
 check-derived: update-derived
-	git diff --check -- assets/shell-completion docs/generated/cli-help docs/generated/key-tables
-	@test -z "$$(git status --short -- assets/shell-completion docs/generated/cli-help docs/generated/key-tables)" || { \
-		git status --short -- assets/shell-completion docs/generated/cli-help docs/generated/key-tables; \
+	git diff --check -- assets/shell-completion docs/generated/cli-help docs/generated/key-tables docs/guides/configuration/default-keys.md
+	@test -z "$$(git status --short -- assets/shell-completion docs/generated/cli-help docs/generated/key-tables docs/guides/configuration/default-keys.md)" || { \
+		git status --short -- assets/shell-completion docs/generated/cli-help docs/generated/key-tables docs/guides/configuration/default-keys.md; \
 		echo "Derived files are stale. Run 'make update-derived'." >&2; \
 		exit 1; \
 	}

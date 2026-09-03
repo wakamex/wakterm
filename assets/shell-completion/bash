@@ -100,6 +100,9 @@ _wakterm() {
             wakterm__agent,output)
                 cmd="wakterm__agent__output"
                 ;;
+            wakterm__agent,promote-codex)
+                cmd="wakterm__agent__promote__codex"
+                ;;
             wakterm__agent,request)
                 cmd="wakterm__agent__request"
                 ;;
@@ -153,6 +156,9 @@ _wakterm() {
                 ;;
             wakterm__agent__help,output)
                 cmd="wakterm__agent__help__output"
+                ;;
+            wakterm__agent__help,promote-codex)
+                cmd="wakterm__agent__help__promote__codex"
                 ;;
             wakterm__agent__help,request)
                 cmd="wakterm__agent__help__request"
@@ -325,6 +331,9 @@ _wakterm() {
             wakterm__cli__agent,output)
                 cmd="wakterm__cli__agent__output"
                 ;;
+            wakterm__cli__agent,promote-codex)
+                cmd="wakterm__cli__agent__promote__codex"
+                ;;
             wakterm__cli__agent,request)
                 cmd="wakterm__cli__agent__request"
                 ;;
@@ -378,6 +387,9 @@ _wakterm() {
                 ;;
             wakterm__cli__agent__help,output)
                 cmd="wakterm__cli__agent__help__output"
+                ;;
+            wakterm__cli__agent__help,promote-codex)
+                cmd="wakterm__cli__agent__help__promote__codex"
                 ;;
             wakterm__cli__agent__help,request)
                 cmd="wakterm__cli__agent__help__request"
@@ -547,6 +559,9 @@ _wakterm() {
             wakterm__cli__help__agent,output)
                 cmd="wakterm__cli__help__agent__output"
                 ;;
+            wakterm__cli__help__agent,promote-codex)
+                cmd="wakterm__cli__help__agent__promote__codex"
+                ;;
             wakterm__cli__help__agent,request)
                 cmd="wakterm__cli__help__agent__request"
                 ;;
@@ -654,6 +669,9 @@ _wakterm() {
                 ;;
             wakterm__help__agent,output)
                 cmd="wakterm__help__agent__output"
+                ;;
+            wakterm__help__agent,promote-codex)
+                cmd="wakterm__help__agent__promote__codex"
                 ;;
             wakterm__help__agent,request)
                 cmd="wakterm__help__agent__request"
@@ -784,6 +802,9 @@ _wakterm() {
             wakterm__help__cli__agent,output)
                 cmd="wakterm__help__cli__agent__output"
                 ;;
+            wakterm__help__cli__agent,promote-codex)
+                cmd="wakterm__help__cli__agent__promote__codex"
+                ;;
             wakterm__help__cli__agent,request)
                 cmd="wakterm__help__cli__agent__request"
                 ;;
@@ -851,7 +872,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__agent)
-            opts="-h --help start launch adopt adopt-detected list watch inspect output events capabilities catalog admit send request interrupt set clear help"
+            opts="-h --help start launch adopt adopt-detected promote-codex list watch inspect output events capabilities catalog admit send request interrupt set clear help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -997,7 +1018,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__agent__events)
-            opts="-h --after --limit --help"
+            opts="-h --after --limit --follow --wait-ms --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1011,6 +1032,10 @@ _wakterm() {
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
+                --wait-ms)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -1019,7 +1044,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__agent__help)
-            opts="start launch adopt adopt-detected list watch inspect output events capabilities catalog admit send request interrupt set clear help"
+            opts="start launch adopt adopt-detected promote-codex list watch inspect output events capabilities catalog admit send request interrupt set clear help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1215,6 +1240,20 @@ _wakterm() {
             return 0
             ;;
         wakterm__agent__help__output)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        wakterm__agent__help__promote__codex)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -1491,6 +1530,24 @@ _wakterm() {
                     return 0
                     ;;
                 --limit)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        wakterm__agent__promote__codex)
+            opts="-h --thread --help <TARGET>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --thread)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -1933,7 +1990,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__agent)
-            opts="-h --help start launch adopt adopt-detected list watch inspect output events capabilities catalog admit send request interrupt set clear help"
+            opts="-h --help start launch adopt adopt-detected promote-codex list watch inspect output events capabilities catalog admit send request interrupt set clear help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2079,7 +2136,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__agent__events)
-            opts="-h --after --limit --help"
+            opts="-h --after --limit --follow --wait-ms --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2093,6 +2150,10 @@ _wakterm() {
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
+                --wait-ms)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -2101,7 +2162,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__agent__help)
-            opts="start launch adopt adopt-detected list watch inspect output events capabilities catalog admit send request interrupt set clear help"
+            opts="start launch adopt adopt-detected promote-codex list watch inspect output events capabilities catalog admit send request interrupt set clear help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2297,6 +2358,20 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__agent__help__output)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        wakterm__cli__agent__help__promote__codex)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -2573,6 +2648,24 @@ _wakterm() {
                     return 0
                     ;;
                 --limit)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        wakterm__cli__agent__promote__codex)
+            opts="-h --thread --help <TARGET>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --thread)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -2986,7 +3079,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__help__agent)
-            opts="start launch adopt adopt-detected list watch inspect output events capabilities catalog admit send request interrupt set clear"
+            opts="start launch adopt adopt-detected promote-codex list watch inspect output events capabilities catalog admit send request interrupt set clear"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3168,6 +3261,20 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__help__agent__output)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        wakterm__cli__help__agent__promote__codex)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -3898,7 +4005,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__help__agent)
-            opts="start launch adopt adopt-detected list watch inspect output events capabilities catalog admit send request interrupt set clear"
+            opts="start launch adopt adopt-detected promote-codex list watch inspect output events capabilities catalog admit send request interrupt set clear"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4080,6 +4187,20 @@ _wakterm() {
             return 0
             ;;
         wakterm__help__agent__output)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        wakterm__help__agent__promote__codex)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -4290,7 +4411,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__help__cli__agent)
-            opts="start launch adopt adopt-detected list watch inspect output events capabilities catalog admit send request interrupt set clear"
+            opts="start launch adopt adopt-detected promote-codex list watch inspect output events capabilities catalog admit send request interrupt set clear"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4472,6 +4593,20 @@ _wakterm() {
             return 0
             ;;
         wakterm__help__cli__agent__output)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        wakterm__help__cli__agent__promote__codex)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -5170,7 +5305,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__show__keys)
-            opts="-h --lua --key-table --help"
+            opts="-h --lua --key-table --json --platform --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5178,6 +5313,10 @@ _wakterm() {
             case "${prev}" in
                 --key-table)
                     COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --platform)
+                    COMPREPLY=($(compgen -W "linux macos windows" -- "${cur}"))
                     return 0
                     ;;
                 *)

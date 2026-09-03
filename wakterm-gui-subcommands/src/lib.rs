@@ -1,5 +1,5 @@
 use clap::builder::ValueParser;
-use clap::{Parser, ValueHint};
+use clap::{Parser, ValueEnum, ValueHint};
 use config::{GuiPosition, SshParameters};
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -265,9 +265,22 @@ pub struct LsFontsCommand {
 #[derive(Debug, Parser, Clone)]
 pub struct ShowKeysCommand {
     /// Show the keys as lua config statements
-    #[arg(long)]
+    #[arg(long, conflicts_with = "json")]
     pub lua: bool,
     /// In lua mode, show only the named key table
     #[arg(long)]
     pub key_table: Option<String>,
+    /// Show built-in command metadata and default keys as JSON
+    #[arg(long, conflicts_with_all = ["lua", "key_table"])]
+    pub json: bool,
+    /// Select the target platform for the JSON export
+    #[arg(long, value_enum, requires = "json")]
+    pub platform: Option<ShowKeysPlatform>,
+}
+
+#[derive(Debug, ValueEnum, Clone, Copy)]
+pub enum ShowKeysPlatform {
+    Linux,
+    Macos,
+    Windows,
 }

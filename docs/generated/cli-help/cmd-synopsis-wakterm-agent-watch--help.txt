@@ -1,4 +1,4 @@
-stream latest observer-backed harness messages for adopted and detected agent panes
+stream latest observer-backed harness messages for registered and detected agent panes
 
 Usage: wakterm agent watch [OPTIONS]
 

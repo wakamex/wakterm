@@ -1,9 +1,10 @@
-use crate::commands::CommandDef;
+use crate::commands::{CommandDef, KeyBindingPlatform};
 use config::keyassignment::{
     ClipboardCopyDestination, ClipboardPasteSource, KeyAssignment, KeyTableEntry, KeyTables,
     MouseEventTrigger, SelectionMode,
 };
 use config::{ConfigHandle, MouseEventAltScreen, MouseEventTriggerMods};
+use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 use wakterm_dynamic::{ToDynamic, Value};
@@ -16,6 +17,28 @@ pub struct InputMap {
     leader: Option<(KeyCode, Modifiers, Duration)>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct DefaultCommandCatalog {
+    pub schema_version: u8,
+    pub platform: &'static str,
+    pub commands: Vec<DefaultCommand>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DefaultCommand {
+    pub action: serde_json::Value,
+    pub action_label: String,
+    pub brief: String,
+    pub doc: String,
+    pub bindings: Vec<DefaultKeyBinding>,
+}
+
+#[derive(Debug, Serialize, Eq, PartialEq)]
+pub struct DefaultKeyBinding {
+    pub modifiers: Vec<&'static str>,
+    pub key: String,
+}
+
 impl InputMap {
     pub fn default_input_map() -> Self {
         let config = ConfigHandle::default_config();
@@ -23,6 +46,10 @@ impl InputMap {
     }
 
     pub fn new(config: &ConfigHandle) -> Self {
+        Self::new_for_platform(config, KeyBindingPlatform::current())
+    }
+
+    fn new_for_platform(config: &ConfigHandle, platform: KeyBindingPlatform) -> Self {
         let mut mouse = config.mouse_bindings();
 
         let mut keys = config.key_bindings();
@@ -48,7 +75,9 @@ impl InputMap {
         use KeyAssignment::*;
 
         if !config.disable_default_key_bindings {
-            for (mods, code, action) in CommandDef::default_key_assignments(config) {
+            for (mods, code, action) in
+                CommandDef::default_key_assignments_for_platform(config, platform)
+            {
                 // If the user configures {key='p', mods='CTRL|SHIFT'} that gets
                 // normalized into {key='P', mods='CTRL'} in Config::key_bindings(),
                 // and that value exists in `keys.default` when we reach this point.
@@ -70,7 +99,7 @@ impl InputMap {
                 // to continue? to work, the approach we take here is to lookup the
                 // normalized version of what we're about to register, and if we get
                 // a match, skip this key.  Otherwise register the non-normalized
-                // version from default_key_assignments().
+                // version from default_key_assignments_for_platform().
                 //
                 // See: <https://github.com/wakamex/wakterm/issues/3262>
                 let (disable_code, disable_mods) = code.normalize_shift(mods);
@@ -497,6 +526,44 @@ impl InputMap {
         println!("}}");
     }
 
+    pub fn default_command_catalog(
+        platform: KeyBindingPlatform,
+    ) -> anyhow::Result<DefaultCommandCatalog> {
+        let config = ConfigHandle::default_config();
+        let map = Self::new_for_platform(&config, platform);
+        let ordered_bindings = map.keys.default.iter().collect::<BTreeMap<_, _>>();
+        let mut commands = vec![];
+
+        for command in CommandDef::expanded_commands_for_platform(&config, platform) {
+            let bindings = ordered_bindings
+                .iter()
+                .filter_map(|((key, mods), entry)| {
+                    if entry.action != command.action {
+                        return None;
+                    }
+                    Some(DefaultKeyBinding {
+                        modifiers: modifier_names(*mods),
+                        key: lua_key_code(key),
+                    })
+                })
+                .collect();
+            let action = dynamic_to_json(command.action.to_dynamic())?;
+            commands.push(DefaultCommand {
+                action_label: action_variant_name(&action)?.to_string(),
+                action,
+                brief: command.brief.into_owned(),
+                doc: command.doc.into_owned(),
+                bindings,
+            });
+        }
+
+        Ok(DefaultCommandCatalog {
+            schema_version: 1,
+            platform: platform.as_str(),
+            commands,
+        })
+    }
+
     pub fn show_keys(&self) {
         if let Some((key, mods, duration)) = &self.leader {
             println!("Leader: {key:?} {mods:?} {duration:?}");
@@ -637,6 +704,61 @@ pub fn human_key(key: &KeyCode) -> String {
         KeyCode::Numpad(n) => format!("Numpad{n}"),
         KeyCode::Physical(phys) => format!("{} (Physical)", phys.to_string()),
         _ => format!("{key:?}"),
+    }
+}
+
+fn modifier_names(mods: Modifiers) -> Vec<&'static str> {
+    let mut names = vec![];
+    for (modifier, name) in [
+        (Modifiers::CTRL, "CTRL"),
+        (Modifiers::SHIFT, "SHIFT"),
+        (Modifiers::ALT, "ALT"),
+        (Modifiers::SUPER, "SUPER"),
+        (Modifiers::LEADER, "LEADER"),
+    ] {
+        if mods.contains(modifier) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+fn dynamic_to_json(value: Value) -> anyhow::Result<serde_json::Value> {
+    Ok(match value {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(value) => serde_json::Value::Bool(value),
+        Value::String(value) => serde_json::Value::String(value),
+        Value::U64(value) => serde_json::Value::Number(value.into()),
+        Value::I64(value) => serde_json::Value::Number(value.into()),
+        Value::F64(value) => serde_json::Number::from_f64(value.into_inner())
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| anyhow::anyhow!("action contains a non-finite number"))?,
+        Value::Array(values) => serde_json::Value::Array(
+            values
+                .into_iter()
+                .map(dynamic_to_json)
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        ),
+        Value::Object(values) => {
+            let mut object = serde_json::Map::new();
+            for (key, value) in values {
+                let Value::String(key) = key else {
+                    anyhow::bail!("action object contains a non-string key");
+                };
+                object.insert(key, dynamic_to_json(value)?);
+            }
+            serde_json::Value::Object(object)
+        }
+    })
+}
+
+fn action_variant_name(action: &serde_json::Value) -> anyhow::Result<&str> {
+    match action {
+        serde_json::Value::String(name) => Ok(name),
+        serde_json::Value::Object(fields) if fields.len() == 1 => {
+            Ok(fields.keys().next().expect("object has one key"))
+        }
+        _ => anyhow::bail!("action has an unexpected structured representation: {action}"),
     }
 }
 
@@ -807,5 +929,103 @@ fn show_key_table_as_lua(table: &config::keyassignment::KeyTable, indent: usize)
     for ((key, mods), entry) in ordered {
         let action = &entry.action;
         println!("{pad}{},", lua_key(key, *mods, action));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command<'a>(catalog: &'a DefaultCommandCatalog, label: &str) -> Option<&'a DefaultCommand> {
+        catalog
+            .commands
+            .iter()
+            .find(|command| command.action_label == label)
+    }
+
+    fn command_with_brief<'a>(
+        catalog: &'a DefaultCommandCatalog,
+        brief: &str,
+    ) -> &'a DefaultCommand {
+        catalog
+            .commands
+            .iter()
+            .find(|command| command.brief == brief)
+            .unwrap()
+    }
+
+    #[test]
+    fn default_command_catalog_reflects_platform_defaults() {
+        let linux = InputMap::default_command_catalog(KeyBindingPlatform::Linux).unwrap();
+        let macos = InputMap::default_command_catalog(KeyBindingPlatform::MacOs).unwrap();
+        let windows = InputMap::default_command_catalog(KeyBindingPlatform::Windows).unwrap();
+
+        assert_eq!(linux.schema_version, 1);
+        assert_eq!(linux.platform, "linux");
+        assert_eq!(macos.platform, "macos");
+        assert_eq!(windows.platform, "windows");
+
+        assert!(linux
+            .commands
+            .iter()
+            .any(|command| command.action == serde_json::json!({"CopyTo": "PrimarySelection"})));
+        assert!(windows
+            .commands
+            .iter()
+            .any(|command| command.action == serde_json::json!({"CopyTo": "PrimarySelection"})));
+        assert!(!macos
+            .commands
+            .iter()
+            .any(|command| command.action == serde_json::json!({"CopyTo": "PrimarySelection"})));
+
+        assert!(command(&linux, "HideApplication").is_none());
+        assert!(command(&windows, "HideApplication").is_none());
+        assert!(!command(&macos, "HideApplication")
+            .unwrap()
+            .bindings
+            .is_empty());
+
+        let linux_left = command_with_brief(&linux, "Activate Pane Left");
+        let macos_left = command_with_brief(&macos, "Activate Pane Left");
+        assert!(!linux_left
+            .bindings
+            .iter()
+            .any(|binding| binding.modifiers == ["ALT", "SUPER"]));
+        assert!(macos_left
+            .bindings
+            .iter()
+            .any(|binding| binding.modifiers == ["ALT", "SUPER"]));
+
+        let swap = command_with_brief(&linux, "Swap a pane with the active pane");
+        assert!(swap.bindings.iter().any(|binding| {
+            binding.modifiers == ["CTRL", "SHIFT"] && binding.key.eq_ignore_ascii_case("m")
+        }));
+        assert_eq!(
+            command(&linux, "Hide").unwrap().bindings,
+            [DefaultKeyBinding {
+                modifiers: vec!["SUPER"],
+                key: "m".to_string(),
+            }]
+        );
+
+        assert!(command(&linux, "ParkCurrentTab")
+            .unwrap()
+            .bindings
+            .iter()
+            .any(|binding| binding.modifiers == ["CTRL", "SHIFT"]));
+        assert!(command(&macos, "ParkCurrentTab")
+            .unwrap()
+            .bindings
+            .iter()
+            .any(|binding| binding.modifiers == ["SHIFT", "SUPER"]));
+    }
+
+    #[test]
+    fn default_command_catalog_actions_are_structured() {
+        let catalog = InputMap::default_command_catalog(KeyBindingPlatform::Linux).unwrap();
+        let copy = command_with_brief(&catalog, "Copy to clipboard");
+
+        assert_eq!(copy.action, serde_json::json!({"CopyTo": "Clipboard"}));
+        assert_eq!(copy.action_label, "CopyTo");
     }
 }

@@ -1,4 +1,4 @@
-list adopted and detected agent panes
+list managed, adopted, and detected agent panes
 
 Usage: wakterm agent list [OPTIONS]
 

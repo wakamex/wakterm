@@ -6,107 +6,69 @@ tags:
  - keys
 ---
 
-The default key assignments are shown in the table below.
+The default key assignments are shown below. This table is generated from the built-in command metadata for each platform.
 
-You may also use `wakterm show-keys --lua` to see the assignments in a form that you can copy and paste into your own configuration.
+Use `wakterm show-keys` to inspect the bindings after loading your config. Use `wakterm show-keys --json --platform linux|macos|windows` to export the built-in command metadata as structured data.
 
-| Modifiers | Key | Action |
-| --------- | --- | ------ |
-| `SUPER` | `c` | `CopyTo="Clipboard"` |
-| `SUPER` | `v` | `PasteFrom="Clipboard"` |
-| `CTRL+SHIFT` | `c` | `CopyTo="Clipboard"` |
-| `CTRL+SHIFT` | `v` | `PasteFrom="Clipboard"` |
-| | `Copy` | `CopyTo="Clipboard"` |
-| | `Paste` | `PasteFrom="Clipboard"` |
-| `CTRL` | `Insert` | `CopyTo="PrimarySelection"` |
-| `SHIFT` | `Insert` | `PasteFrom="PrimarySelection"` |
-| `SUPER` | `m` | `Hide` |
-| `SUPER` | `n` | `SpawnWindow` |
-| `CTRL+SHIFT` | `n` | `SpawnWindow` |
-| `ALT` | `Enter` | `ToggleFullScreen` |
-| `SUPER` | `-` | `DecreaseFontSize` |
-| `CTRL` | `-` | `DecreaseFontSize` |
-| `SUPER` | `=` | `IncreaseFontSize` |
-| `CTRL` | `=` | `IncreaseFontSize` |
-| `SUPER` | `0` | `ResetFontSize` |
-| `CTRL` | `0` | `ResetFontSize` |
-| `SUPER` | `t` | `SpawnTab="CurrentPaneDomain"` |
-| `CTRL+SHIFT` | `t` | `SpawnTab="CurrentPaneDomain"` |
-| `SUPER+SHIFT` | `T` | `SpawnTab="DefaultDomain"` |
-| `SUPER` | `w` | `CloseCurrentTab{confirm=true}` |
-| `CTRL+SHIFT` | `w` | `CloseCurrentTab{confirm=true}` |
-| `SUPER` | `d` | `CloseCurrentPane{confirm=true}` |
-| `CTRL+SHIFT` | `d` | `CloseCurrentPane{confirm=true}` |
-| `SUPER+SHIFT` | `S` | `ParkCurrentTab` |
-| `CTRL+SHIFT` | `S` | `ParkCurrentTab` |
-| `SUPER` | `e` | `ShowTabNavigator` |
-| `CTRL+SHIFT` | `E` | `ShowTabNavigator` |
-| `SUPER` | `1` | `ActivateTab=0` |
-| `SUPER` | `2` | `ActivateTab=1` |
-| `SUPER` | `3` | `ActivateTab=2` |
-| `SUPER` | `4` | `ActivateTab=3` |
-| `SUPER` | `5` | `ActivateTab=4` |
-| `SUPER` | `6` | `ActivateTab=5` |
-| `SUPER` | `7` | `ActivateTab=6` |
-| `SUPER` | `8` | `ActivateTab=7` |
-| `SUPER` | `9` | `ActivateTab=-1` |
-| `CTRL+SHIFT` | `1` | `ActivateTab=0` |
-| `CTRL+SHIFT` | `2` | `ActivateTab=1` |
-| `CTRL+SHIFT` | `3` | `ActivateTab=2` |
-| `CTRL+SHIFT` | `4` | `ActivateTab=3` |
-| `CTRL+SHIFT` | `5` | `ActivateTab=4` |
-| `CTRL+SHIFT` | `6` | `ActivateTab=5` |
-| `CTRL+SHIFT` | `7` | `ActivateTab=6` |
-| `CTRL+SHIFT` | `8` | `ActivateTab=7` |
-| `CTRL+SHIFT` | `9` | `ActivateTab=-1` |
-| `SUPER+SHIFT` | `[` | `ActivateTabRelative=-1` |
-| `CTRL+SHIFT` | `Tab` | `ActivateTabRelative=-1` |
-| `CTRL` | `PageUp` | `ActivateTabRelative=-1` |
-| `SUPER+SHIFT` | `]` | `ActivateTabRelative=1` |
-| `CTRL` | `Tab` | `ActivateTabRelative=1` |
-| `CTRL` | `PageDown` | `ActivateTabRelative=1` |
-| `CTRL+SHIFT` | `PageUp` | `MoveTabRelative=-1` |
-| `CTRL+SHIFT+ALT` | `[` | `MoveTabRelative=-1` |
-| `OPT+CMD` | `[` | `MoveTabRelative=-1` (macOS only) |
-| `CTRL+SHIFT` | `PageDown` | `MoveTabRelative=1` |
-| `CTRL+SHIFT+ALT` | `]` | `MoveTabRelative=1` |
-| `OPT+CMD` | `]` | `MoveTabRelative=1` (macOS only) |
-| `SHIFT` | `PageUp` | `ScrollByPage=-1` |
-| `SHIFT` | `PageDown` | `ScrollByPage=1` |
-| `SHIFT` | `Home` | `ScrollToTop` |
-| `SHIFT` | `End` | `ScrollToBottom` |
-| `SUPER` | `r` | `ReloadConfiguration` |
-| `CTRL+SHIFT` | `R` | `ReloadConfiguration` |
-| `SUPER` | `h` | `HideApplication` (macOS only) |
-| `SUPER` | `k` | `ClearScrollback="ScrollbackOnly"` |
-| `CTRL+SHIFT` | `K` | `ClearScrollback="ScrollbackOnly"` |
-| `CTRL+SHIFT` | `L` | `ShowDebugOverlay` |
-| `CTRL+SHIFT` | `P` | `ActivateCommandPalette` |
-| `SUPER` | `<` | `PromptRenameTab` |
-| `CTRL+SHIFT` | `<` | `PromptRenameTab` |
-| `SUPER` | `o` | `RotatePanes="Clockwise"` |
-| `CTRL+SHIFT` | `O` | `RotatePanes="Clockwise"` |
-| `CTRL+SHIFT` | `U` | `CharSelect` |
-| `SUPER` | `f` | `Search={CaseSensitiveString=""}` |
-| `CTRL+SHIFT` | `F` | `Search={CaseSensitiveString=""}` |
-| `CTRL+SHIFT` | `X` | `ActivateCopyMode` |
-| `CTRL+SHIFT` | `Space` | `QuickSelect` |
-| `CTRL+SHIFT` | `M` | `PaneSelect={mode="SwapWithActive"}` |
-| `CTRL+SHIFT+ALT` | `"` | `SplitVertical={domain="CurrentPaneDomain"}` |
-| `CTRL+SHIFT+ALT` | `%` | `SplitHorizontal={domain="CurrentPaneDomain"}` |
-| `CTRL+SHIFT+ALT` | `LeftArrow` | `AdjustPaneSize={"Left", 1}` |
-| `CTRL+SHIFT+ALT` | `RightArrow` | `AdjustPaneSize={"Right", 1}` |
-| `CTRL+SHIFT+ALT` | `UpArrow` | `AdjustPaneSize={"Up", 1}` |
-| `CTRL+SHIFT+ALT` | `DownArrow` | `AdjustPaneSize={"Down", 1}` |
-| `CTRL+SHIFT` | `LeftArrow` | `ActivatePaneDirection="Left"` |
-| `CTRL+SHIFT` | `RightArrow` | `ActivatePaneDirection="Right"` |
-| `CTRL+SHIFT` | `UpArrow` | `ActivatePaneDirection="Up"` |
-| `CTRL+SHIFT` | `DownArrow` | `ActivatePaneDirection="Down"` |
-| `SUPER+ALT` | `LeftArrow` | `ActivatePaneDirection="Left"` (macOS only) |
-| `SUPER+ALT` | `RightArrow` | `ActivatePaneDirection="Right"` (macOS only) |
-| `SUPER+ALT` | `UpArrow` | `ActivatePaneDirection="Up"` (macOS only) |
-| `SUPER+ALT` | `DownArrow` | `ActivatePaneDirection="Down"` (macOS only) |
-| `CTRL+SHIFT` | `Z` | `TogglePaneZoomState` |
+| Action | Description | Linux | macOS | Windows |
+| ------ | ----------- | ----- | ----- | ------- |
+| <code>ActivateTab</code> | Activate 1st Tab | <code>Ctrl+!</code><br><code>Ctrl+Shift+!</code><br><code>Ctrl+Shift+1</code><br><code>Super+1</code> | <code>Ctrl+!</code><br><code>Ctrl+Shift+!</code><br><code>Ctrl+Shift+1</code><br><code>Cmd+1</code> | <code>Ctrl+!</code><br><code>Ctrl+Shift+!</code><br><code>Ctrl+Shift+1</code><br><code>Win+1</code> |
+| <code>ActivateTab</code> | Activate 2nd Tab | <code>Ctrl+Shift+2</code><br><code>Super+2</code><br><code>Ctrl+@</code><br><code>Ctrl+Shift+@</code> | <code>Ctrl+Shift+2</code><br><code>Cmd+2</code><br><code>Ctrl+@</code><br><code>Ctrl+Shift+@</code> | <code>Ctrl+Shift+2</code><br><code>Win+2</code><br><code>Ctrl+@</code><br><code>Ctrl+Shift+@</code> |
+| <code>ActivateTab</code> | Activate 3rd Tab | <code>Ctrl+#</code><br><code>Ctrl+Shift+#</code><br><code>Ctrl+Shift+3</code><br><code>Super+3</code> | <code>Ctrl+#</code><br><code>Ctrl+Shift+#</code><br><code>Ctrl+Shift+3</code><br><code>Cmd+3</code> | <code>Ctrl+#</code><br><code>Ctrl+Shift+#</code><br><code>Ctrl+Shift+3</code><br><code>Win+3</code> |
+| <code>ActivateTab</code> | Activate 4th Tab | <code>Ctrl+$</code><br><code>Ctrl+Shift+$</code><br><code>Ctrl+Shift+4</code><br><code>Super+4</code> | <code>Ctrl+$</code><br><code>Ctrl+Shift+$</code><br><code>Ctrl+Shift+4</code><br><code>Cmd+4</code> | <code>Ctrl+$</code><br><code>Ctrl+Shift+$</code><br><code>Ctrl+Shift+4</code><br><code>Win+4</code> |
+| <code>ActivateTab</code> | Activate 5th Tab | <code>Ctrl+%</code><br><code>Ctrl+Shift+%</code><br><code>Ctrl+Shift+5</code><br><code>Super+5</code> | <code>Ctrl+%</code><br><code>Ctrl+Shift+%</code><br><code>Ctrl+Shift+5</code><br><code>Cmd+5</code> | <code>Ctrl+%</code><br><code>Ctrl+Shift+%</code><br><code>Ctrl+Shift+5</code><br><code>Win+5</code> |
+| <code>ActivateTab</code> | Activate 6th Tab | <code>Ctrl+Shift+6</code><br><code>Super+6</code><br><code>Ctrl+^</code><br><code>Ctrl+Shift+^</code> | <code>Ctrl+Shift+6</code><br><code>Cmd+6</code><br><code>Ctrl+^</code><br><code>Ctrl+Shift+^</code> | <code>Ctrl+Shift+6</code><br><code>Win+6</code><br><code>Ctrl+^</code><br><code>Ctrl+Shift+^</code> |
+| <code>ActivateTab</code> | Activate 7th Tab | <code>Ctrl+&amp;</code><br><code>Ctrl+Shift+&amp;</code><br><code>Ctrl+Shift+7</code><br><code>Super+7</code> | <code>Ctrl+&amp;</code><br><code>Ctrl+Shift+&amp;</code><br><code>Ctrl+Shift+7</code><br><code>Cmd+7</code> | <code>Ctrl+&amp;</code><br><code>Ctrl+Shift+&amp;</code><br><code>Ctrl+Shift+7</code><br><code>Win+7</code> |
+| <code>ActivateTab</code> | Activate 8th Tab | <code>Ctrl+*</code><br><code>Ctrl+Shift+*</code><br><code>Ctrl+Shift+8</code><br><code>Super+8</code> | <code>Ctrl+*</code><br><code>Ctrl+Shift+*</code><br><code>Ctrl+Shift+8</code><br><code>Cmd+8</code> | <code>Ctrl+*</code><br><code>Ctrl+Shift+*</code><br><code>Ctrl+Shift+8</code><br><code>Win+8</code> |
+| <code>ActivateCommandPalette</code> | Activate Command Palette | <code>Ctrl+P</code><br><code>Ctrl+Shift+P</code><br><code>Ctrl+Shift+p</code> | <code>Ctrl+P</code><br><code>Ctrl+Shift+P</code><br><code>Ctrl+Shift+p</code> | <code>Ctrl+P</code><br><code>Ctrl+Shift+P</code><br><code>Ctrl+Shift+p</code> |
+| <code>ActivateCopyMode</code> | Activate Copy Mode | <code>Ctrl+X</code><br><code>Ctrl+Shift+X</code><br><code>Ctrl+Shift+x</code> | <code>Ctrl+X</code><br><code>Ctrl+Shift+X</code><br><code>Ctrl+Shift+x</code> | <code>Ctrl+X</code><br><code>Ctrl+Shift+X</code><br><code>Ctrl+Shift+x</code> |
+| <code>ActivatePaneDirection</code> | Activate Pane Down | <code>Ctrl+Shift+DownArrow</code> | <code>Ctrl+Shift+DownArrow</code><br><code>Cmd+Opt+DownArrow</code> | <code>Ctrl+Shift+DownArrow</code> |
+| <code>ActivatePaneDirection</code> | Activate Pane Left | <code>Ctrl+Shift+LeftArrow</code> | <code>Ctrl+Shift+LeftArrow</code><br><code>Cmd+Opt+LeftArrow</code> | <code>Ctrl+Shift+LeftArrow</code> |
+| <code>ActivatePaneDirection</code> | Activate Pane Right | <code>Ctrl+Shift+RightArrow</code> | <code>Ctrl+Shift+RightArrow</code><br><code>Cmd+Opt+RightArrow</code> | <code>Ctrl+Shift+RightArrow</code> |
+| <code>ActivatePaneDirection</code> | Activate Pane Up | <code>Ctrl+Shift+UpArrow</code> | <code>Ctrl+Shift+UpArrow</code><br><code>Cmd+Opt+UpArrow</code> | <code>Ctrl+Shift+UpArrow</code> |
+| <code>ActivateTab</code> | Activate right-most tab | <code>Ctrl+(</code><br><code>Ctrl+Shift+(</code><br><code>Ctrl+Shift+9</code><br><code>Super+9</code> | <code>Ctrl+(</code><br><code>Ctrl+Shift+(</code><br><code>Ctrl+Shift+9</code><br><code>Cmd+9</code> | <code>Ctrl+(</code><br><code>Ctrl+Shift+(</code><br><code>Ctrl+Shift+9</code><br><code>Win+9</code> |
+| <code>ActivateTabRelative</code> | Activate the tab to the left | <code>Ctrl+Shift+Tab</code><br><code>Shift+Super+[</code><br><code>Super+{</code><br><code>Shift+Super+{</code><br><code>Ctrl+PageUp</code> | <code>Ctrl+Shift+Tab</code><br><code>Cmd+Shift+[</code><br><code>Cmd+{</code><br><code>Cmd+Shift+{</code><br><code>Ctrl+PageUp</code> | <code>Ctrl+Shift+Tab</code><br><code>Shift+Win+[</code><br><code>Win+{</code><br><code>Shift+Win+{</code><br><code>Ctrl+PageUp</code> |
+| <code>ActivateTabRelative</code> | Activate the tab to the right | <code>Ctrl+Tab</code><br><code>Shift+Super+]</code><br><code>Super+}</code><br><code>Shift+Super+}</code><br><code>Ctrl+PageDown</code> | <code>Ctrl+Tab</code><br><code>Cmd+Shift+]</code><br><code>Cmd+}</code><br><code>Cmd+Shift+}</code><br><code>Ctrl+PageDown</code> | <code>Ctrl+Tab</code><br><code>Shift+Win+]</code><br><code>Win+}</code><br><code>Shift+Win+}</code><br><code>Ctrl+PageDown</code> |
+| <code>ClearScrollback</code> | Clear scrollback | <code>Ctrl+K</code><br><code>Ctrl+Shift+K</code><br><code>Ctrl+Shift+k</code><br><code>Super+k</code> | <code>Ctrl+K</code><br><code>Ctrl+Shift+K</code><br><code>Ctrl+Shift+k</code><br><code>Cmd+k</code> | <code>Ctrl+K</code><br><code>Ctrl+Shift+K</code><br><code>Ctrl+Shift+k</code><br><code>Win+k</code> |
+| <code>CloseCurrentPane</code> | Close current Pane | <code>Ctrl+D</code><br><code>Ctrl+Shift+D</code><br><code>Ctrl+Shift+d</code><br><code>Super+d</code> | <code>Ctrl+D</code><br><code>Ctrl+Shift+D</code><br><code>Ctrl+Shift+d</code><br><code>Cmd+d</code> | <code>Ctrl+D</code><br><code>Ctrl+Shift+D</code><br><code>Ctrl+Shift+d</code><br><code>Win+d</code> |
+| <code>CloseCurrentTab</code> | Close current Tab | <code>Ctrl+W</code><br><code>Ctrl+Shift+W</code><br><code>Ctrl+Shift+w</code><br><code>Super+w</code> | <code>Ctrl+W</code><br><code>Ctrl+Shift+W</code><br><code>Ctrl+Shift+w</code><br><code>Cmd+w</code> | <code>Ctrl+W</code><br><code>Ctrl+Shift+W</code><br><code>Ctrl+Shift+w</code><br><code>Win+w</code> |
+| <code>CopyTo</code> | Copy to clipboard | <code>Ctrl+C</code><br><code>Ctrl+Shift+C</code><br><code>Ctrl+Shift+c</code><br><code>Super+c</code><br><code>Copy</code> | <code>Ctrl+C</code><br><code>Ctrl+Shift+C</code><br><code>Ctrl+Shift+c</code><br><code>Cmd+c</code><br><code>Copy</code> | <code>Ctrl+C</code><br><code>Ctrl+Shift+C</code><br><code>Ctrl+Shift+c</code><br><code>Win+c</code><br><code>Copy</code> |
+| <code>CopyTo</code> | Copy to primary selection | <code>Ctrl+Insert</code> | - | <code>Ctrl+Insert</code> |
+| <code>DecreaseFontSize</code> | Decrease font size | <code>Ctrl+-</code><br><code>Ctrl+Shift+-</code><br><code>Super+-</code><br><code>Ctrl+_</code><br><code>Ctrl+Shift+_</code> | <code>Ctrl+-</code><br><code>Ctrl+Shift+-</code><br><code>Cmd+-</code><br><code>Ctrl+_</code><br><code>Ctrl+Shift+_</code> | <code>Ctrl+-</code><br><code>Ctrl+Shift+-</code><br><code>Win+-</code><br><code>Ctrl+_</code><br><code>Ctrl+Shift+_</code> |
+| <code>CharSelect</code> | Enter Emoji / Character selection mode | <code>Ctrl+U</code><br><code>Ctrl+Shift+U</code><br><code>Ctrl+Shift+u</code> | <code>Ctrl+U</code><br><code>Ctrl+Shift+U</code><br><code>Ctrl+Shift+u</code> | <code>Ctrl+U</code><br><code>Ctrl+Shift+U</code><br><code>Ctrl+Shift+u</code> |
+| <code>QuickSelect</code> | Enter QuickSelect mode | <code>Ctrl+Shift+phys:Space</code> | <code>Ctrl+Shift+phys:Space</code> | <code>Ctrl+Shift+phys:Space</code> |
+| <code>HideApplication</code> | Hide Application | - | <code>Ctrl+H</code><br><code>Ctrl+Shift+H</code><br><code>Ctrl+Shift+h</code><br><code>Cmd+h</code> | - |
+| <code>ParkCurrentTab</code> | Hide current Tab | <code>Ctrl+Shift+S</code> | <code>Cmd+Shift+S</code> | <code>Ctrl+Shift+S</code> |
+| <code>Hide</code> | Hide/Minimize Window | <code>Super+m</code> | <code>Cmd+m</code> | <code>Win+m</code> |
+| <code>IncreaseFontSize</code> | Increase font size | <code>Ctrl++</code><br><code>Ctrl+Shift++</code><br><code>Ctrl+=</code><br><code>Ctrl+Shift+=</code><br><code>Super+=</code> | <code>Ctrl++</code><br><code>Ctrl+Shift++</code><br><code>Ctrl+=</code><br><code>Ctrl+Shift+=</code><br><code>Cmd+=</code> | <code>Ctrl++</code><br><code>Ctrl+Shift++</code><br><code>Ctrl+=</code><br><code>Ctrl+Shift+=</code><br><code>Win+=</code> |
+| <code>MoveTabRelative</code> | Move tab one place to the left | <code>Alt+Super+[</code><br><code>Ctrl+Shift+PageUp</code> | <code>Cmd+Opt+[</code><br><code>Ctrl+Shift+PageUp</code> | <code>Alt+Win+[</code><br><code>Ctrl+Shift+PageUp</code> |
+| <code>MoveTabRelative</code> | Move tab one place to the right | <code>Alt+Super+]</code><br><code>Ctrl+Shift+PageDown</code> | <code>Cmd+Opt+]</code><br><code>Ctrl+Shift+PageDown</code> | <code>Alt+Win+]</code><br><code>Ctrl+Shift+PageDown</code> |
+| <code>ShowTabNavigator</code> | Navigate tabs | <code>Ctrl+E</code><br><code>Ctrl+Shift+E</code><br><code>Ctrl+Shift+e</code><br><code>Super+e</code> | <code>Ctrl+E</code><br><code>Ctrl+Shift+E</code><br><code>Ctrl+Shift+e</code><br><code>Cmd+e</code> | <code>Ctrl+E</code><br><code>Ctrl+Shift+E</code><br><code>Ctrl+Shift+e</code><br><code>Win+e</code> |
+| <code>SpawnTab</code> | New Tab | <code>Ctrl+T</code><br><code>Ctrl+Shift+T</code><br><code>Ctrl+Shift+t</code><br><code>Super+t</code> | <code>Ctrl+T</code><br><code>Ctrl+Shift+T</code><br><code>Ctrl+Shift+t</code><br><code>Cmd+t</code> | <code>Ctrl+T</code><br><code>Ctrl+Shift+T</code><br><code>Ctrl+Shift+t</code><br><code>Win+t</code> |
+| <code>SpawnWindow</code> | New Window | <code>Ctrl+N</code><br><code>Ctrl+Shift+N</code><br><code>Ctrl+Shift+n</code><br><code>Super+n</code> | <code>Ctrl+N</code><br><code>Ctrl+Shift+N</code><br><code>Ctrl+Shift+n</code><br><code>Cmd+n</code> | <code>Ctrl+N</code><br><code>Ctrl+Shift+N</code><br><code>Ctrl+Shift+n</code><br><code>Win+n</code> |
+| <code>PasteFrom</code> | Paste from clipboard | <code>Ctrl+V</code><br><code>Ctrl+Shift+V</code><br><code>Ctrl+Shift+v</code><br><code>Super+v</code><br><code>Paste</code> | <code>Ctrl+V</code><br><code>Ctrl+Shift+V</code><br><code>Ctrl+Shift+v</code><br><code>Cmd+v</code><br><code>Paste</code> | <code>Ctrl+V</code><br><code>Ctrl+Shift+V</code><br><code>Ctrl+Shift+v</code><br><code>Win+v</code><br><code>Paste</code> |
+| <code>PasteFrom</code> | Paste primary selection | <code>Shift+Insert</code> | - | <code>Shift+Insert</code> |
+| <code>QuitApplication</code> | Quit wakterm | - | <code>Ctrl+Q</code><br><code>Ctrl+Shift+Q</code><br><code>Ctrl+Shift+q</code><br><code>Cmd+q</code> | - |
+| <code>ReloadConfiguration</code> | Reload configuration | <code>Ctrl+R</code><br><code>Ctrl+Shift+R</code><br><code>Ctrl+Shift+r</code><br><code>Super+r</code> | <code>Ctrl+R</code><br><code>Ctrl+Shift+R</code><br><code>Ctrl+Shift+r</code><br><code>Cmd+r</code> | <code>Ctrl+R</code><br><code>Ctrl+Shift+R</code><br><code>Ctrl+Shift+r</code><br><code>Win+r</code> |
+| <code>PromptRenameTab</code> | Rename current tab | <code>Ctrl+Shift+&lt;</code><br><code>Super+&lt;</code> | <code>Ctrl+Shift+&lt;</code><br><code>Cmd+&lt;</code> | <code>Ctrl+Shift+&lt;</code><br><code>Win+&lt;</code> |
+| <code>ResetFontSize</code> | Reset font size | <code>Ctrl+)</code><br><code>Ctrl+Shift+)</code><br><code>Ctrl+0</code><br><code>Ctrl+Shift+0</code><br><code>Super+0</code> | <code>Ctrl+)</code><br><code>Ctrl+Shift+)</code><br><code>Ctrl+0</code><br><code>Ctrl+Shift+0</code><br><code>Cmd+0</code> | <code>Ctrl+)</code><br><code>Ctrl+Shift+)</code><br><code>Ctrl+0</code><br><code>Ctrl+Shift+0</code><br><code>Win+0</code> |
+| <code>AdjustPaneSize</code> | Resize Pane 1 cell(s) Downwards | <code>Ctrl+Shift+Alt+DownArrow</code> | <code>Ctrl+Opt+Shift+DownArrow</code> | <code>Ctrl+Shift+Alt+DownArrow</code> |
+| <code>AdjustPaneSize</code> | Resize Pane 1 cell(s) to the Left | <code>Ctrl+Shift+Alt+LeftArrow</code> | <code>Ctrl+Opt+Shift+LeftArrow</code> | <code>Ctrl+Shift+Alt+LeftArrow</code> |
+| <code>AdjustPaneSize</code> | Resize Pane 1 cell(s) to the Right | <code>Ctrl+Shift+Alt+RightArrow</code> | <code>Ctrl+Opt+Shift+RightArrow</code> | <code>Ctrl+Shift+Alt+RightArrow</code> |
+| <code>AdjustPaneSize</code> | Resize Pane 1 cell(s) Upwards | <code>Ctrl+Shift+Alt+UpArrow</code> | <code>Ctrl+Opt+Shift+UpArrow</code> | <code>Ctrl+Shift+Alt+UpArrow</code> |
+| <code>RotatePanes</code> | Rotate panes clockwise | <code>Ctrl+O</code><br><code>Ctrl+Shift+O</code><br><code>Ctrl+Shift+o</code><br><code>Super+o</code> | <code>Ctrl+O</code><br><code>Ctrl+Shift+O</code><br><code>Ctrl+Shift+o</code><br><code>Cmd+o</code> | <code>Ctrl+O</code><br><code>Ctrl+Shift+O</code><br><code>Ctrl+Shift+o</code><br><code>Win+o</code> |
+| <code>ScrollByPage</code> | Scroll Down One Page | <code>Shift+PageDown</code> | <code>Shift+PageDown</code> | <code>Shift+PageDown</code> |
+| <code>ScrollToBottom</code> | Scroll to the bottom | <code>Shift+End</code> | <code>Shift+End</code> | <code>Shift+End</code> |
+| <code>ScrollToTop</code> | Scroll to the top | <code>Shift+Home</code> | <code>Shift+Home</code> | <code>Shift+Home</code> |
+| <code>ScrollByPage</code> | Scroll Up One Page | <code>Shift+PageUp</code> | <code>Shift+PageUp</code> | <code>Shift+PageUp</code> |
+| <code>Search</code> | Search pane output | <code>Ctrl+F</code><br><code>Ctrl+Shift+F</code><br><code>Ctrl+Shift+f</code><br><code>Super+f</code> | <code>Ctrl+F</code><br><code>Ctrl+Shift+F</code><br><code>Ctrl+Shift+f</code><br><code>Cmd+f</code> | <code>Ctrl+F</code><br><code>Ctrl+Shift+F</code><br><code>Ctrl+Shift+f</code><br><code>Win+f</code> |
+| <code>ShowDebugOverlay</code> | Show debug overlay | <code>Ctrl+L</code><br><code>Ctrl+Shift+L</code><br><code>Ctrl+Shift+l</code> | <code>Ctrl+L</code><br><code>Ctrl+Shift+L</code><br><code>Ctrl+Shift+l</code> | <code>Ctrl+L</code><br><code>Ctrl+Shift+L</code><br><code>Ctrl+Shift+l</code> |
+| <code>SplitHorizontal</code> | Split Horizontally (Left/Right) | <code>Ctrl+Alt+%</code><br><code>Ctrl+Shift+Alt+%</code><br><code>Ctrl+Shift+Alt+5</code> | <code>Ctrl+Opt+%</code><br><code>Ctrl+Opt+Shift+%</code><br><code>Ctrl+Opt+Shift+5</code> | <code>Ctrl+Alt+%</code><br><code>Ctrl+Shift+Alt+%</code><br><code>Ctrl+Shift+Alt+5</code> |
+| <code>SplitVertical</code> | Split Vertically (Top/Bottom) | <code>Ctrl+Alt+&quot;</code><br><code>Ctrl+Shift+Alt+&quot;</code><br><code>Ctrl+Shift+Alt+&#x27;</code> | <code>Ctrl+Opt+&quot;</code><br><code>Ctrl+Opt+Shift+&quot;</code><br><code>Ctrl+Opt+Shift+&#x27;</code> | <code>Ctrl+Alt+&quot;</code><br><code>Ctrl+Shift+Alt+&quot;</code><br><code>Ctrl+Shift+Alt+&#x27;</code> |
+| <code>PaneSelect</code> | Swap a pane with the active pane | <code>Ctrl+M</code><br><code>Ctrl+Shift+M</code><br><code>Ctrl+Shift+m</code> | <code>Ctrl+M</code><br><code>Ctrl+Shift+M</code><br><code>Ctrl+Shift+m</code> | <code>Ctrl+M</code><br><code>Ctrl+Shift+M</code><br><code>Ctrl+Shift+m</code> |
+| <code>ToggleFullScreen</code> | Toggle full screen mode | <code>Alt+Enter</code> | <code>Opt+Enter</code> | <code>Alt+Enter</code> |
+| <code>TogglePaneZoomState</code> | Toggle Pane Zoom | <code>Ctrl+Z</code><br><code>Ctrl+Shift+Z</code><br><code>Ctrl+Shift+z</code> | <code>Ctrl+Z</code><br><code>Ctrl+Shift+Z</code><br><code>Ctrl+Shift+z</code> | <code>Ctrl+Z</code><br><code>Ctrl+Shift+Z</code><br><code>Ctrl+Shift+z</code> |
+| <code>ToggleTabBarPosition</code> | Toggle tab bar position | <code>Ctrl+A</code><br><code>Ctrl+Shift+A</code><br><code>Ctrl+Shift+a</code> | <code>Ctrl+A</code><br><code>Ctrl+Shift+A</code><br><code>Ctrl+Shift+a</code> | <code>Ctrl+A</code><br><code>Ctrl+Shift+A</code><br><code>Ctrl+Shift+a</code> |
 
 If you do not want the default assignments to be registered, you can disable all of them with this configuration:
 
