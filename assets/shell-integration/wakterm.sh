@@ -24,6 +24,14 @@ if [ "${WAKTERM_SHELL_SKIP_ALL-}" = "1" ] ; then
   return 0
 fi
 
+# Wsh owns standard OSC 7 and OSC 133 sequences through its bundled Zsh. Keep
+# Wakterm's separate OSC 1337 metadata, but do not install duplicate prompt,
+# output, or working-directory reporters.
+if [ "${WSH_NATIVE_TERMINAL_INTEGRATION-}" = "1" ] ; then
+  WAKTERM_SHELL_SKIP_SEMANTIC_ZONES=1
+  WAKTERM_SHELL_SKIP_CWD=1
+fi
+
 if [[ $- != *i* ]] ; then
   # Shell integration is only useful in interactive sessions
   return 0

@@ -1685,6 +1685,14 @@ mod test {
                 }
             ),
         );
+
+        assert_eq!(
+            FinalTermSemanticPrompt::parse(&[b"133", b"A", b"cl=m", b"aid=zAbC123"]).unwrap(),
+            FinalTermSemanticPrompt::FreshLineAndStartPrompt {
+                aid: Some("zAbC123".to_owned()),
+                cl: Some(FinalTermClick::MultipleLine),
+            },
+        );
     }
 
     #[test]

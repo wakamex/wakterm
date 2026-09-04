@@ -21,6 +21,8 @@ To use this file to setup shell integration in wakterm with Bash or Zsh, you can
 copy the file to your computer and source it via `. /path/to/file.sh` in your `.bashrc`
 or `.zshrc`, or you can install it at `/etc/profile.d` on most unix systems.
 
+Wsh's bundled Zsh emits OSC 7 and OSC 133 natively. When Wsh marks itself as their owner, this script keeps its separate OSC 1337 user variables but skips its prompt, output, and working-directory hooks so each standard sequence has one owner.
+
 Xonsh is supported via a [term-integrations](https://github.com/jnoortheen/xontrib-term-integrations) plugin.
 
 Starting with version 20210314-114017-04b7cedd, the Fedora and Debian packages
