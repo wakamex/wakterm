@@ -376,6 +376,7 @@ impl CodexAppServer {
             .connection
             .as_ref()
             .context("Codex app-server connection missing")?;
+        let fresh_thread = request.resume_thread_id.is_none();
         let result = if let Some(thread_id) = request.resume_thread_id.as_deref() {
             connection.request(
                 "thread/resume",
@@ -407,13 +408,31 @@ impl CodexAppServer {
                 "Codex resumed thread {thread_id}, expected {expected}"
             );
         }
-        // The installed app-server does not make a new empty thread resumable
-        // from another connection until it has durable state. Naming is a
-        // supported, model-free write that makes the native TUI resume exact.
         connection.request(
             "thread/name/set",
             json!({"threadId": thread_id, "name": request.name}),
         )?;
+        if fresh_thread {
+            let attached = connection
+                .request(
+                    "thread/resume",
+                    metadata_only_resume_params(&thread_id, &request.cwd, &request.tui_args),
+                )
+                .with_context(|| {
+                    format!(
+                        "Codex app-server cannot attach a native TUI to fresh thread {thread_id}; this Codex build does not support resuming an already-live unmaterialized thread"
+                    )
+                })?;
+            let attached_thread_id = attached
+                .pointer("/thread/id")
+                .and_then(Value::as_str)
+                .context("Codex fresh-thread attachment omitted thread.id")?;
+            anyhow::ensure!(
+                attached_thread_id == thread_id,
+                "Codex attached fresh thread {attached_thread_id}, expected {thread_id}"
+            );
+            self.record_thread_bootstrap(&attached);
+        }
         let executable = state.executable.clone().unwrap();
         let version = state.version.clone().unwrap();
         let endpoint = if proxy_tui {
@@ -1617,6 +1636,103 @@ mod test {
         assert_eq!(first_rx.recv().unwrap().unwrap()["thread"], "one");
         assert_eq!(second_rx.recv().unwrap().unwrap()["thread"], "two");
         assert!(connection.pending.lock().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preflights_fresh_thread_attachment_before_preparing_tui() {
+        let thread_id = "01a06a49-b07c-7b52-9d9b-3d6e57a137d0";
+        let (writer, peer) = UnixStream::pair().unwrap();
+        let connection = Arc::new(Connection {
+            writer: Mutex::new(writer),
+            pending: Mutex::new(HashMap::new()),
+            next_id: AtomicU64::new(1),
+        });
+        let responder_connection = Arc::clone(&connection);
+        let responder = thread::spawn(move || {
+            let mut methods = Vec::new();
+            read_messages(peer, |opcode, payload| {
+                assert_eq!(opcode, 1);
+                let request: Value = serde_json::from_slice(&payload).unwrap();
+                let id = request["id"].as_u64().unwrap();
+                let method = request["method"].as_str().unwrap();
+                methods.push(method.to_string());
+                match method {
+                    "thread/start" => responder_connection.dispatch(json!({
+                        "id": id,
+                        "result": {
+                            "thread": {
+                                "id": thread_id,
+                                "sessionId": thread_id,
+                                "status": {"type": "idle"}
+                            }
+                        }
+                    })),
+                    "thread/name/set" => {
+                        assert_eq!(request["params"]["threadId"], thread_id);
+                        responder_connection.dispatch(json!({"id": id, "result": {}}));
+                    }
+                    "thread/resume" => {
+                        assert_eq!(request["params"]["threadId"], thread_id);
+                        assert_eq!(request["params"]["excludeTurns"], true);
+                        responder_connection.dispatch(json!({
+                            "id": id,
+                            "result": {
+                                "thread": {
+                                    "id": thread_id,
+                                    "sessionId": thread_id,
+                                    "status": {"type": "idle"}
+                                }
+                            }
+                        }));
+                    }
+                    method => panic!("unexpected request {}", method),
+                }
+                if methods.len() == 3 {
+                    assert_eq!(
+                        methods,
+                        ["thread/start", "thread/name/set", "thread/resume"]
+                    );
+                    false
+                } else {
+                    true
+                }
+            })
+            .unwrap();
+        });
+
+        let server = CodexAppServer::new(9000);
+        let prepared = {
+            let mut state = server.state.lock();
+            state.connection = Some(connection);
+            state.executable = Some("/usr/local/bin/codex".to_string());
+            state.version = Some("codex-cli test".to_string());
+            server
+                .prepare_connected(
+                    &mut state,
+                    PrepareCodexLaunch {
+                        name: "zcode_codex".to_string(),
+                        cwd: "/code/zcode".to_string(),
+                        resume_thread_id: None,
+                        tui_args: vec![
+                            "-a".to_string(),
+                            "never".to_string(),
+                            "-s".to_string(),
+                            "danger-full-access".to_string(),
+                        ],
+                    },
+                    false,
+                )
+                .unwrap()
+        };
+        responder.join().unwrap();
+
+        assert_eq!(prepared.session.thread_id, thread_id);
+        assert_eq!(prepared.session.session_id, thread_id);
+        assert_eq!(
+            prepared.session.tui_args,
+            ["-a", "never", "-s", "danger-full-access"]
+        );
     }
 
     #[cfg(unix)]

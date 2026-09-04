@@ -28,6 +28,8 @@ use uuid::Uuid;
 use wakterm_client::client::Client;
 
 const STARTUP_STABILIZATION_DELAY_MS: u64 = 200;
+const MANAGED_CODEX_STARTUP_TIMEOUT_MS: u64 = 1_000;
+const MANAGED_CODEX_STARTUP_POLL_MS: u64 = 25;
 
 #[derive(Debug, Parser, Clone)]
 pub struct AgentCommand {
@@ -603,13 +605,25 @@ impl SpawnAgentCommand {
             }
         }
 
-        reload_spawned_agent_after_startup(
+        let stabilization_delay_ms = if self.prepared_override.is_some() {
+            MANAGED_CODEX_STARTUP_TIMEOUT_MS
+        } else {
+            STARTUP_STABILIZATION_DELAY_MS
+        };
+        let result = reload_spawned_agent_after_startup(
             &mut list_agents_after_set,
             spawned.pane_id,
             &agent_name,
-            STARTUP_STABILIZATION_DELAY_MS,
+            stabilization_delay_ms,
         )
-        .await
+        .await;
+        if result.is_err() && !self.here {
+            let _ = kill_pane(codec::KillPane {
+                pane_id: spawned.pane_id,
+            })
+            .await;
+        }
+        result
     }
 
     fn split_request(&self) -> SplitRequest {
@@ -3062,7 +3076,7 @@ async fn reload_spawned_agent_after_startup<ListAgents, ListAgentsFut>(
     list_agents: &mut ListAgents,
     pane_id: PaneId,
     agent_name: &str,
-    stabilization_delay_ms: u64,
+    stabilization_timeout_ms: u64,
 ) -> anyhow::Result<AgentSnapshot>
 where
     ListAgents: FnMut() -> ListAgentsFut,
@@ -3075,17 +3089,38 @@ where
         .find(|agent| agent.pane_id == pane_id)
         .ok_or_else(|| anyhow::anyhow!("spawned agent but could not reload it from the mux"))?;
     ensure_spawned_agent_is_running(&initial, agent_name)?;
+    let managed_codex = initial.metadata.codex_app_server.is_some();
+    if managed_codex && initial.metadata.adopted_pid.is_some() {
+        return Ok(initial);
+    }
 
-    smol::Timer::after(Duration::from_millis(stabilization_delay_ms)).await;
+    let timeout = Duration::from_millis(stabilization_timeout_ms);
+    let started = Instant::now();
+    loop {
+        let wait = if managed_codex {
+            Duration::from_millis(MANAGED_CODEX_STARTUP_POLL_MS)
+                .min(timeout.saturating_sub(started.elapsed()))
+        } else {
+            timeout
+        };
+        smol::Timer::after(wait).await;
 
-    let stabilized = list_agents()
-        .await?
-        .agents
-        .into_iter()
-        .find(|agent| agent.pane_id == pane_id)
-        .ok_or_else(|| anyhow::anyhow!("agent {agent_name} disappeared shortly after startup"))?;
-    ensure_spawned_agent_is_running(&stabilized, agent_name)?;
-    Ok(stabilized)
+        let stabilized = list_agents()
+            .await?
+            .agents
+            .into_iter()
+            .find(|agent| agent.pane_id == pane_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!("agent {agent_name} disappeared shortly after startup")
+            })?;
+        ensure_spawned_agent_is_running(&stabilized, agent_name)?;
+        if !managed_codex || stabilized.metadata.adopted_pid.is_some() {
+            return Ok(stabilized);
+        }
+        if started.elapsed() >= timeout {
+            bail!("agent {agent_name} did not establish its managed Codex frontend");
+        }
+    }
 }
 
 fn ensure_spawned_agent_is_running(agent: &AgentSnapshot, agent_name: &str) -> anyhow::Result<()> {
@@ -3881,6 +3916,79 @@ mod test {
         assert!(err
             .to_string()
             .contains("agent reviewer exited shortly after startup"));
+    }
+
+    #[test]
+    fn reload_spawned_agent_after_startup_requires_managed_codex_frontend() {
+        let mut pending = sample_agent(30, "reviewer");
+        pending.metadata.codex_app_server = Some(mux::agent::CodexAppServerSession {
+            thread_id: "01a06a49-b07c-7b52-9d9b-3d6e57a137d0".to_string(),
+            session_id: "01a06a49-b07c-7b52-9d9b-3d6e57a137d0".to_string(),
+            executable: "/usr/local/bin/codex".to_string(),
+            version: "codex-cli test".to_string(),
+            tui_args: vec![],
+        });
+
+        let err = promise::spawn::block_on(reload_spawned_agent_after_startup(
+            &mut move || {
+                let pending = pending.clone();
+                async move {
+                    Ok(ListAgentsResponse {
+                        agents: vec![pending],
+                    })
+                }
+            },
+            30,
+            "reviewer",
+            0,
+        ))
+        .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("agent reviewer did not establish its managed Codex frontend"));
+    }
+
+    #[test]
+    fn reload_spawned_agent_after_startup_waits_for_managed_codex_frontend() {
+        let mut pending = sample_agent(30, "reviewer");
+        pending.metadata.codex_app_server = Some(mux::agent::CodexAppServerSession {
+            thread_id: "01a06a49-b07c-7b52-9d9b-3d6e57a137d0".to_string(),
+            session_id: "01a06a49-b07c-7b52-9d9b-3d6e57a137d0".to_string(),
+            executable: "/usr/local/bin/codex".to_string(),
+            version: "codex-cli test".to_string(),
+            tui_args: vec![],
+        });
+        let mut ready = pending.clone();
+        ready.metadata.adopted_pid = Some(42);
+        ready.metadata.adopted_start_time = Some(84);
+        let calls = Rc::new(RefCell::new(0usize));
+
+        let result = promise::spawn::block_on(reload_spawned_agent_after_startup(
+            &mut {
+                let calls = Rc::clone(&calls);
+                move || {
+                    *calls.borrow_mut() += 1;
+                    let agent = if *calls.borrow() == 1 {
+                        pending.clone()
+                    } else {
+                        ready.clone()
+                    };
+                    async move {
+                        Ok(ListAgentsResponse {
+                            agents: vec![agent],
+                        })
+                    }
+                }
+            },
+            30,
+            "reviewer",
+            0,
+        ))
+        .unwrap();
+
+        assert_eq!(result.metadata.adopted_pid, Some(42));
+        assert_eq!(*calls.borrow(), 2);
     }
 
     #[test]

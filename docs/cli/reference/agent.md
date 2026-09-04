@@ -63,6 +63,8 @@ Launches Codex as a mux-supervised app-server TUI. The mux manages the app-serve
 
 When run inside a Wakterm pane, the command runs the native TUI in the current pane and returns to the shell when Codex exits. Use `--new-tab` when running outside Wakterm or when a separate tab is desired.
 
+A new-tab launch returns only after the mux confirms that the native Codex frontend is attached. Wakterm preflights fresh-thread attachment before creating the pane, removes the pane if frontend startup does not complete, and reports the originating app-server or frontend error.
+
 Examples:
 
 ```sh
