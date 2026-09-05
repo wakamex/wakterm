@@ -9815,26 +9815,39 @@ mod test {
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn filesystem_artifact_event_adopts_and_publishes_later_final() {
+    fn alternate_codex_home_session_is_auto_adopted_and_publishes_later_final() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
         let _env_lock = ENV_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
+        let configured_root = temp.path().join("standard-sessions");
+        std::fs::create_dir_all(&configured_root).unwrap();
         unsafe {
-            std::env::set_var("WAKTERM_AGENT_CODEX_DIR", temp.path());
+            std::env::set_var("WAKTERM_AGENT_CODEX_DIR", &configured_root);
         }
         let _config = TestConfigGuard::new_with_auto_adopt("attention", "🤖 ", true);
 
-        let session_dir = temp.path().join("2026").join("03").join("21");
+        let session_id = "01a06fd1-992d-7c73-acdc-cbbcff7c3b7d";
+        let session_dir = temp
+            .path()
+            .join("alternate-codex-home")
+            .join("sessions")
+            .join("2026")
+            .join("09")
+            .join("05");
         std::fs::create_dir_all(&session_dir).unwrap();
-        let session = session_dir.join("rollout-filesystem-watcher.jsonl");
+        let session = session_dir.join(format!("rollout-2026-09-05T00-26-42-{session_id}.jsonl"));
+        let session_header = format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\",\"cwd\":\"/tmp/filesystem-watcher-project\"}}}}\n"
+        );
         std::fs::write(
             &session,
-            concat!(
-                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-direct-adopted\",\"cwd\":\"/tmp/filesystem-watcher-project\"}}\n",
+            [
+                session_header.as_str(),
                 "{\"ordinal\":1,\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T11:59:58Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-before-adoption\",\"collaboration_mode_kind\":\"default\"}}\n",
-                "{\"ordinal\":2,\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T11:59:59Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-before-adoption\",\"last_agent_message\":\"ready\"}}\n"
-            ),
+                "{\"ordinal\":2,\"type\":\"event_msg\",\"timestamp\":\"2026-03-21T11:59:59Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-before-adoption\",\"last_agent_message\":\"ready\"}}\n",
+            ]
+            .concat(),
         )
         .unwrap();
         let _owned_session = std::fs::File::open(&session).unwrap();

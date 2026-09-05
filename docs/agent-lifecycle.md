@@ -89,6 +89,8 @@ Confirmed adoption requires a provider session reference discovered by the
 observer. Depending on the provider, that reference may currently be a session
 file, a database plus session ID, or another provider-owned record.
 
+On Linux, direct Codex confirmation accepts a user-visible rollout held open by the exact foreground process incarnation or one of its descendants after verifying that the rollout declares the pane working directory. This process-owned path works across nonstandard `CODEX_HOME` locations without scanning those locations. Directory scanning remains a fallback within the configured Codex sessions root when exact process evidence is unavailable.
+
 On Linux, Agy confirmation matches the exact process incarnation to its open
 per-conversation presence lock, then observes that conversation's persistent
 transcript. Wakterm does not select an Agy conversation by modification time or

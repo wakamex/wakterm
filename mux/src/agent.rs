@@ -1519,12 +1519,7 @@ fn observe_codex(
     process_start_time: Option<u64>,
     expected_session_id: Option<&str>,
 ) -> anyhow::Result<Option<HarnessObservation>> {
-    let Some(root) = codex_sessions_root() else {
-        return Ok(None);
-    };
-
     if let Some(process_session) = codex_session_owned_by_process(
-        &root,
         cwd,
         process_id,
         process_start_time,
@@ -1551,6 +1546,10 @@ fn observe_codex(
             observed_turn: details.observed_turn,
         }));
     }
+
+    let Some(root) = codex_sessions_root() else {
+        return Ok(None);
+    };
 
     #[cfg(target_os = "linux")]
     if (process_id.is_some() || process_start_time.is_some())
@@ -2208,7 +2207,6 @@ fn linux_process_started_at(
 
 #[cfg(target_os = "linux")]
 fn codex_session_owned_by_process(
-    root: &Path,
     cwd: &str,
     process_id: Option<u32>,
     process_start_time: Option<u64>,
@@ -2236,7 +2234,6 @@ fn codex_session_owned_by_process(
         }
     }
 
-    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let canonical_preferred = preferred_session
         .map(Path::new)
         .map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
@@ -2255,12 +2252,11 @@ fn codex_session_owned_by_process(
                 continue;
             };
             let canonical_path = path.canonicalize().unwrap_or(path);
-            if !canonical_path.starts_with(&canonical_root)
-                || !canonical_path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
-                    .unwrap_or(false)
+            if !canonical_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+                .unwrap_or(false)
                 || !codex_session_matches_cwd(&canonical_path, cwd)?
             {
                 continue;
@@ -2292,7 +2288,6 @@ fn codex_session_owned_by_process(
 
 #[cfg(not(target_os = "linux"))]
 fn codex_session_owned_by_process(
-    _root: &Path,
     _cwd: &str,
     _process_id: Option<u32>,
     _process_start_time: Option<u64>,
@@ -4512,8 +4507,13 @@ mod test {
     fn observe_codex_prefers_session_open_by_matching_process() {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let temp = TempDir::new().unwrap();
-        let old = temp.path().join("rollout-old.jsonl");
-        let live = temp.path().join("rollout-live.jsonl");
+        let configured_root = temp.path().join("standard-sessions");
+        let alternate_root = temp.path().join("alternate-home").join("sessions");
+        fs::create_dir_all(&configured_root).unwrap();
+        fs::create_dir_all(&alternate_root).unwrap();
+        let old = configured_root.join("rollout-old.jsonl");
+        let live = alternate_root
+            .join("rollout-2026-09-05T00-26-42-01a06fd1-992d-7c73-acdc-cbbcff7c3b7d.jsonl");
         fs::write(
             &old,
             concat!(
@@ -4525,7 +4525,7 @@ mod test {
         fs::write(
             &live,
             concat!(
-                "{\"payload\":{\"cwd\":\"/tmp/process-owned\"}}\n",
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"01a06fd1-992d-7c73-acdc-cbbcff7c3b7d\",\"cwd\":\"/tmp/process-owned\"}}\n",
                 "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"live\"}]}}\n"
             ),
         )
@@ -4534,7 +4534,7 @@ mod test {
         let process_id = std::process::id();
         let process = LocalProcessInfo::with_root_pid(process_id).unwrap();
 
-        set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", &configured_root);
         let observed = observe_codex(
             "/tmp/process-owned",
             Some(old.to_string_lossy().as_ref()),
