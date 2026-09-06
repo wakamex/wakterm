@@ -437,35 +437,135 @@ fn harness_tui_process<'a>(
 
 pub fn remote_codex_tui(process: &LocalProcessInfo) -> Option<RemoteCodexTui> {
     let process = harness_tui_process(&AgentHarness::Codex, process)?;
-    let resume = process.argv.iter().position(|arg| arg == "resume")?;
-    let args = process.argv.get(resume + 1..)?;
-    let remote = args.iter().position(|arg| {
-        arg == "--remote"
-            || arg
-                .strip_prefix("--remote=")
-                .is_some_and(|value| !value.is_empty())
-    })?;
-    let (endpoint, search_from) = if args[remote] == "--remote" {
-        (args.get(remote + 1)?.clone(), remote + 2)
-    } else {
-        (
-            args[remote].trim_start_matches("--remote=").to_string(),
-            remote + 1,
+    let mut args = process.argv.iter().skip(1).peekable();
+    if args
+        .peek()
+        .is_some_and(|arg| is_harness_tui_program(&AgentHarness::Codex, arg))
+    {
+        args.next();
+    }
+    let mut endpoint = None;
+    let mut thread_id = None;
+    let mut resumed = false;
+    let mut positional_only = false;
+    let mut settings: [Vec<(&str, Vec<String>)>; 2] = Default::default();
+    while let Some(arg) = args.next() {
+        if arg == "--" && !positional_only {
+            positional_only = true;
+            continue;
+        }
+        if !positional_only && arg.starts_with('-') {
+            let (name, inline) = arg
+                .split_once('=')
+                .map_or((arg.as_str(), None), |(name, value)| (name, Some(value)));
+            // Normalize attached short values as well as long --option=value forms.
+            let (name, inline) =
+                if !name.starts_with("--") && name.len() > 2 && name.as_bytes()[1].is_ascii() {
+                    (
+                        &arg[..2],
+                        Some(arg[2..].strip_prefix('=').unwrap_or(&arg[2..])),
+                    )
+                } else {
+                    (name, inline)
+                };
+            let (name, takes_value) = match name {
+                "--remote" => ("--remote", true),
+                "-C" | "--cd" => ("--cd", true),
+                "-a" | "--ask-for-approval" => ("-a", true),
+                "-s" | "--sandbox" => ("-s", true),
+                "-m" | "--model" => ("-m", true),
+                "-i" | "--image" => ("-i", true),
+                "--local-provider" | "--add-dir" => (name, true),
+                "--yolo" | "--dangerously-bypass-approvals-and-sandbox" => {
+                    ("--dangerously-bypass-approvals-and-sandbox", false)
+                }
+                "--not-so-yolo" | "--approve-for-me" => ("--approve-for-me", false),
+                "--strict-config"
+                | "--oss"
+                | "--dangerously-bypass-hook-trust"
+                | "--search"
+                | "--no-alt-screen"
+                | "--include-non-interactive"
+                | "--all" => (name, false),
+                // Unknown arity or process-wide overrides cannot be captured faithfully.
+                _ => return None,
+            };
+            let mut values = Vec::new();
+            if takes_value {
+                let value = inline.or_else(|| args.next().map(String::as_str))?;
+                if value.is_empty() || value.starts_with('-') {
+                    return None;
+                }
+                values.push(value.to_string());
+                if name == "-i" && inline.is_none() {
+                    while args.peek().is_some_and(|value| !value.starts_with('-')) {
+                        values.push(args.next()?.clone());
+                    }
+                }
+            } else if inline.is_some() {
+                return None;
+            }
+            match name {
+                "--remote" => endpoint = values.pop(),
+                "--cd" | "--all" => {}
+                _ => settings[usize::from(resumed)].push((name, values)),
+            }
+        } else if !resumed && !positional_only && arg == "resume" {
+            resumed = true;
+        } else if resumed && thread_id.is_none() {
+            let parsed = uuid::Uuid::parse_str(arg).ok()?.to_string();
+            if &parsed != arg {
+                return None;
+            }
+            thread_id = Some(parsed);
+        } else {
+            // Never find an identity inside an option value or replay an initial prompt.
+            return None;
+        }
+    }
+    let endpoint = endpoint.filter(|value| value.starts_with("unix://"))?;
+    let thread_id = thread_id?;
+    let [mut root, resume] = settings;
+    // Codex merges resume-scoped settings over root settings before starting the TUI.
+    let sandbox_setting = |name: &str| {
+        matches!(
+            name,
+            "-s" | "--approve-for-me" | "--dangerously-bypass-approvals-and-sandbox"
         )
     };
-    if !endpoint.starts_with("unix://") {
+    if resume.iter().any(|(name, _)| sandbox_setting(name)) {
+        root.retain(|(name, _)| !sandbox_setting(name));
+    }
+    if resume.iter().any(|(name, _)| *name == "--approve-for-me") {
+        root.retain(|(name, _)| *name != "-a");
+    }
+    root.retain(|(name, _)| *name == "--add-dir" || !resume.iter().any(|(other, _)| name == other));
+    root.extend(resume);
+    // These mixed-scope combinations need config overrides to reproduce Codex's
+    // merge. Managed launch does not support those overrides.
+    if root.iter().any(|(name, _)| *name == "-a")
+        && root.iter().any(|(name, _)| {
+            matches!(
+                *name,
+                "--approve-for-me" | "--dangerously-bypass-approvals-and-sandbox"
+            )
+        })
+    {
         return None;
     }
-    let (thread_index, parsed) = args
-        .iter()
-        .enumerate()
-        .skip(search_from)
-        .find_map(|(index, arg)| uuid::Uuid::parse_str(arg).ok().map(|uuid| (index, uuid)))?;
-    let thread_id = parsed.to_string();
-    if args[thread_index] != thread_id {
-        return None;
-    }
-    let tui_args = args.get(thread_index + 1..)?.to_vec();
+    let tui_args = root
+        .into_iter()
+        .flat_map(|(name, values)| {
+            if values.is_empty() {
+                vec![name.to_string()]
+            } else {
+                values
+                    .into_iter()
+                    .flat_map(|value| [name.to_string(), value])
+                    .collect()
+            }
+        })
+        .collect();
     Some(RemoteCodexTui {
         pid: process.pid,
         start_time: process.start_time,
@@ -3916,6 +4016,108 @@ mod test {
                 tui_args: vec!["--dangerously-bypass-approvals-and-sandbox".to_string()],
             })
         );
+    }
+
+    fn remote_codex_tui_argument_cases() -> Vec<(&'static str, Vec<&'static str>)> {
+        vec![
+            ("codex --remote unix:///tmp/codex.sock resume 01a02767-c120-77b2-88a1-4e17c93a7549", vec![]),
+            ("codex -a never -s danger-full-access --remote unix:///tmp/codex.sock resume 01a02767-c120-77b2-88a1-4e17c93a7549", vec!["-a", "never", "-s", "danger-full-access"]),
+            ("codex resume -a never --remote=unix:///tmp/codex.sock -s danger-full-access 01a02767-c120-77b2-88a1-4e17c93a7549 -C /code/zola", vec!["-a", "never", "-s", "danger-full-access"]),
+            ("codex resume 01a02767-c120-77b2-88a1-4e17c93a7549 --remote unix:///tmp/codex.sock --cd=/code/zola --ask-for-approval=never --sandbox=danger-full-access", vec!["-a", "never", "-s", "danger-full-access"]),
+            ("codex -anever --remote unix:///tmp/codex.sock resume -sdanger-full-access -C/code/zola 01a02767-c120-77b2-88a1-4e17c93a7549", vec!["-a", "never", "-s", "danger-full-access"]),
+            ("codex -m resume --remote unix:///tmp/codex.sock resume -a never 01a02767-c120-77b2-88a1-4e17c93a7549", vec!["-m", "resume", "-a", "never"]),
+            ("codex --remote unix:///tmp/codex.sock -C 00000000-0000-4000-8000-000000000001 resume --no-alt-screen -- 01a02767-c120-77b2-88a1-4e17c93a7549", vec!["--no-alt-screen"]),
+            ("codex -a on-request -s workspace-write --remote unix:///tmp/codex.sock resume --ask-for-approval never 01a02767-c120-77b2-88a1-4e17c93a7549 --sandbox danger-full-access", vec!["-a", "never", "-s", "danger-full-access"]),
+            ("codex --yolo --remote unix:///tmp/codex.sock resume 01a02767-c120-77b2-88a1-4e17c93a7549 -s read-only -a on-request", vec!["-s", "read-only", "-a", "on-request"]),
+            ("codex -a never --remote unix:///tmp/codex.sock resume --approve-for-me 01a02767-c120-77b2-88a1-4e17c93a7549", vec!["--approve-for-me"]),
+            ("codex --add-dir '/tmp/root dir' --remote unix:///tmp/codex.sock resume 01a02767-c120-77b2-88a1-4e17c93a7549 --add-dir '/tmp/another dir' --no-alt-screen", vec!["--add-dir", "/tmp/root dir", "--add-dir", "/tmp/another dir", "--no-alt-screen"]),
+            ("codex --remote unix:///tmp/codex.sock resume 01a02767-c120-77b2-88a1-4e17c93a7549 --image a.png b.png --no-alt-screen", vec!["-i", "a.png", "-i", "b.png", "--no-alt-screen"]),
+        ]
+    }
+
+    #[test]
+    fn remote_codex_tui_captures_settings_across_argument_positions() {
+        for (command, expected) in remote_codex_tui_argument_cases() {
+            let argv = shell_words::split(command).unwrap();
+            let argv: Vec<_> = argv.iter().map(String::as_str).collect();
+            let process = proc_info("codex", "/usr/bin/codex", &argv, 2, vec![]);
+            let parsed =
+                remote_codex_tui(&process).unwrap_or_else(|| panic!("rejected {}", command));
+            assert_eq!(
+                parsed.thread_id, "01a02767-c120-77b2-88a1-4e17c93a7549",
+                "{}",
+                command
+            );
+            assert_eq!(parsed.endpoint, "unix:///tmp/codex.sock", "{}", command);
+            assert_eq!(parsed.tui_args, expected, "{}", command);
+        }
+    }
+
+    #[test]
+    fn remote_codex_tui_rejects_ambiguous_identity_and_unsupported_settings() {
+        for command in [
+            "codex --remote unix:///tmp/codex.sock -m resume 01a02767-c120-77b2-88a1-4e17c93a7549",
+            "codex --remote unix:///tmp/codex.sock resume -m 01a02767-c120-77b2-88a1-4e17c93a7549",
+            "codex --remote unix:///tmp/codex.sock resume named-session --add-dir 01a02767-c120-77b2-88a1-4e17c93a7549",
+            "codex --remote unix:///tmp/codex.sock resume --last 01a02767-c120-77b2-88a1-4e17c93a7549",
+            "codex --remote unix:///tmp/codex.sock resume 01a02767-c120-77b2-88a1-4e17c93a7549 'do some work'",
+            "codex --remote unix:///tmp/codex.sock resume 01a02767-c120-77b2-88a1-4e17c93a7549 --unknown value",
+            "codex --remote unix:///tmp/codex.sock resume 01a02767-c120-77b2-88a1-4e17c93a7549 -a",
+            "codex --remote unix:///tmp/codex.sock resume 01a02767-c120-77b2-88a1-4e17c93a7549 -é",
+            "codex --remote unix:///tmp/codex.sock resume 01A02767-C120-77B2-88A1-4E17C93A7549",
+            "codex --remote unix:///tmp/codex.sock -p custom resume 01a02767-c120-77b2-88a1-4e17c93a7549",
+            "codex --approve-for-me --remote unix:///tmp/codex.sock resume 01a02767-c120-77b2-88a1-4e17c93a7549 -a never",
+        ] {
+            let argv = shell_words::split(command).unwrap();
+            let argv: Vec<_> = argv.iter().map(String::as_str).collect();
+            let process = proc_info("codex", "/usr/bin/codex", &argv, 2, vec![]);
+            assert_eq!(remote_codex_tui(&process), None, "accepted {}", command);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the real Codex CLI on PATH; --help exits before connecting"]
+    fn remote_codex_tui_argument_forms_match_real_codex_parser() {
+        for (command, _) in remote_codex_tui_argument_cases() {
+            let argv = shell_words::split(command).unwrap();
+            let process = proc_info(
+                "codex",
+                "/usr/bin/codex",
+                &argv.iter().map(String::as_str).collect::<Vec<_>>(),
+                2,
+                vec![],
+            );
+            let parsed = remote_codex_tui(&process).unwrap();
+            let mut original: Vec<_> = argv.into_iter().skip(1).collect();
+            // Insert help before the positional-only delimiter, if any.
+            let help_index = original
+                .iter()
+                .position(|arg| arg == "--")
+                .unwrap_or(original.len());
+            original.insert(help_index, "--help".into());
+            let mut replay = vec![
+                "resume".into(),
+                "--remote".into(),
+                parsed.endpoint,
+                parsed.thread_id,
+            ];
+            replay.extend(parsed.tui_args);
+            replay.push("--help".into());
+            for args in [original, replay] {
+                let output = std::process::Command::new("codex")
+                    .args(&args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}: {:?}: {}",
+                    command,
+                    args,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert!(String::from_utf8_lossy(&output.stdout).contains("Usage:"));
+            }
+        }
     }
 
     #[test]
