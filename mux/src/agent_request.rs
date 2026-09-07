@@ -222,11 +222,8 @@ impl AgentRequest {
             return;
         }
         if matches!(self.state, AgentRequestState::Registered) {
-            self.finish(
-                AgentRequestState::Indeterminate,
-                now,
-                "mux restarted before prompt submission was durably confirmed",
-            );
+            // Admission persists registration before writing the prompt and
+            // confirming submission. A concurrent watcher must leave it alone.
             return;
         }
         if self.deadline_at.is_some_and(|deadline| now >= deadline) {
@@ -304,6 +301,7 @@ impl AgentRequest {
 
     pub fn reconcile_managed_event_page(&mut self, page: &AgentEventPage, now: DateTime<Utc>) {
         if self.state.is_terminal()
+            || matches!(self.state, AgentRequestState::Registered)
             || !matches!(
                 self.correlation,
                 AgentRequestCorrelation::CodexAppServerEvents
@@ -566,6 +564,22 @@ pub struct AgentRequestStore {
 impl AgentRequestStore {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
+    }
+
+    /// Recover registrations left by the previous authoritative mux runtime.
+    /// Call only at startup, before accepting admissions or terminal watchers.
+    pub(crate) fn recover_registered(&self) -> anyhow::Result<()> {
+        for mut request in self.active()? {
+            if matches!(request.state, AgentRequestState::Registered) {
+                request.finish(
+                    AgentRequestState::Indeterminate,
+                    Utc::now(),
+                    "mux restarted before prompt submission was durably confirmed",
+                );
+                self.save(&mut request)?;
+            }
+        }
+        Ok(())
     }
 
     fn connect(&self) -> anyhow::Result<Connection> {
@@ -1270,6 +1284,43 @@ mod tests {
         restoring.observed_turn = None;
         request.reconcile(Some(&metadata), Some(&restoring), Utc::now());
         assert_eq!(request.state, AgentRequestState::Submitted);
+    }
+
+    #[test]
+    fn registered_request_waits_for_submission_during_observation() {
+        let metadata = managed_metadata();
+        let runtime = managed_runtime(&metadata);
+        let mut request = AgentRequest::new_managed_codex(
+            "pending-admission".to_string(),
+            &metadata,
+            7,
+            &runtime,
+            "incarnation-managed".to_string(),
+            10,
+            true,
+            "do work",
+            false,
+            0,
+            None,
+        )
+        .unwrap();
+        let registered = request.clone();
+        request.reconcile(Some(&metadata), Some(&runtime), Utc::now());
+        assert_eq!(request, registered);
+        request.reconcile_managed_event_page(
+            &managed_page(vec![
+                managed_event(11, AgentEventKind::TurnStarted, "turn-new", None, None),
+                managed_event(
+                    12,
+                    AgentEventKind::TurnFinal,
+                    "turn-new",
+                    Some("completed"),
+                    Some("final"),
+                ),
+            ]),
+            Utc::now(),
+        );
+        assert_eq!(request, registered);
     }
 
     #[test]

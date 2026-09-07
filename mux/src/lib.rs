@@ -1576,10 +1576,11 @@ impl Mux {
         }
     }
 
-    /// Begin one authoritative mux runtime epoch for durable agent lifecycle
-    /// projection. Call this once for a mux that will serve Agent API clients,
-    /// after construction and before accepting requests.
+    /// Recover unfinished registrations and begin one authoritative mux runtime
+    /// epoch for durable agent lifecycle projection. Call this once for a mux
+    /// that will serve Agent API clients, before accepting requests.
     pub fn start_agent_event_runtime_epoch(&self) -> anyhow::Result<()> {
+        self.agent_request_store.recover_registered()?;
         self.agent_event_store.start_runtime_epoch()
     }
 
@@ -3294,6 +3295,9 @@ impl Mux {
     fn reconcile_agent_requests(&self) -> anyhow::Result<()> {
         let now = Utc::now();
         for mut request in self.agent_request_store.active()? {
+            if matches!(request.state, AgentRequestState::Registered) {
+                continue;
+            }
             let before = request.clone();
             let metadata = self.get_agent_metadata_for_pane(request.target_pane_id);
             let runtime = self
@@ -6623,6 +6627,7 @@ mod test {
         #[cfg(target_os = "linux")]
         foreground_process_root_pid: Option<u32>,
         foreground_process_info_calls: Option<Arc<AtomicUsize>>,
+        submitted_prompts: Option<Mutex<Vec<(String, bool)>>>,
     }
 
     impl FakePane {
@@ -6642,6 +6647,7 @@ mod test {
                 #[cfg(target_os = "linux")]
                 foreground_process_root_pid: None,
                 foreground_process_info_calls: None,
+                submitted_prompts: None,
             })
         }
 
@@ -6681,6 +6687,7 @@ mod test {
                 #[cfg(target_os = "linux")]
                 foreground_process_root_pid: None,
                 foreground_process_info_calls: None,
+                submitted_prompts: None,
             })
         }
 
@@ -6721,6 +6728,7 @@ mod test {
                 #[cfg(target_os = "linux")]
                 foreground_process_root_pid: None,
                 foreground_process_info_calls: Some(foreground_process_info_calls.clone()),
+                submitted_prompts: None,
             });
             (pane, foreground_process_info_calls)
         }
@@ -6743,6 +6751,7 @@ mod test {
                 #[cfg(target_os = "linux")]
                 foreground_process_root_pid: None,
                 foreground_process_info_calls: None,
+                submitted_prompts: None,
             })
         }
 
@@ -6786,6 +6795,7 @@ mod test {
                 #[cfg(target_os = "linux")]
                 foreground_process_root_pid: None,
                 foreground_process_info_calls: None,
+                submitted_prompts: None,
             })
         }
 
@@ -6807,6 +6817,7 @@ mod test {
                 foreground_process_info: None,
                 foreground_process_root_pid: Some(root_pid),
                 foreground_process_info_calls: None,
+                submitted_prompts: None,
             })
         }
     }
@@ -6879,6 +6890,19 @@ mod test {
         }
 
         fn send_paste(&self, _text: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn supports_atomic_prompt_submission(&self) -> bool {
+            self.submitted_prompts.is_some()
+        }
+
+        fn send_text_and_submit(&self, text: &str, paste: bool) -> anyhow::Result<()> {
+            self.submitted_prompts
+                .as_ref()
+                .context("test pane does not support atomic submission")?
+                .lock()
+                .push((text.to_string(), paste));
             Ok(())
         }
 
@@ -7499,6 +7523,7 @@ mod test {
             #[cfg(target_os = "linux")]
             foreground_process_root_pid: None,
             foreground_process_info_calls: None,
+            submitted_prompts: None,
         });
         mux.panes.write().insert(pane_id, shell_pane);
 
@@ -9598,6 +9623,7 @@ mod test {
             #[cfg(target_os = "linux")]
             foreground_process_root_pid: None,
             foreground_process_info_calls: None,
+            submitted_prompts: None,
         });
         let pane_id = pane.pane_id();
         tab.assign_pane(&pane);
@@ -9882,6 +9908,7 @@ mod test {
             foreground_process_info: Some(process),
             foreground_process_root_pid: None,
             foreground_process_info_calls: None,
+            submitted_prompts: None,
         });
         let pane_id = pane.pane_id();
         tab.assign_pane(&pane);
@@ -10023,6 +10050,7 @@ mod test {
             foreground_process_info: Some(process.clone()),
             foreground_process_root_pid: None,
             foreground_process_info_calls: None,
+            submitted_prompts: None,
         });
         let pane_id = pane.pane_id();
         tab.assign_pane(&pane);
@@ -11529,7 +11557,85 @@ mod test {
     }
 
     #[test]
-    fn managed_codex_return_request_completes_from_durable_app_server_events() {
+    fn registered_requests_recover_only_at_authoritative_mux_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-requests.sqlite3");
+        let metadata = sample_agent_metadata("recovery");
+        let mut metadata = metadata;
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "recovery-thread".to_string(),
+            session_id: "recovery-session".to_string(),
+            executable: "codex".to_string(),
+            version: "test".to_string(),
+            tui_args: vec![],
+        });
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Codex;
+        runtime.transport = crate::agent::AgentTransport::CodexAppServerTui;
+        runtime.turn_state = crate::agent::AgentTurnState::WaitingOnUser;
+        let request = AgentRequest::new_managed_codex(
+            "pending-before-restart".to_string(),
+            &metadata,
+            7,
+            &runtime,
+            crate::agent_admission::incarnation_id(&metadata).unwrap(),
+            0,
+            true,
+            "do work",
+            false,
+            0,
+            None,
+        )
+        .unwrap();
+        let first = Mux::new_with_agent_state_path(None, path.clone());
+        first.start_agent_event_runtime_epoch().unwrap();
+        first.agent_request_store.create(&request).unwrap();
+        let mut submitted = request.clone();
+        submitted.request_id = "submitted-before-restart".to_string();
+        first.agent_request_store.create(&submitted).unwrap();
+        submitted.mark_submitted();
+        first.agent_request_store.save(&mut submitted).unwrap();
+        assert!(first.list_agent_request_events(0, 10).unwrap().is_empty());
+        drop(first);
+
+        let recovered = Mux::new_with_agent_state_path(None, path.clone());
+        // Reading durable state alone is not a recovery boundary.
+        assert!(recovered
+            .list_agent_request_events(0, 10)
+            .unwrap()
+            .is_empty());
+        recovered.start_agent_event_runtime_epoch().unwrap();
+        let events = recovered.list_agent_request_events(0, 10).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].request_id, request.request_id);
+        assert_eq!(events[0].state, AgentRequestState::Indeterminate);
+        assert_eq!(
+            events[0].detail.as_deref(),
+            Some("mux restarted before prompt submission was durably confirmed")
+        );
+        assert_eq!(
+            recovered
+                .agent_request_store
+                .get(&submitted.request_id)
+                .unwrap(),
+            Some(submitted)
+        );
+        let mut current = request.clone();
+        current.request_id = "pending-in-current-runtime".to_string();
+        recovered.agent_request_store.create(&current).unwrap();
+        assert_eq!(recovered.list_agent_request_events(0, 10).unwrap(), events);
+        recovered
+            .agent_request_store
+            .delete_registered(&current.request_id)
+            .unwrap();
+        drop(recovered);
+        let next = Mux::new_with_agent_state_path(None, path);
+        next.start_agent_event_runtime_epoch().unwrap();
+        assert_eq!(next.list_agent_request_events(0, 10).unwrap(), events);
+    }
+
+    #[test]
+    fn concurrent_return_final_admission_and_watch_preserve_submission_and_correlation() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
         let domain = Arc::new(FakeDomain::new());
@@ -11547,7 +11653,9 @@ mod test {
         };
         let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
         let tab = Arc::new(Tab::new(&size));
-        let pane = FakePane::new(56, size, domain.id);
+        let mut pane = FakePane::new_title_only(56, size, domain.id, "managed-return", "/tmp");
+        Arc::get_mut(&mut pane).unwrap().submitted_prompts = Some(Mutex::new(Vec::new()));
+        let pane: Arc<dyn Pane> = pane;
         let pane_id = pane.pane_id();
         tab.assign_pane(&pane);
         mux.add_tab_and_active_pane(&tab).unwrap();
@@ -11578,23 +11686,50 @@ mod test {
         .unwrap();
 
         let baseline = mux.agent_event_store.latest_sequence();
-        let mut request = AgentRequest::new_managed_codex(
-            "managed-return-request".to_string(),
-            &metadata,
-            pane_id,
-            &runtime,
-            incarnation,
-            baseline,
-            true,
-            "do work",
-            false,
-            0,
-            None,
-        )
-        .unwrap();
-        mux.agent_request_store.create(&request).unwrap();
-        request.mark_submitted();
-        mux.agent_request_store.save(&mut request).unwrap();
+        let admission = crate::agent_admission::AgentPromptAdmissionRequest {
+            request_id: "managed-return-request".to_string(),
+            agent_id: metadata.agent_id.clone(),
+            incarnation_id: incarnation,
+            prompt: "do work".to_string(),
+            paste: false,
+            return_final: true,
+            timeout_ms: 0,
+        };
+        let service = mux.agent_service();
+        let candidate = match service.capture_admission(admission.clone()) {
+            crate::agent_admission::AgentAdmissionCapture::Candidate(candidate) => {
+                candidate.refresh()
+            }
+            crate::agent_admission::AgentAdmissionCapture::Rejected(receipt) => {
+                panic!("{:?}", receipt)
+            }
+        };
+        assert!(service.validate_admission(&candidate).is_none());
+        let proposed = candidate.proposed_return_request().unwrap().unwrap();
+        let store = service.request_store();
+        let writer_store = store.clone();
+        let proposed_for_writer = proposed.clone();
+        let (registered_tx, registered_rx) = std::sync::mpsc::channel();
+        let (submit_tx, submit_rx) = std::sync::mpsc::channel();
+        // Admission uses background database jobs. Hold that job at its durable
+        // Registered boundary while the main thread serves terminal observers.
+        let admission_writer = std::thread::spawn(move || {
+            let (mut request, created) = writer_store.create(&proposed_for_writer).unwrap();
+            assert!(created);
+            registered_tx.send(()).unwrap();
+            submit_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            request.mark_submitted();
+            writer_store.save(&mut request).unwrap();
+            request
+        });
+        registered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(service.list_request_events(0, 100).unwrap().is_empty());
+        assert_eq!(
+            mux.get_agent_request(&admission.request_id).unwrap(),
+            Some(proposed.clone())
+        );
+        assert!(service.validate_admission(&candidate).is_none());
+        service.write_admitted_prompt(&candidate).unwrap();
 
         mux.apply_codex_app_server_notification(&serde_json::json!({
             "method": "turn/started",
@@ -11635,6 +11770,20 @@ mod test {
             "managed return-final durable events",
         );
 
+        // Even provider events arriving before Submitted is durable must not
+        // advance a Registered snapshot or leave an orphan terminal sequence.
+        assert!(service.list_request_events(0, 100).unwrap().is_empty());
+        assert_eq!(
+            store.get(&admission.request_id).unwrap(),
+            Some(proposed.clone())
+        );
+        submit_tx.send(()).unwrap();
+        let submitted = admission_writer.join().unwrap();
+        let receipt =
+            crate::agent_admission::AgentAdmissionReceipt::accepted(&admission, Some(submitted));
+        assert!(receipt.definitive);
+        assert_eq!(receipt.request_id, admission.request_id);
+
         let completed = mux
             .get_agent_request("managed-return-request")
             .unwrap()
@@ -11648,6 +11797,31 @@ mod test {
             completed.final_message.as_deref(),
             Some("managed exact final")
         );
+        assert!(crate::agent_admission::request_matches_admission(
+            &completed, &admission
+        ));
+        let events = service.list_request_events(0, 100).unwrap();
+        assert_eq!(events, vec![completed.clone()]);
+        let sequence = completed.terminal_event_sequence.unwrap();
+        assert!(service
+            .list_request_events(sequence, 100)
+            .unwrap()
+            .is_empty());
+        // Repeating the admission's durable claim returns its correlated result.
+        let (replayed, created) = store.create(&proposed).unwrap();
+        assert!(!created);
+        assert_eq!(replayed, completed);
+        assert_eq!(
+            pane.downcast_ref::<FakePane>()
+                .unwrap()
+                .submitted_prompts
+                .as_ref()
+                .unwrap()
+                .lock()
+                .as_slice(),
+            &[("do work".to_string(), false)]
+        );
+        assert_eq!(mux.agent_input_generation(pane_id), 1);
     }
 
     #[test]

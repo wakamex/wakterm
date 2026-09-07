@@ -126,7 +126,7 @@ Managed Codex app-server sessions instead require:
 - the first new provider turn starts after the armed durable event sequence
 - the same provider turn ID supplies the durable final
 
-A mismatch becomes `indeterminate`. Wakterm never substitutes a later final message. A request persisted before input but not durably marked submitted at a mux crash also becomes `indeterminate`, which prevents a post-restart prompt from satisfying it accidentally.
+A mismatch becomes `indeterminate`. Wakterm never substitutes a later final message. During live admission, a request remains `registered` until prompt submission is durably confirmed; terminal watchers leave that registration unchanged. At authoritative mux startup, registrations left unfinished by the previous runtime become `indeterminate`, preventing a post-restart prompt from satisfying them accidentally.
 
 Steering messages within the same bound provider turn preserve correlation. They do not replace the matched initial prompt or authorize a final from a different provider turn.
 
