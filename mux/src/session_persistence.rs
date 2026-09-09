@@ -847,6 +847,13 @@ fn restored_harness_then_shell(command: CommandBuilder) -> anyhow::Result<Comman
         .filter(|shell| !shell.is_empty())
         .unwrap_or_else(|| std::ffi::OsStr::new("/bin/sh"))
         .to_owned();
+    // These paths belong to the native Wsh system package. Per-user legacy
+    // launchers retain the generic shell invocation below.
+    if shell == "/usr/bin/wsh" || shell == "/bin/wsh" {
+        let mut argv = vec![shell, "--wsh-run".into(), "--login".into(), "--".into()];
+        argv.extend(command.get_argv().iter().cloned());
+        return Ok(CommandBuilder::from_argv(argv));
+    }
     let invocation = command
         .get_argv()
         .iter()
@@ -1055,6 +1062,40 @@ mod test {
         assert_eq!(&argv[..4], &["/usr/bin/zsh", "-l", "-i", "-c"]);
         assert_eq!(argv[4], "codex 'argument with spaces'; exec \"$0\" -l");
         assert_eq!(argv[5], "/usr/bin/zsh");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restored_harness_uses_native_wsh_job_control_with_exact_argument_bytes() {
+        use std::os::unix::ffi::OsStringExt;
+        let original = vec![
+            "codex".into(),
+            "argument with spaces".into(),
+            "$(false); quote'".into(),
+            std::ffi::OsString::from_vec(vec![0xff, b'x']),
+        ];
+        for shell in ["/usr/bin/wsh", "/bin/wsh"] {
+            let mut command = CommandBuilder::from_argv(original.clone());
+            command.env("SHELL", shell);
+            let wrapped = restored_harness_then_shell(command).unwrap();
+            let argv = wrapped.get_argv();
+            assert_eq!(argv[0], shell);
+            assert_eq!(argv[1], "--wsh-run");
+            assert_eq!(argv[2], "--login");
+            assert_eq!(argv[3], "--");
+            assert_eq!(&argv[4..], original.as_slice());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restored_harness_keeps_legacy_wsh_on_the_generic_shell_path() {
+        let mut command = CommandBuilder::from_argv(vec!["codex".into()]);
+        command.env("SHELL", "/home/test/.local/bin/wsh");
+        let wrapped = restored_harness_then_shell(command).unwrap();
+        assert_eq!(wrapped.get_argv()[1], "-l");
+        assert_eq!(wrapped.get_argv()[2], "-i");
+        assert_eq!(wrapped.get_argv()[3], "-c");
     }
 
     #[test]

@@ -191,6 +191,8 @@ On Unix, the restored TUI runs as a foreground job of the user's interactive
 login shell. The harness remains the foreground process while it runs, and
 exiting it returns the pane to that login shell instead of closing it.
 
+When `SHELL` names the native Wsh system-package path `/usr/bin/wsh` or `/bin/wsh`, restored harnesses use Wsh's exact-argument foreground interface. Wsh owns suspension and resumption and returns to the same interactive shell after the harness exits. Per-user Wsh launcher paths keep the generic shell restore path. The two system paths are reserved for the native Wsh package; manually copied legacy launchers must be migrated before using them there.
+
 If any step fails, keep the layout recoverable, surface the failure, and retain
 enough intent for an explicit retry. A failure pane or equivalent diagnostic
 surface is preferable to a convincing but incorrect fresh shell.
