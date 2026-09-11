@@ -1,6 +1,6 @@
 use crate::agent::{
-    finalize_runtime_snapshot, AgentObservedTurn, AgentObservedTurnOutcome, AgentTransport,
-    AgentTurnState, CodexAppServerSession,
+    codex_reasoning_effort_override, finalize_runtime_snapshot, AgentObservedTurn,
+    AgentObservedTurnOutcome, AgentTransport, AgentTurnState, CodexAppServerSession,
 };
 use crate::Mux;
 use anyhow::{bail, Context};
@@ -80,7 +80,7 @@ fn apply_tui_settings(params: &mut serde_json::Map<String, Value>, args: &[Strin
                 if let Some(value) =
                     inline_value.or_else(|| args.get(index + 1).map(String::as_str))
                 {
-                    if let Some(effort) = reasoning_effort_override(value) {
+                    if let Some(effort) = codex_reasoning_effort_override(value) {
                         params
                             .entry("config")
                             .or_insert_with(|| json!({}))
@@ -107,25 +107,6 @@ fn apply_tui_settings(params: &mut serde_json::Map<String, Value>, args: &[Strin
         }
         index += 1;
     }
-}
-
-fn reasoning_effort_override(value: &str) -> Option<String> {
-    let (key, value) = value.split_once('=')?;
-    if key != "model_reasoning_effort" {
-        return None;
-    }
-    let value = value.trim();
-    if value.is_empty() {
-        return None;
-    }
-    if let Ok(value) = serde_json::from_str::<String>(value) {
-        return (!value.is_empty()).then_some(value);
-    }
-    if value.len() >= 2 && value.starts_with('\'') && value.ends_with('\'') {
-        let value = &value[1..value.len() - 1];
-        return (!value.is_empty()).then(|| value.to_string());
-    }
-    Some(value.to_string())
 }
 
 fn metadata_only_resume_params(thread_id: &str, cwd: &str, tui_args: &[String]) -> Value {
@@ -872,7 +853,7 @@ fn validate_tui_args(args: &[String]) -> anyhow::Result<()> {
         if matches!(name, "-c" | "--config") {
             let value = inline_value.or_else(|| args.get(index + 1).map(String::as_str));
             anyhow::ensure!(
-                value.and_then(reasoning_effort_override).is_some(),
+                value.and_then(codex_reasoning_effort_override).is_some(),
                 "managed Codex config supports only a non-empty model_reasoning_effort override"
             );
             index += if inline_value.is_some() { 1 } else { 2 };

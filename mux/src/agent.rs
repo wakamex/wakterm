@@ -474,6 +474,7 @@ pub fn remote_codex_tui(process: &LocalProcessInfo) -> Option<RemoteCodexTui> {
                 "-a" | "--ask-for-approval" => ("-a", true),
                 "-s" | "--sandbox" => ("-s", true),
                 "-m" | "--model" => ("-m", true),
+                "-c" | "--config" => ("-c", true),
                 "-i" | "--image" => ("-i", true),
                 "--local-provider" | "--add-dir" => (name, true),
                 "--yolo" | "--dangerously-bypass-approvals-and-sandbox" => {
@@ -494,6 +495,9 @@ pub fn remote_codex_tui(process: &LocalProcessInfo) -> Option<RemoteCodexTui> {
             if takes_value {
                 let value = inline.or_else(|| args.next().map(String::as_str))?;
                 if value.is_empty() || value.starts_with('-') {
+                    return None;
+                }
+                if name == "-c" && codex_reasoning_effort_override(value).is_none() {
                     return None;
                 }
                 values.push(value.to_string());
@@ -573,6 +577,25 @@ pub fn remote_codex_tui(process: &LocalProcessInfo) -> Option<RemoteCodexTui> {
         thread_id,
         tui_args,
     })
+}
+
+pub(crate) fn codex_reasoning_effort_override(value: &str) -> Option<String> {
+    let (key, value) = value.split_once('=')?;
+    if key != "model_reasoning_effort" {
+        return None;
+    }
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Ok(value) = serde_json::from_str::<String>(value) {
+        return (!value.is_empty()).then_some(value);
+    }
+    if value.len() >= 2 && value.starts_with('\'') && value.ends_with('\'') {
+        let value = &value[1..value.len() - 1];
+        return (!value.is_empty()).then(|| value.to_string());
+    }
+    Some(value.to_string())
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -4026,6 +4049,7 @@ mod test {
             ("codex resume 01a02767-c120-77b2-88a1-4e17c93a7549 --remote unix:///tmp/codex.sock --cd=/code/zola --ask-for-approval=never --sandbox=danger-full-access", vec!["-a", "never", "-s", "danger-full-access"]),
             ("codex -anever --remote unix:///tmp/codex.sock resume -sdanger-full-access -C/code/zola 01a02767-c120-77b2-88a1-4e17c93a7549", vec!["-a", "never", "-s", "danger-full-access"]),
             ("codex -m resume --remote unix:///tmp/codex.sock resume -a never 01a02767-c120-77b2-88a1-4e17c93a7549", vec!["-m", "resume", "-a", "never"]),
+            ("codex resume --remote unix:///tmp/codex.sock -C /code/aipocalypse-public 01a02767-c120-77b2-88a1-4e17c93a7549 -a never -s danger-full-access -m gpt-daybreak-blue-latest -c 'model_reasoning_effort=\"xhigh\"'", vec!["-a", "never", "-s", "danger-full-access", "-m", "gpt-daybreak-blue-latest", "-c", "model_reasoning_effort=\"xhigh\""]),
             ("codex --remote unix:///tmp/codex.sock -C 00000000-0000-4000-8000-000000000001 resume --no-alt-screen -- 01a02767-c120-77b2-88a1-4e17c93a7549", vec!["--no-alt-screen"]),
             ("codex -a on-request -s workspace-write --remote unix:///tmp/codex.sock resume --ask-for-approval never 01a02767-c120-77b2-88a1-4e17c93a7549 --sandbox danger-full-access", vec!["-a", "never", "-s", "danger-full-access"]),
             ("codex --yolo --remote unix:///tmp/codex.sock resume 01a02767-c120-77b2-88a1-4e17c93a7549 -s read-only -a on-request", vec!["-s", "read-only", "-a", "on-request"]),
@@ -4067,6 +4091,7 @@ mod test {
             "codex --remote unix:///tmp/codex.sock resume 01A02767-C120-77B2-88A1-4E17C93A7549",
             "codex --remote unix:///tmp/codex.sock -p custom resume 01a02767-c120-77b2-88a1-4e17c93a7549",
             "codex --approve-for-me --remote unix:///tmp/codex.sock resume 01a02767-c120-77b2-88a1-4e17c93a7549 -a never",
+            "codex --remote unix:///tmp/codex.sock resume 01a02767-c120-77b2-88a1-4e17c93a7549 -c model_provider=other",
         ] {
             let argv = shell_words::split(command).unwrap();
             let argv: Vec<_> = argv.iter().map(String::as_str).collect();
