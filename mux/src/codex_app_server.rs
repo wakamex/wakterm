@@ -66,6 +66,33 @@ fn apply_tui_settings(params: &mut serde_json::Map<String, Value>, args: &[Strin
                     index += 1;
                 }
             }
+            "-m" | "--model" => {
+                if let Some(value) =
+                    inline_value.or_else(|| args.get(index + 1).map(String::as_str))
+                {
+                    params.insert("model".to_string(), Value::String(value.to_string()));
+                }
+                if inline_value.is_none() {
+                    index += 1;
+                }
+            }
+            "-c" | "--config" => {
+                if let Some(value) =
+                    inline_value.or_else(|| args.get(index + 1).map(String::as_str))
+                {
+                    if let Some(effort) = reasoning_effort_override(value) {
+                        params
+                            .entry("config")
+                            .or_insert_with(|| json!({}))
+                            .as_object_mut()
+                            .expect("managed Codex config is an object")
+                            .insert("model_reasoning_effort".to_string(), Value::String(effort));
+                    }
+                }
+                if inline_value.is_none() {
+                    index += 1;
+                }
+            }
             "--dangerously-bypass-approvals-and-sandbox" => {
                 params.insert(
                     "approvalPolicy".to_string(),
@@ -80,6 +107,25 @@ fn apply_tui_settings(params: &mut serde_json::Map<String, Value>, args: &[Strin
         }
         index += 1;
     }
+}
+
+fn reasoning_effort_override(value: &str) -> Option<String> {
+    let (key, value) = value.split_once('=')?;
+    if key != "model_reasoning_effort" {
+        return None;
+    }
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Ok(value) = serde_json::from_str::<String>(value) {
+        return (!value.is_empty()).then_some(value);
+    }
+    if value.len() >= 2 && value.starts_with('\'') && value.ends_with('\'') {
+        let value = &value[1..value.len() - 1];
+        return (!value.is_empty()).then(|| value.to_string());
+    }
+    Some(value.to_string())
 }
 
 fn metadata_only_resume_params(thread_id: &str, cwd: &str, tui_args: &[String]) -> Value {
@@ -791,8 +837,6 @@ fn validate_tui_args(args: &[String]) -> anyhow::Result<()> {
         "--all",
         "--enable",
         "--disable",
-        "-c",
-        "--config",
         "-p",
         "--profile",
     ];
@@ -821,6 +865,19 @@ fn validate_tui_args(args: &[String]) -> anyhow::Result<()> {
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
+        let (name, inline_value) = arg
+            .split_once('=')
+            .map(|(name, value)| (name, Some(value)))
+            .unwrap_or((arg.as_str(), None));
+        if matches!(name, "-c" | "--config") {
+            let value = inline_value.or_else(|| args.get(index + 1).map(String::as_str));
+            anyhow::ensure!(
+                value.and_then(reasoning_effort_override).is_some(),
+                "managed Codex config supports only a non-empty model_reasoning_effort override"
+            );
+            index += if inline_value.is_some() { 1 } else { 2 };
+            continue;
+        }
         anyhow::ensure!(
             !OWNED.iter().any(|owned| {
                 arg == owned
@@ -1539,6 +1596,10 @@ mod test {
             "never".to_string(),
             "-s".to_string(),
             "danger-full-access".to_string(),
+            "-m".to_string(),
+            "gpt-6-astra".to_string(),
+            "-c".to_string(),
+            "model_reasoning_effort=\"high\"".to_string(),
         ];
         assert_eq!(
             metadata_only_resume_params("thread-id", "/code/project", &args),
@@ -1552,7 +1613,20 @@ mod test {
                     "itemsView": "notLoaded"
                 },
                 "approvalPolicy": "never",
-                "sandbox": "danger-full-access"
+                "sandbox": "danger-full-access",
+                "model": "gpt-6-astra",
+                "config": {"model_reasoning_effort": "high"}
+            })
+        );
+        assert_eq!(
+            thread_start_params("/code/project", &args),
+            json!({
+                "cwd": "/code/project",
+                "serviceName": "wakterm",
+                "approvalPolicy": "never",
+                "sandbox": "danger-full-access",
+                "model": "gpt-6-astra",
+                "config": {"model_reasoning_effort": "high"}
             })
         );
         assert_eq!(
@@ -1598,6 +1672,8 @@ mod test {
             "gpt-5.4".into(),
             "--search".into(),
             "--sandbox=workspace-write".into(),
+            "-c".into(),
+            "model_reasoning_effort=\"xhigh\"".into(),
         ])
         .unwrap();
         for args in [
@@ -1606,6 +1682,8 @@ mod test {
             vec!["--enable=example".into()],
             vec!["prompt text".into()],
             vec!["--model".into()],
+            vec!["-c".into(), "model_provider=other".into()],
+            vec!["--config=model_reasoning_effort=".into()],
         ] {
             assert!(validate_tui_args(&args).is_err(), "accepted {:?}", args);
         }

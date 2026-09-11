@@ -76,7 +76,12 @@ wakterm agent launch codex --new-tab
 
 # Resume an exact Codex thread UUID
 wakterm agent launch codex --resume 12345678-1234-1234-1234-123456789abc
+
+# Override the model and reasoning effort
+wakterm agent launch codex -- --model gpt-6-astra -c 'model_reasoning_effort="high"'
 ```
+
+Managed launches accept the `model_reasoning_effort` config key because Wakterm applies it to both the app-server thread and native TUI. Other `-c` or `--config` overrides remain rejected because process-wide and thread settings could otherwise disagree.
 
 ## `wakterm agent list`
 
