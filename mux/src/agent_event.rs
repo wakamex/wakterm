@@ -1069,7 +1069,11 @@ fn codex_terminal_failure(error: Option<&Value>) -> (&'static str, &'static str)
             "rate_limited",
             "Codex could not complete this turn because the provider rate limit was reached.",
         ),
-        Some("serverOverloaded" | "httpConnectionFailed" | "responseStreamConnectionFailed"
+        Some("serverOverloaded") => (
+            "model_at_capacity",
+            "Selected model is at capacity. Please try a different model.",
+        ),
+        Some("httpConnectionFailed" | "responseStreamConnectionFailed"
             | "internalServerError" | "responseStreamDisconnected" | "responseTooManyFailedAttempts") => (
             "provider_unavailable",
             "Codex could not complete this turn because the provider service or connection failed.",
@@ -3156,6 +3160,53 @@ mod tests {
     }
 
     #[test]
+    fn codex_capacity_failure_matches_terminal_contract() {
+        let temp = TempDir::new().unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        store.start_runtime_epoch().unwrap();
+        let mut metadata = metadata("codex");
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "thread-policy".to_string(),
+            session_id: "session-capacity".to_string(),
+            executable: "codex".to_string(),
+            version: "test".to_string(),
+            tui_args: vec![],
+        });
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.alive = true;
+        runtime.transport = AgentTransport::CodexAppServerTui;
+        let mut notifications: Vec<Value> =
+            serde_json::from_str(include_str!("../test-data/codex-policy-failed-turn.json"))
+                .unwrap();
+        notifications[2]["params"]["turn"]["error"]["codexErrorInfo"] =
+            serde_json::json!("serverOverloaded");
+        store
+            .writer()
+            .unwrap()
+            .observe_codex_app_server_notification(&metadata, &runtime, &notifications[2])
+            .unwrap();
+        let page = store.read_page(0, 100).unwrap();
+        let event = page
+            .events
+            .iter()
+            .find(|event| event.kind == AgentEventKind::TurnFinal)
+            .unwrap();
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../docs/agent-api/v1/golden-fixtures.json"))
+                .unwrap();
+        let golden: AgentEvent =
+            serde_json::from_value(fixtures["capacity_aborted_turn_final"].clone()).unwrap();
+        assert_eq!(event.reason, golden.reason);
+        assert_eq!(event.detail, golden.detail);
+        assert_eq!(event.outcome, golden.outcome);
+        assert_eq!(event.text, None);
+        assert_eq!(event.recoverable, None);
+        let serialized = serde_json::to_string(event).unwrap();
+        assert!(!serialized.contains("RAW_PROVIDER_DIAGNOSTIC"));
+        assert!(!serialized.contains("PRIVATE_DIAGNOSTIC_PAYLOAD"));
+    }
+
+    #[test]
     fn codex_terminal_failure_classifies_codes_without_exposing_payloads() {
         for (info, reason) in [
             (
@@ -3170,8 +3221,13 @@ mod tests {
                 serde_json::json!({"httpConnectionFailed": {"httpStatusCode": 503}}),
                 "provider_unavailable",
             ),
+            (serde_json::json!("serverOverloaded"), "model_at_capacity"),
             (
-                serde_json::json!("serverOverloaded"),
+                serde_json::json!({"responseStreamDisconnected": {"httpStatusCode": 503}}),
+                "provider_unavailable",
+            ),
+            (
+                serde_json::json!({"responseStreamConnectionFailed": {"httpStatusCode": 503}}),
                 "provider_unavailable",
             ),
             (serde_json::json!("unauthorized"), "authentication_failed"),

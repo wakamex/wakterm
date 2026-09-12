@@ -86,6 +86,7 @@ For managed Codex turns ending with provider status `failed`, `turn_final` keeps
 | `context_limit` | The conversation exceeded the context limit. |
 | `usage_limit` | A session budget or usage limit was reached. |
 | `rate_limited` | The provider rate limit was reached. |
+| `model_at_capacity` | The selected model is at capacity; the user can try a different model. |
 | `provider_unavailable` | The provider service or connection failed. |
 | `authentication_failed` | The provider rejected authentication. |
 | `invalid_request` | The provider rejected the request. |
@@ -93,6 +94,8 @@ For managed Codex turns ending with provider status `failed`, `turn_final` keeps
 | `provider_error` | The failure has an unknown or absent provider error code. |
 
 Descriptions come from Wakterm's fixed mapping of structured provider error codes. Raw provider messages, additional diagnostics, and policy continuation instructions are excluded. Clients should accept unknown reason values and render `detail` as plain text. `recoverable` stays null; the category does not authorize retries or changes to provider policy settings.
+
+Codex `serverOverloaded` maps to `model_at_capacity` with the fixed detail “Selected model is at capacity. Please try a different model.” HTTP and stream connection failures retain `provider_unavailable`, including HTTP 503 errors without the explicit capacity code. The `capacity_aborted_turn_final` fixture covers the capacity notice. Consumers that display `detail` need no compatibility change.
 
 Consumers may present an aborted terminal event's nonempty `detail` as a failure notice, including when `text` is null, and deduplicate it by `event_id`. It is not an assistant message. Successful turns and ordinary interrupted turns retain their existing behavior. A transient error notification does not itself produce a terminal event; failure detail comes from the authoritative turn-completion payload.
 

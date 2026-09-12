@@ -233,6 +233,22 @@
     "recoverable": null,
     "detail": "Codex could not complete this turn because the provider blocked the response under its content policy."
   },
+  "capacity_aborted_turn_final": {
+    "sequence": 110,
+    "event_id": "event-capacity-final",
+    "kind": "turn_final",
+    "agent_id": "agent-zola",
+    "incarnation_id": "incarnation-zola-7",
+    "observed_at": "2026-09-12T03:40:32Z",
+    "turn_id": "turn-capacity",
+    "lifecycle": null,
+    "reason": "model_at_capacity",
+    "turn_state": null,
+    "text": null,
+    "outcome": "aborted",
+    "recoverable": null,
+    "detail": "Selected model is at capacity. Please try a different model."
+  },
   "cursor_too_old": {
     "availability": "live_example",
     "schema": "wakterm.agent-events.v1",
