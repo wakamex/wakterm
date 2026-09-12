@@ -217,6 +217,22 @@
       }
     ]
   },
+  "policy_aborted_turn_final": {
+    "sequence": 109,
+    "event_id": "event-policy-final",
+    "kind": "turn_final",
+    "agent_id": "agent-zola",
+    "incarnation_id": "incarnation-zola-7",
+    "observed_at": "2026-09-12T03:39:32Z",
+    "turn_id": "turn-policy",
+    "lifecycle": null,
+    "reason": "policy_blocked",
+    "turn_state": null,
+    "text": null,
+    "outcome": "aborted",
+    "recoverable": null,
+    "detail": "Codex could not complete this turn because the provider blocked the response under its content policy."
+  },
   "cursor_too_old": {
     "availability": "live_example",
     "schema": "wakterm.agent-events.v1",

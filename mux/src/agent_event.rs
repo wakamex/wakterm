@@ -908,6 +908,11 @@ impl AgentEventStore {
                     .to_string(),
                 );
                 final_event.text = text;
+                if status == "failed" {
+                    let (reason, detail) = codex_terminal_failure(params.pointer("/turn/error"));
+                    final_event.reason = Some(reason.to_string());
+                    final_event.detail = Some(detail.to_string());
+                }
                 pending.push(final_event);
                 let mut state = PendingEvent::new(
                     format!("{key}:completed-state"),
@@ -1034,6 +1039,58 @@ fn apply_retention(tx: &Transaction<'_>, retention_limit: usize) -> anyhow::Resu
         params![cutoff],
     )?;
     Ok(())
+}
+
+fn codex_terminal_failure(error: Option<&Value>) -> (&'static str, &'static str) {
+    let info = error.and_then(|error| error.get("codexErrorInfo"));
+    // Structured variants with fields serialize as a one-key object. Only
+    // classify known codes; never forward raw messages or diagnostic payloads.
+    let code = info.and_then(|info| {
+        info.as_str().or_else(|| {
+            info.as_object()
+                .filter(|object| object.len() == 1)
+                .and_then(|object| object.keys().next().map(String::as_str))
+        })
+    });
+    match code {
+        Some("cyberPolicy" | "misalignmentPolicyViolation") => (
+            "policy_blocked",
+            "Codex could not complete this turn because the provider blocked the response under its content policy.",
+        ),
+        Some("contextWindowExceeded") => (
+            "context_limit",
+            "Codex could not complete this turn because the conversation exceeded the context limit.",
+        ),
+        Some("sessionBudgetExceeded" | "usageLimitExceeded") => (
+            "usage_limit",
+            "Codex could not complete this turn because a session budget or usage limit was reached.",
+        ),
+        Some("rateLimitExceeded") => (
+            "rate_limited",
+            "Codex could not complete this turn because the provider rate limit was reached.",
+        ),
+        Some("serverOverloaded" | "httpConnectionFailed" | "responseStreamConnectionFailed"
+            | "internalServerError" | "responseStreamDisconnected" | "responseTooManyFailedAttempts") => (
+            "provider_unavailable",
+            "Codex could not complete this turn because the provider service or connection failed.",
+        ),
+        Some("unauthorized") => (
+            "authentication_failed",
+            "Codex could not complete this turn because the provider rejected authentication.",
+        ),
+        Some("badRequest") => (
+            "invalid_request",
+            "Codex could not complete this turn because the provider rejected the request.",
+        ),
+        Some("sandboxError") => (
+            "sandbox_error",
+            "Codex could not complete this turn because its execution sandbox failed.",
+        ),
+        _ => (
+            "provider_error",
+            "Codex could not complete this turn because of a provider error.",
+        ),
+    }
 }
 
 fn observer_failure(
@@ -2991,6 +3048,144 @@ mod tests {
         assert_eq!(page.events[0].kind, AgentEventKind::AgentLifecycle);
         assert_eq!(page.events[0].lifecycle.as_deref(), Some("unavailable"));
         assert_eq!(page.events[0].reason.as_deref(), Some("metadata_cleared"));
+    }
+
+    #[test]
+    fn codex_policy_failure_without_assistant_text_has_safe_terminal_detail() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("events.sqlite3");
+        let store = AgentEventStore::new(path.clone());
+        store.start_runtime_epoch().unwrap();
+        let mut metadata = metadata("codex");
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "thread-policy".to_string(),
+            session_id: "session-policy".to_string(),
+            executable: "codex".to_string(),
+            version: "test".to_string(),
+            tui_args: vec![],
+        });
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.alive = true;
+        runtime.harness = AgentHarness::Codex;
+        runtime.transport = AgentTransport::CodexAppServerTui;
+        let notifications: Vec<Value> =
+            serde_json::from_str(include_str!("../test-data/codex-policy-failed-turn.json"))
+                .unwrap();
+        let mut writer = store.writer().unwrap();
+        for notification in &notifications[..2] {
+            writer
+                .observe_codex_app_server_notification(&metadata, &runtime, notification)
+                .unwrap();
+        }
+        assert!(!store
+            .read_page(0, 100)
+            .unwrap()
+            .events
+            .iter()
+            .any(|event| event.kind == AgentEventKind::TurnFinal));
+        // The terminal payload is sufficient even if its preceding error
+        // notification was missed. Duplicate delivery preserves one final.
+        for _ in 0..2 {
+            writer
+                .observe_codex_app_server_notification(&metadata, &runtime, &notifications[2])
+                .unwrap();
+        }
+        drop(writer);
+        drop(store);
+        let reopened = AgentEventStore::new(path);
+        let page = reopened.read_page(0, 100).unwrap();
+        let finals: Vec<_> = page
+            .events
+            .iter()
+            .filter(|event| event.kind == AgentEventKind::TurnFinal)
+            .collect();
+        assert_eq!(finals.len(), 1);
+        let event = finals[0];
+        assert_eq!(event.turn_id.as_deref(), Some("turn-policy"));
+        assert_eq!(event.outcome.as_deref(), Some("aborted"));
+        assert_eq!(event.reason.as_deref(), Some("policy_blocked"));
+        assert_eq!(event.detail.as_deref(), Some("Codex could not complete this turn because the provider blocked the response under its content policy."));
+        assert_eq!(event.text, None);
+        assert_eq!(event.recoverable, None);
+        assert!(!page
+            .events
+            .iter()
+            .any(|event| event.kind == AgentEventKind::AssistantMessage));
+        assert!(page
+            .events
+            .iter()
+            .any(|event| event.sequence > finals[0].sequence
+                && event.turn_state.as_deref() == Some("waiting_on_user")));
+        let serialized = serde_json::to_string(&page).unwrap();
+        assert!(!serialized.contains("RAW_PROVIDER_DIAGNOSTIC"));
+        assert!(!serialized.contains("PRIVATE_DIAGNOSTIC_PAYLOAD"));
+
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../docs/agent-api/v1/golden-fixtures.json"))
+                .unwrap();
+        let golden: AgentEvent =
+            serde_json::from_value(fixtures["policy_aborted_turn_final"].clone()).unwrap();
+        assert_eq!(event.reason, golden.reason);
+        assert_eq!(event.detail, golden.detail);
+        assert_eq!(event.outcome, golden.outcome);
+        assert_eq!(event.text, golden.text);
+
+        let mut writer = reopened.writer().unwrap();
+        for status in ["completed", "interrupted"] {
+            let mut completion = notifications[2].clone();
+            completion["params"]["turn"]["id"] = serde_json::json!(status);
+            completion["params"]["turn"]["status"] = serde_json::json!(status);
+            completion["params"]["turn"]["error"] = Value::Null;
+            writer
+                .observe_codex_app_server_notification(&metadata, &runtime, &completion)
+                .unwrap();
+        }
+        let page = reopened.read_page(0, 100).unwrap();
+        for status in ["completed", "interrupted"] {
+            let event = page
+                .events
+                .iter()
+                .find(|event| {
+                    event.kind == AgentEventKind::TurnFinal
+                        && event.turn_id.as_deref() == Some(status)
+                })
+                .unwrap();
+            assert_eq!(event.reason, None);
+            assert_eq!(event.detail, None);
+        }
+    }
+
+    #[test]
+    fn codex_terminal_failure_classifies_codes_without_exposing_payloads() {
+        for (info, reason) in [
+            (
+                serde_json::json!("misalignmentPolicyViolation"),
+                "policy_blocked",
+            ),
+            (serde_json::json!("contextWindowExceeded"), "context_limit"),
+            (serde_json::json!("sessionBudgetExceeded"), "usage_limit"),
+            (serde_json::json!("usageLimitExceeded"), "usage_limit"),
+            (serde_json::json!("rateLimitExceeded"), "rate_limited"),
+            (
+                serde_json::json!({"httpConnectionFailed": {"httpStatusCode": 503}}),
+                "provider_unavailable",
+            ),
+            (
+                serde_json::json!("serverOverloaded"),
+                "provider_unavailable",
+            ),
+            (serde_json::json!("unauthorized"), "authentication_failed"),
+            (serde_json::json!("badRequest"), "invalid_request"),
+            (serde_json::json!("sandboxError"), "sandbox_error"),
+            (serde_json::json!("futureProviderCode"), "provider_error"),
+            (Value::Null, "provider_error"),
+        ] {
+            let error = serde_json::json!({"codexErrorInfo": info, "message": "PRIVATE", "additionalDetails": "PRIVATE"});
+            let (actual, detail) = codex_terminal_failure(Some(&error));
+            assert_eq!(actual, reason);
+            assert!(!detail.contains("PRIVATE"));
+        }
+        assert_eq!(codex_terminal_failure(None).0, "provider_error");
     }
 
     #[test]

@@ -76,6 +76,30 @@ restored after a mux restart and does not require catalog or prompt activity.
 The authoritative status returned by app-server resume initializes the restored
 catalog entry, so an idle session can accept prompt admission immediately.
 
+## Terminal failure detail
+
+For managed Codex turns ending with provider status `failed`, `turn_final` keeps `outcome: "aborted"` and supplies a normalized category in the existing `reason` field plus a safe user-facing description in `detail`. These fields are present even when the turn has no assistant output. `text` remains assistant output and may be null. The `policy_aborted_turn_final` golden fixture demonstrates this case.
+
+| Reason | Meaning |
+| --- | --- |
+| `policy_blocked` | The provider blocked the response under its content policy. |
+| `context_limit` | The conversation exceeded the context limit. |
+| `usage_limit` | A session budget or usage limit was reached. |
+| `rate_limited` | The provider rate limit was reached. |
+| `provider_unavailable` | The provider service or connection failed. |
+| `authentication_failed` | The provider rejected authentication. |
+| `invalid_request` | The provider rejected the request. |
+| `sandbox_error` | The execution sandbox failed. |
+| `provider_error` | The failure has an unknown or absent provider error code. |
+
+Descriptions come from Wakterm's fixed mapping of structured provider error codes. Raw provider messages, additional diagnostics, and policy continuation instructions are excluded. Clients should accept unknown reason values and render `detail` as plain text. `recoverable` stays null; the category does not authorize retries or changes to provider policy settings.
+
+Consumers may present an aborted terminal event's nonempty `detail` as a failure notice, including when `text` is null, and deduplicate it by `event_id`. It is not an assistant message. Successful turns and ordinary interrupted turns retain their existing behavior. A transient error notification does not itself produce a terminal event; failure detail comes from the authoritative turn-completion payload.
+
+This uses existing Agent API v1 fields and requires no new event kind or capability. Events already committed without failure detail remain unchanged; the new normalization applies to newly recorded completions. Return-request receipts are a separate stream and retain their existing generic aborted detail.
+
+## Session continuity and event delivery
+
 Ordinary event mirroring follows the live pane when its managed Codex TUI starts, resumes, or forks to another provider thread. The stable Wakterm agent ID and pane route continue to receive assistant output, while the exact provider thread and derived incarnation change in the catalog and event provenance. Consumers do not need to replace an event cursor or rediscover the route. Exact prompt admission and return-final correlation still require the current catalog incarnation and provider turn.
 
 Return-final admission uses the same request and receipt contract for observer-backed Codex PTYs and managed Codex app-server sessions. An observer-backed request is correlated through its exact process, provider session, cursor, prompt hash, and provider turn. A managed request arms the durable event sequence for its exact app-server thread and session, binds the first subsequent provider turn, and accepts only that turn's durable final.

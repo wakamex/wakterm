@@ -1,0 +1,51 @@
+[
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "thread-policy",
+      "turn": {
+        "id": "turn-policy",
+        "items": [],
+        "status": "inProgress",
+        "error": null,
+        "startedAt": 1777000000,
+        "completedAt": null,
+        "durationMs": null
+      }
+    }
+  },
+  {
+    "method": "error",
+    "params": {
+      "threadId": "thread-policy",
+      "turnId": "turn-policy",
+      "willRetry": false,
+      "error": {
+        "message": "RAW_PROVIDER_DIAGNOSTIC",
+        "codexErrorInfo": "cyberPolicy",
+        "additionalDetails": "PRIVATE_DIAGNOSTIC_PAYLOAD",
+        "misalignment": null
+      }
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "thread-policy",
+      "turn": {
+        "id": "turn-policy",
+        "items": [],
+        "status": "failed",
+        "error": {
+          "message": "RAW_PROVIDER_DIAGNOSTIC",
+          "codexErrorInfo": "cyberPolicy",
+          "additionalDetails": "PRIVATE_DIAGNOSTIC_PAYLOAD",
+          "misalignment": null
+        },
+        "startedAt": 1777000000,
+        "completedAt": 1777000002,
+        "durationMs": 2000
+      }
+    }
+  }
+]
