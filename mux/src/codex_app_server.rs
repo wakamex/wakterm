@@ -1369,6 +1369,30 @@ fn relay_websocket_frames(
     }
 }
 
+fn notification_updates_current_turn(
+    runtime: &crate::agent::AgentRuntimeSnapshot,
+    method: &str,
+    params: &Value,
+) -> bool {
+    let Some(turn) = runtime.observed_turn.as_ref() else {
+        return true;
+    };
+    let turn_id = params
+        .get("turnId")
+        .or_else(|| params.pointer("/turn/id"))
+        .and_then(Value::as_str);
+    let Some(turn_id) = turn_id else {
+        return true;
+    };
+    if turn_id != turn.provider_turn_id {
+        return method == "turn/started";
+    }
+    // Codex can report child activity for its spawning turn after completion.
+    // Only a different turn/started may begin live work again. Keep late items
+    // available to the durable event writer without re-finalizing live state.
+    matches!(turn.outcome, AgentObservedTurnOutcome::Running)
+}
+
 pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         return;
@@ -1395,93 +1419,95 @@ pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
         let Some(runtime) = runtimes.get_mut(&pane_id) else {
             continue;
         };
-        runtime.observed_at = Utc::now();
-        runtime.transport = AgentTransport::CodexAppServerTui;
-        runtime.harness_mode = Some("app-server-tui".to_string());
-        match method {
-            "turn/started" => {
-                if let Some(turn_id) = params.pointer("/turn/id").and_then(Value::as_str) {
-                    runtime.turn_state = AgentTurnState::WaitingOnAgent;
-                    runtime.turn_phase = Some("running".to_string());
+        if notification_updates_current_turn(runtime, method, params) {
+            runtime.observed_at = Utc::now();
+            runtime.transport = AgentTransport::CodexAppServerTui;
+            runtime.harness_mode = Some("app-server-tui".to_string());
+            match method {
+                "turn/started" => {
+                    if let Some(turn_id) = params.pointer("/turn/id").and_then(Value::as_str) {
+                        runtime.turn_state = AgentTurnState::WaitingOnAgent;
+                        runtime.turn_phase = Some("running".to_string());
+                        runtime.attention_reason = None;
+                        runtime.observer_error = None;
+                        runtime.observed_turn = Some(AgentObservedTurn {
+                            provider_turn_id: turn_id.to_string(),
+                            outcome: AgentObservedTurnOutcome::Running,
+                            started_at: Some(Utc::now()),
+                            completed_at: None,
+                            started_cursor: None,
+                            latest_cursor: None,
+                            primary_user_message_sha256: None,
+                            user_message_count: 1,
+                            final_message: None,
+                        });
+                    }
+                }
+                "turn/completed" => {
+                    let status = params
+                        .pointer("/turn/status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("failed");
+                    let final_message = params
+                        .pointer("/turn/items")
+                        .and_then(Value::as_array)
+                        .and_then(|items| {
+                            items.iter().rev().find(|item| {
+                                item.get("type").and_then(Value::as_str) == Some("agentMessage")
+                            })
+                        })
+                        .and_then(|item| item.get("text"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    runtime.turn_state = AgentTurnState::WaitingOnUser;
+                    runtime.turn_phase = Some(status.to_string());
+                    runtime.last_turn_completed_at = Some(Utc::now());
                     runtime.attention_reason = None;
                     runtime.observer_error = None;
-                    runtime.observed_turn = Some(AgentObservedTurn {
-                        provider_turn_id: turn_id.to_string(),
-                        outcome: AgentObservedTurnOutcome::Running,
-                        started_at: Some(Utc::now()),
-                        completed_at: None,
-                        started_cursor: None,
-                        latest_cursor: None,
-                        primary_user_message_sha256: None,
-                        user_message_count: 1,
-                        final_message: None,
-                    });
+                    if let Some(turn) = runtime.observed_turn.as_mut() {
+                        turn.outcome = if status == "completed" {
+                            AgentObservedTurnOutcome::Completed
+                        } else {
+                            AgentObservedTurnOutcome::Aborted
+                        };
+                        turn.completed_at = Some(Utc::now());
+                        turn.final_message = final_message;
+                    }
                 }
-            }
-            "turn/completed" => {
-                let status = params
-                    .pointer("/turn/status")
-                    .and_then(Value::as_str)
-                    .unwrap_or("failed");
-                let final_message = params
-                    .pointer("/turn/items")
-                    .and_then(Value::as_array)
-                    .and_then(|items| {
-                        items.iter().rev().find(|item| {
-                            item.get("type").and_then(Value::as_str) == Some("agentMessage")
-                        })
-                    })
-                    .and_then(|item| item.get("text"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                runtime.turn_state = AgentTurnState::WaitingOnUser;
-                runtime.turn_phase = Some(status.to_string());
-                runtime.last_turn_completed_at = Some(Utc::now());
-                runtime.attention_reason = None;
-                runtime.observer_error = None;
-                if let Some(turn) = runtime.observed_turn.as_mut() {
-                    turn.outcome = if status == "completed" {
-                        AgentObservedTurnOutcome::Completed
-                    } else {
-                        AgentObservedTurnOutcome::Aborted
-                    };
-                    turn.completed_at = Some(Utc::now());
-                    turn.final_message = final_message;
+                "thread/status/changed" => {
+                    apply_thread_status(runtime, params.get("status").unwrap_or(&Value::Null));
                 }
-            }
-            "thread/status/changed" => {
-                apply_thread_status(runtime, params.get("status").unwrap_or(&Value::Null));
-            }
-            "item/started" => {
-                runtime.turn_state = AgentTurnState::WaitingOnAgent;
-                runtime.attention_reason = None;
-                runtime.last_progress_at = Some(Utc::now());
-                runtime.progress_summary = params
-                    .pointer("/item/type")
-                    .and_then(Value::as_str)
-                    .map(|kind| format!("Codex {kind}"));
-            }
-            "item/completed" => {
-                runtime.last_progress_at = Some(Utc::now());
-            }
-            "item/commandExecution/requestApproval"
-            | "item/fileChange/requestApproval"
-            | "item/permissions/requestApproval" => {
-                runtime.turn_state = AgentTurnState::WaitingOnUser;
-                runtime.attention_reason = Some("approval-requested".to_string());
-            }
-            "error" => {
-                runtime.observer_error = Some(
-                    params
-                        .get("message")
+                "item/started" => {
+                    runtime.turn_state = AgentTurnState::WaitingOnAgent;
+                    runtime.attention_reason = None;
+                    runtime.last_progress_at = Some(Utc::now());
+                    runtime.progress_summary = params
+                        .pointer("/item/type")
                         .and_then(Value::as_str)
-                        .unwrap_or("Codex app-server error")
-                        .to_string(),
-                );
+                        .map(|kind| format!("Codex {kind}"));
+                }
+                "item/completed" => {
+                    runtime.last_progress_at = Some(Utc::now());
+                }
+                "item/commandExecution/requestApproval"
+                | "item/fileChange/requestApproval"
+                | "item/permissions/requestApproval" => {
+                    runtime.turn_state = AgentTurnState::WaitingOnUser;
+                    runtime.attention_reason = Some("approval-requested".to_string());
+                }
+                "error" => {
+                    runtime.observer_error = Some(
+                        params
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Codex app-server error")
+                            .to_string(),
+                    );
+                }
+                _ => {}
             }
-            _ => {}
+            finalize_runtime_snapshot(runtime);
         }
-        finalize_runtime_snapshot(runtime);
         let runtime = runtime.clone();
         drop(runtimes);
         if matches!(method, "turn/started" | "item/completed" | "turn/completed") {
@@ -1945,6 +1971,136 @@ mod test {
             runtime.last_turn_completed_at,
             Utc.timestamp_opt(1_777_000_010, 0).single()
         );
+    }
+
+    #[test]
+    fn terminal_turn_ignores_late_subagent_activity() {
+        for status in ["completed", "interrupted", "failed"] {
+            let mux = Mux::new(None);
+            mux.start_agent_event_runtime_epoch().unwrap();
+            let metadata = metadata("late-child", "thread-parent");
+            mux.agent_metadata_by_pane
+                .write()
+                .insert(1, Arc::new(metadata.clone()));
+            let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+            runtime.alive = true;
+            mux.agent_runtime_by_pane.write().insert(1, runtime);
+            apply_notification_to_runtime(
+                &mux,
+                &json!({
+                    "method": "turn/started",
+                    "params": {"threadId": "thread-parent", "turn": {"id": "turn-parent"}}
+                }),
+            );
+            apply_notification_to_runtime(
+                &mux,
+                &json!({
+                    "method": "turn/completed",
+                    "params": {"threadId": "thread-parent", "turn": {
+                        "id": "turn-parent", "status": status
+                    }}
+                }),
+            );
+            let terminal = mux.agent_runtime_by_pane.read()[&1].clone();
+            assert_eq!(terminal.turn_state, AgentTurnState::WaitingOnUser);
+            let terminal_page = (0..100)
+                .find_map(|_| {
+                    let page = mux.agent_event_store.read_page(0, 100).unwrap();
+                    if page.events.iter().any(|event| {
+                        event.kind == AgentEventKind::TurnFinal
+                            && event.turn_id.as_deref() == Some("turn-parent")
+                    }) {
+                        Some(page)
+                    } else {
+                        std::thread::sleep(Duration::from_millis(10));
+                        None
+                    }
+                })
+                .expect("parent turn final was not persisted");
+            assert!(terminal_page.events.iter().any(|event| {
+                event.kind == AgentEventKind::TurnStateChanged
+                    && event.turn_id.as_deref() == Some("turn-parent")
+                    && event.turn_state.as_deref() == Some("waiting_on_user")
+            }));
+            // Typing at the idle prompt is not a provider turn/started event.
+            mux.agent_runtime_by_pane
+                .write()
+                .get_mut(&1)
+                .unwrap()
+                .last_input_at = Some(Utc::now() + chrono::Duration::seconds(1));
+            // Codex maps SubAgentActivity to ItemCompleted, including the
+            // spawning parent turn ID even after that turn has completed.
+            let late_activity: Value = serde_json::from_str(include_str!(
+                "../test-data/codex-late-subagent-activity.json"
+            ))
+            .unwrap();
+            apply_notification_to_runtime(&mux, &late_activity);
+            {
+                let runtimes = mux.agent_runtime_by_pane.read();
+                let runtime = &runtimes[&1];
+                assert_eq!(runtime.turn_state, terminal.turn_state, "{status}");
+                assert_eq!(runtime.status, terminal.status, "{status}");
+                assert_eq!(runtime.turn_phase, terminal.turn_phase);
+                assert_eq!(runtime.attention_reason, terminal.attention_reason);
+                assert_eq!(runtime.last_progress_at, terminal.last_progress_at);
+                assert_eq!(runtime.observed_turn, terminal.observed_turn);
+            }
+            // End the synthetic input-timestamp scenario before exercising
+            // the provider's next-turn and approval notifications.
+            mux.agent_runtime_by_pane
+                .write()
+                .get_mut(&1)
+                .unwrap()
+                .last_input_at = None;
+            apply_notification_to_runtime(
+                &mux,
+                &json!({
+                    "method": "turn/started",
+                    "params": {"threadId": "thread-parent", "turn": {"id": "turn-next"}}
+                }),
+            );
+            let next = mux.agent_runtime_by_pane.read()[&1].clone();
+            assert_eq!(next.status, AgentStatus::Busy);
+            assert_eq!(next.turn_state, AgentTurnState::WaitingOnAgent);
+            apply_notification_to_runtime(&mux, &late_activity);
+            let runtimes = mux.agent_runtime_by_pane.read();
+            assert_eq!(runtimes[&1].observed_turn, next.observed_turn);
+            assert_eq!(runtimes[&1].last_progress_at, next.last_progress_at);
+            drop(runtimes);
+            // An old turn must not interrupt the new turn's approval state.
+            apply_notification_to_runtime(
+                &mux,
+                &json!({
+                    "method": "item/commandExecution/requestApproval",
+                    "params": {"threadId": "thread-parent", "turnId": "turn-next"}
+                }),
+            );
+            let approval = mux.agent_runtime_by_pane.read()[&1].clone();
+            assert_eq!(
+                approval.attention_reason.as_deref(),
+                Some("approval-requested")
+            );
+            let mut stale = late_activity.clone();
+            stale["method"] = json!("item/started");
+            stale["params"]["startedAtMs"] = stale["params"]["completedAtMs"].clone();
+            stale["params"]
+                .as_object_mut()
+                .unwrap()
+                .remove("completedAtMs");
+            apply_notification_to_runtime(&mux, &stale);
+            {
+                let runtimes = mux.agent_runtime_by_pane.read();
+                assert_eq!(runtimes[&1].turn_state, approval.turn_state);
+                assert_eq!(runtimes[&1].attention_reason, approval.attention_reason);
+                assert_eq!(runtimes[&1].observer_error, approval.observer_error);
+                assert_eq!(runtimes[&1].observed_turn, approval.observed_turn);
+            }
+            stale["params"]["turnId"] = json!("turn-next");
+            apply_notification_to_runtime(&mux, &stale);
+            let runtimes = mux.agent_runtime_by_pane.read();
+            assert_eq!(runtimes[&1].turn_state, AgentTurnState::WaitingOnAgent);
+            assert_eq!(runtimes[&1].attention_reason, None);
+        }
     }
 
     #[test]

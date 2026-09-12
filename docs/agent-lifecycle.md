@@ -57,6 +57,8 @@ When a managed TUI uses `/resume`, `/fork`, or another provider operation that r
 
 Ephemeral provider threads used for hidden work such as title generation do not replace the pane's active thread, restoration identity, lifecycle state, or passive output source.
 
+Turn-scoped notifications update live state only for the current running provider turn. Late items, including subagent completion attributed to a finished parent turn, remain eligible for durable event recording without reopening that turn or changing a newer turn's state. A `turn/started` notification for a different provider turn starts live work normally.
+
 The native TUI receives the pane's declared working directory explicitly. Its session picker therefore starts with the same working-directory filter as a normal Codex TUI, even though multiple panes share one app-server.
 
 When invoked inside a Wakterm pane, the command runs the native TUI in that

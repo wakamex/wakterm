@@ -1,0 +1,15 @@
+{
+  "method": "item/completed",
+  "params": {
+    "threadId": "thread-parent",
+    "turnId": "turn-parent",
+    "completedAtMs": 1777000076000,
+    "item": {
+      "id": "child-completed",
+      "type": "subAgentActivity",
+      "kind": "completed",
+      "agentThreadId": "thread-child",
+      "agentPath": "/root/child"
+    }
+  }
+}
