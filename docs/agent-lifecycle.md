@@ -193,7 +193,9 @@ On Unix, the restored TUI runs as a foreground job of the user's interactive
 login shell. The harness remains the foreground process while it runs, and
 exiting it returns the pane to that login shell instead of closing it.
 
-When `SHELL` names the native Wsh system-package path `/usr/bin/wsh` or `/bin/wsh`, restored harnesses use Wsh's exact-argument foreground interface. Wsh owns suspension and resumption and returns to the same interactive shell after the harness exits. Per-user Wsh launcher paths keep the generic shell restore path. The two system paths are reserved for the native Wsh package; manually copied legacy launchers must be migrated before using them there.
+When `SHELL` names the native Wsh system-package path `/usr/bin/wsh` or `/bin/wsh`, restored harnesses use `wsh --run --login -- PROGRAM ARG...`, Wsh's exact-argument foreground interface. Wsh owns suspension and resumption and returns to the same interactive shell after the harness exits. Per-user Wsh launcher paths keep the generic shell restore path. The two system paths are reserved for the native Wsh package; manually copied legacy launchers must be migrated before using them there.
+
+Run the real-parser and PTY regression with `WAKTERM_TEST_WSH=/path/to/native/wsh cargo test -p mux restored_harness_real_wsh_preserves_argv_and_job_control --lib -- --ignored --nocapture`. It uses the production restore arguments and substitutes only the executable location, checking argument bytes, Ctrl-C, Ctrl-Z, `fg`, foreground ownership, application exit status, and return to the shell prompt. The test needs Python 3 and an available native Wsh build.
 
 If any step fails, keep the layout recoverable, surface the failure, and retain
 enough intent for an explicit retry. A failure pane or equivalent diagnostic
