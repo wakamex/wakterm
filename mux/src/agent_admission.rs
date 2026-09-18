@@ -489,6 +489,19 @@ fn classify_runtime(
             "the target agent is not alive",
         ));
     }
+    // A managed active-turn boundary is sufficient to reject idle admission
+    // as busy, even when an observer error makes the derived status Errored.
+    // Callers may then use their explicit steering path; no prompt is written.
+    if matches!(runtime.harness, AgentHarness::Codex)
+        && matches!(runtime.transport, AgentTransport::CodexAppServerTui)
+        && matches!(runtime.turn_state, AgentTurnState::WaitingOnAgent)
+    {
+        return Some(AgentAdmissionReceipt::rejected(
+            request,
+            AgentAdmissionStatus::Busy,
+            "the target has an active managed Codex turn",
+        ));
+    }
     if let Some(error) = runtime.observer_error.as_deref() {
         return Some(AgentAdmissionReceipt::rejected(
             request,
@@ -885,6 +898,51 @@ mod tests {
         assert_eq!(nested.baseline_cursor, 42);
         assert_eq!(nested.reconciled_event_sequence, 42);
         assert!(request_matches_admission(&nested, &candidate.request));
+    }
+
+    #[test]
+    fn active_managed_codex_observer_error_is_busy_without_prompt_write() {
+        let request = request("request-steer", "work");
+        let mut runtime = runtime();
+        runtime.harness = AgentHarness::Codex;
+        runtime.transport = AgentTransport::CodexAppServerTui;
+        runtime.turn_state = AgentTurnState::WaitingOnAgent;
+        runtime.status = AgentStatus::Errored;
+        runtime.observer_error = Some("Codex app-server error".to_string());
+        let receipt = classify_runtime(&request, &runtime).unwrap();
+        assert_eq!(receipt.status, AgentAdmissionStatus::Busy);
+        assert!(receipt.definitive);
+        assert_eq!(receipt.prompt_written, Some(false));
+
+        runtime.turn_state = AgentTurnState::WaitingOnUser;
+        assert_eq!(
+            classify_runtime(&request, &runtime).unwrap().status,
+            AgentAdmissionStatus::ObserverFailure
+        );
+        runtime.turn_state = AgentTurnState::Unknown;
+        runtime.status = AgentStatus::Busy;
+        assert_eq!(
+            classify_runtime(&request, &runtime).unwrap().status,
+            AgentAdmissionStatus::ObserverFailure
+        );
+        runtime.turn_state = AgentTurnState::WaitingOnAgent;
+        runtime.transport = AgentTransport::ObservedPty;
+        assert_eq!(
+            classify_runtime(&request, &runtime).unwrap().status,
+            AgentAdmissionStatus::ObserverFailure
+        );
+        runtime.transport = AgentTransport::CodexAppServerTui;
+        runtime.alive = false;
+        assert_eq!(
+            classify_runtime(&request, &runtime).unwrap().status,
+            AgentAdmissionStatus::Unavailable
+        );
+        runtime.alive = true;
+        runtime.status = AgentStatus::Exited;
+        assert_eq!(
+            classify_runtime(&request, &runtime).unwrap().status,
+            AgentAdmissionStatus::Unavailable
+        );
     }
 
     #[test]
