@@ -994,10 +994,14 @@ fn spawn_agent_observer_timer(mux_instance_id: usize) -> Sender<PaneId> {
                         true
                     };
                     if should_refresh {
+                        // This is the reconciliation owed by a coalesced hint.
+                        // A newer refresh may have run before the hint arrived;
+                        // throttling again would discard the only remaining pass.
+                        // The scheduler still coalesces with any in-flight work.
                         mux.refresh_agent_runtime_for_pane_with_update_inner(
                             pane_id,
                             false,
-                            AgentRefreshPolicy::Throttled,
+                            AgentRefreshPolicy::Immediate,
                             false,
                             |_| {},
                         );
@@ -8320,6 +8324,119 @@ mod test {
             },
             "shared trailing refresh timer",
         );
+    }
+
+    #[test]
+    fn trailing_refresh_publishes_final_despite_recent_refresh_without_reads() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("rollout-trailing.jsonl");
+        std::fs::write(
+            &session,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-trailing\",\"cwd\":\"/tmp/trailing\"}}\n",
+                "{\"ordinal\":1,\"type\":\"event_msg\",\"timestamp\":\"2026-09-18T01:52:16Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-trailing\"}}\n"
+            ),
+        ).unwrap();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        // Isolate the outstanding timer: no later filesystem hint may rescue it.
+        mux.agent_artifact_watcher.lock().watcher.take();
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new_detected(
+            159,
+            size,
+            domain.id,
+            "codex",
+            "/tmp/trailing",
+            "/usr/bin/codex",
+            &["codex"],
+        );
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        let mut metadata = sample_agent_metadata("trailing-final");
+        metadata.launch_cmd = "codex".to_string();
+        metadata.declared_cwd = "/tmp/trailing".to_string();
+        let process = LocalProcessInfo::with_root_pid(std::process::id()).unwrap();
+        metadata.adopted_pid = Some(std::process::id());
+        metadata.adopted_start_time = Some(process.start_time);
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Codex;
+        runtime.transport = crate::agent::AgentTransport::ObservedPty;
+        runtime.session_path = Some(session.to_string_lossy().into_owned());
+        runtime.alive = true;
+        runtime.turn_state = crate::agent::AgentTurnState::WaitingOnAgent;
+        mux.install_agent_metadata_runtime_without_process_identity(
+            pane_id,
+            metadata.clone(),
+            runtime.clone(),
+        )
+        .unwrap();
+        mux.agent_event_store
+            .writer()
+            .unwrap()
+            .observe_agent(&metadata, &runtime)
+            .unwrap();
+        let baseline = mux.agent_event_store.latest_sequence();
+        mux.agent_observer_state_by_pane
+            .write()
+            .insert(pane_id, AgentObserverState::default());
+        mux.schedule_trailing_agent_observer_refresh(pane_id);
+        // Let the timer become due without executing its main-thread callback.
+        std::thread::sleep(AGENT_HARNESS_REFRESH_THROTTLE + Duration::from_millis(50));
+        // A refresh just ran while this timer was already scheduled. The final
+        // arrived afterward, so this outstanding pass must still read it.
+        mux.agent_observer_state_by_pane
+            .write()
+            .get_mut(&pane_id)
+            .unwrap()
+            .last_requested_at = Some(Utc::now());
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&session)
+            .unwrap();
+        file.write_all(b"{\"ordinal\":2,\"type\":\"event_msg\",\"timestamp\":\"2026-09-18T01:53:26.676Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-trailing\",\"last_agent_message\":\"done\"}}\n").unwrap();
+        file.sync_data().unwrap();
+        // Only pump callbacks and read the in-memory result, never inspect/list.
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_runtime_by_pane
+                    .read()
+                    .get(&pane_id)
+                    .is_some_and(|runtime| {
+                        runtime.turn_state == crate::agent::AgentTurnState::WaitingOnUser
+                    })
+            },
+            "trailing final without incidental reads",
+        );
+        let events = mux
+            .agent_event_store
+            .read_page(baseline, 100)
+            .unwrap()
+            .events;
+        assert!(events.iter().any(|event| {
+            event.kind == crate::agent_event::AgentEventKind::TurnFinal
+                && event.turn_id.as_deref() == Some("turn-trailing")
+                && event.text.as_deref() == Some("done")
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == crate::agent_event::AgentEventKind::TurnStateChanged
+                && event.turn_state.as_deref() == Some("waiting_on_user")
+        }));
     }
 
     #[test]
