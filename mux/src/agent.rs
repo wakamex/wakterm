@@ -3047,6 +3047,55 @@ fn visit_lines_reverse(
     Ok(())
 }
 
+/// Recover only an already-correlated turn, never infer a binding from history.
+pub(crate) fn read_codex_terminal_turn(
+    path: &Path,
+    turn_id: &str,
+    baseline_cursor: u64,
+) -> anyhow::Result<Option<AgentObservedTurn>> {
+    let mut terminal = None;
+    visit_lines_reverse(path, |line| {
+        let record: Value = serde_json::from_str(line)?;
+        let Some(cursor) = codex_record_cursor(&record) else {
+            return Ok(false);
+        };
+        if cursor <= baseline_cursor {
+            return Ok(true);
+        }
+        if record.get("type").and_then(Value::as_str) != Some("event_msg")
+            || codex_record_turn_id(&record) != Some(turn_id)
+        {
+            return Ok(false);
+        }
+        let payload = &record["payload"];
+        let outcome = match payload.get("type").and_then(Value::as_str) {
+            Some("task_complete") => AgentObservedTurnOutcome::Completed,
+            Some("turn_aborted") => AgentObservedTurnOutcome::Aborted,
+            // A start without a terminal boundary is genuinely indeterminate.
+            Some("task_started") => return Ok(true),
+            _ => return Ok(false),
+        };
+        terminal = Some(AgentObservedTurn {
+            provider_turn_id: turn_id.to_string(),
+            outcome,
+            started_at: None,
+            completed_at: parse_record_timestamp(&record),
+            started_cursor: None,
+            latest_cursor: Some(cursor),
+            primary_user_message_sha256: None,
+            user_message_count: 0,
+            final_message: payload
+                .get("last_agent_message")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string),
+        });
+        Ok(true)
+    })?;
+    Ok(terminal)
+}
+
 fn codex_record_turn_id(record: &Value) -> Option<&str> {
     let payload = record.get("payload")?;
     payload.get("turn_id").and_then(Value::as_str).or_else(|| {

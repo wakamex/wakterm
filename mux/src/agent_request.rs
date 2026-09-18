@@ -296,6 +296,31 @@ impl AgentRequest {
         let Some(turn) = runtime.observed_turn.as_ref() else {
             return;
         };
+        if self.target_harness == AgentHarness::Codex {
+            if let Some(bound) = self.provider_turn_id.as_deref() {
+                if turn.provider_turn_id != bound {
+                    // The live snapshot holds only the newest turn. A bound turn
+                    // may have completed between request reconciliation passes.
+                    // Identity and session checks above still apply, and this
+                    // lookup cannot bind an uncorrelated prompt or replay input.
+                    match crate::agent::read_codex_terminal_turn(
+                        std::path::Path::new(session_path),
+                        bound,
+                        self.baseline_cursor,
+                    ) {
+                        Ok(Some(completed)) => {
+                            self.reconcile_turn(&completed, now);
+                            return;
+                        }
+                        Ok(None) => {}
+                        Err(err) => log::warn!(
+                            "unable to recover bound Codex turn for request {}: {err:#}",
+                            self.request_id
+                        ),
+                    }
+                }
+            }
+        }
         self.reconcile_turn(turn, now);
     }
 
@@ -917,6 +942,14 @@ mod tests {
                     Some("completed"),
                     Some("exact final"),
                 ),
+                managed_event(13, AgentEventKind::TurnStarted, "newer-turn", None, None),
+                managed_event(
+                    14,
+                    AgentEventKind::TurnFinal,
+                    "newer-turn",
+                    Some("completed"),
+                    Some("wrong newer reply"),
+                ),
             ]),
             Utc::now(),
         );
@@ -1044,6 +1077,120 @@ mod tests {
             request.final_message.as_deref(),
             Some("done after steering")
         );
+    }
+
+    #[test]
+    fn bound_pty_turn_completion_survives_newer_runtime_snapshot() {
+        // Captured Codex boundaries from the reported incident; the bound
+        // task_complete record is unchanged from the authoritative rollout.
+        let fixture = include_str!("../test-data/codex-completion-before-next-turn.jsonl");
+        let bound = "01a0b363-569f-7b40-833d-62e7c68ed841";
+        let newer = "01a0b364-3dcc-72e2-a553-e0809afd58a1";
+        for case in [
+            "completed",
+            "aborted",
+            "missing",
+            "no_text",
+            "other_turn",
+            "old_cursor",
+            "wrong_process",
+            "wrong_session",
+            "unbound",
+        ] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let path = temp.path().join("rollout.jsonl");
+            let mut records: Vec<serde_json::Value> = fixture
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            let expected_text = records[2]["payload"]["last_agent_message"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            match case {
+                "aborted" => records[2]["payload"]["type"] = "turn_aborted".into(),
+                "missing" => {
+                    records.remove(2);
+                }
+                "no_text" => {
+                    records[2]["payload"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("last_agent_message");
+                }
+                "other_turn" => records[2]["payload"]["turn_id"] = "unrelated".into(),
+                "old_cursor" => records[2]["ordinal"] = 9626.into(),
+                _ => {}
+            }
+            std::fs::write(
+                &path,
+                records
+                    .iter()
+                    .map(|record| format!("{record}\n"))
+                    .collect::<String>(),
+            )
+            .unwrap();
+            let mut metadata = metadata();
+            let mut baseline = runtime();
+            baseline.session_path = Some(path.to_string_lossy().into_owned());
+            baseline.observed_turn.as_mut().unwrap().latest_cursor = Some(9626);
+            let mut request = AgentRequest::new(
+                "request-history".to_string(),
+                &metadata,
+                7,
+                &baseline,
+                "do work",
+                true,
+                0,
+                None,
+            )
+            .unwrap();
+            request.mark_submitted();
+            let mut observed = baseline.clone();
+            observed.observed_turn = Some(turn(
+                bound,
+                9628,
+                Some("do work"),
+                AgentObservedTurnOutcome::Running,
+            ));
+            if case != "unbound" {
+                request.reconcile(Some(&metadata), Some(&observed), Utc::now());
+                assert_eq!(request.state, AgentRequestState::Bound);
+            }
+            observed.observed_turn = Some(turn(
+                newer,
+                9640,
+                Some("other prompt"),
+                AgentObservedTurnOutcome::Completed,
+            ));
+            observed.observed_turn.as_mut().unwrap().final_message =
+                Some("wrong newer reply".to_string());
+            if case == "wrong_process" {
+                metadata.adopted_start_time = Some(999);
+            }
+            if case == "wrong_session" {
+                observed.session_path = Some("/different/session.jsonl".to_string());
+            }
+            request.reconcile(Some(&metadata), Some(&observed), Utc::now());
+            match case {
+                "completed" => {
+                    assert_eq!(request.state, AgentRequestState::Completed);
+                    assert_eq!(
+                        request.final_message.as_deref(),
+                        Some(expected_text.as_str())
+                    );
+                    assert_eq!(
+                        request.completed_at,
+                        Some("2026-09-18T07:20:40.630Z".parse().unwrap())
+                    );
+                }
+                "aborted" => assert_eq!(request.state, AgentRequestState::Aborted),
+                _ => assert_eq!(request.state, AgentRequestState::Indeterminate, "{case}"),
+            }
+            if case != "completed" {
+                assert!(request.final_message.is_none(), "{}", case);
+            }
+        }
     }
 
     #[test]

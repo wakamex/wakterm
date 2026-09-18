@@ -107,6 +107,10 @@ Ordinary event mirroring follows the live pane when its managed Codex TUI starts
 
 Return-final admission uses the same request and receipt contract for observer-backed Codex PTYs and managed Codex app-server sessions. An observer-backed request is correlated through its exact process, provider session, cursor, prompt hash, and provider turn. A managed request arms the durable event sequence for its exact app-server thread and session, binds the first subsequent provider turn, and accepts only that turn's durable final.
 
+For an already-bound observed Codex request, a newer live turn does not invalidate a terminal record retained in the same provider session. Reconciliation checks that bound turn's terminal record after the armed cursor and returns its completion or abortion, preserving the original completion timestamp. Missing terminal evidence or changed process or session identity remains indeterminate.
+
+Codex and Claude JSONL records larger than 4 MiB produce an `observer_failure` describing the skipped byte range. Observation resumes at the next complete record, with cached turn identity and assistant text cleared to prevent attribution across the gap. An incomplete oversized record waits for its terminating newline. Later records with sufficient turn identity continue to produce events; content inside the skipped record is unavailable through the event stream.
+
 Gemini observation accepts both legacy JSON conversation snapshots and the
 current append-only JSONL format. Duplicate JSONL records update the same
 durable provider message, incomplete trailing records wait for the next

@@ -1256,10 +1256,39 @@ fn read_new_jsonl(
         if read == 0 {
             break;
         }
-        anyhow::ensure!(
-            read as u64 <= MAX_PROVIDER_RECORD_BYTES,
-            "provider record exceeds the {MAX_PROVIDER_RECORD_BYTES}-byte bound"
-        );
+        if read as u64 > MAX_PROVIDER_RECORD_BYTES {
+            let mut consumed = read as u64;
+            let mut complete = line.ends_with(b"\n");
+            // Drain the rest without accumulating an unbounded provider record.
+            // An incomplete tail remains at `start` until its newline arrives.
+            while !complete {
+                line.clear();
+                let read = reader
+                    .by_ref()
+                    .take(64 * 1024)
+                    .read_until(b'\n', &mut line)?;
+                if read == 0 {
+                    break;
+                }
+                consumed += read as u64;
+                complete = line.ends_with(b"\n");
+            }
+            if !complete {
+                break;
+            }
+            cursor.offset += consumed;
+            // The skipped record might contain a new turn or an assistant
+            // message. Require fresh identity instead of reusing stale context.
+            cursor.current_turn_id = None;
+            cursor.last_assistant_text = None;
+            events.push(observer_failure(
+                format!("{}:{start}:oversized-record", cursor.source_id),
+                Utc::now(),
+                None,
+                &format!("provider record at byte {start} exceeds the {MAX_PROVIDER_RECORD_BYTES}-byte bound; skipped {consumed} bytes and resumed at the next record; turn attribution was cleared"),
+            ));
+            continue;
+        }
         if !line.ends_with(b"\n") {
             break;
         }
@@ -2603,7 +2632,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_provider_record_emits_an_observer_failure_without_advancing() {
+    fn oversized_provider_record_reports_gap_and_publishes_later_final() {
         let temp = TempDir::new().unwrap();
         let session = temp.path().join("codex-oversized.jsonl");
         fs::write(
@@ -2622,16 +2651,125 @@ mod tests {
         let after = store.latest_sequence();
         append(
             &session,
-            &format!("{{\"padding\":\"{}\"}}\n", "x".repeat(4 * 1024 * 1024)),
+            concat!(
+                "{\"ordinal\":1,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-before-gap\"}}\n",
+                "{\"ordinal\":2,\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"stale text\"}]}}\n"
+            ),
         );
+        // Same envelope as the incident's 5,169,128-byte Codex tool output.
+        append(&session, &format!("{{\"ordinal\":3,\"type\":\"response_item\",\"payload\":{{\"type\":\"custom_tool_call_output\",\"output\":\"{}\"}}}}\n", "x".repeat(5_169_128)));
+        append(&session, concat!(
+            "{\"ordinal\":4,\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"must not inherit stale turn\"}]}}\n",
+            "{\"ordinal\":5,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-after-gap\",\"last_agent_message\":\"exact final\"}}\n"
+        ));
 
         store.observe_agent(&metadata, &runtime).unwrap();
         let page = store.read_page(after, 100).unwrap();
-        assert_eq!(event_kinds(&page), vec![AgentEventKind::ObserverFailure]);
-        assert!(page.events[0]
+        assert_eq!(
+            event_kinds(&page),
+            vec![
+                AgentEventKind::TurnStarted,
+                AgentEventKind::TurnStateChanged,
+                AgentEventKind::AssistantMessage,
+                AgentEventKind::ObserverFailure,
+                AgentEventKind::ObserverFailure,
+                AgentEventKind::TurnFinal,
+                AgentEventKind::TurnStateChanged,
+            ]
+        );
+        assert!(page.events[3]
             .detail
             .as_deref()
-            .is_some_and(|detail| detail.contains("exceeds the 4194304-byte bound")));
+            .is_some_and(|detail| detail.contains("exceeds the 4194304-byte bound")
+                && detail.contains("resumed at the next record")));
+        assert_eq!(page.events[5].turn_id.as_deref(), Some("turn-after-gap"));
+        assert_eq!(page.events[5].text.as_deref(), Some("exact final"));
+        assert_eq!(
+            page.events[6].turn_state.as_deref(),
+            Some("waiting_on_user")
+        );
+        let last = page.latest_sequence;
+        let reopened = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        reopened.observe_agent(&metadata, &runtime).unwrap();
+        assert!(reopened.read_page(last, 100).unwrap().events.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires WAKTERM_TEST_CODEX_ROLLOUT pointing to the reported provider rollout"]
+    fn real_codex_rollout_projects_final_after_oversized_tool_output() {
+        let path =
+            PathBuf::from(std::env::var_os("WAKTERM_TEST_CODEX_ROLLOUT").expect("rollout path"));
+        let initial = project_codex(&path, None).unwrap();
+        let ProviderCursor::Codex(mut cursor) = initial.cursor else {
+            panic!("Codex cursor")
+        };
+        cursor.offset = 0;
+        cursor.checkpoint_sha256 = checkpoint_sha256(&path, 0).unwrap();
+        cursor.current_turn_id = None;
+        cursor.last_assistant_text = None;
+        let projected = project_codex(&path, Some(ProviderCursor::Codex(cursor))).unwrap();
+        assert!(projected.events.iter().any(|event| {
+            event.kind == AgentEventKind::ObserverFailure
+                && event
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("resumed at the next record"))
+        }));
+        let terminal = projected
+            .events
+            .iter()
+            .find(|event| {
+                event.kind == AgentEventKind::TurnFinal
+                    && event.turn_id.as_deref() == Some("01a0b363-569f-7b40-833d-62e7c68ed841")
+            })
+            .expect("reported turn's completion survives the earlier oversized record");
+        assert_eq!(terminal.outcome.as_deref(), Some("completed"));
+        assert!(terminal
+            .text
+            .as_deref()
+            .is_some_and(|text| text.starts_with("This is the earlier `b04c73cc` direction")));
+    }
+
+    #[test]
+    fn oversized_partial_record_waits_for_newline_and_clears_cached_text() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("partial.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"partial\"}}\n",
+        )
+        .unwrap();
+        let initial = project_codex(&session, None).unwrap();
+        let ProviderCursor::Codex(mut cursor) = initial.cursor else {
+            panic!("Codex cursor")
+        };
+        cursor.current_turn_id = Some("stale-turn".to_string());
+        cursor.last_assistant_text = Some("stale reply".to_string());
+        let baseline = cursor.offset;
+        append(
+            &session,
+            &format!(
+                "{{\"padding\":\"{}\"}}",
+                "x".repeat(MAX_PROVIDER_RECORD_BYTES as usize)
+            ),
+        );
+        let partial = project_codex(&session, Some(ProviderCursor::Codex(cursor))).unwrap();
+        assert!(partial.events.is_empty());
+        let ProviderCursor::Codex(cursor) = &partial.cursor else {
+            panic!("Codex cursor")
+        };
+        assert_eq!(cursor.offset, baseline);
+        append(&session, "\n{\"ordinal\":2,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"exact-turn\"}}\n");
+        let complete = project_codex(&session, Some(partial.cursor)).unwrap();
+        assert_eq!(complete.events.len(), 3);
+        assert_eq!(complete.events[0].kind, AgentEventKind::ObserverFailure);
+        assert_eq!(complete.events[1].kind, AgentEventKind::TurnFinal);
+        assert_eq!(complete.events[1].turn_id.as_deref(), Some("exact-turn"));
+        assert!(complete.events[1].text.is_none());
+        let ProviderCursor::Codex(cursor) = complete.cursor else {
+            panic!("Codex cursor")
+        };
+        assert_eq!(cursor.offset, fs::metadata(&session).unwrap().len());
     }
 
     #[test]
