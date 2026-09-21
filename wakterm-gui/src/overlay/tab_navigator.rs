@@ -5,6 +5,7 @@ use crate::overlay::selector::{matcher_pattern, matcher_score};
 use crate::termwindow::TabHarnessIcon;
 use chrono::{DateTime, Utc};
 use mux::agent::{AgentSnapshot, AgentStatus, AgentTurnState};
+use mux::codex_process_memory::CodexProcessMemory;
 use mux::pane::{CachePolicy, PaneId};
 use mux::tab::TabId;
 use mux::termwiztermtab::TermWizTerminal;
@@ -88,16 +89,18 @@ pub struct TabNavigatorArgs {
     host_tab_id: TabId,
     active_tab_id: TabId,
     rows: Vec<TabNavigatorRow>,
+    memory: Vec<(String, Option<CodexProcessMemory>)>,
 }
 
 impl TabNavigatorArgs {
     pub fn new(window_id: WindowId, host_tab_id: TabId) -> anyhow::Result<Self> {
-        let rows = snapshot_rows(window_id)?;
+        let (rows, memory) = snapshot_rows(window_id)?;
         Ok(Self {
             window_id,
             host_tab_id,
             active_tab_id: host_tab_id,
             rows,
+            memory,
         })
     }
 }
@@ -155,7 +158,12 @@ fn process_leaf(name: String) -> String {
         .to_string()
 }
 
-fn snapshot_rows(window_id: WindowId) -> anyhow::Result<Vec<TabNavigatorRow>> {
+fn snapshot_rows(
+    window_id: WindowId,
+) -> anyhow::Result<(
+    Vec<TabNavigatorRow>,
+    Vec<(String, Option<CodexProcessMemory>)>,
+)> {
     let mux = Mux::get();
     let titles = mux.display_tab_titles_for_window(window_id);
     let mut agents = mux.list_agents_cached();
@@ -170,17 +178,10 @@ fn snapshot_rows(window_id: WindowId) -> anyhow::Result<Vec<TabNavigatorRow>> {
     let window = mux
         .get_window(window_id)
         .ok_or_else(|| anyhow::anyhow!("no such window {window_id}"))?;
-    let remote_domain_ids = window
+    let domain_ids = window
         .iter()
         .flat_map(|tab| tab.iter_panes_ignoring_zoom())
         .map(|pane| pane.pane.domain_id())
-        .filter(|domain_id| {
-            mux.get_domain(*domain_id).is_some_and(|domain| {
-                domain
-                    .downcast_ref::<wakterm_client::domain::ClientDomain>()
-                    .is_some()
-            })
-        })
         .collect::<HashSet<_>>();
     let mut rows = Vec::with_capacity(window.len());
     for tab in window.iter() {
@@ -266,7 +267,23 @@ fn snapshot_rows(window_id: WindowId) -> anyhow::Result<Vec<TabNavigatorRow>> {
         });
     }
     drop(window);
-    for domain_id in remote_domain_ids {
+    let mut memory = Vec::new();
+    let mut has_local_domain = false;
+    for domain_id in domain_ids {
+        let Some(domain) = mux.get_domain(domain_id) else {
+            continue;
+        };
+        if domain
+            .downcast_ref::<wakterm_client::domain::ClientDomain>()
+            .is_none()
+        {
+            has_local_domain = true;
+            continue;
+        }
+        memory.push((
+            domain.domain_name().to_string(),
+            mux.mirrored_codex_process_memory(domain_id),
+        ));
         promise::spawn::spawn_into_main_thread(async move {
             let Some(mux) = Mux::try_get() else {
                 return;
@@ -283,7 +300,11 @@ fn snapshot_rows(window_id: WindowId) -> anyhow::Result<Vec<TabNavigatorRow>> {
         })
         .detach();
     }
-    Ok(rows)
+    if has_local_domain {
+        memory.push(("local mux".to_string(), mux.codex_process_memory()));
+    }
+    memory.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok((rows, memory))
 }
 
 fn on_main_thread<T, F>(func: F) -> anyhow::Result<T>
@@ -467,8 +488,9 @@ impl NavigatorState {
             let window_id = self.args.window_id;
             move || snapshot_rows(window_id)
         }) {
-            Ok(rows) => {
+            Ok((rows, memory)) => {
                 self.args.rows = rows;
+                self.args.memory = memory;
                 self.rebuild(preserve);
                 self.message = None;
             }
@@ -817,10 +839,36 @@ impl NavigatorState {
         None
     }
 
+    fn header_rows(&self) -> usize {
+        HEADER_ROWS + self.args.memory.len()
+    }
+
+    fn format_memory_summary(domain: &str, snapshot: Option<&CodexProcessMemory>) -> String {
+        let scope = format!("Codex / {} (mux total)", truncate_right(domain, 24));
+        let Some(snapshot) = snapshot else {
+            return format!("{scope}: memory pending");
+        };
+        let Some(bytes) = snapshot.pss_bytes else {
+            return format!("{scope}: PSS unavailable (incomplete or unsupported sample)");
+        };
+        let memory = if bytes >= 1_000_000_000 {
+            format!("{:.2} GB PSS", bytes as f64 / 1_000_000_000.0)
+        } else {
+            format!("{:.1} MB PSS", bytes as f64 / 1_000_000.0)
+        };
+        let sampled = DateTime::<Utc>::from_timestamp_millis(snapshot.sampled_at_ms as i64)
+            .map(|time| time.format("%H:%M:%S UTC").to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        format!(
+            "{scope}: {} processes | {memory} | sampled {sampled}",
+            snapshot.process_count
+        )
+    }
+
     fn render(&mut self, term: &mut TermWizTerminal) -> termwiz::Result<()> {
         let size = term.get_screen_size()?;
         let width = size.cols.saturating_sub(2);
-        let available = size.rows.saturating_sub(HEADER_ROWS + FOOTER_ROWS);
+        let available = size.rows.saturating_sub(self.header_rows() + FOOTER_ROWS);
         if self.selected < self.top_row {
             self.top_row = self.selected;
         }
@@ -852,6 +900,15 @@ impl NavigatorState {
                 y: Position::Absolute(0),
             },
             Change::Text("Tabs\r\n".to_string()),
+        ];
+        for (domain, snapshot) in &self.args.memory {
+            changes.push(Change::Text(truncate_right(
+                &Self::format_memory_summary(domain, snapshot.as_ref()),
+                width,
+            )));
+            changes.push(Change::Text("\r\n".to_string()));
+        }
+        changes.extend([
             Change::Text(truncate_right(&format!("Search: {}", self.query), width)),
             Change::Text("\r\n".to_string()),
             Change::Text(truncate_right(
@@ -861,7 +918,7 @@ impl NavigatorState {
             Change::Text("\r\n".to_string()),
             Change::Text(truncate_right(&Self::format_header(columns), width)),
             Change::Text("\r\n".to_string()),
-        ];
+        ]);
 
         let mut body_lines = 0usize;
         for display_idx in self.top_row..self.filtered.len() {
@@ -1059,8 +1116,10 @@ impl NavigatorState {
                         }) => {
                             let size = term.get_screen_size()?;
                             let y = y as usize;
-                            if y >= HEADER_ROWS && y < size.rows.saturating_sub(FOOTER_ROWS) {
-                                if let Some(idx) = self.display_index_at_body_line(y - HEADER_ROWS)
+                            if y >= self.header_rows() && y < size.rows.saturating_sub(FOOTER_ROWS)
+                            {
+                                if let Some(idx) =
+                                    self.display_index_at_body_line(y - self.header_rows())
                                 {
                                     self.selected = idx;
                                     should_exit = self.activate_selected();
@@ -1074,7 +1133,7 @@ impl NavigatorState {
             if should_exit {
                 break;
             }
-            if self.last_refresh.elapsed() >= Duration::from_secs(5) {
+            if self.last_refresh.elapsed() >= Duration::from_secs(2) {
                 self.refresh();
             }
             self.render(term)?;
@@ -1125,7 +1184,38 @@ mod test {
             host_tab_id: 10,
             active_tab_id: 10,
             rows,
+            memory: Vec::new(),
         })
+    }
+
+    #[test]
+    fn memory_total_keeps_mux_scope_while_tabs_are_filtered() {
+        let mut state = state(vec![row(10, "one", false), row(20, "two", true)]);
+        let snapshot = CodexProcessMemory {
+            sampled_at_ms: 1_777_000_000_000,
+            process_count: 50,
+            pss_bytes: Some(800_000_000),
+        };
+        state.args.memory = vec![("server".to_string(), Some(snapshot.clone()))];
+        state.view = NavigatorView::Hidden;
+        state.push_query_char('z');
+        assert!(state.filtered.is_empty());
+        assert_eq!(state.header_rows(), HEADER_ROWS + 1);
+        let summary = NavigatorState::format_memory_summary(
+            &state.args.memory[0].0,
+            state.args.memory[0].1.as_ref(),
+        );
+        assert!(summary.contains("mux total"));
+        assert!(summary.contains("50 processes | 800.0 MB PSS"));
+        assert!(summary.contains("UTC"));
+        let unavailable = CodexProcessMemory {
+            pss_bytes: None,
+            ..snapshot
+        };
+        let summary = NavigatorState::format_memory_summary("server", Some(&unavailable));
+        assert!(summary.contains("PSS unavailable"));
+        assert!(!summary.contains("MB"));
+        assert!(NavigatorState::format_memory_summary("server", None).contains("pending"));
     }
 
     #[test]

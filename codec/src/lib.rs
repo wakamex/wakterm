@@ -470,7 +470,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 69;
+pub const CODEC_VERSION: usize = 70;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -888,6 +888,7 @@ pub struct GetPaneStatusResponse {
     pub sampled_at_ms: u64,
     pub agents: Vec<AgentSnapshot>,
     pub tab_rss_bytes: HashMap<TabId, u64>,
+    pub codex_process_memory: Option<mux::codex_process_memory::CodexProcessMemory>,
 }
 
 impl ListPanesResponse {
@@ -1939,6 +1940,11 @@ mod test {
                 sampled_at_ms: 1_777_000_000_000,
                 agents: vec![],
                 tab_rss_bytes: HashMap::from([(7, 42_000_000)]),
+                codex_process_memory: Some(mux::codex_process_memory::CodexProcessMemory {
+                    sampled_at_ms: 1_777_000_000_000,
+                    process_count: 50,
+                    pss_bytes: Some(800_000_000),
+                }),
             }),
             Pdu::PromoteCodexAppServer(PromoteCodexAppServer {
                 pane_id: 9,

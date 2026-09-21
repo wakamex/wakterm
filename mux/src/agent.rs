@@ -415,18 +415,21 @@ fn is_harness_tui_program(harness: &AgentHarness, value: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn harness_tui_process<'a>(
-    harness: &AgentHarness,
-    process: &'a LocalProcessInfo,
-) -> Option<&'a LocalProcessInfo> {
-    if is_harness_tui_program(harness, &process.name)
+pub(crate) fn is_harness_tui_process(harness: &AgentHarness, process: &LocalProcessInfo) -> bool {
+    is_harness_tui_program(harness, &process.name)
         || is_harness_tui_program(harness, process.executable.to_string_lossy().as_ref())
         || process
             .argv
             .iter()
             .take(2)
             .any(|arg| is_harness_tui_program(harness, arg))
-    {
+}
+
+fn harness_tui_process<'a>(
+    harness: &AgentHarness,
+    process: &'a LocalProcessInfo,
+) -> Option<&'a LocalProcessInfo> {
+    if is_harness_tui_process(harness, process) {
         return Some(process);
     }
     process

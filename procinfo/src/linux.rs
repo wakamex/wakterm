@@ -165,6 +165,22 @@ impl From<&str> for LocalProcessStatus {
 }
 
 impl LocalProcessInfo {
+    pub fn proportional_set_bytes(pid: u32, expected_start_time: Option<u64>) -> Option<u64> {
+        let before = LinuxProcessSnapshot::read_stat(pid as pid_t)?;
+        if expected_start_time.is_some_and(|expected| before.starttime != expected) {
+            return None;
+        }
+        let smaps = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok()?;
+        let bytes = smaps.lines().find_map(|line| {
+            let mut fields = line.strip_prefix("Pss:")?.split_whitespace();
+            let kib = fields.next()?.parse::<u64>().ok()?;
+            (fields.next()? == "kB").then_some(())?;
+            kib.checked_mul(1024)
+        })?;
+        let after = LinuxProcessSnapshot::read_stat(pid as pid_t)?;
+        (before.starttime == after.starttime).then_some(bytes)
+    }
+
     pub fn resident_set_bytes(pid: u32) -> Option<u64> {
         let statm = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
         let resident_pages = statm.split_whitespace().nth(1)?.parse::<u64>().ok()?;
@@ -193,6 +209,25 @@ impl LocalProcessInfo {
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn proportional_memory_reads_kernel_accounting_and_rejects_reused_identity() {
+        let pid = std::process::id();
+        let start = LinuxProcessSnapshot::read_stat(pid as pid_t)
+            .unwrap()
+            .starttime;
+        let bytes = LocalProcessInfo::proportional_set_bytes(pid, Some(start)).unwrap();
+        assert!(bytes > 0);
+        assert_eq!(bytes % 1024, 0);
+        assert_eq!(
+            LocalProcessInfo::proportional_set_bytes(pid, Some(start + 1)),
+            None
+        );
+        assert_eq!(
+            LocalProcessInfo::proportional_set_bytes(u32::MAX, None),
+            None
+        );
+    }
 
     #[test]
     fn cached_process_lookups_share_one_proc_snapshot() {

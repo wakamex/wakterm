@@ -63,6 +63,13 @@ pub struct LocalProcessInfo {
 luahelper::impl_lua_conversion_dynamic!(LocalProcessInfo);
 
 impl LocalProcessInfo {
+    /// Proportional resident memory, with process identity checked before and
+    /// after sampling. Unlike RSS, PSS apportions shared pages between users.
+    #[cfg(not(target_os = "linux"))]
+    pub fn proportional_set_bytes(_pid: u32, _expected_start_time: Option<u64>) -> Option<u64> {
+        None
+    }
+
     /// Walk this sub-tree of processes and return a unique set
     /// of executable base names. eg: `foo/bar` and `woot/bar`
     /// produce a set containing just `bar`.

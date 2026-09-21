@@ -59,6 +59,7 @@ pub mod agent_request;
 pub mod agent_service;
 pub mod client;
 pub mod codex_app_server;
+pub mod codex_process_memory;
 pub mod connui;
 pub mod domain;
 pub mod localpane;
@@ -193,6 +194,9 @@ pub struct Mux {
     mirrored_agent_badge_by_tab: RwLock<HashMap<TabId, AgentTabBadgeState>>,
     mirrored_tab_rss_bytes: RwLock<HashMap<TabId, u64>>,
     tab_resource_status_cache: Mutex<TabResourceStatusCache>,
+    codex_process_memory_cache: codex_process_memory::CodexProcessMemoryCache,
+    mirrored_codex_process_memory:
+        RwLock<HashMap<DomainId, codex_process_memory::CodexProcessMemory>>,
     agent_panes_by_name: RwLock<HashMap<String, PaneId>>,
     agent_metadata_by_pane: RwLock<HashMap<PaneId, Arc<AgentMetadata>>>,
     detected_agent_panes: RwLock<HashSet<PaneId>>,
@@ -1279,6 +1283,8 @@ impl Mux {
             mirrored_agent_badge_by_tab: RwLock::new(HashMap::new()),
             mirrored_tab_rss_bytes: RwLock::new(HashMap::new()),
             tab_resource_status_cache: Mutex::new(TabResourceStatusCache::default()),
+            codex_process_memory_cache: codex_process_memory::CodexProcessMemoryCache::default(),
+            mirrored_codex_process_memory: RwLock::new(HashMap::new()),
             agent_panes_by_name: RwLock::new(HashMap::new()),
             agent_metadata_by_pane: RwLock::new(HashMap::new()),
             detected_agent_panes: RwLock::new(HashSet::new()),
@@ -3897,6 +3903,35 @@ impl Mux {
             .copied()
     }
 
+    pub fn codex_process_memory(
+        self: &Arc<Self>,
+    ) -> Option<codex_process_memory::CodexProcessMemory> {
+        self.codex_process_memory_cache.get(Arc::downgrade(self))
+    }
+
+    pub fn set_mirrored_codex_process_memory(
+        &self,
+        domain_id: DomainId,
+        snapshot: Option<codex_process_memory::CodexProcessMemory>,
+    ) {
+        let mut snapshots = self.mirrored_codex_process_memory.write();
+        if let Some(snapshot) = snapshot {
+            snapshots.insert(domain_id, snapshot);
+        } else {
+            snapshots.remove(&domain_id);
+        }
+    }
+
+    pub fn mirrored_codex_process_memory(
+        &self,
+        domain_id: DomainId,
+    ) -> Option<codex_process_memory::CodexProcessMemory> {
+        self.mirrored_codex_process_memory
+            .read()
+            .get(&domain_id)
+            .cloned()
+    }
+
     fn invalidate_tab_resource_status(&self) {
         self.tab_resource_status_cache.lock().sampled_at = None;
     }
@@ -5746,6 +5781,7 @@ impl Mux {
     }
 
     pub fn domain_was_detached(&self, domain: DomainId) {
+        self.set_mirrored_codex_process_memory(domain, None);
         let mut dead_panes = vec![];
         for pane in self.panes.read().values() {
             if pane.domain_id() == domain {

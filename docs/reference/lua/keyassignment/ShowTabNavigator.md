@@ -20,6 +20,10 @@ The choice corresponding to the current tab is initially selected.
 
 Hidden rows display an eye-slash icon and approximate process RSS when available.
 
+The header shows a process count and proportional memory total for the known Codex agents on each connected mux, including their Codex subprocesses and the shared app-server counted once. It includes agents across all windows and hidden tabs, and filtering the tab list does not change its scope. Separate connections have separate labelled totals.
+
+Proportional memory (PSS) accounts for shared pages without counting them repeatedly. It is available when the mux host runs Linux. The header uses decimal MB or GB, displays the sample time in UTC, and refreshes in the background while the navigator is open. An incomplete or unsupported measurement displays `PSS unavailable`. The total covers Codex processes; other programs and Wakterm use additional memory. Per-tab RSS remains a separate approximate measurement.
+
 ```lua
 config.keys = {
   {

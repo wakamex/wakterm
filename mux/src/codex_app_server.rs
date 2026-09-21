@@ -337,6 +337,15 @@ struct State {
 }
 
 impl CodexAppServer {
+    pub(crate) fn process_id(&self) -> Option<u32> {
+        let mut state = self.state.lock();
+        let child = state.child.as_mut()?;
+        match child.try_wait() {
+            Ok(None) => Some(child.id()),
+            _ => None,
+        }
+    }
+
     pub fn new(mux_instance_id: usize) -> Self {
         Self {
             state: Mutex::new(State {

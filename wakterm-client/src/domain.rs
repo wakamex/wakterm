@@ -1151,7 +1151,7 @@ impl ClientDomain {
         let panes = inner.client.list_panes().await?;
         Self::process_pane_list(Arc::clone(&inner), panes, None)?;
         let status = inner.client.get_pane_status().await?;
-        Self::process_remote_status_snapshot(inner.as_ref(), status.agents, status.tab_rss_bytes);
+        Self::process_remote_status(inner.as_ref(), status);
 
         ui.close();
         Ok(())
@@ -1162,11 +1162,7 @@ impl ClientDomain {
             let panes = inner.client.list_panes().await?;
             Self::process_pane_list(Arc::clone(&inner), panes, None)?;
             let status = inner.client.get_pane_status().await?;
-            Self::process_remote_status_snapshot(
-                inner.as_ref(),
-                status.agents,
-                status.tab_rss_bytes,
-            );
+            Self::process_remote_status(inner.as_ref(), status);
         }
         Ok(())
     }
@@ -1188,17 +1184,20 @@ impl ClientDomain {
                 let status = match inner.client.get_pane_status().await {
                     Ok(status) => status,
                     Err(err) => {
+                        if self
+                            .inner()
+                            .is_some_and(|current| Arc::ptr_eq(&current, &inner))
+                        {
+                            Mux::get()
+                                .set_mirrored_codex_process_memory(self.local_domain_id, None);
+                        }
                         let mut refresh = self.status_refresh.lock().unwrap();
                         refresh.in_progress = false;
                         refresh.pending = false;
                         return Err(err);
                     }
                 };
-                Self::process_remote_status_snapshot(
-                    inner.as_ref(),
-                    status.agents,
-                    status.tab_rss_bytes,
-                );
+                Self::process_remote_status(inner.as_ref(), status);
             }
 
             let mut refresh = self.status_refresh.lock().unwrap();
@@ -1209,6 +1208,18 @@ impl ClientDomain {
             refresh.in_progress = false;
             return Ok(());
         }
+    }
+
+    fn process_remote_status(inner: &ClientInner, status: codec::GetPaneStatusResponse) {
+        let mux = Mux::get();
+        let current = mux
+            .get_domain(inner.local_domain_id)
+            .and_then(|domain| domain.downcast_ref::<Self>().and_then(Self::inner));
+        if !current.is_some_and(|current| std::ptr::eq(current.as_ref(), inner)) {
+            return;
+        }
+        mux.set_mirrored_codex_process_memory(inner.local_domain_id, status.codex_process_memory);
+        Self::process_remote_status_snapshot(inner, status.agents, status.tab_rss_bytes);
     }
 
     fn process_remote_status_snapshot(
@@ -2061,7 +2072,7 @@ impl ClientDomain {
         );
         Self::process_pane_list(Arc::clone(&inner), panes, primary_window_id)?;
         let status = inner.client.get_pane_status().await?;
-        Self::process_remote_status_snapshot(inner.as_ref(), status.agents, status.tab_rss_bytes);
+        Self::process_remote_status(inner.as_ref(), status);
         log::debug!("finish_attach complete for domain {}", domain_id);
 
         Ok(())
@@ -2906,6 +2917,73 @@ mod test {
         assert_eq!(
             mux.approximate_tab_process_rss(local_tab_b),
             Some(42_000_000)
+        );
+    }
+
+    #[test]
+    fn codex_memory_totals_are_scoped_to_each_connection_and_replaced_on_reconnect() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        ensure_test_executor();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+        let (domain_a, inner_a, _, _) = install_client_domain(&mux, "memory-a");
+        let (domain_b, inner_b, _, _) = install_client_domain(&mux, "memory-b");
+        let snapshot = mux::codex_process_memory::CodexProcessMemory {
+            sampled_at_ms: 1_777_000_000_000,
+            process_count: 50,
+            pss_bytes: Some(800_000_000),
+        };
+        let status = |memory| codec::GetPaneStatusResponse {
+            sampled_at_ms: 1_777_000_000_000,
+            agents: Vec::new(),
+            tab_rss_bytes: HashMap::new(),
+            codex_process_memory: memory,
+        };
+        ClientDomain::process_remote_status(&inner_a, status(Some(snapshot.clone())));
+        ClientDomain::process_remote_status(&inner_b, status(Some(snapshot.clone())));
+        assert_eq!(
+            mux.mirrored_codex_process_memory(domain_a.local_domain_id),
+            Some(snapshot.clone())
+        );
+        assert_eq!(
+            mux.mirrored_codex_process_memory(domain_b.local_domain_id),
+            Some(snapshot.clone())
+        );
+
+        domain_a.perform_detach();
+        ClientDomain::process_remote_status(&inner_a, status(Some(snapshot.clone())));
+        assert_eq!(
+            mux.mirrored_codex_process_memory(domain_a.local_domain_id),
+            None
+        );
+        assert_eq!(
+            mux.mirrored_codex_process_memory(domain_b.local_domain_id),
+            Some(snapshot.clone())
+        );
+
+        let (_, _, client) = make_dummy_client(domain_a.local_domain_id, "memory-reconnected");
+        let reconnected = Arc::new(ClientInner::new(
+            domain_a.local_domain_id,
+            client,
+            None,
+            false,
+        ));
+        *domain_a.inner.lock().unwrap() = Some(reconnected.clone());
+        let latest = mux::codex_process_memory::CodexProcessMemory {
+            process_count: 51,
+            ..snapshot.clone()
+        };
+        ClientDomain::process_remote_status(&reconnected, status(Some(latest.clone())));
+        ClientDomain::process_remote_status(&inner_a, status(Some(snapshot)));
+        assert_eq!(
+            mux.mirrored_codex_process_memory(domain_a.local_domain_id),
+            Some(latest)
+        );
+        ClientDomain::process_remote_status(&reconnected, status(None));
+        assert_eq!(
+            mux.mirrored_codex_process_memory(domain_a.local_domain_id),
+            None
         );
     }
 

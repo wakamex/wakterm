@@ -1068,6 +1068,7 @@ impl SessionHandler {
                                 sampled_at_ms: status.sampled_at_ms,
                                 agents,
                                 tab_rss_bytes: status.tab_rss_bytes,
+                                codex_process_memory: mux.codex_process_memory(),
                             }))
                         },
                         send_response,
@@ -3629,6 +3630,40 @@ mod test {
             handler.request(&executor, Pdu::GetClientList(GetClientList)),
             Pdu::GetClientListResponse(_)
         ));
+    }
+
+    #[test]
+    fn codex_memory_status_agrees_for_two_clients_and_server() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = SimpleExecutor::new();
+        let mux = test_mux();
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+        let (_, _, mut handler_a) = register_test_client(&mux, "memory-a");
+        let (_, _, mut handler_b) = register_test_client(&mux, "memory-b");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let sample_a = loop {
+            let status = match handler_a.request(&executor, Pdu::GetPaneStatus(GetPaneStatus {})) {
+                Pdu::GetPaneStatusResponse(status) => status,
+                other => panic!("expected GetPaneStatusResponse, got {:?}", other),
+            };
+            if let Some(sample) = status.codex_process_memory {
+                break sample;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "memory sampler did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let sample_b = match handler_b.request(&executor, Pdu::GetPaneStatus(GetPaneStatus {})) {
+            Pdu::GetPaneStatusResponse(status) => status.codex_process_memory.unwrap(),
+            other => panic!("expected GetPaneStatusResponse, got {:?}", other),
+        };
+        assert_eq!(sample_a, sample_b);
+        assert_eq!(mux.codex_process_memory().unwrap(), sample_a);
+        assert_eq!(sample_a.process_count, 0);
+        assert!(sample_a.sampled_at_ms > 0);
     }
 
     #[test]
