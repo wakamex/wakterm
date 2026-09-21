@@ -1,0 +1,37 @@
+{
+  "request": {
+    "id": 42,
+    "method": "thread/fork",
+    "params": {
+      "threadId": "thread-a",
+      "excludeTurns": true
+    }
+  },
+  "response": {
+    "id": 42,
+    "result": {
+      "thread": {
+        "id": "thread-b",
+        "sessionId": "thread-b",
+        "forkedFromId": "thread-a",
+        "preview": "",
+        "ephemeral": false,
+        "modelProvider": "openai",
+        "createdAt": 1790013155,
+        "updatedAt": 1790013155,
+        "status": { "type": "active", "activeFlags": [] },
+        "cwd": "/tmp/switching",
+        "cliVersion": "0.154.0-alpha.3",
+        "source": "cli",
+        "projectId": null,
+        "turns": []
+      },
+      "model": "test-model",
+      "modelProvider": "openai",
+      "cwd": "/tmp/switching",
+      "approvalPolicy": "never",
+      "approvalsReviewer": "user",
+      "sandbox": { "type": "dangerFullAccess" }
+    }
+  }
+}

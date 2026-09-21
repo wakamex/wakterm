@@ -1063,7 +1063,7 @@ impl TuiProxyProtocolState {
         if !matches!(method, "thread/start" | "thread/resume" | "thread/fork") {
             return;
         }
-        if method == "thread/start"
+        if matches!(method, "thread/start" | "thread/fork")
             && message
                 .pointer("/params/ephemeral")
                 .and_then(Value::as_bool)
@@ -1077,10 +1077,16 @@ impl TuiProxyProtocolState {
         self.pending.insert(
             id,
             PendingTuiThreadChange {
-                requested_thread_id: message
-                    .pointer("/params/threadId")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
+                // Resume returns the requested thread. Fork's threadId names
+                // the source; its response identifies the newly created thread.
+                requested_thread_id: if method == "thread/resume" {
+                    message
+                        .pointer("/params/threadId")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                } else {
+                    None
+                },
             },
         );
     }
@@ -2421,14 +2427,27 @@ mod test {
 
     #[test]
     fn tui_proxy_does_not_follow_an_ephemeral_thread_start() {
+        assert_tui_proxy_ignores_ephemeral_thread("thread/start");
+    }
+
+    #[test]
+    fn tui_proxy_does_not_follow_an_ephemeral_thread_fork() {
+        assert_tui_proxy_ignores_ephemeral_thread("thread/fork");
+    }
+
+    fn assert_tui_proxy_ignores_ephemeral_thread(method: &str) {
         let mut state = TuiProxyProtocolState::new("thread-primary");
+        let mut params = json!({
+            "ephemeral": true,
+            "threadSource": {"type": "feature", "name": "system"}
+        });
+        if method == "thread/fork" {
+            params["threadId"] = json!("thread-primary");
+        }
         state.record_client_message(&json!({
             "id": "temporary-structured-title",
-            "method": "thread/start",
-            "params": {
-                "ephemeral": true,
-                "threadSource": {"type": "feature", "name": "system"}
-            }
+            "method": method,
+            "params": params
         }));
 
         let dispatch = state.record_server_message(&json!({
@@ -2478,6 +2497,18 @@ mod test {
 
     #[test]
     fn durable_output_follows_the_managed_pane_to_a_resumed_thread() {
+        assert_durable_output_follows_thread_change("thread/resume", "thread-b");
+    }
+
+    #[test]
+    fn durable_output_follows_the_managed_pane_to_a_forked_thread() {
+        assert_durable_output_follows_thread_change("thread/fork", "thread-a");
+    }
+
+    fn assert_durable_output_follows_thread_change(method: &str, requested_thread_id: &str) {
+        // Request and response checked against the installed Codex JSON schemas.
+        let exchange: Value =
+            serde_json::from_str(include_str!("../test-data/codex-thread-fork.json")).unwrap();
         let mux = Mux::new(None);
         mux.start_agent_event_runtime_epoch().unwrap();
         let metadata = metadata("switching", "thread-a");
@@ -2519,11 +2550,10 @@ mod test {
         }
 
         let mut proxy = TuiProxyProtocolState::new("thread-a");
-        proxy.record_client_message(&json!({
-            "id": 42,
-            "method": "thread/resume",
-            "params": {"threadId": "thread-b"}
-        }));
+        let mut request = exchange["request"].clone();
+        request["method"] = json!(method);
+        request["params"]["threadId"] = json!(requested_thread_id);
+        proxy.record_client_message(&request);
         let early_turn_started = json!({
             "method": "turn/started",
             "params": {"threadId": "thread-b", "turn": {"id": "turn-b"}}
@@ -2532,19 +2562,13 @@ mod test {
             .record_server_message(&early_turn_started)
             .notifications
             .is_empty());
-        apply_tui_proxy_dispatch(
-            &mux,
-            proxy.record_server_message(&json!({
-                "id": 42,
-                "result": {
-                    "thread": {
-                        "id": "thread-b",
-                        "sessionId": "session-b",
-                        "status": {"type": "active"}
-                    }
-                }
-            })),
+        let dispatch = proxy.record_server_message(&exchange["response"]);
+        assert!(
+            dispatch.transition.is_some(),
+            "native thread change was lost"
         );
+        assert_eq!(dispatch.notifications.len(), 1, "early turn start was lost");
+        apply_tui_proxy_dispatch(&mux, dispatch);
         for message in [
             json!({
                 "method": "item/completed",
@@ -2577,7 +2601,12 @@ mod test {
                     .iter()
                     .filter(|event| event.kind == AgentEventKind::AssistantMessage)
                     .count();
-                if messages == 2 {
+                let finals = page
+                    .events
+                    .iter()
+                    .filter(|event| event.kind == AgentEventKind::TurnFinal)
+                    .count();
+                if messages == 2 && finals == 2 {
                     Some(page)
                 } else {
                     std::thread::sleep(Duration::from_millis(10));
@@ -2598,7 +2627,21 @@ mod test {
         let current = mux.agent_metadata_by_pane.read()[&23].clone();
         let current_session = current.codex_app_server.as_ref().unwrap();
         assert_eq!(current_session.thread_id, "thread-b");
-        assert_eq!(current_session.session_id, "session-b");
+        assert_eq!(current_session.session_id, "thread-b");
+        let runtimes = mux.agent_runtime_by_pane.read();
+        let runtime = &runtimes[&23];
+        assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
+        let turn = runtime.observed_turn.as_ref().unwrap();
+        assert_eq!(turn.provider_turn_id, "turn-b");
+        assert_eq!(turn.outcome, AgentObservedTurnOutcome::Completed);
+        assert_eq!(turn.final_message.as_deref(), Some("answer b"));
+        assert!(page.events.iter().any(|event| {
+            event.kind == AgentEventKind::TurnFinal
+                && event.agent_id == agent_id
+                && event.turn_id.as_deref() == Some("turn-b")
+                && event.outcome.as_deref() == Some("completed")
+                && event.text.as_deref() == Some("answer b")
+        }));
     }
 
     #[cfg(unix)]
