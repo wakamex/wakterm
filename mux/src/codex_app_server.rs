@@ -109,6 +109,28 @@ fn apply_tui_settings(params: &mut serde_json::Map<String, Value>, args: &[Strin
     }
 }
 
+/// Remote Codex TUIs reject permission overrides on resume. The thread
+/// receives them through `apply_tui_settings` instead.
+fn remote_tui_args(args: &[String]) -> Vec<String> {
+    let mut remote = Vec::with_capacity(args.len());
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        match arg {
+            "-a" | "--ask-for-approval" | "-s" | "--sandbox" => index += 2,
+            "--dangerously-bypass-approvals-and-sandbox" => index += 1,
+            _ if arg.starts_with("--ask-for-approval=") || arg.starts_with("--sandbox=") => {
+                index += 1
+            }
+            _ => {
+                remote.push(args[index].clone());
+                index += 1;
+            }
+        }
+    }
+    remote
+}
+
 fn metadata_only_resume_params(thread_id: &str, cwd: &str, tui_args: &[String]) -> Value {
     // Wakterm follows live notifications and does not consume hydrated turn
     // history. Keeping it out of resume responses also bounds frame size.
@@ -485,7 +507,7 @@ impl CodexAppServer {
             request.cwd.clone(),
         ];
         native_argv.push(thread_id.clone());
-        native_argv.extend(request.tui_args.clone());
+        native_argv.extend(remote_tui_args(&request.tui_args));
         let argv = native_tui_argv(&native_argv);
         Ok(PreparedCodexLaunch {
             argv,
@@ -1836,6 +1858,36 @@ mod test {
         );
     }
 
+    #[test]
+    fn remote_tui_args_omit_permission_overrides() {
+        let args = [
+            "-a",
+            "never",
+            "-s",
+            "danger-full-access",
+            "--ask-for-approval=on-request",
+            "--sandbox=workspace-write",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "-m",
+            "gpt-6-astra",
+            "-c",
+            "model_reasoning_effort=\"ultra\"",
+            "--no-alt-screen",
+        ]
+        .map(String::from);
+
+        assert_eq!(
+            remote_tui_args(&args),
+            [
+                "-m",
+                "gpt-6-astra",
+                "-c",
+                "model_reasoning_effort=\"ultra\"",
+                "--no-alt-screen"
+            ]
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn attaches_only_to_an_already_running_exact_thread() {
@@ -1931,7 +1983,6 @@ mod test {
                 "-C",
                 "/code/wakterm",
                 thread_id,
-                "--dangerously-bypass-approvals-and-sandbox",
             ]
         );
         let seed = server
