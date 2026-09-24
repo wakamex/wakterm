@@ -856,6 +856,25 @@ fn harness_process_is_compatible(
     }
 }
 
+pub(crate) fn registered_harness_process<'a>(
+    harness: &AgentHarness,
+    process: &'a LocalProcessInfo,
+) -> Option<&'a LocalProcessInfo> {
+    if matches!(harness, AgentHarness::Unknown)
+        || harness_process_is_compatible(
+            harness,
+            &infer_harness_from_process_info(process),
+            process.executable.to_str(),
+        )
+    {
+        return Some(process);
+    }
+    process
+        .children
+        .values()
+        .find_map(|child| registered_harness_process(harness, child))
+}
+
 pub fn agent_metadata_matches_process_info(
     metadata: &AgentMetadata,
     process: Option<&LocalProcessInfo>,
@@ -893,7 +912,17 @@ pub fn agent_metadata_matches_process_info(
     let Some(process) = process else {
         return true;
     };
-    process.pid == adopted_pid && process.start_time == adopted_start_time
+    if process.pid == adopted_pid && process.start_time == adopted_start_time {
+        // Older registrations may name a persistent launcher shell. Its PID
+        // alone cannot keep a harness registered after the child has exited.
+        return registered_harness_process(&infer_harness(&metadata.launch_cmd, None), process)
+            .is_some();
+    }
+    // A suspended harness remains a child of the foreground shell.
+    process
+        .children
+        .values()
+        .any(|child| agent_metadata_matches_process_info(metadata, Some(child)))
 }
 
 pub fn derive_runtime_status(runtime: &AgentRuntimeSnapshot) -> AgentStatus {

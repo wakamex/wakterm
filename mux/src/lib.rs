@@ -2327,6 +2327,13 @@ impl Mux {
         metadata: &mut AgentMetadata,
         process_info: Option<&procinfo::LocalProcessInfo>,
     ) {
+        let process_info = if metadata.codex_app_server.is_none() {
+            let harness = infer_harness(&metadata.launch_cmd, None);
+            process_info
+                .and_then(|process| crate::agent::registered_harness_process(&harness, process))
+        } else {
+            process_info
+        };
         metadata.adopted_pid = process_info.map(|process| process.pid);
         metadata.adopted_start_time = process_info.map(|process| process.start_time);
     }
@@ -3381,7 +3388,15 @@ impl Mux {
                 self.clear_agent_metadata(pane_id);
             } else if metadata.codex_app_server.is_some() && metadata.adopted_pid.is_none() {
                 if let Some(remote_tui) = process.as_ref().and_then(remote_codex_tui) {
-                    self.confirm_managed_codex_frontend(pane_id, &remote_tui);
+                    self.confirm_agent_frontend(pane_id, remote_tui.pid, remote_tui.start_time);
+                }
+            } else if metadata.adopted_pid.is_none() {
+                let harness = infer_harness(&metadata.launch_cmd, None);
+                if let Some(process) = process
+                    .as_ref()
+                    .and_then(|process| crate::agent::registered_harness_process(&harness, process))
+                {
+                    self.confirm_agent_frontend(pane_id, process.pid, process.start_time);
                 }
             }
         }
@@ -3417,22 +3432,18 @@ impl Mux {
         );
     }
 
-    fn confirm_managed_codex_frontend(
-        &self,
-        pane_id: PaneId,
-        remote_tui: &crate::agent::RemoteCodexTui,
-    ) {
+    fn confirm_agent_frontend(&self, pane_id: PaneId, pid: u32, start_time: u64) {
         let metadata = {
             let mut metadata_by_pane = self.agent_metadata_by_pane.write();
             let Some(current) = metadata_by_pane.get(&pane_id) else {
                 return;
             };
-            if current.codex_app_server.is_none() || current.adopted_pid.is_some() {
+            if current.adopted_pid.is_some() {
                 return;
             }
             let mut metadata = (**current).clone();
-            metadata.adopted_pid = Some(remote_tui.pid);
-            metadata.adopted_start_time = Some(remote_tui.start_time);
+            metadata.adopted_pid = Some(pid);
+            metadata.adopted_start_time = Some(start_time);
             let metadata = Arc::new(metadata);
             metadata_by_pane.insert(pane_id, Arc::clone(&metadata));
             metadata
@@ -7569,6 +7580,129 @@ mod test {
 
         assert!(mux.list_agents().is_empty());
         assert!(mux.get_agent_metadata_for_pane(pane_id).is_none());
+    }
+
+    #[test]
+    fn in_place_agent_binds_to_harness_and_clears_when_it_exits() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let _config = TestConfigGuard::new("identity", "agent ");
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let pane_id = 42;
+        let shell_pane = |child: Option<LocalProcessInfo>| -> Arc<dyn Pane> {
+            let (mut pane, _) = FakePane::new_detected_counted(
+                pane_id,
+                size,
+                domain.id,
+                "zsh",
+                "/tmp/opencode-exit",
+                "/usr/bin/zsh",
+                &["zsh"],
+            );
+            if let Some(child) = child {
+                Arc::get_mut(&mut pane)
+                    .unwrap()
+                    .foreground_process_info
+                    .as_mut()
+                    .unwrap()
+                    .children
+                    .insert(child.pid, child);
+            }
+            pane
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        tab.assign_pane(&shell_pane(None));
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        // The in-place launcher registers before submitting the shell command.
+        mux.set_agent_metadata(
+            pane_id,
+            AgentMetadata {
+                launch_cmd: "opencode".to_string(),
+                declared_cwd: "/tmp/opencode-exit".to_string(),
+                ..sample_agent_metadata("opencode-exit")
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            mux.get_agent_metadata_for_pane(pane_id)
+                .unwrap()
+                .adopted_pid,
+            None,
+            "the launcher shell is not the harness"
+        );
+
+        let mut harness = LocalProcessInfo {
+            pid: 2,
+            ppid: 1,
+            name: "opencode".to_string(),
+            executable: PathBuf::from("/usr/bin/opencode"),
+            argv: vec!["opencode".to_string()],
+            cwd: PathBuf::from("/tmp/opencode-exit"),
+            status: LocalProcessStatus::Run,
+            start_time: 2,
+            #[cfg(windows)]
+            console: 0,
+            children: HashMap::new(),
+        };
+        mux.panes
+            .write()
+            .insert(pane_id, shell_pane(Some(harness.clone())));
+        mux.record_agent_output(pane_id);
+        let metadata = mux.get_agent_metadata_for_pane(pane_id).unwrap();
+        assert_eq!(metadata.adopted_pid, Some(2));
+        assert_eq!(metadata.adopted_start_time, Some(2));
+        assert_eq!(
+            mux.visible_harness_icons_for_tab(tab.tab_id(), None),
+            vec![AgentHarness::Opencode]
+        );
+
+        harness.status = LocalProcessStatus::Stop;
+        mux.panes.write().insert(pane_id, shell_pane(Some(harness)));
+        mux.record_agent_output(pane_id);
+        assert_eq!(
+            mux.get_agent_metadata_for_pane(pane_id).as_deref(),
+            Some(metadata.as_ref())
+        );
+
+        let mut legacy_metadata = (*metadata).clone();
+        legacy_metadata.adopted_pid = Some(1);
+        legacy_metadata.adopted_start_time = Some(1);
+        assert!(agent_metadata_matches_process_info(
+            &legacy_metadata,
+            mux.get_pane(pane_id)
+                .unwrap()
+                .get_foreground_process_info(CachePolicy::AllowStale)
+                .as_ref()
+        ));
+
+        // The same shell PID survives after the harness child exits.
+        mux.panes.write().insert(pane_id, shell_pane(None));
+        assert!(!agent_metadata_matches_process_info(
+            &legacy_metadata,
+            mux.get_pane(pane_id)
+                .unwrap()
+                .get_foreground_process_info(CachePolicy::AllowStale)
+                .as_ref()
+        ));
+        mux.record_agent_output(pane_id);
+        assert!(mux.get_agent_metadata_for_pane(pane_id).is_none());
+        assert!(mux
+            .visible_harness_icons_for_tab(tab.tab_id(), None)
+            .is_empty());
+        assert!(mux.list_agents().is_empty());
     }
 
     #[test]

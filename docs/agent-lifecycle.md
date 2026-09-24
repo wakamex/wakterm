@@ -116,6 +116,8 @@ Automatic adoption may promote a detected pane only after a confirmed session
 match. If the harness exits back to a shell, stale automatically adopted state
 must be cleared instead of making the shell look like a live agent.
 
+An agent launched in an existing pane binds its process identity after the harness starts. Suspending that process preserves the registration. Exiting the harness clears its metadata and icon even when the launcher shell remains alive.
+
 Provider artifact observation continues after adoption. Filesystem changes are
 hints to refresh the exact pane and confirmed provider session through the
 observer worker. This keeps durable agent events current even when no client is
