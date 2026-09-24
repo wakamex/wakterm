@@ -542,6 +542,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         }
     }

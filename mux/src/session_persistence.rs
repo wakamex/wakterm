@@ -883,6 +883,20 @@ fn prepare_agent_restore(
     intent: &SavedAgentRestoreIntent,
     prepare_managed: impl FnOnce(PrepareCodexLaunch) -> anyhow::Result<PreparedCodexLaunch>,
 ) -> anyhow::Result<PreparedAgentRestore> {
+    if let Some(supervisor) = &intent.metadata.launch_supervisor {
+        #[cfg(unix)]
+        return Ok(PreparedAgentRestore {
+            command: CommandBuilder::from_argv(vec![
+                "/bin/sh".into(), "-c".into(),
+                "printf '%s\\n' \"$1\"; while :; do sleep 3600; done".into(),
+                "wakterm-restore-error".into(),
+                format!("Wakterm could not restore this agent: its launch supervisor ({supervisor}) needs an explicit restore recipe.\nRelaunch it with the same isolation and resume session {}.\nThe saved session has been retained.", intent.session_id).into(),
+            ]),
+            intent: intent.clone(),
+        });
+        #[cfg(not(unix))]
+        anyhow::bail!("automatic restore cannot reconstruct launch supervisor {supervisor}");
+    }
     let harness = intent.harness();
     if matches!(harness, AgentHarness::Agy | AgentHarness::Claude) {
         return Ok(PreparedAgentRestore {
@@ -1573,8 +1587,39 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn supervised_restore_retains_identity_and_displays_a_failure_without_launching_the_inner_tui()
+    {
+        let mut metadata = sample_agent_metadata("sandboxed");
+        metadata.launch_cmd = "claude --restricted".to_string();
+        metadata.launch_supervisor = Some("/usr/bin/supervisor".to_string());
+        let intent = SavedAgentRestoreIntent {
+            pane_id: 1,
+            harness: AgentHarness::Claude,
+            metadata,
+            session_id: "00000000-0000-4000-8000-000000000091".to_string(),
+            attention_seen_at: None,
+        };
+        let saved: SavedAgentRestoreIntent =
+            serde_json::from_slice(&serde_json::to_vec(&intent).unwrap()).unwrap();
+        let restored =
+            prepare_agent_restore(&saved, |_| panic!("must not start a managed backend")).unwrap();
+        assert_eq!(restored.intent.metadata, intent.metadata);
+        assert_eq!(restored.intent.session_id, intent.session_id);
+        let argv = restored.command.get_argv();
+        assert_eq!(argv[0], "/bin/sh");
+        assert_eq!(
+            argv[2],
+            "printf '%s\\n' \"$1\"; while :; do sleep 3600; done"
+        );
+        assert!(argv[4].to_string_lossy().contains(&intent.session_id));
+        assert!(argv[4].to_string_lossy().contains("launch supervisor"));
     }
 
     #[test]

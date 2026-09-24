@@ -2669,6 +2669,7 @@ mod test {
             worktree: None,
             branch: Some("main".to_string()),
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
 
@@ -3017,6 +3018,7 @@ mod test {
             worktree: None,
             branch: Some("main".to_string()),
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
@@ -3555,6 +3557,7 @@ mod test {
             worktree: None,
             branch: Some("main".to_string()),
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);

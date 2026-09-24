@@ -201,6 +201,8 @@ impl LocalProcessInfo {
             LocalProcessInfo {
                 pid: info.pbi_pid,
                 ppid: info.pbi_ppid,
+                process_group: info.pbi_pgid,
+                controlling_tty: (info.e_tdev != u32::MAX).then_some(info.e_tdev as u64),
                 name,
                 executable,
                 cwd: cwd_for_pid(info.pbi_pid as _),

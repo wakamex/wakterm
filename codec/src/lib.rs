@@ -470,7 +470,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 70;
+pub const CODEC_VERSION: usize = 71;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -1832,6 +1832,7 @@ mod test {
             worktree: None,
             branch: Some("main".to_string()),
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
 
@@ -1978,6 +1979,7 @@ mod test {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                launch_supervisor: None,
                 codex_app_server,
             };
             AgentSnapshot {

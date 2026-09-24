@@ -118,6 +118,12 @@ must be cleared instead of making the shell look like a live agent.
 
 An agent launched in an existing pane binds its process identity after the harness starts. Suspending that process preserves the registration. Exiting the harness clears its metadata and icon even when the launcher shell remains alive.
 
+On Linux, an interactive harness may run behind a foreground supervisor. Discovery selects one outermost harness descendant in the same process group and controlling terminal; ambiguous candidates and other jobs cannot be adopted. The registration follows the harness PID and start time. Prompt admission rechecks that exact foreground target immediately before writing input. A supervisor remaining alive cannot retain a departed or replaced harness's registration.
+
+Supervised Claude observation requires its process-owned session record and transcript to be readable by the host mux. Wakterm matches the record's PID in Claude's namespace, process start time, machine and PID namespace identity, working directory, interactive mode, and session UUID. A missing or mismatched record leaves observation pending. The existing Agent API, native TUI input, and durable output stream use the confirmed child session. Observing a sandboxed process does not grant that process host mux control authority or require access to host runtime sockets.
+
+Wakterm records the presence of a launch supervisor separately from the inner harness command. Automatic restoration currently retains that session intent and displays a diagnostic pane requesting an explicit supervised resume recipe. It does not execute the inner command without its supervisor. Run the offline native-TUI regression with `WAKTERM_TEST_CLAUDE=/path/to/claude cargo test --locked -p mux real_sandboxed_claude_process_and_session_are_observed --lib -- --ignored --nocapture`. It requires Python 3 and bubblewrap, uses private provider storage, resumes a local fixture without a model request, and checks mount, PID, IPC and UTS isolation plus absence of host control sockets.
+
 Provider artifact observation continues after adoption. Filesystem changes are
 hints to refresh the exact pane and confirmed provider session through the
 observer worker. This keeps durable agent events current even when no client is

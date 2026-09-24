@@ -482,6 +482,7 @@ impl SpawnAgentCommand {
             worktree: prepared.worktree.clone(),
             branch: prepared.branch.clone(),
             managed_checkout: prepared.managed_checkout,
+            launch_supervisor: None,
             codex_app_server: self
                 .prepared_override
                 .as_ref()
@@ -768,6 +769,7 @@ impl LaunchCodexCommand {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                launch_supervisor: None,
                 codex_app_server: Some(prepared.session.clone()),
             };
             return run_managed_codex_in_current_pane(
@@ -2214,6 +2216,7 @@ impl AdoptDetectedAgentCommand {
             worktree: detected.metadata.worktree.clone(),
             branch: detected.metadata.branch.clone(),
             managed_checkout: detected.metadata.managed_checkout,
+            launch_supervisor: None,
             codex_app_server: None,
         };
 
@@ -2629,6 +2632,7 @@ fn build_agent_metadata(
         managed_checkout: managed_checkout
             .or_else(|| existing.map(|agent| agent.metadata.managed_checkout))
             .unwrap_or(false),
+        launch_supervisor: existing.and_then(|agent| agent.metadata.launch_supervisor.clone()),
         codex_app_server: existing.and_then(|agent| agent.metadata.codex_app_server.clone()),
     })
 }
@@ -3339,6 +3343,7 @@ mod test {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                launch_supervisor: None,
                 codex_app_server: None,
             },
             runtime: mux::agent::AgentRuntimeSnapshot {

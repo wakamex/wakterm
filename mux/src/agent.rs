@@ -34,6 +34,10 @@ pub struct AgentMetadata {
     pub managed_checkout: bool,
     #[serde(default)]
     pub codex_app_server: Option<CodexAppServerSession>,
+    /// The foreground launcher enclosing an observed TUI. Its isolation cannot
+    /// be reconstructed from the inner harness argv during native restoration.
+    #[serde(default)]
+    pub launch_supervisor: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,10 +221,12 @@ pub struct AgentSnapshot {
     pub needs_attention: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AgentProcessMatch {
+#[derive(Clone, Debug)]
+pub struct AgentProcessMatch<'a> {
     pub harness: AgentHarness,
     pub launch_cmd: String,
+    pub process: Option<&'a LocalProcessInfo>,
+    pub launch_supervisor: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -316,14 +322,17 @@ pub fn default_launch_cmd_for_harness(harness: &AgentHarness) -> Option<&'static
 }
 
 fn infer_harness_from_process_info(process: &LocalProcessInfo) -> AgentHarness {
-    let executable = process
-        .executable
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-    let mut values = vec![process.name.as_str(), executable];
-    values.extend(process.argv.iter().map(String::as_str));
-    infer_harness(&values.join(" "), Some(executable))
+    [
+        AgentHarness::Agy,
+        AgentHarness::Claude,
+        AgentHarness::Codex,
+        AgentHarness::Gemini,
+        AgentHarness::Opencode,
+    ]
+    .iter()
+    .cloned()
+    .find(|harness| is_harness_tui_process(harness, process))
+    .unwrap_or(AgentHarness::Unknown)
 }
 
 fn format_process_command(process: &LocalProcessInfo) -> Option<String> {
@@ -346,43 +355,68 @@ fn format_process_command(process: &LocalProcessInfo) -> Option<String> {
     }
 }
 
-fn best_harness_process(process: &LocalProcessInfo) -> Option<(u64, AgentProcessMatch)> {
-    let mut best = match infer_harness_from_process_info(process) {
-        AgentHarness::Unknown => None,
-        harness => format_process_command(process).map(|launch_cmd| {
-            (
-                process.start_time,
-                AgentProcessMatch {
-                    harness,
-                    launch_cmd,
-                },
-            )
-        }),
-    };
-
-    for child in process.children.values() {
-        if let Some(candidate) = best_harness_process(child) {
-            let replace = best
-                .as_ref()
-                .map(|(start_time, _)| candidate.0 >= *start_time)
-                .unwrap_or(true);
-            if replace {
-                best = Some(candidate);
-            }
-        }
+fn same_terminal_job(root: &LocalProcessInfo, child: &LocalProcessInfo) -> bool {
+    #[cfg(unix)]
+    {
+        root.process_group != 0
+            && root.process_group == child.process_group
+            && root.controlling_tty.is_some()
+            && root.controlling_tty == child.controlling_tty
     }
-
-    best
+    #[cfg(windows)]
+    {
+        root.console != 0 && root.console == child.console
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
 }
 
-pub fn detect_harness_process(
-    process: Option<&LocalProcessInfo>,
-    foreground_process_name: Option<&str>,
-) -> Option<AgentProcessMatch> {
-    if let Some(process) = process {
-        if let Some((_, matched)) = best_harness_process(process) {
-            return Some(matched);
+/// Select the unique outermost harness in this foreground job. A harness is a
+/// boundary: its tools and nested agents can never replace its pane identity.
+fn foreground_harness_process(process: &LocalProcessInfo) -> Option<&LocalProcessInfo> {
+    fn visit<'a>(
+        root: &LocalProcessInfo,
+        process: &'a LocalProcessInfo,
+        matches: &mut Vec<&'a LocalProcessInfo>,
+    ) {
+        if matches!(
+            process.status,
+            procinfo::LocalProcessStatus::Zombie | procinfo::LocalProcessStatus::Dead
+        ) {
+            return;
         }
+        if infer_harness_from_process_info(process) != AgentHarness::Unknown {
+            matches.push(process);
+            return;
+        }
+        for child in process
+            .children
+            .values()
+            .filter(|child| same_terminal_job(root, child))
+        {
+            visit(root, child, matches);
+        }
+    }
+    let mut matches = Vec::new();
+    visit(process, process, &mut matches);
+    (matches.len() == 1).then(|| matches[0])
+}
+
+pub fn detect_harness_process<'a>(
+    process: Option<&'a LocalProcessInfo>,
+    foreground_process_name: Option<&str>,
+) -> Option<AgentProcessMatch<'a>> {
+    if let Some(process) = process {
+        let selected = foreground_harness_process(process)?;
+        return Some(AgentProcessMatch {
+            harness: infer_harness_from_process_info(selected),
+            launch_cmd: format_process_command(selected)?,
+            process: Some(selected),
+            launch_supervisor: (selected.pid != process.pid)
+                .then(|| process.executable.to_string_lossy().into_owned()),
+        });
     }
 
     let harness = infer_harness("", foreground_process_name);
@@ -390,6 +424,8 @@ pub fn detect_harness_process(
     Some(AgentProcessMatch {
         harness,
         launch_cmd: launch_cmd.to_string(),
+        process: None,
+        launch_supervisor: None,
     })
 }
 
@@ -409,6 +445,10 @@ fn is_harness_tui_program(harness: &AgentHarness, value: &str) -> bool {
                     name.as_str(),
                     "codex" | "codex.exe" | "codex.cmd" | "codex.bat" | "codex.js"
                 ),
+                AgentHarness::Gemini => {
+                    matches!(name.as_str(), "gemini" | "gemini.exe" | "gemini.js")
+                }
+                AgentHarness::Opencode => matches!(name.as_str(), "opencode" | "opencode.exe"),
                 _ => false,
             }
         })
@@ -420,9 +460,17 @@ pub(crate) fn is_harness_tui_process(harness: &AgentHarness, process: &LocalProc
         || is_harness_tui_program(harness, process.executable.to_string_lossy().as_ref())
         || process
             .argv
-            .iter()
-            .take(2)
-            .any(|arg| is_harness_tui_program(harness, arg))
+            .first()
+            .is_some_and(|arg| is_harness_tui_program(harness, arg))
+        || (process
+            .executable
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches!(name, "node" | "node.exe" | "bun" | "bun.exe" | "deno"))
+            && process
+                .argv
+                .get(1)
+                .is_some_and(|arg| is_harness_tui_program(harness, arg)))
 }
 
 fn harness_tui_process<'a>(
@@ -860,19 +908,47 @@ pub(crate) fn registered_harness_process<'a>(
     harness: &AgentHarness,
     process: &'a LocalProcessInfo,
 ) -> Option<&'a LocalProcessInfo> {
-    if matches!(harness, AgentHarness::Unknown)
-        || harness_process_is_compatible(
-            harness,
-            &infer_harness_from_process_info(process),
-            process.executable.to_str(),
-        )
-    {
+    if matches!(harness, AgentHarness::Unknown) {
         return Some(process);
+    }
+    let selected = foreground_harness_process(process)?;
+    (infer_harness_from_process_info(selected) == *harness).then_some(selected)
+}
+
+pub(crate) fn exact_harness_process<'a>(
+    metadata: &AgentMetadata,
+    process: &'a LocalProcessInfo,
+) -> Option<&'a LocalProcessInfo> {
+    if metadata.adopted_pid == Some(process.pid)
+        && metadata.adopted_start_time == Some(process.start_time)
+    {
+        return registered_harness_process(&infer_harness(&metadata.launch_cmd, None), process)
+            .filter(|selected| selected.pid == process.pid);
     }
     process
         .children
         .values()
-        .find_map(|child| registered_harness_process(harness, child))
+        .find_map(|child| exact_harness_process(metadata, child))
+}
+
+pub(crate) fn observed_foreground_process_name(
+    metadata: &AgentMetadata,
+    process: Option<&LocalProcessInfo>,
+    fallback: Option<String>,
+) -> Option<String> {
+    process
+        .and_then(|root| {
+            registered_harness_process(&infer_harness(&metadata.launch_cmd, None), root)
+        })
+        .filter(|selected| {
+            metadata.adopted_pid == Some(selected.pid)
+                && metadata.adopted_start_time == Some(selected.start_time)
+        })
+        .and_then(|selected| {
+            default_launch_cmd_for_harness(&infer_harness_from_process_info(selected))
+                .map(str::to_string)
+        })
+        .or(fallback)
 }
 
 pub fn agent_metadata_matches_process_info(
@@ -1122,14 +1198,7 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
                 .filter(|expected| expected.harness == AgentHarness::Agy)
                 .map(|expected| expected.session_id.as_str()),
         ),
-        AgentHarness::Claude => observe_claude(
-            cwd,
-            runtime.session_path.as_deref(),
-            runtime.observer_started_at,
-            expected_session
-                .filter(|expected| expected.harness == AgentHarness::Claude)
-                .map(|expected| expected.session_id.as_str()),
-        ),
+        AgentHarness::Claude => observe_claude_process(cwd, metadata, runtime, expected_session),
         AgentHarness::Codex => observe_codex(
             cwd,
             runtime.session_path.as_deref(),
@@ -1242,6 +1311,9 @@ pub fn pending_observer_detail(
     }
 
     let updated_after = runtime.observer_started_at;
+    if metadata.launch_supervisor.is_some() && runtime.harness == AgentHarness::Claude {
+        return Some("waiting for Claude's exact process and namespace session record".to_string());
+    }
     match runtime.harness {
         AgentHarness::Agy => describe_pending_agy_observer(cwd, updated_after)
             .ok()
@@ -1564,6 +1636,118 @@ fn settle_codex_turn_interrupted_by_process_restart(
     details.turn_phase = Some("interrupted".to_string());
     turn.outcome = AgentObservedTurnOutcome::Aborted;
     turn.completed_at = Some(DateTime::<Utc>::from(process_started_at));
+}
+
+fn observe_claude_process(
+    cwd: &str,
+    metadata: &AgentMetadata,
+    runtime: &AgentRuntimeSnapshot,
+    expected: Option<&ExpectedAgentSession>,
+) -> anyhow::Result<Option<HarnessObservation>> {
+    let expected_id = expected
+        .filter(|expected| expected.harness == AgentHarness::Claude)
+        .map(|expected| expected.session_id.as_str());
+    let owned =
+        claude_session_owned_by_process(cwd, metadata.adopted_pid, metadata.adopted_start_time)?;
+    if metadata.launch_supervisor.is_some() && owned.is_none() {
+        // A sandbox may run several PID 2 processes or a different session in
+        // the same project. Do not confirm it by transcript timestamps.
+        return Ok(None);
+    }
+    if let Some((session_id, _)) = owned.as_ref() {
+        if expected_id.is_some_and(|expected| expected != session_id) {
+            return Ok(None);
+        }
+    }
+    observe_claude(
+        cwd,
+        runtime.session_path.as_deref(),
+        runtime.observer_started_at,
+        owned.as_ref().map(|(id, _)| id.as_str()).or(expected_id),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn claude_session_owned_by_process(
+    cwd: &str,
+    pid: Option<u32>,
+    start_time: Option<u64>,
+) -> anyhow::Result<Option<(String, PathBuf)>> {
+    let (Some(pid), Some(start_time)) = (pid, start_time) else {
+        return Ok(None);
+    };
+    if linux_process_started_at(Some(pid), Some(start_time)).is_none() {
+        return Ok(None);
+    }
+    let Some(root) = claude_sessions_root() else {
+        return Ok(None);
+    };
+    let status = match fs::read_to_string(format!("/proc/{pid}/status")) {
+        Ok(status) => status,
+        Err(_) => return Ok(None),
+    };
+    let Some(namespace_pid) = status
+        .lines()
+        .find_map(|line| line.strip_prefix("NSpid:"))
+        .and_then(|ids| ids.split_whitespace().last())
+        .and_then(|pid| pid.parse::<u32>().ok())
+    else {
+        return Ok(None);
+    };
+    let registry = root
+        .parent()
+        .context("Claude projects root has no parent")?
+        .join("sessions")
+        .join(format!("{namespace_pid}.json"));
+    let bytes = match fs::read(&registry) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let record: Value = serde_json::from_slice(&bytes)?;
+    let machine_id = fs::read_to_string(format!("/proc/{pid}/root/etc/machine-id"))?;
+    let namespace = fs::read_link(format!("/proc/{pid}/ns/pid"))?;
+    let domain = format!(
+        "linux:{}:{}",
+        machine_id.trim(),
+        namespace.to_string_lossy()
+    );
+    let start = start_time.to_string();
+    if record.get("pid").and_then(Value::as_u64) != Some(u64::from(namespace_pid))
+        || record.get("procStart").and_then(Value::as_str) != Some(start.as_str())
+        || record.get("pidDomain").and_then(Value::as_str) != Some(domain.as_str())
+        || record.get("kind").and_then(Value::as_str) != Some("interactive")
+        || record.get("cwd").and_then(Value::as_str) != Some(cwd)
+        || linux_process_started_at(Some(pid), Some(start_time)).is_none()
+    {
+        return Ok(None);
+    }
+    let Some(session_id) = record
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|id| is_uuid(id))
+    else {
+        return Ok(None);
+    };
+    let path = root
+        .join(cwd.replace('/', "-"))
+        .join(format!("{session_id}.jsonl"));
+    if !path.is_file()
+        || claude_session_id(&path)?.as_deref() != Some(session_id)
+        || !claude_session_is_interactive(&path)?
+    {
+        return Ok(None);
+    }
+    Ok(Some((session_id.to_string(), path)))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn claude_session_owned_by_process(
+    _cwd: &str,
+    _pid: Option<u32>,
+    _start_time: Option<u64>,
+) -> anyhow::Result<Option<(String, PathBuf)>> {
+    Ok(None)
 }
 
 fn observe_claude(
@@ -2169,11 +2353,15 @@ pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> V
         AgentHarness::Agy => agy_root().map(|root| vec![root.join("presence"), root.join("brain")]),
         AgentHarness::Claude => claude_sessions_root().map(|root| {
             let project = root.join(cwd.replace('/', "-"));
-            if project.is_dir() {
+            let mut paths = if project.is_dir() {
                 vec![project]
             } else {
-                vec![root]
+                vec![root.clone()]
+            };
+            if let Some(parent) = root.parent() {
+                paths.push(parent.join("sessions"));
             }
+            paths
         }),
         AgentHarness::Codex => codex_sessions_root().map(|root| vec![root]),
         AgentHarness::Gemini => gemini_root().map(|root| {
@@ -3703,6 +3891,10 @@ mod test {
         LocalProcessInfo {
             pid: start_time as u32,
             ppid: 0,
+            #[cfg(unix)]
+            process_group: 1,
+            #[cfg(unix)]
+            controlling_tty: Some(1),
             name: name.to_string(),
             executable: PathBuf::from(executable),
             argv: argv.iter().map(|arg| (*arg).to_string()).collect(),
@@ -3710,7 +3902,7 @@ mod test {
             status: procinfo::LocalProcessStatus::Run,
             start_time,
             #[cfg(windows)]
-            console: 0,
+            console: 1,
             children: children
                 .into_iter()
                 .map(|child| (child.pid, child))
@@ -4002,6 +4194,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
@@ -4039,6 +4232,191 @@ mod test {
         let matched = detect_harness_process(Some(&process), Some("/usr/bin/zsh")).unwrap();
         assert_eq!(matched.harness, AgentHarness::Codex);
         assert_eq!(matched.launch_cmd, "codex -a never");
+    }
+
+    #[test]
+    fn supervised_harness_binds_the_tui_instead_of_its_launcher_or_worker() {
+        let process = proc_info(
+            "supervisor",
+            "/usr/bin/supervisor",
+            &["supervisor", "--", "claude"],
+            1,
+            vec![proc_info(
+                "claude",
+                "/opt/claude",
+                &["claude"],
+                2,
+                vec![proc_info(
+                    "codex",
+                    "/opt/codex",
+                    &["codex", "exec"],
+                    3,
+                    vec![],
+                )],
+            )],
+        );
+        let matched = detect_harness_process(Some(&process), Some("/usr/bin/supervisor"))
+            .expect("interactive harness behind supervisor");
+        assert_eq!(matched.harness, AgentHarness::Claude);
+        assert_eq!(matched.launch_cmd, "claude");
+        assert_eq!(
+            registered_harness_process(&AgentHarness::Claude, &process)
+                .unwrap()
+                .pid,
+            2
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn supervised_harness_requires_one_foreground_job_member() {
+        let child = proc_info("claude", "/opt/claude", &["claude"], 2, vec![]);
+        let mut root = proc_info(
+            "supervisor",
+            "/usr/bin/supervisor",
+            &["supervisor", "claude"],
+            1,
+            vec![],
+        );
+        assert!(
+            detect_harness_process(Some(&root), None).is_none(),
+            "an argument is not a harness"
+        );
+        root.children.insert(2, child.clone());
+        assert_eq!(
+            detect_harness_process(Some(&root), None)
+                .unwrap()
+                .process
+                .unwrap()
+                .pid,
+            2
+        );
+        root.children.get_mut(&2).unwrap().process_group = 9;
+        assert!(
+            detect_harness_process(Some(&root), None).is_none(),
+            "background job"
+        );
+        root.children.insert(2, child.clone());
+        root.children.get_mut(&2).unwrap().controlling_tty = Some(9);
+        assert!(
+            detect_harness_process(Some(&root), None).is_none(),
+            "another terminal"
+        );
+        root.children.insert(2, child.clone());
+        root.children
+            .insert(3, proc_info("codex", "/opt/codex", &["codex"], 3, vec![]));
+        assert!(
+            detect_harness_process(Some(&root), None).is_none(),
+            "ambiguous foreground harnesses"
+        );
+        assert!(registered_harness_process(&AgentHarness::Claude, &root).is_none());
+        root.children.remove(&3);
+        root.children.get_mut(&2).unwrap().status = procinfo::LocalProcessStatus::Zombie;
+        assert!(
+            detect_harness_process(Some(&root), None).is_none(),
+            "exited child"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "requires WAKTERM_TEST_CLAUDE, Python 3 and bubblewrap"]
+    fn real_sandboxed_claude_process_and_session_are_observed() {
+        use std::process::{Command, Stdio};
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::Builder::new()
+            .prefix("wakterm-sandbox-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let binary = std::env::var_os("WAKTERM_TEST_CLAUDE").expect("WAKTERM_TEST_CLAUDE");
+        let mut child = Command::new("python3")
+            .arg("-c")
+            .arg(include_str!("../test-data/supervised_claude_pty.py"))
+            .arg(temp.path())
+            .arg(binary)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        let result = (|| -> anyhow::Result<()> {
+            let ready: Value =
+                serde_json::from_str(&ready).context("native Claude sandbox startup")?;
+            let root =
+                LocalProcessInfo::with_root_pid(ready["supervisor_pid"].as_u64().unwrap() as u32)
+                    .context("sandbox supervisor")?;
+            let matched = detect_harness_process(Some(&root), root.executable.to_str())
+                .context("sandbox TUI selection")?;
+            let process = matched.process.context("exact child")?;
+            anyhow::ensure!(matched.harness == AgentHarness::Claude && process.pid != root.pid);
+            anyhow::ensure!(
+                process.process_group == root.process_group
+                    && process.controlling_tty == root.controlling_tty
+            );
+            for ns in ["mnt", "pid", "ipc", "uts"] {
+                anyhow::ensure!(
+                    fs::read_link(format!("/proc/{}/ns/{ns}", process.pid))?
+                        != fs::read_link(format!("/proc/self/ns/{ns}"))?
+                );
+            }
+            for path in [
+                "run/user/1000/wakterm/sock",
+                "run/user/1000/panetone/control.sock",
+                "home/mihai/.local/bin/wakterm",
+                "home/mihai/.local/bin/panetone",
+            ] {
+                anyhow::ensure!(
+                    !PathBuf::from(format!("/proc/{}/root/{path}", process.pid)).exists()
+                );
+            }
+            set_env_path(
+                "WAKTERM_AGENT_CLAUDE_DIR",
+                Path::new(ready["projects"].as_str().unwrap()),
+            );
+            let metadata = AgentMetadata {
+                agent_id: "offline-sandbox-test".into(),
+                name: "sandbox-test".into(),
+                launch_cmd: matched.launch_cmd,
+                launch_supervisor: matched.launch_supervisor,
+                declared_cwd: ready["cwd"].as_str().unwrap().into(),
+                adopted_pid: Some(process.pid),
+                adopted_start_time: Some(process.start_time),
+                created_at: Utc::now(),
+                repo_root: None,
+                worktree: None,
+                branch: None,
+                managed_checkout: false,
+                codex_app_server: None,
+            };
+            let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+            runtime.alive = true;
+            runtime.foreground_process_name = observed_foreground_process_name(
+                &metadata,
+                Some(&root),
+                root.executable.to_str().map(str::to_string),
+            );
+            refresh_runtime_from_harness(&mut runtime, &metadata);
+            anyhow::ensure!(
+                runtime.transport == AgentTransport::ObservedPty,
+                "{:?}",
+                runtime
+            );
+            anyhow::ensure!(runtime.turn_state == AgentTurnState::WaitingOnUser);
+            anyhow::ensure!(
+                claude_session_id(Path::new(runtime.session_path.as_deref().unwrap()))?.as_deref()
+                    == ready["session_id"].as_str()
+            );
+            eprintln!("native Claude sandbox: host PID {}, supervisor {}, namespace/session identity verified; mount/PID/IPC/UTS isolated; host sockets absent", process.pid, root.pid);
+            Ok(())
+        })();
+        remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
+        drop(child.stdin.take());
+        let status = child.wait().unwrap();
+        result.unwrap();
+        assert!(status.success());
     }
 
     #[test]
@@ -4384,6 +4762,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
@@ -4447,6 +4826,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
@@ -4497,6 +4877,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
@@ -4527,6 +4908,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let runtime = AgentRuntimeSnapshot::new(&metadata);
@@ -5745,6 +6127,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let mut gemini_runtime = AgentRuntimeSnapshot::new(&gemini_metadata);
@@ -5815,6 +6198,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let mut opencode_runtime = AgentRuntimeSnapshot::new(&opencode_metadata);
@@ -5857,6 +6241,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
@@ -5907,6 +6292,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
@@ -5938,6 +6324,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
@@ -5967,6 +6354,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
@@ -6017,6 +6405,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);

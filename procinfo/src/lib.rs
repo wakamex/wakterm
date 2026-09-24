@@ -32,6 +32,11 @@ pub struct LocalProcessInfo {
     pub pid: u32,
     /// The parent process identifier
     pub ppid: u32,
+    /// Kernel job-control identity, in the observer's PID namespace.
+    #[cfg(unix)]
+    pub process_group: u32,
+    #[cfg(unix)]
+    pub controlling_tty: Option<u64>,
     /// The COMM name of the process. May not bear any relation to
     /// the executable image name. May be changed at runtime by
     /// the process.

@@ -187,7 +187,9 @@ impl AgentAdmissionCandidate {
             .metadata
             .adopted_pid
             .and_then(procinfo::LocalProcessInfo::with_root_pid)
-            .is_some_and(|process| Some(process.start_time) == self.metadata.adopted_start_time);
+            .is_some_and(|process| {
+                crate::agent::exact_harness_process(&self.metadata, &process).is_some()
+            });
         if !process_matches {
             self.runtime.alive = false;
             self.runtime.status = AgentStatus::Exited;
@@ -447,6 +449,29 @@ impl Mux {
                 "the target pane exited",
             ));
         }
+        if metadata.codex_app_server.is_none() {
+            let process =
+                pane.get_foreground_process_info(crate::pane::CachePolicy::FetchImmediate);
+            let foreground = process.as_ref().and_then(|root| {
+                crate::agent::registered_harness_process(&candidate.runtime.harness, root)
+            });
+            if !foreground.is_some_and(|process| {
+                metadata.adopted_pid == Some(process.pid)
+                    && metadata.adopted_start_time == Some(process.start_time)
+                    && !matches!(
+                        process.status,
+                        procinfo::LocalProcessStatus::Stop
+                            | procinfo::LocalProcessStatus::Zombie
+                            | procinfo::LocalProcessStatus::Dead
+                    )
+            }) {
+                return Some(AgentAdmissionReceipt::rejected(
+                    request,
+                    AgentAdmissionStatus::StaleIncarnation,
+                    "the exact harness is no longer the pane's foreground input target",
+                ));
+            }
+        }
         if !pane.supports_atomic_prompt_submission() {
             return Some(AgentAdmissionReceipt::rejected(
                 request,
@@ -461,6 +486,13 @@ impl Mux {
         &self,
         candidate: &AgentAdmissionCandidate,
     ) -> anyhow::Result<()> {
+        if let Some(receipt) = self.validate_agent_admission(candidate) {
+            anyhow::bail!(
+                "prompt admission changed before input: {:?}: {:?}",
+                receipt.status,
+                receipt.detail
+            );
+        }
         let pane = self
             .get_pane(candidate.pane_id)
             .with_context(|| format!("target pane {} disappeared", candidate.pane_id))?;
@@ -782,6 +814,7 @@ mod tests {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         }
     }

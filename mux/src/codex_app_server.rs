@@ -1583,6 +1583,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: Some(CodexAppServerSession {
                 thread_id: thread_id.to_string(),
                 session_id: format!("session-{name}"),

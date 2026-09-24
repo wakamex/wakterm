@@ -10,6 +10,8 @@ struct LinuxStat {
     name: String,
     status: String,
     ppid: pid_t,
+    process_group: u32,
+    controlling_tty: Option<u64>,
     // Time process started after boot, measured in ticks.
     starttime: u64,
 }
@@ -80,6 +82,13 @@ impl LinuxProcessSnapshot {
             name: name.to_string(),
             status: fields.first()?.to_string(),
             ppid: fields.get(1)?.parse().ok()?,
+            process_group: fields.get(2)?.parse().ok()?,
+            controlling_tty: fields
+                .get(4)?
+                .parse::<i64>()
+                .ok()
+                .filter(|tty| *tty != 0)
+                .map(|tty| tty as u64),
             starttime: fields.get(19)?.parse().ok()?,
         })
     }
@@ -111,6 +120,8 @@ impl LinuxProcessSnapshot {
         LocalProcessInfo {
             pid: info.pid as u32,
             ppid: info.ppid as u32,
+            process_group: info.process_group,
+            controlling_tty: info.controlling_tty,
             name: info.name.clone(),
             executable: std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_default(),
             cwd: LocalProcessInfo::current_working_dir(pid as u32).unwrap_or_default(),

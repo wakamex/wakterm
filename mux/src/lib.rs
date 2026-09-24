@@ -272,6 +272,7 @@ struct DetectedAgentState {
     declared_cwd: String,
     adopted_pid: Option<u32>,
     adopted_start_time: Option<u64>,
+    launch_supervisor: Option<String>,
     runtime: AgentRuntimeSnapshot,
     detection_source: String,
 }
@@ -284,6 +285,7 @@ struct AgentAdoptionCandidate {
     launch_cmd: String,
     foreground_pid: Option<u32>,
     process_start_time: Option<u64>,
+    launch_supervisor: Option<String>,
     created_at: DateTime<Utc>,
     tab_id: TabId,
     window_id: WindowId,
@@ -1991,7 +1993,11 @@ impl Mux {
         let mut runtime = runtime;
         self.agent_attention_seen_at.write().remove(&pane_id);
         runtime.alive = alive;
-        runtime.foreground_process_name = foreground_process_name.clone();
+        runtime.foreground_process_name = crate::agent::observed_foreground_process_name(
+            &metadata,
+            foreground_process_info,
+            foreground_process_name.clone(),
+        );
         runtime.tty_name = tty_name;
         runtime.terminal_progress = terminal_progress;
         runtime.harness = infer_harness(&metadata.launch_cmd, foreground_process_name.as_deref());
@@ -2327,15 +2333,19 @@ impl Mux {
         metadata: &mut AgentMetadata,
         process_info: Option<&procinfo::LocalProcessInfo>,
     ) {
-        let process_info = if metadata.codex_app_server.is_none() {
+        let selected = if metadata.codex_app_server.is_none() {
             let harness = infer_harness(&metadata.launch_cmd, None);
             process_info
                 .and_then(|process| crate::agent::registered_harness_process(&harness, process))
         } else {
             process_info
         };
-        metadata.adopted_pid = process_info.map(|process| process.pid);
-        metadata.adopted_start_time = process_info.map(|process| process.start_time);
+        metadata.adopted_pid = selected.map(|process| process.pid);
+        metadata.adopted_start_time = selected.map(|process| process.start_time);
+        metadata.launch_supervisor = process_info
+            .zip(selected)
+            .filter(|(root, child)| root.pid != child.pid)
+            .map(|(root, _)| root.executable.to_string_lossy().into_owned());
     }
 
     fn detect_agent_state_for_pane(&self, pane_id: PaneId) -> Option<DetectedAgentState> {
@@ -2382,14 +2392,6 @@ impl Mux {
         let title = pane.get_title();
         let title_harness = infer_harness(&title, None);
         let foreground_process_name = pane.get_foreground_process_name(CachePolicy::AllowStale);
-        let quick_process_harness = infer_harness("", foreground_process_name.as_deref());
-        if matches!(title_harness, crate::agent::AgentHarness::Unknown)
-            && matches!(quick_process_harness, crate::agent::AgentHarness::Unknown)
-        {
-            self.clear_detected_agent_info(pane_id);
-            return None;
-        }
-
         let foreground_process_info = pane.get_foreground_process_info(CachePolicy::AllowStale);
         let process_match = detect_harness_process(
             foreground_process_info.as_ref(),
@@ -2409,7 +2411,15 @@ impl Mux {
             return None;
         }
 
-        let Some(declared_cwd) = Self::pane_declared_cwd(&pane, foreground_process_info.as_ref())
+        let selected_process = process_match.as_ref().and_then(|matched| matched.process);
+        let selected_cwd = process_match
+            .as_ref()
+            .filter(|matched| matched.launch_supervisor.is_some())
+            .and_then(|_| selected_process)
+            .filter(|process| !process.cwd.as_os_str().is_empty())
+            .map(|process| process.cwd.to_string_lossy().into_owned());
+        let Some(declared_cwd) =
+            selected_cwd.or_else(|| Self::pane_declared_cwd(&pane, selected_process))
         else {
             self.clear_detected_agent_info(pane_id);
             return None;
@@ -2428,15 +2438,16 @@ impl Mux {
             name: format!("detected-{pane_id}"),
             launch_cmd,
             declared_cwd,
-            adopted_pid: foreground_process_info.as_ref().map(|process| process.pid),
-            adopted_start_time: foreground_process_info
-                .as_ref()
-                .map(|process| process.start_time),
+            adopted_pid: selected_process.map(|process| process.pid),
+            adopted_start_time: selected_process.map(|process| process.start_time),
             created_at: Utc::now(),
             repo_root: None,
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: process_match
+                .as_ref()
+                .and_then(|matched| matched.launch_supervisor.clone()),
             codex_app_server: None,
         };
         let existing_candidate = self.agent_adoption_candidates.read().get(&pane_id).cloned();
@@ -2457,7 +2468,11 @@ impl Mux {
             AgentRuntimeSnapshot::new(&metadata)
         };
         runtime.alive = !pane.is_dead();
-        runtime.foreground_process_name = foreground_process_name;
+        runtime.foreground_process_name = crate::agent::observed_foreground_process_name(
+            &metadata,
+            foreground_process_info.as_ref(),
+            foreground_process_name,
+        );
         runtime.tty_name = pane.tty_name();
         runtime.terminal_progress = pane.get_progress();
         runtime.harness = harness.clone();
@@ -2495,6 +2510,7 @@ impl Mux {
             launch_cmd: metadata.launch_cmd.clone(),
             foreground_pid: metadata.adopted_pid,
             process_start_time: metadata.adopted_start_time,
+            launch_supervisor: metadata.launch_supervisor.clone(),
             created_at: metadata.created_at,
             tab_id,
             window_id,
@@ -2530,6 +2546,7 @@ impl Mux {
             declared_cwd: metadata.declared_cwd,
             adopted_pid: metadata.adopted_pid,
             adopted_start_time: metadata.adopted_start_time,
+            launch_supervisor: metadata.launch_supervisor,
             runtime,
             detection_source,
         })
@@ -2554,6 +2571,7 @@ impl Mux {
             declared_cwd: candidate.declared_cwd,
             adopted_pid: candidate.foreground_pid,
             adopted_start_time: candidate.process_start_time,
+            launch_supervisor: candidate.launch_supervisor,
             runtime,
             detection_source: candidate.detection_source,
         })
@@ -2572,6 +2590,7 @@ impl Mux {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: candidate.launch_supervisor.clone(),
             codex_app_server: None,
         }
     }
@@ -2795,6 +2814,7 @@ impl Mux {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                launch_supervisor: state.launch_supervisor,
                 codex_app_server: None,
             },
             runtime: state.runtime,
@@ -2892,6 +2912,7 @@ impl Mux {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: candidate.launch_supervisor.clone(),
             codex_app_server: None,
         };
         let (result_tx, result_rx) = mpsc::channel();
@@ -2946,11 +2967,15 @@ impl Mux {
         if pane.is_dead() {
             return false;
         }
-        let Some(process) = pane.get_foreground_process_info(CachePolicy::AllowStale) else {
+        let Some(process) = pane.get_foreground_process_info(CachePolicy::FetchImmediate) else {
             return false;
         };
-        candidate.foreground_pid == Some(process.pid)
-            && candidate.process_start_time == Some(process.start_time)
+        crate::agent::registered_harness_process(&candidate.harness, &process).is_some_and(
+            |process| {
+                candidate.foreground_pid == Some(process.pid)
+                    && candidate.process_start_time == Some(process.start_time)
+            },
+        )
     }
 
     fn should_refresh_harness_runtime(
@@ -3388,15 +3413,29 @@ impl Mux {
                 self.clear_agent_metadata(pane_id);
             } else if metadata.codex_app_server.is_some() && metadata.adopted_pid.is_none() {
                 if let Some(remote_tui) = process.as_ref().and_then(remote_codex_tui) {
-                    self.confirm_agent_frontend(pane_id, remote_tui.pid, remote_tui.start_time);
+                    self.confirm_agent_frontend(
+                        pane_id,
+                        remote_tui.pid,
+                        remote_tui.start_time,
+                        None,
+                    );
                 }
             } else if metadata.adopted_pid.is_none() {
                 let harness = infer_harness(&metadata.launch_cmd, None);
-                if let Some(process) = process
+                if let Some(selected) = process
                     .as_ref()
                     .and_then(|process| crate::agent::registered_harness_process(&harness, process))
                 {
-                    self.confirm_agent_frontend(pane_id, process.pid, process.start_time);
+                    let supervisor = process
+                        .as_ref()
+                        .filter(|root| root.pid != selected.pid)
+                        .map(|root| root.executable.to_string_lossy().into_owned());
+                    self.confirm_agent_frontend(
+                        pane_id,
+                        selected.pid,
+                        selected.start_time,
+                        supervisor,
+                    );
                 }
             }
         }
@@ -3432,7 +3471,13 @@ impl Mux {
         );
     }
 
-    fn confirm_agent_frontend(&self, pane_id: PaneId, pid: u32, start_time: u64) {
+    fn confirm_agent_frontend(
+        &self,
+        pane_id: PaneId,
+        pid: u32,
+        start_time: u64,
+        supervisor: Option<String>,
+    ) {
         let metadata = {
             let mut metadata_by_pane = self.agent_metadata_by_pane.write();
             let Some(current) = metadata_by_pane.get(&pane_id) else {
@@ -3444,6 +3489,7 @@ impl Mux {
             let mut metadata = (**current).clone();
             metadata.adopted_pid = Some(pid);
             metadata.adopted_start_time = Some(start_time);
+            metadata.launch_supervisor = supervisor;
             let metadata = Arc::new(metadata);
             metadata_by_pane.insert(pane_id, Arc::clone(&metadata));
             metadata
@@ -3543,6 +3589,11 @@ impl Mux {
         let Some((_, _, tab_id)) = self.resolve_pane_id(pane_id) else {
             return;
         };
+        let process = pane.get_foreground_process_info(CachePolicy::AllowStale);
+        if !agent_metadata_matches_process_info(&metadata, process.as_ref()) {
+            self.clear_agent_metadata(pane_id);
+            return;
+        }
         let mut runtime = self
             .agent_runtime_by_pane
             .read()
@@ -3552,7 +3603,11 @@ impl Mux {
         let before_title = notify_title.then(|| Self::title_fingerprint(&runtime));
         update(&mut runtime);
         runtime.alive = !pane.is_dead();
-        runtime.foreground_process_name = pane.get_foreground_process_name(CachePolicy::AllowStale);
+        runtime.foreground_process_name = crate::agent::observed_foreground_process_name(
+            &metadata,
+            process.as_ref(),
+            pane.get_foreground_process_name(CachePolicy::AllowStale),
+        );
         runtime.tty_name = pane.tty_name();
         runtime.terminal_progress = pane.get_progress();
         runtime.harness = infer_harness(
@@ -4331,6 +4386,7 @@ impl Mux {
                     worktree: None,
                     branch: None,
                     managed_checkout: false,
+                    launch_supervisor: candidate.launch_supervisor,
                     codex_app_server: None,
                 },
                 runtime,
@@ -4362,6 +4418,7 @@ impl Mux {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                launch_supervisor: None,
                 codex_app_server: None,
             },
             runtime,
@@ -6721,6 +6778,10 @@ mod test {
                 foreground_process_info: Some(LocalProcessInfo {
                     pid: 1,
                     ppid: 0,
+                    #[cfg(unix)]
+                    process_group: 1,
+                    #[cfg(unix)]
+                    controlling_tty: Some(1),
                     name: PathBuf::from(foreground_process_name)
                         .file_name()
                         .and_then(|name| name.to_str())
@@ -6762,6 +6823,10 @@ mod test {
                 foreground_process_info: Some(LocalProcessInfo {
                     pid: 1,
                     ppid: 0,
+                    #[cfg(unix)]
+                    process_group: 1,
+                    #[cfg(unix)]
+                    controlling_tty: Some(1),
                     name: PathBuf::from(foreground_process_name)
                         .file_name()
                         .and_then(|name| name.to_str())
@@ -6829,6 +6894,10 @@ mod test {
                 foreground_process_info: Some(LocalProcessInfo {
                     pid: 1,
                     ppid: 0,
+                    #[cfg(unix)]
+                    process_group: 1,
+                    #[cfg(unix)]
+                    controlling_tty: Some(1),
                     name: PathBuf::from(foreground_process_name)
                         .file_name()
                         .and_then(|name| name.to_str())
@@ -7295,6 +7364,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         }
     }
@@ -7561,6 +7631,10 @@ mod test {
             foreground_process_info: Some(LocalProcessInfo {
                 pid: 2,
                 ppid: 0,
+                #[cfg(unix)]
+                process_group: 1,
+                #[cfg(unix)]
+                controlling_tty: Some(1),
                 name: "zsh".to_string(),
                 executable: PathBuf::from("/usr/bin/zsh"),
                 argv: vec!["zsh".to_string()],
@@ -7647,6 +7721,10 @@ mod test {
         let mut harness = LocalProcessInfo {
             pid: 2,
             ppid: 1,
+            #[cfg(unix)]
+            process_group: 1,
+            #[cfg(unix)]
+            controlling_tty: Some(1),
             name: "opencode".to_string(),
             executable: PathBuf::from("/usr/bin/opencode"),
             argv: vec!["opencode".to_string()],
@@ -8370,6 +8448,7 @@ mod test {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                launch_supervisor: None,
                 codex_app_server: None,
             },
         )
@@ -8524,7 +8603,8 @@ mod test {
         };
         let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
         let tab = Arc::new(Tab::new(&size));
-        let pane = FakePane::new_detected(
+        let process = LocalProcessInfo::with_root_pid(std::process::id()).unwrap();
+        let (mut pane, _) = FakePane::new_detected_counted(
             159,
             size,
             domain.id,
@@ -8533,6 +8613,14 @@ mod test {
             "/usr/bin/codex",
             &["codex"],
         );
+        let info = Arc::get_mut(&mut pane)
+            .unwrap()
+            .foreground_process_info
+            .as_mut()
+            .unwrap();
+        info.pid = process.pid;
+        info.start_time = process.start_time;
+        let pane: Arc<dyn Pane> = pane;
         let pane_id = pane.pane_id();
         tab.assign_pane(&pane);
         mux.add_tab_and_active_pane(&tab).unwrap();
@@ -8540,7 +8628,6 @@ mod test {
         let mut metadata = sample_agent_metadata("trailing-final");
         metadata.launch_cmd = "codex".to_string();
         metadata.declared_cwd = "/tmp/trailing".to_string();
-        let process = LocalProcessInfo::with_root_pid(std::process::id()).unwrap();
         metadata.adopted_pid = Some(std::process::id());
         metadata.adopted_start_time = Some(process.start_time);
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
@@ -8648,6 +8735,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         mux.set_mirrored_agent_metadata(pane_id, Some(&metadata));
@@ -8736,6 +8824,7 @@ mod test {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                launch_supervisor: None,
                 codex_app_server: None,
             },
         )
@@ -8835,6 +8924,7 @@ mod test {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                launch_supervisor: None,
                 codex_app_server: None,
             },
         )
@@ -8956,6 +9046,7 @@ mod test {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                launch_supervisor: None,
                 codex_app_server: None,
             },
         )
@@ -9071,6 +9162,7 @@ mod test {
                 worktree: None,
                 branch: None,
                 managed_checkout: false,
+                launch_supervisor: None,
                 codex_app_server: None,
             },
         )
@@ -9634,6 +9726,7 @@ mod test {
             launch_cmd: matching_metadata.launch_cmd.clone(),
             foreground_pid: Some(1),
             process_start_time: Some(1),
+            launch_supervisor: None,
             created_at: matching_metadata.created_at,
             tab_id: matching_tab_id,
             window_id: matching_window,
@@ -9713,6 +9806,7 @@ mod test {
             launch_cmd: mismatching_metadata.launch_cmd.clone(),
             foreground_pid: Some(1),
             process_start_time: Some(1),
+            launch_supervisor: None,
             created_at: mismatching_metadata.created_at,
             tab_id: mismatching_tab_id,
             window_id: mismatching_window,
@@ -9814,6 +9908,7 @@ mod test {
             launch_cmd: metadata.launch_cmd.clone(),
             foreground_pid: Some(1),
             process_start_time: Some(1),
+            launch_supervisor: None,
             created_at: metadata.created_at,
             tab_id,
             window_id,
@@ -10128,6 +10223,298 @@ mod test {
 
     #[test]
     #[cfg(target_os = "linux")]
+    fn supervised_claude_observation_admission_events_and_replacement() {
+        use crate::agent_admission::{
+            AgentAdmissionCapture, AgentAdmissionStatus, AgentPromptAdmissionRequest,
+        };
+        use crate::agent_event::AgentEventKind;
+        use std::os::unix::process::CommandExt;
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _config = TestConfigGuard::new_with_auto_adopt("identity", "", true);
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("projects");
+        let cwd = "/tmp/supervised-claude";
+        let project = root.join(cwd.replace('/', "-"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(temp.path().join("sessions")).unwrap();
+        struct Cleanup(std::process::Child);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+                unsafe {
+                    std::env::remove_var("WAKTERM_AGENT_CLAUDE_DIR");
+                }
+            }
+        }
+        // A real process incarnation, with provider records supplied by the fixture.
+        let child = Cleanup(
+            std::process::Command::new("sleep")
+                .arg0("claude")
+                .arg("60")
+                .spawn()
+                .unwrap(),
+        );
+        let mut harness = LocalProcessInfo::with_root_pid(child.0.id()).unwrap();
+        harness.cwd = PathBuf::from(cwd);
+        harness.process_group = 1;
+        harness.controlling_tty = Some(1);
+        let namespace = std::fs::read_link(format!("/proc/{}/ns/pid", harness.pid)).unwrap();
+        let machine_id = std::fs::read_to_string("/etc/machine-id").unwrap();
+        let sid = "00000000-0000-4000-8000-000000000091";
+        let session = project.join(format!("{sid}.jsonl"));
+        let registry_path = temp
+            .path()
+            .join("sessions")
+            .join(format!("{}.json", harness.pid));
+        let registry = serde_json::json!({"pid": harness.pid, "procStart": harness.start_time.to_string(),
+            "pidDomain": format!("linux:{}:{}", machine_id.trim(), namespace.to_string_lossy()), "sessionId": sid,
+            "cwd": cwd, "kind": "interactive"});
+        std::fs::write(&registry_path, serde_json::to_vec(&registry).unwrap()).unwrap();
+        let user_record = |turn: &str, time: DateTime<Utc>| {
+            serde_json::json!({"type":"user", "uuid":turn,
+            "sessionId":sid, "cwd":cwd, "timestamp":time, "message":{"role":"user","content":"work"}})
+        };
+        let final_record = |turn: &str, time: DateTime<Utc>| {
+            serde_json::json!({"type":"assistant", "uuid":format!("{turn}-assistant"),
+            "sessionId":sid, "cwd":cwd, "timestamp":time, "parentUuid":turn,
+            "message":{"id":format!("msg-{turn}"),"role":"assistant","model":"claude", "stop_reason":"end_turn",
+            "content":[{"type":"text","text":"done"}]}})
+        };
+        let append = |record: serde_json::Value| {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&session)
+                .unwrap();
+            writeln!(file, "{record}").unwrap();
+            file.sync_data().unwrap();
+        };
+        append(user_record(
+            "before",
+            Utc::now() - chrono::Duration::seconds(2),
+        ));
+        append(final_record(
+            "before",
+            Utc::now() - chrono::Duration::seconds(1),
+        ));
+        unsafe {
+            std::env::set_var("WAKTERM_AGENT_CLAUDE_DIR", &root);
+        }
+
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        mux.start_agent_event_runtime_epoch().unwrap();
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let pane_id = 16901;
+        let make_pane = |child: Option<LocalProcessInfo>| -> Arc<dyn Pane> {
+            let (mut pane, _) = FakePane::new_detected_counted(
+                pane_id,
+                size,
+                domain.id,
+                "project",
+                "/tmp/launcher",
+                "/usr/bin/supervisor",
+                &["supervisor", "--", "claude"],
+            );
+            let inner = Arc::get_mut(&mut pane).unwrap();
+            if let Some(child) = child {
+                inner
+                    .foreground_process_info
+                    .as_mut()
+                    .unwrap()
+                    .children
+                    .insert(child.pid, child);
+            }
+            inner.submitted_prompts = Some(Mutex::new(Vec::new()));
+            pane
+        };
+        let pane = make_pane(Some(harness.clone()));
+        let tab = Arc::new(Tab::new(&size));
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        let window = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        mux.add_tab_to_window(&tab, window).unwrap();
+        mux.record_agent_output(pane_id);
+        wait_for_main_thread_work(
+            &executor,
+            || mux.get_agent_metadata_for_pane(pane_id).is_some(),
+            "supervised Claude adoption",
+        );
+        let metadata = mux.get_agent_metadata_for_pane(pane_id).unwrap();
+        assert_eq!(metadata.adopted_pid, Some(harness.pid));
+        assert_eq!(metadata.adopted_start_time, Some(harness.start_time));
+        assert_eq!(
+            metadata.launch_supervisor.as_deref(),
+            Some("/usr/bin/supervisor")
+        );
+        assert_eq!(metadata.declared_cwd, cwd);
+        let runtime = mux.agent_runtime_by_pane.read()[&pane_id].clone();
+        assert_eq!(runtime.transport, crate::agent::AgentTransport::ObservedPty);
+        assert_eq!(runtime.status, crate::agent::AgentStatus::Idle);
+        assert_eq!(runtime.session_path.as_deref(), session.to_str());
+        let incarnation = crate::agent_admission::incarnation_id(&metadata).unwrap();
+        assert_eq!(
+            mux.agent_api_catalog().agents[0].incarnation_id.as_deref(),
+            Some(incarnation.as_str())
+        );
+
+        // Explicit adoption uses the same process selection as automatic adoption.
+        let mut explicit = (*metadata).clone();
+        Mux::stamp_adopted_process_identity(
+            &mut explicit,
+            pane.get_foreground_process_info(CachePolicy::FetchImmediate)
+                .as_ref(),
+        );
+        assert_eq!(explicit, *metadata);
+        // Neither an old process record nor a namespace peer can confirm this pane.
+        for (key, bad) in [
+            ("procStart", serde_json::json!("0")),
+            ("pidDomain", serde_json::json!("linux:other:pid:[1]")),
+            ("cwd", serde_json::json!("/tmp/other")),
+        ] {
+            let mut invalid = registry.clone();
+            invalid[key] = bad;
+            std::fs::write(&registry_path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+            let mut observed = runtime.clone();
+            crate::agent::refresh_runtime_from_harness(&mut observed, &metadata);
+            assert_eq!(
+                observed.session_path, None,
+                "{key} must not fall back to a cwd match"
+            );
+        }
+        std::fs::write(&registry_path, serde_json::to_vec(&registry).unwrap()).unwrap();
+        let request = AgentPromptAdmissionRequest {
+            request_id: "supervised-prompt".into(),
+            agent_id: metadata.agent_id.clone(),
+            incarnation_id: incarnation.clone(),
+            prompt: "work".into(),
+            paste: true,
+            return_final: false,
+            timeout_ms: 0,
+        };
+        let candidate = match mux.capture_agent_admission(request.clone()) {
+            AgentAdmissionCapture::Candidate(candidate) => candidate.refresh(),
+            AgentAdmissionCapture::Rejected(receipt) => panic!("{:?}", receipt),
+        };
+        assert!(mux.validate_agent_admission(&candidate).is_none());
+        mux.write_admitted_prompt(&candidate).unwrap();
+        let baseline = mux.agent_event_store.latest_sequence();
+        append(user_record("after", Utc::now()));
+        wait_for_main_thread_work(
+            &executor,
+            || mux.agent_runtime_by_pane.read()[&pane_id].status == crate::agent::AgentStatus::Busy,
+            "Claude busy state",
+        );
+        let busy = match mux.capture_agent_admission(request.clone()) {
+            AgentAdmissionCapture::Candidate(candidate) => candidate.refresh(),
+            AgentAdmissionCapture::Rejected(receipt) => panic!("{:?}", receipt),
+        };
+        assert_eq!(
+            mux.validate_agent_admission(&busy).unwrap().status,
+            AgentAdmissionStatus::Busy
+        );
+        append(final_record("after", Utc::now()));
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_event_store
+                    .read_page(baseline, 100)
+                    .unwrap()
+                    .events
+                    .iter()
+                    .any(|event| {
+                        event.kind == AgentEventKind::TurnFinal
+                            && event.turn_id.as_deref() == Some("after")
+                    })
+            },
+            "durable Claude final",
+        );
+        wait_for_main_thread_work(
+            &executor,
+            || mux.agent_runtime_by_pane.read()[&pane_id].status == crate::agent::AgentStatus::Idle,
+            "Claude idle state",
+        );
+        let events = mux
+            .agent_event_store
+            .read_page(baseline, 100)
+            .unwrap()
+            .events;
+        for kind in [AgentEventKind::AssistantMessage, AgentEventKind::TurnFinal] {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.kind == kind
+                        && event.text.as_deref() == Some("done")
+                        && event.agent_id == metadata.agent_id
+                        && event.incarnation_id == incarnation)
+                    .count(),
+                1
+            );
+        }
+        // Capture at idle, then replace the child while leaving the supervisor alive.
+        let candidate = match mux.capture_agent_admission(request) {
+            AgentAdmissionCapture::Candidate(candidate) => candidate.refresh(),
+            AgentAdmissionCapture::Rejected(receipt) => panic!("{:?}", receipt),
+        };
+        harness.start_time += 1;
+        mux.panes.write().insert(pane_id, make_pane(Some(harness)));
+        assert_eq!(
+            mux.validate_agent_admission(&candidate).unwrap().status,
+            AgentAdmissionStatus::StaleIncarnation
+        );
+        assert!(mux.write_admitted_prompt(&candidate).is_err());
+        mux.record_agent_output(pane_id);
+        assert!(mux.get_agent_metadata_for_pane(pane_id).is_none());
+        assert!(!mux
+            .agent_api_catalog()
+            .agents
+            .iter()
+            .any(|agent| agent.agent_id == metadata.agent_id));
+        mux.panes.write().insert(pane_id, make_pane(None));
+        mux.record_agent_output(pane_id);
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_event_store
+                    .read_page(baseline, 100)
+                    .unwrap()
+                    .events
+                    .iter()
+                    .any(|event| {
+                        event.agent_id == metadata.agent_id
+                            && event.lifecycle.as_deref() == Some("unavailable")
+                    })
+            },
+            "old child unavailable",
+        );
+        assert!(mux
+            .visible_harness_icons_for_tab(tab.tab_id(), None)
+            .is_empty());
+        assert_eq!(
+            pane.downcast_ref::<FakePane>()
+                .unwrap()
+                .submitted_prompts
+                .as_ref()
+                .unwrap()
+                .lock()
+                .as_slice(),
+            &[("work".to_string(), true)]
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
     fn alternate_codex_home_session_is_auto_adopted_and_publishes_later_final() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
@@ -10356,6 +10743,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let mut running = AgentRuntimeSnapshot::new(&metadata);
@@ -10521,6 +10909,7 @@ mod test {
             worktree: None,
             branch: None,
             managed_checkout: false,
+            launch_supervisor: None,
             codex_app_server: None,
         };
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);

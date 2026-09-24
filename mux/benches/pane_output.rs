@@ -69,6 +69,10 @@ impl BenchPane {
             foreground_process_info: Some(procinfo::LocalProcessInfo {
                 pid: 1,
                 ppid: 0,
+                #[cfg(unix)]
+                process_group: 1,
+                #[cfg(unix)]
+                controlling_tty: Some(1),
                 name: "codex".to_string(),
                 executable: std::path::PathBuf::from("/usr/bin/codex"),
                 argv: vec!["codex".to_string()],
@@ -341,6 +345,7 @@ fn sample_agent_metadata(name: &str) -> AgentMetadata {
         worktree: None,
         branch: None,
         managed_checkout: false,
+        launch_supervisor: None,
         codex_app_server: None,
     }
 }
@@ -477,6 +482,7 @@ fn setup_codex_refresh_bench() -> CodexRefreshBench {
         worktree: None,
         branch: None,
         managed_checkout: false,
+        launch_supervisor: None,
         codex_app_server: None,
     };
     let mut runtime = AgentRuntimeSnapshot::new(&metadata);
