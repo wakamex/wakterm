@@ -666,6 +666,7 @@ fn claude_option_values(option: &str) -> ClaudeOptionValues {
         "--agent"
         | "--agents"
         | "--append-system-prompt"
+        | "--append-system-prompt-file"
         | "--autocompact"
         | "--debug-file"
         | "--effort"
@@ -679,11 +680,17 @@ fn claude_option_values(option: &str) -> ClaudeOptionValues {
         | "--name"
         | "--output-format"
         | "--permission-mode"
+        | "--permission-prompts"
+        | "--plugin-url"
         | "--remote-control-name"
+        | "--remote-control-session-name-prefix"
         | "--setting-sources"
         | "--settings"
-        | "--system-prompt" => ClaudeOptionValues::One,
-        "-d" | "--debug" | "--from-pr" | "-w" | "--worktree" => ClaudeOptionValues::Optional,
+        | "--system-prompt"
+        | "--system-prompt-file"
+        | "--system-prompt-snapshot" => ClaudeOptionValues::One,
+        "--cloud" | "-d" | "--debug" | "--from-pr" | "--prompt-suggestions" | "--remote-control"
+        | "-w" | "--worktree" => ClaudeOptionValues::Optional,
         _ => ClaudeOptionValues::None,
     }
 }
@@ -4698,6 +4705,32 @@ mod test {
             native_restore_launch_command(&AgentHarness::Claude, &process).as_deref(),
             Some(
                 "/home/mihai/.local/bin/claude --dangerously-skip-permissions --add-dir /home/mihai --add-dir /code --add-dir .git"
+            )
+        );
+    }
+
+    #[test]
+    fn claude_restore_recipe_keeps_system_prompt_option_values() {
+        let process = proc_info(
+            "claude",
+            "/home/mihai/.local/bin/claude",
+            &[
+                "claude",
+                "--append-system-prompt-file",
+                "/code/inquisition/prompt.md",
+                "--system-prompt-snapshot",
+                "on",
+                "--resume",
+                "00000000-0000-4000-8000-000000000002",
+            ],
+            2,
+            vec![],
+        );
+
+        assert_eq!(
+            native_restore_launch_command(&AgentHarness::Claude, &process).as_deref(),
+            Some(
+                "claude --append-system-prompt-file /code/inquisition/prompt.md --system-prompt-snapshot on"
             )
         );
     }
