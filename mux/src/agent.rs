@@ -1667,8 +1667,8 @@ fn observe_claude_process(
         // the same project. Do not confirm it by transcript timestamps.
         return Ok(None);
     }
-    if let Some((session_id, _)) = owned.as_ref() {
-        if expected_id.is_some_and(|expected| expected != session_id) {
+    if let Some(owned) = owned.as_ref() {
+        if expected_id.is_some_and(|expected| expected != owned.launched_id) {
             return Ok(None);
         }
     }
@@ -1676,8 +1676,70 @@ fn observe_claude_process(
         cwd,
         runtime.session_path.as_deref(),
         runtime.observer_started_at,
-        owned.as_ref().map(|(id, _)| id.as_str()).or(expected_id),
+        owned
+            .as_ref()
+            .map(|owned| owned.current_id.as_str())
+            .or(expected_id),
     )
+}
+
+/// The Claude session a live process owns. Claude keeps the registry's
+/// `sessionId` at the launched session when the TUI continues in a new one,
+/// so `current_id` follows the transcript's `continued-in` records.
+struct OwnedClaudeSession {
+    launched_id: String,
+    current_id: String,
+}
+
+/// Follow `continued-in` records written after the process started. An older
+/// record belongs to a previous process that continued this session.
+fn claude_continued_session(
+    project_dir: &Path,
+    session_id: &str,
+    process_started_at: DateTime<Utc>,
+) -> anyhow::Result<String> {
+    const MAX_CONTINUATIONS: usize = 64;
+    let mut current = session_id.to_string();
+    let mut visited = std::collections::HashSet::from([current.clone()]);
+    for _ in 0..MAX_CONTINUATIONS {
+        let path = project_dir.join(format!("{current}.jsonl"));
+        let mut next = None;
+        for line in BufReader::new(fs::File::open(&path)?).lines() {
+            let line = line?;
+            if !line.contains("\"continued-in\"") {
+                continue;
+            }
+            let Ok(record) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if record.get("type").and_then(Value::as_str) != Some("continued-in")
+                || record.get("sessionId").and_then(Value::as_str) != Some(current.as_str())
+                || parse_record_timestamp(&record).map_or(true, |at| at < process_started_at)
+            {
+                continue;
+            }
+            if let Some(id) = record
+                .get("continuedInSessionId")
+                .and_then(Value::as_str)
+                .filter(|id| is_uuid(id))
+            {
+                next = Some(id.to_string());
+            }
+        }
+        let Some(next) = next.filter(|next| !visited.contains(next)) else {
+            break;
+        };
+        let next_path = project_dir.join(format!("{next}.jsonl"));
+        if !next_path.is_file()
+            || claude_session_id(&next_path)?.as_deref() != Some(next.as_str())
+            || !claude_session_is_interactive(&next_path)?
+        {
+            break;
+        }
+        visited.insert(next.clone());
+        current = next;
+    }
+    Ok(current)
 }
 
 #[cfg(target_os = "linux")]
@@ -1685,13 +1747,13 @@ fn claude_session_owned_by_process(
     cwd: &str,
     pid: Option<u32>,
     start_time: Option<u64>,
-) -> anyhow::Result<Option<(String, PathBuf)>> {
+) -> anyhow::Result<Option<OwnedClaudeSession>> {
     let (Some(pid), Some(start_time)) = (pid, start_time) else {
         return Ok(None);
     };
-    if linux_process_started_at(Some(pid), Some(start_time)).is_none() {
+    let Some(process_started_at) = linux_process_started_at(Some(pid), Some(start_time)) else {
         return Ok(None);
-    }
+    };
     let Some(root) = claude_sessions_root() else {
         return Ok(None);
     };
@@ -1742,16 +1804,22 @@ fn claude_session_owned_by_process(
     else {
         return Ok(None);
     };
-    let path = root
-        .join(cwd.replace('/', "-"))
-        .join(format!("{session_id}.jsonl"));
+    let project_dir = root.join(cwd.replace('/', "-"));
+    let path = project_dir.join(format!("{session_id}.jsonl"));
     if !path.is_file()
         || claude_session_id(&path)?.as_deref() != Some(session_id)
         || !claude_session_is_interactive(&path)?
     {
         return Ok(None);
     }
-    Ok(Some((session_id.to_string(), path)))
+    Ok(Some(OwnedClaudeSession {
+        launched_id: session_id.to_string(),
+        current_id: claude_continued_session(
+            &project_dir,
+            session_id,
+            DateTime::<Utc>::from(process_started_at),
+        )?,
+    }))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1759,7 +1827,7 @@ fn claude_session_owned_by_process(
     _cwd: &str,
     _pid: Option<u32>,
     _start_time: Option<u64>,
-) -> anyhow::Result<Option<(String, PathBuf)>> {
+) -> anyhow::Result<Option<OwnedClaudeSession>> {
     Ok(None)
 }
 
@@ -4987,6 +5055,43 @@ mod test {
         assert_eq!(
             observed.last_turn_completed_at,
             Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 2).unwrap())
+        );
+    }
+
+    #[test]
+    fn claude_continuation_ignores_records_older_than_the_process() {
+        let temp = tempfile::tempdir().unwrap();
+        let a = "00000000-0000-4000-8000-0000000000a1";
+        let b = "00000000-0000-4000-8000-0000000000b2";
+        let continued_at = Utc::now();
+        std::fs::write(
+            temp.path().join(format!("{a}.jsonl")),
+            format!(
+                "{}\n",
+                serde_json::json!({"type": "continued-in", "timestamp": continued_at,
+                    "sessionId": a, "continuedInSessionId": b})
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path().join(format!("{b}.jsonl")),
+            format!(
+                "{}\n",
+                serde_json::json!({"type": "ai-title", "sessionId": b})
+            ),
+        )
+        .unwrap();
+
+        let started_before = continued_at - chrono::Duration::seconds(1);
+        assert_eq!(
+            claude_continued_session(temp.path(), a, started_before).unwrap(),
+            b
+        );
+        // A later `claude --resume A` must stay on A.
+        let started_after = continued_at + chrono::Duration::seconds(1);
+        assert_eq!(
+            claude_continued_session(temp.path(), a, started_after).unwrap(),
+            a
         );
     }
 

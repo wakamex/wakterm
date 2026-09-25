@@ -10222,6 +10222,231 @@ mod test {
     }
 
     #[test]
+    fn claude_in_place_session_continuation_rebinds_pane_events() {
+        use crate::agent_event::AgentEventKind;
+        use std::os::unix::process::CommandExt;
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _config = TestConfigGuard::new_with_auto_adopt("identity", "", true);
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("projects");
+        let cwd = "/tmp/continued-claude";
+        let project = root.join(cwd.replace('/', "-"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(temp.path().join("sessions")).unwrap();
+        struct Cleanup(std::process::Child);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+                unsafe {
+                    std::env::remove_var("WAKTERM_AGENT_CLAUDE_DIR");
+                }
+            }
+        }
+        let child = Cleanup(
+            std::process::Command::new("sleep")
+                .arg0("claude")
+                .arg("60")
+                .spawn()
+                .unwrap(),
+        );
+        let mut harness = LocalProcessInfo::with_root_pid(child.0.id()).unwrap();
+        harness.cwd = PathBuf::from(cwd);
+        harness.process_group = 1;
+        harness.controlling_tty = Some(1);
+        let namespace = std::fs::read_link(format!("/proc/{}/ns/pid", harness.pid)).unwrap();
+        let machine_id = std::fs::read_to_string("/etc/machine-id").unwrap();
+        let session_a = "00000000-0000-4000-8000-0000000000a1";
+        let session_b = "00000000-0000-4000-8000-0000000000b2";
+        let path_a = project.join(format!("{session_a}.jsonl"));
+        let path_b = project.join(format!("{session_b}.jsonl"));
+        // Claude keeps the registry at the launched session after continuing.
+        let registry = serde_json::json!({"pid": harness.pid, "procStart": harness.start_time.to_string(),
+            "pidDomain": format!("linux:{}:{}", machine_id.trim(), namespace.to_string_lossy()), "sessionId": session_a,
+            "cwd": cwd, "kind": "interactive"});
+        std::fs::write(
+            temp.path()
+                .join("sessions")
+                .join(format!("{}.json", harness.pid)),
+            serde_json::to_vec(&registry).unwrap(),
+        )
+        .unwrap();
+        let user_record = |sid: &str, turn: &str, time: DateTime<Utc>| {
+            serde_json::json!({"type":"user", "uuid":turn,
+            "sessionId":sid, "cwd":cwd, "timestamp":time, "message":{"role":"user","content":"work"}})
+        };
+        let final_record = |sid: &str, turn: &str, text: &str, time: DateTime<Utc>| {
+            serde_json::json!({"type":"assistant", "uuid":format!("{turn}-assistant"),
+            "sessionId":sid, "cwd":cwd, "timestamp":time, "parentUuid":turn,
+            "message":{"id":format!("msg-{turn}"),"role":"assistant","model":"claude", "stop_reason":"end_turn",
+            "content":[{"type":"text","text":text}]}})
+        };
+        let append = |path: &Path, record: serde_json::Value| {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap();
+            writeln!(file, "{record}").unwrap();
+            file.sync_data().unwrap();
+        };
+        append(
+            &path_a,
+            user_record(
+                session_a,
+                "a-turn",
+                Utc::now() - chrono::Duration::seconds(2),
+            ),
+        );
+        append(
+            &path_a,
+            final_record(
+                session_a,
+                "a-turn",
+                "from a",
+                Utc::now() - chrono::Duration::seconds(1),
+            ),
+        );
+        unsafe {
+            std::env::set_var("WAKTERM_AGENT_CLAUDE_DIR", &root);
+        }
+
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        mux.start_agent_event_runtime_epoch().unwrap();
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let pane_id = 16902;
+        let (mut pane, _) = FakePane::new_detected_counted(
+            pane_id,
+            size,
+            domain.id,
+            "project",
+            "/tmp/launcher",
+            "/usr/bin/supervisor",
+            &["supervisor", "--", "claude"],
+        );
+        Arc::get_mut(&mut pane)
+            .unwrap()
+            .foreground_process_info
+            .as_mut()
+            .unwrap()
+            .children
+            .insert(harness.pid, harness.clone());
+        let pane: Arc<dyn Pane> = pane;
+        let tab = Arc::new(Tab::new(&size));
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        let window = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        mux.add_tab_to_window(&tab, window).unwrap();
+        mux.record_agent_output(pane_id);
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_runtime_by_pane
+                    .read()
+                    .get(&pane_id)
+                    .and_then(|runtime| runtime.session_path.clone())
+                    .as_deref()
+                    == path_a.to_str()
+            },
+            "Claude bound to session A",
+        );
+        let metadata = mux.get_agent_metadata_for_pane(pane_id).unwrap();
+        let incarnation = crate::agent_admission::incarnation_id(&metadata).unwrap();
+
+        // Continue in B, which starts with a copy of A's history.
+        append(
+            &path_b,
+            user_record(
+                session_b,
+                "a-turn",
+                Utc::now() - chrono::Duration::seconds(2),
+            ),
+        );
+        append(
+            &path_b,
+            final_record(
+                session_b,
+                "a-turn",
+                "from a",
+                Utc::now() - chrono::Duration::seconds(1),
+            ),
+        );
+        append(
+            &path_a,
+            serde_json::json!({"type":"continued-in", "timestamp":Utc::now(),
+                "sessionId":session_a, "continuedInSessionId":session_b}),
+        );
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_runtime_by_pane.read()[&pane_id]
+                    .session_path
+                    .as_deref()
+                    == path_b.to_str()
+            },
+            "Claude rebound to session B",
+        );
+        let baseline = mux.agent_event_store.latest_sequence();
+        append(
+            &path_a,
+            final_record(session_a, "late-a", "late a", Utc::now()),
+        );
+        append(&path_b, user_record(session_b, "b-turn", Utc::now()));
+        append(
+            &path_b,
+            final_record(session_b, "b-turn", "from b", Utc::now()),
+        );
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_event_store
+                    .read_page(baseline, 100)
+                    .unwrap()
+                    .events
+                    .iter()
+                    .any(|event| {
+                        event.kind == AgentEventKind::TurnFinal
+                            && event.turn_id.as_deref() == Some("b-turn")
+                    })
+            },
+            "Claude final from session B",
+        );
+
+        let metadata_after = mux.get_agent_metadata_for_pane(pane_id).unwrap();
+        assert_eq!(metadata_after.agent_id, metadata.agent_id);
+        let events = mux
+            .agent_event_store
+            .read_page(baseline, 100)
+            .unwrap()
+            .events;
+        for kind in [AgentEventKind::AssistantMessage, AgentEventKind::TurnFinal] {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.kind == kind
+                        && event.text.as_deref() == Some("from b")
+                        && event.incarnation_id == incarnation)
+                    .count(),
+                1
+            );
+        }
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event.text.as_deref(), Some("from a" | "late a"))));
+    }
+
+    #[test]
     #[cfg(target_os = "linux")]
     fn supervised_claude_observation_admission_events_and_replacement() {
         use crate::agent_admission::{
