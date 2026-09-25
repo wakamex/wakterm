@@ -689,8 +689,14 @@ fn claude_option_values(option: &str) -> ClaudeOptionValues {
         | "--system-prompt"
         | "--system-prompt-file"
         | "--system-prompt-snapshot" => ClaudeOptionValues::One,
-        "--cloud" | "-d" | "--debug" | "--from-pr" | "--prompt-suggestions" | "--remote-control"
-        | "-w" | "--worktree" => ClaudeOptionValues::Optional,
+        "--cloud"
+        | "-d"
+        | "--debug"
+        | "--from-pr"
+        | "--prompt-suggestions"
+        | "--remote-control"
+        | "-w"
+        | "--worktree" => ClaudeOptionValues::Optional,
         _ => ClaudeOptionValues::None,
     }
 }
