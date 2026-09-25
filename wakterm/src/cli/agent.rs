@@ -3021,6 +3021,9 @@ fn inline_progress_summary(agent: &AgentSnapshot) -> String {
         .unwrap_or_default();
 
     let mut tags = vec![];
+    if let Some(job) = agent.runtime.background_job.as_ref() {
+        tags.push(format!("bg-job:{}", job.job_id));
+    }
     if let Some(mode) = agent.runtime.harness_mode.as_deref() {
         let mode = mode.trim();
         if !mode.is_empty() {
@@ -3367,6 +3370,7 @@ mod test {
                 attention_reason: None,
                 terminal_progress: wakterm_term::Progress::None,
                 observer_error: None,
+                background_job: None,
                 observer_started_at: None,
                 last_harness_refresh_at: None,
             },

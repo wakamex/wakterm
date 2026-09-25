@@ -3167,6 +3167,7 @@ impl Mux {
             runtime.last_turn_completed_at = update.runtime.last_turn_completed_at;
             runtime.observed_turn = update.runtime.observed_turn;
             runtime.observer_error = update.runtime.observer_error;
+            runtime.background_job = update.runtime.background_job;
             runtime.observer_started_at = update.runtime.observer_started_at;
             runtime.last_harness_refresh_at = update.runtime.last_harness_refresh_at;
             finalize_runtime_snapshot(runtime);
@@ -8145,6 +8146,7 @@ mod test {
                 attention_reason: None,
                 terminal_progress: wakterm_term::Progress::None,
                 observer_error: None,
+                background_job: None,
                 observer_started_at: None,
                 last_harness_refresh_at: None,
             },
@@ -8367,6 +8369,7 @@ mod test {
                 attention_reason: None,
                 terminal_progress: wakterm_term::Progress::None,
                 observer_error: None,
+                background_job: None,
                 observer_started_at: None,
                 last_harness_refresh_at: None,
             },
@@ -10256,7 +10259,7 @@ mod test {
         };
         let child = spawn_claude();
         let worker = spawn_claude();
-        let worker = (
+        let mut worker = (
             LocalProcessInfo::with_root_pid(worker.0.id()).unwrap(),
             worker,
         );
@@ -10438,6 +10441,20 @@ mod test {
 
         let metadata_after = mux.get_agent_metadata_for_pane(pane_id).unwrap();
         assert_eq!(metadata_after.agent_id, metadata.agent_id);
+        let job = mux.agent_runtime_by_pane.read()[&pane_id]
+            .background_job
+            .clone()
+            .expect("parked window reports its background job");
+        assert_eq!(
+            (job.job_id.as_str(), job.session_id.as_str()),
+            (job_id, session_b)
+        );
+        assert!(job.hint.contains("`claude stop b2job`"), "{}", job.hint);
+        assert!(
+            job.hint.contains(&format!("--resume {session_b}`.")),
+            "{}",
+            job.hint
+        );
         let events = mux
             .agent_event_store
             .read_page(baseline, 100)
@@ -10519,6 +10536,51 @@ mod test {
                     })
             },
             "Claude final through the attach client",
+        );
+        let job = mux.agent_runtime_by_pane.read()[&pane_id]
+            .background_job
+            .clone()
+            .expect("attach client reports its background job");
+        assert!(
+            job.hint.contains(&format!(
+                "`claude --resume {session_b}` with your usual flags"
+            )),
+            "{}",
+            job.hint
+        );
+
+        // Once the worker dies, the pane reports how to recover instead of
+        // guessing a session.
+        let jobs = temp.path().join("jobs").join(job_id);
+        std::fs::create_dir_all(&jobs).unwrap();
+        std::fs::write(
+            jobs.join("state.json"),
+            serde_json::to_vec(&serde_json::json!({"sessionId": session_b})).unwrap(),
+        )
+        .unwrap();
+        worker.1 .0.kill().unwrap();
+        worker.1 .0.wait().unwrap();
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.record_agent_output(pane_id);
+                let runtime = mux.agent_runtime_by_pane.read()[&pane_id].clone();
+                runtime.background_job.is_none()
+                    && runtime.observer_error.as_deref()
+                        == Some(
+                            format!(
+                                "Claude background job {job_id} is not running. To continue the \
+                                 conversation in this pane, run `claude --resume {session_b}` \
+                                 with your usual flags."
+                            )
+                            .as_str(),
+                        )
+            },
+            "dead background job recovery message",
+        );
+        assert_eq!(
+            mux.agent_runtime_by_pane.read()[&pane_id].status,
+            crate::agent::AgentStatus::Errored
         );
     }
 
@@ -11515,6 +11577,7 @@ mod test {
                 attention_reason: None,
                 terminal_progress: wakterm_term::Progress::None,
                 observer_error: None,
+                background_job: None,
                 observer_started_at: None,
                 last_harness_refresh_at: None,
             },
@@ -11604,6 +11667,7 @@ mod test {
                 attention_reason: None,
                 terminal_progress: wakterm_term::Progress::None,
                 observer_error: None,
+                background_job: None,
                 observer_started_at: None,
                 last_harness_refresh_at: None,
             },

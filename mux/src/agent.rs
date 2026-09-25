@@ -167,10 +167,23 @@ pub struct AgentRuntimeSnapshot {
     pub attention_reason: Option<String>,
     pub terminal_progress: Progress,
     pub observer_error: Option<String>,
+    /// Set while the pane shows a Claude background job that is running
+    /// outside it.
+    #[serde(default)]
+    pub background_job: Option<AgentBackgroundJob>,
     #[serde(skip, default)]
     pub observer_started_at: Option<DateTime<Utc>>,
     #[serde(skip, default)]
     pub last_harness_refresh_at: Option<DateTime<Utc>>,
+}
+
+/// A Claude conversation that a pane shows while Claude's daemon runs it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentBackgroundJob {
+    pub job_id: String,
+    pub session_id: String,
+    /// How to move the conversation back into the pane.
+    pub hint: String,
 }
 
 impl AgentRuntimeSnapshot {
@@ -198,6 +211,7 @@ impl AgentRuntimeSnapshot {
             attention_reason: None,
             terminal_progress: Progress::None,
             observer_error: None,
+            background_job: None,
             observer_started_at: None,
             last_harness_refresh_at: None,
         }
@@ -1147,6 +1161,7 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
     metadata: &AgentMetadata,
     expected_session: Option<&ExpectedAgentSession>,
 ) {
+    runtime.background_job = None;
     if metadata.codex_app_server.is_some() {
         runtime.harness = AgentHarness::Codex;
         runtime.transport = AgentTransport::CodexAppServerTui;
@@ -1211,7 +1226,11 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
                 .filter(|expected| expected.harness == AgentHarness::Agy)
                 .map(|expected| expected.session_id.as_str()),
         ),
-        AgentHarness::Claude => observe_claude_process(cwd, metadata, runtime, expected_session),
+        AgentHarness::Claude => observe_claude_process(cwd, metadata, runtime, expected_session)
+            .map(|(observation, background_job)| {
+                runtime.background_job = background_job;
+                observation
+            }),
         AgentHarness::Codex => observe_codex(
             cwd,
             runtime.session_path.as_deref(),
@@ -1656,7 +1675,7 @@ fn observe_claude_process(
     metadata: &AgentMetadata,
     runtime: &AgentRuntimeSnapshot,
     expected: Option<&ExpectedAgentSession>,
-) -> anyhow::Result<Option<HarnessObservation>> {
+) -> anyhow::Result<(Option<HarnessObservation>, Option<AgentBackgroundJob>)> {
     let expected_id = expected
         .filter(|expected| expected.harness == AgentHarness::Claude)
         .map(|expected| expected.session_id.as_str());
@@ -1667,22 +1686,34 @@ fn observe_claude_process(
         &metadata.launch_cmd,
     )? {
         ClaudeOwnership::Owned(owned) => Some(owned),
-        // The pane shows a background job that is not live. Guessing from
-        // transcript timestamps would bind an unrelated session.
-        ClaudeOwnership::UnresolvedJob => return Ok(None),
+        // Guessing from transcript timestamps would bind an unrelated session.
+        ClaudeOwnership::UnresolvedJob { job_id, session_id } => {
+            anyhow::bail!(
+                "{}",
+                dead_claude_job_message(&metadata.launch_cmd, &job_id, session_id.as_deref())
+            )
+        }
         ClaudeOwnership::Unknown => None,
     };
     if metadata.launch_supervisor.is_some() && owned.is_none() {
         // A sandbox may run several PID 2 processes or a different session in
         // the same project. Do not confirm it by transcript timestamps.
-        return Ok(None);
+        return Ok((None, None));
     }
     if let Some(owned) = owned.as_ref() {
         if expected_id.is_some_and(|expected| expected != owned.launched_id) {
-            return Ok(None);
+            return Ok((None, None));
         }
     }
-    observe_claude(
+    let background_job = owned
+        .as_ref()
+        .and_then(|owned| Some((owned.job_id.clone()?, owned.current_id.clone())))
+        .map(|(job_id, session_id)| AgentBackgroundJob {
+            hint: running_claude_job_message(&metadata.launch_cmd, &job_id, &session_id),
+            job_id,
+            session_id,
+        });
+    let observation = observe_claude(
         cwd,
         runtime.session_path.as_deref(),
         runtime.observer_started_at,
@@ -1690,13 +1721,67 @@ fn observe_claude_process(
             .as_ref()
             .map(|owned| owned.current_id.as_str())
             .or(expected_id),
+    )?;
+    Ok((observation, background_job))
+}
+
+/// Resume a Claude session in the pane with the pane's own launch flags.
+/// An attach client has none, so it gets a plain command.
+fn claude_pane_resume_command(launch_cmd: &str, session_id: &str) -> (String, bool) {
+    let attached = claude_attach_job_id(launch_cmd).is_some();
+    let command = native_resume_command(&AgentHarness::Claude, launch_cmd, session_id)
+        .map(|command| {
+            command
+                .get_argv()
+                .iter()
+                .map(|arg| shell_words::quote(&arg.to_string_lossy()).into_owned())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_else(|_| format!("claude --resume {session_id}"));
+    (command, attached)
+}
+
+fn running_claude_job_message(launch_cmd: &str, job_id: &str, session_id: &str) -> String {
+    let (resume, attached) = claude_pane_resume_command(launch_cmd, session_id);
+    format!(
+        "This conversation runs as Claude background job {job_id}, outside this pane, \
+         and a mux restart will stop it. To move it into this pane, exit Claude, then run \
+         `claude stop {job_id}` and `{resume}`{}.",
+        if attached {
+            " with your usual flags"
+        } else {
+            ""
+        }
+    )
+}
+
+fn dead_claude_job_message(launch_cmd: &str, job_id: &str, session_id: Option<&str>) -> String {
+    let Some(session_id) = session_id else {
+        return format!(
+            "Claude background job {job_id} is not running, and its session could not be found."
+        );
+    };
+    let (resume, attached) = claude_pane_resume_command(launch_cmd, session_id);
+    format!(
+        "Claude background job {job_id} is not running. To continue the conversation in \
+         this pane, run `{resume}`{}.",
+        if attached {
+            " with your usual flags"
+        } else {
+            ""
+        }
     )
 }
 
 enum ClaudeOwnership {
     Owned(OwnedClaudeSession),
     /// The process shows a background job, but no live worker runs it.
-    UnresolvedJob,
+    /// The session comes from the job's saved state when it is known.
+    UnresolvedJob {
+        job_id: String,
+        session_id: Option<String>,
+    },
     Unknown,
 }
 
@@ -1708,6 +1793,18 @@ enum ClaudeOwnership {
 struct OwnedClaudeSession {
     launched_id: String,
     current_id: String,
+    job_id: Option<String>,
+}
+
+/// The session a stopped or dead background job was running.
+fn claude_job_saved_session(jobs_dir: &Path, job_id: &str) -> Option<String> {
+    let bytes = fs::read(jobs_dir.join(job_id).join("state.json")).ok()?;
+    let state: Value = serde_json::from_slice(&bytes).ok()?;
+    state
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|id| is_uuid(id))
+        .map(str::to_string)
 }
 
 fn claude_attach_job_id(launch_cmd: &str) -> Option<String> {
@@ -1839,10 +1936,16 @@ fn claude_session_owned_by_process(
         }
         Err(error) => return Err(error.into()),
     };
-    let current_id = match job_id {
-        Some(job_id) => match claude_background_session(&sessions_dir, &job_id, cwd)? {
+    let current_id = match job_id.as_deref() {
+        Some(job_id) => match claude_background_session(&sessions_dir, job_id, cwd)? {
             Some(session_id) => session_id,
-            None => return Ok(ClaudeOwnership::UnresolvedJob),
+            None => {
+                let jobs_dir = sessions_dir.with_file_name("jobs");
+                return Ok(ClaudeOwnership::UnresolvedJob {
+                    job_id: job_id.to_string(),
+                    session_id: claude_job_saved_session(&jobs_dir, job_id),
+                });
+            }
         },
         None => launched_id.clone().expect("registry session without a job"),
     };
@@ -1858,6 +1961,7 @@ fn claude_session_owned_by_process(
     Ok(ClaudeOwnership::Owned(OwnedClaudeSession {
         launched_id: launched_id.unwrap_or_else(|| current_id.clone()),
         current_id,
+        job_id,
     }))
 }
 
@@ -5095,6 +5199,28 @@ mod test {
         assert_eq!(
             observed.last_turn_completed_at,
             Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 2).unwrap())
+        );
+    }
+
+    #[test]
+    fn claude_background_job_messages_reuse_the_pane_launch_flags() {
+        let session = "bfe3a8cc-8d63-4b2e-b3a5-ec7a2593defa";
+        assert_eq!(
+            running_claude_job_message(
+                "claude --dangerously-skip-permissions --add-dir /code \
+                 --resume d7eba7e2-cc02-4819-b357-27b1140c6238",
+                "bfe3a8cc",
+                session,
+            ),
+            "This conversation runs as Claude background job bfe3a8cc, outside this pane, and \
+             a mux restart will stop it. To move it into this pane, exit Claude, then run \
+             `claude stop bfe3a8cc` and `claude --dangerously-skip-permissions --add-dir /code \
+             --resume bfe3a8cc-8d63-4b2e-b3a5-ec7a2593defa`."
+        );
+        assert_eq!(
+            dead_claude_job_message("claude attach bfe3a8cc", "bfe3a8cc", Some(session)),
+            "Claude background job bfe3a8cc is not running. To continue the conversation in this \
+             pane, run `claude --resume bfe3a8cc-8d63-4b2e-b3a5-ec7a2593defa` with your usual flags."
         );
     }
 
