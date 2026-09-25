@@ -1660,8 +1660,18 @@ fn observe_claude_process(
     let expected_id = expected
         .filter(|expected| expected.harness == AgentHarness::Claude)
         .map(|expected| expected.session_id.as_str());
-    let owned =
-        claude_session_owned_by_process(cwd, metadata.adopted_pid, metadata.adopted_start_time)?;
+    let owned = match claude_session_owned_by_process(
+        cwd,
+        metadata.adopted_pid,
+        metadata.adopted_start_time,
+        &metadata.launch_cmd,
+    )? {
+        ClaudeOwnership::Owned(owned) => Some(owned),
+        // The pane shows a background job that is not live. Guessing from
+        // transcript timestamps would bind an unrelated session.
+        ClaudeOwnership::UnresolvedJob => return Ok(None),
+        ClaudeOwnership::Unknown => None,
+    };
     if metadata.launch_supervisor.is_some() && owned.is_none() {
         // A sandbox may run several PID 2 processes or a different session in
         // the same project. Do not confirm it by transcript timestamps.
@@ -1683,63 +1693,76 @@ fn observe_claude_process(
     )
 }
 
-/// The Claude session a live process owns. Claude keeps the registry's
-/// `sessionId` at the launched session when the TUI continues in a new one,
-/// so `current_id` follows the transcript's `continued-in` records.
+enum ClaudeOwnership {
+    Owned(OwnedClaudeSession),
+    /// The process shows a background job, but no live worker runs it.
+    UnresolvedJob,
+    Unknown,
+}
+
+/// The Claude session a live process shows. A TUI that moves its session to
+/// the background keeps the registry's `sessionId` at the launched session
+/// and records `parkedJobId`; `claude attach <job>` has no registry record.
+/// Either way the conversation belongs to the background worker whose
+/// registry record has that `jobId`.
 struct OwnedClaudeSession {
     launched_id: String,
     current_id: String,
 }
 
-/// Follow `continued-in` records written after the process started. An older
-/// record belongs to a previous process that continued this session.
-fn claude_continued_session(
-    project_dir: &Path,
-    session_id: &str,
-    process_started_at: DateTime<Utc>,
-) -> anyhow::Result<String> {
-    const MAX_CONTINUATIONS: usize = 64;
-    let mut current = session_id.to_string();
-    let mut visited = std::collections::HashSet::from([current.clone()]);
-    for _ in 0..MAX_CONTINUATIONS {
-        let path = project_dir.join(format!("{current}.jsonl"));
-        let mut next = None;
-        for line in BufReader::new(fs::File::open(&path)?).lines() {
-            let line = line?;
-            if !line.contains("\"continued-in\"") {
-                continue;
-            }
-            let Ok(record) = serde_json::from_str::<Value>(&line) else {
-                continue;
-            };
-            if record.get("type").and_then(Value::as_str) != Some("continued-in")
-                || record.get("sessionId").and_then(Value::as_str) != Some(current.as_str())
-                || parse_record_timestamp(&record).map_or(true, |at| at < process_started_at)
-            {
-                continue;
-            }
-            if let Some(id) = record
-                .get("continuedInSessionId")
-                .and_then(Value::as_str)
-                .filter(|id| is_uuid(id))
-            {
-                next = Some(id.to_string());
-            }
-        }
-        let Some(next) = next.filter(|next| !visited.contains(next)) else {
-            break;
-        };
-        let next_path = project_dir.join(format!("{next}.jsonl"));
-        if !next_path.is_file()
-            || claude_session_id(&next_path)?.as_deref() != Some(next.as_str())
-            || !claude_session_is_interactive(&next_path)?
-        {
-            break;
-        }
-        visited.insert(next.clone());
-        current = next;
+fn claude_attach_job_id(launch_cmd: &str) -> Option<String> {
+    let argv = shell_words::split(launch_cmd).ok()?;
+    match argv.as_slice() {
+        [_, command, job_id] if command == "attach" => Some(job_id.clone()),
+        _ => None,
     }
-    Ok(current)
+}
+
+#[cfg(target_os = "linux")]
+fn claude_background_session(
+    sessions_dir: &Path,
+    job_id: &str,
+    cwd: &str,
+) -> anyhow::Result<Option<String>> {
+    let entries = match fs::read_dir(sessions_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(record) = serde_json::from_slice::<Value>(&fs::read(&path)?) else {
+            continue;
+        };
+        if record.get("kind").and_then(Value::as_str) != Some("bg")
+            || record.get("jobId").and_then(Value::as_str) != Some(job_id)
+            || record.get("cwd").and_then(Value::as_str) != Some(cwd)
+        {
+            continue;
+        }
+        let pid = record
+            .get("pid")
+            .and_then(Value::as_u64)
+            .and_then(|pid| <u32 as std::convert::TryFrom<u64>>::try_from(pid).ok());
+        let start = record
+            .get("procStart")
+            .and_then(Value::as_str)
+            .and_then(|start| start.parse::<u64>().ok());
+        if linux_process_started_at(pid, start).is_none() {
+            continue;
+        }
+        if let Some(session_id) = record
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .filter(|id| is_uuid(id))
+        {
+            return Ok(Some(session_id.to_string()));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(target_os = "linux")]
@@ -1747,19 +1770,20 @@ fn claude_session_owned_by_process(
     cwd: &str,
     pid: Option<u32>,
     start_time: Option<u64>,
-) -> anyhow::Result<Option<OwnedClaudeSession>> {
+    launch_cmd: &str,
+) -> anyhow::Result<ClaudeOwnership> {
     let (Some(pid), Some(start_time)) = (pid, start_time) else {
-        return Ok(None);
+        return Ok(ClaudeOwnership::Unknown);
     };
-    let Some(process_started_at) = linux_process_started_at(Some(pid), Some(start_time)) else {
-        return Ok(None);
-    };
+    if linux_process_started_at(Some(pid), Some(start_time)).is_none() {
+        return Ok(ClaudeOwnership::Unknown);
+    }
     let Some(root) = claude_sessions_root() else {
-        return Ok(None);
+        return Ok(ClaudeOwnership::Unknown);
     };
     let status = match fs::read_to_string(format!("/proc/{pid}/status")) {
         Ok(status) => status,
-        Err(_) => return Ok(None),
+        Err(_) => return Ok(ClaudeOwnership::Unknown),
     };
     let Some(namespace_pid) = status
         .lines()
@@ -1767,58 +1791,73 @@ fn claude_session_owned_by_process(
         .and_then(|ids| ids.split_whitespace().last())
         .and_then(|pid| pid.parse::<u32>().ok())
     else {
-        return Ok(None);
+        return Ok(ClaudeOwnership::Unknown);
     };
-    let registry = root
+    let sessions_dir = root
         .parent()
         .context("Claude projects root has no parent")?
-        .join("sessions")
-        .join(format!("{namespace_pid}.json"));
-    let bytes = match fs::read(&registry) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        .join("sessions");
+    let registry = sessions_dir.join(format!("{namespace_pid}.json"));
+    let (launched_id, job_id) = match fs::read(&registry) {
+        Ok(bytes) => {
+            let record: Value = serde_json::from_slice(&bytes)?;
+            let machine_id = fs::read_to_string(format!("/proc/{pid}/root/etc/machine-id"))?;
+            let namespace = fs::read_link(format!("/proc/{pid}/ns/pid"))?;
+            let domain = format!(
+                "linux:{}:{}",
+                machine_id.trim(),
+                namespace.to_string_lossy()
+            );
+            let start = start_time.to_string();
+            if record.get("pid").and_then(Value::as_u64) != Some(u64::from(namespace_pid))
+                || record.get("procStart").and_then(Value::as_str) != Some(start.as_str())
+                || record.get("pidDomain").and_then(Value::as_str) != Some(domain.as_str())
+                || record.get("kind").and_then(Value::as_str) != Some("interactive")
+                || record.get("cwd").and_then(Value::as_str) != Some(cwd)
+                || linux_process_started_at(Some(pid), Some(start_time)).is_none()
+            {
+                return Ok(ClaudeOwnership::Unknown);
+            }
+            let Some(session_id) = record
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .filter(|id| is_uuid(id))
+            else {
+                return Ok(ClaudeOwnership::Unknown);
+            };
+            let parked = record
+                .get("parkedJobId")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            (Some(session_id.to_string()), parked)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let Some(job_id) = claude_attach_job_id(launch_cmd) else {
+                return Ok(ClaudeOwnership::Unknown);
+            };
+            (None, Some(job_id))
+        }
         Err(error) => return Err(error.into()),
     };
-    let record: Value = serde_json::from_slice(&bytes)?;
-    let machine_id = fs::read_to_string(format!("/proc/{pid}/root/etc/machine-id"))?;
-    let namespace = fs::read_link(format!("/proc/{pid}/ns/pid"))?;
-    let domain = format!(
-        "linux:{}:{}",
-        machine_id.trim(),
-        namespace.to_string_lossy()
-    );
-    let start = start_time.to_string();
-    if record.get("pid").and_then(Value::as_u64) != Some(u64::from(namespace_pid))
-        || record.get("procStart").and_then(Value::as_str) != Some(start.as_str())
-        || record.get("pidDomain").and_then(Value::as_str) != Some(domain.as_str())
-        || record.get("kind").and_then(Value::as_str) != Some("interactive")
-        || record.get("cwd").and_then(Value::as_str) != Some(cwd)
-        || linux_process_started_at(Some(pid), Some(start_time)).is_none()
-    {
-        return Ok(None);
-    }
-    let Some(session_id) = record
-        .get("sessionId")
-        .and_then(Value::as_str)
-        .filter(|id| is_uuid(id))
-    else {
-        return Ok(None);
+    let current_id = match job_id {
+        Some(job_id) => match claude_background_session(&sessions_dir, &job_id, cwd)? {
+            Some(session_id) => session_id,
+            None => return Ok(ClaudeOwnership::UnresolvedJob),
+        },
+        None => launched_id.clone().expect("registry session without a job"),
     };
-    let project_dir = root.join(cwd.replace('/', "-"));
-    let path = project_dir.join(format!("{session_id}.jsonl"));
+    let path = root
+        .join(cwd.replace('/', "-"))
+        .join(format!("{current_id}.jsonl"));
     if !path.is_file()
-        || claude_session_id(&path)?.as_deref() != Some(session_id)
+        || claude_session_id(&path)?.as_deref() != Some(current_id.as_str())
         || !claude_session_is_interactive(&path)?
     {
-        return Ok(None);
+        return Ok(ClaudeOwnership::Unknown);
     }
-    Ok(Some(OwnedClaudeSession {
-        launched_id: session_id.to_string(),
-        current_id: claude_continued_session(
-            &project_dir,
-            session_id,
-            DateTime::<Utc>::from(process_started_at),
-        )?,
+    Ok(ClaudeOwnership::Owned(OwnedClaudeSession {
+        launched_id: launched_id.unwrap_or_else(|| current_id.clone()),
+        current_id,
     }))
 }
 
@@ -1827,8 +1866,9 @@ fn claude_session_owned_by_process(
     _cwd: &str,
     _pid: Option<u32>,
     _start_time: Option<u64>,
-) -> anyhow::Result<Option<OwnedClaudeSession>> {
-    Ok(None)
+    _launch_cmd: &str,
+) -> anyhow::Result<ClaudeOwnership> {
+    Ok(ClaudeOwnership::Unknown)
 }
 
 fn observe_claude(
@@ -5055,43 +5095,6 @@ mod test {
         assert_eq!(
             observed.last_turn_completed_at,
             Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 2).unwrap())
-        );
-    }
-
-    #[test]
-    fn claude_continuation_ignores_records_older_than_the_process() {
-        let temp = tempfile::tempdir().unwrap();
-        let a = "00000000-0000-4000-8000-0000000000a1";
-        let b = "00000000-0000-4000-8000-0000000000b2";
-        let continued_at = Utc::now();
-        std::fs::write(
-            temp.path().join(format!("{a}.jsonl")),
-            format!(
-                "{}\n",
-                serde_json::json!({"type": "continued-in", "timestamp": continued_at,
-                    "sessionId": a, "continuedInSessionId": b})
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            temp.path().join(format!("{b}.jsonl")),
-            format!(
-                "{}\n",
-                serde_json::json!({"type": "ai-title", "sessionId": b})
-            ),
-        )
-        .unwrap();
-
-        let started_before = continued_at - chrono::Duration::seconds(1);
-        assert_eq!(
-            claude_continued_session(temp.path(), a, started_before).unwrap(),
-            b
-        );
-        // A later `claude --resume A` must stay on A.
-        let started_after = continued_at + chrono::Duration::seconds(1);
-        assert_eq!(
-            claude_continued_session(temp.path(), a, started_after).unwrap(),
-            a
         );
     }
 

@@ -10222,7 +10222,7 @@ mod test {
     }
 
     #[test]
-    fn claude_in_place_session_continuation_rebinds_pane_events() {
+    fn claude_background_job_rebinds_parked_window_and_attach_client() {
         use crate::agent_event::AgentEventKind;
         use std::os::unix::process::CommandExt;
         let _test_lock = TEST_MUX_LOCK.lock();
@@ -10245,12 +10245,20 @@ mod test {
                 }
             }
         }
-        let child = Cleanup(
-            std::process::Command::new("sleep")
-                .arg0("claude")
-                .arg("60")
-                .spawn()
-                .unwrap(),
+        let spawn_claude = || {
+            Cleanup(
+                std::process::Command::new("sleep")
+                    .arg0("claude")
+                    .arg("60")
+                    .spawn()
+                    .unwrap(),
+            )
+        };
+        let child = spawn_claude();
+        let worker = spawn_claude();
+        let worker = (
+            LocalProcessInfo::with_root_pid(worker.0.id()).unwrap(),
+            worker,
         );
         let mut harness = LocalProcessInfo::with_root_pid(child.0.id()).unwrap();
         harness.cwd = PathBuf::from(cwd);
@@ -10262,17 +10270,18 @@ mod test {
         let session_b = "00000000-0000-4000-8000-0000000000b2";
         let path_a = project.join(format!("{session_a}.jsonl"));
         let path_b = project.join(format!("{session_b}.jsonl"));
-        // Claude keeps the registry at the launched session after continuing.
+        let job_id = "b2job";
         let registry = serde_json::json!({"pid": harness.pid, "procStart": harness.start_time.to_string(),
             "pidDomain": format!("linux:{}:{}", machine_id.trim(), namespace.to_string_lossy()), "sessionId": session_a,
             "cwd": cwd, "kind": "interactive"});
-        std::fs::write(
-            temp.path()
-                .join("sessions")
-                .join(format!("{}.json", harness.pid)),
-            serde_json::to_vec(&registry).unwrap(),
-        )
-        .unwrap();
+        let write_registry = |pid: u32, record: &serde_json::Value| {
+            std::fs::write(
+                temp.path().join("sessions").join(format!("{pid}.json")),
+                serde_json::to_vec(record).unwrap(),
+            )
+            .unwrap();
+        };
+        write_registry(harness.pid, &registry);
         let user_record = |sid: &str, turn: &str, time: DateTime<Utc>| {
             serde_json::json!({"type":"user", "uuid":turn,
             "sessionId":sid, "cwd":cwd, "timestamp":time, "message":{"role":"user","content":"work"}})
@@ -10364,7 +10373,8 @@ mod test {
         let metadata = mux.get_agent_metadata_for_pane(pane_id).unwrap();
         let incarnation = crate::agent_admission::incarnation_id(&metadata).unwrap();
 
-        // Continue in B, which starts with a copy of A's history.
+        // Move the session to a background job forked as B, which starts
+        // with a copy of A's history. The window keeps A as its sessionId.
         append(
             &path_b,
             user_record(
@@ -10382,11 +10392,14 @@ mod test {
                 Utc::now() - chrono::Duration::seconds(1),
             ),
         );
-        append(
-            &path_a,
-            serde_json::json!({"type":"continued-in", "timestamp":Utc::now(),
-                "sessionId":session_a, "continuedInSessionId":session_b}),
+        write_registry(
+            worker.0.pid,
+            &serde_json::json!({"pid": worker.0.pid, "procStart": worker.0.start_time.to_string(),
+                "sessionId": session_b, "cwd": cwd, "kind": "bg", "jobId": job_id}),
         );
+        let mut parked = registry.clone();
+        parked["parkedJobId"] = serde_json::json!(job_id);
+        write_registry(harness.pid, &parked);
         wait_for_main_thread_work(
             &executor,
             || {
@@ -10395,7 +10408,7 @@ mod test {
                     .as_deref()
                     == path_b.to_str()
             },
-            "Claude rebound to session B",
+            "parked window rebound to job session B",
         );
         let baseline = mux.agent_event_store.latest_sequence();
         append(
@@ -10444,6 +10457,69 @@ mod test {
         assert!(!events
             .iter()
             .any(|event| matches!(event.text.as_deref(), Some("from a" | "late a"))));
+
+        // `claude attach <job>` writes no registry record of its own.
+        let attach = spawn_claude();
+        let mut attach_process = LocalProcessInfo::with_root_pid(attach.0.id()).unwrap();
+        attach_process.cwd = PathBuf::from(cwd);
+        attach_process.process_group = 1;
+        attach_process.controlling_tty = Some(1);
+        attach_process.argv = vec!["claude".into(), "attach".into(), job_id.into()];
+        let (mut pane, _) = FakePane::new_detected_counted(
+            pane_id,
+            size,
+            domain.id,
+            "project",
+            "/tmp/launcher",
+            "/usr/bin/supervisor",
+            &["supervisor", "--", "claude"],
+        );
+        Arc::get_mut(&mut pane)
+            .unwrap()
+            .foreground_process_info
+            .as_mut()
+            .unwrap()
+            .children
+            .insert(attach_process.pid, attach_process.clone());
+        mux.panes.write().insert(pane_id, pane);
+        mux.record_agent_output(pane_id);
+        mux.record_agent_output(pane_id);
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.get_agent_metadata_for_pane(pane_id)
+                    .is_some_and(|metadata| metadata.adopted_pid == Some(attach_process.pid))
+                    && mux.agent_runtime_by_pane.read()[&pane_id]
+                        .session_path
+                        .as_deref()
+                        == path_b.to_str()
+            },
+            "attach client bound to job session B",
+        );
+        let attached = mux.get_agent_metadata_for_pane(pane_id).unwrap();
+        let attached_incarnation = crate::agent_admission::incarnation_id(&attached).unwrap();
+        let baseline = mux.agent_event_store.latest_sequence();
+        append(&path_b, user_record(session_b, "c-turn", Utc::now()));
+        append(
+            &path_b,
+            final_record(session_b, "c-turn", "from attach", Utc::now()),
+        );
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_event_store
+                    .read_page(baseline, 100)
+                    .unwrap()
+                    .events
+                    .iter()
+                    .any(|event| {
+                        event.kind == AgentEventKind::TurnFinal
+                            && event.text.as_deref() == Some("from attach")
+                            && event.incarnation_id == attached_incarnation
+                    })
+            },
+            "Claude final through the attach client",
+        );
     }
 
     #[test]
