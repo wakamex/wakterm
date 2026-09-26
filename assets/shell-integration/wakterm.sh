@@ -13,6 +13,7 @@
 # WAKTERM_SHELL_SKIP_CWD - disables OSC 7 cwd setting
 # WAKTERM_SHELL_SKIP_USER_VARS - disable user vars that capture information
 #                                about running programs
+# WAKTERM_SHELL_SKIP_PANE_HISTORY - disables pane-local history
 
 # shellcheck disable=SC2166
 if [ -z "${BASH_VERSION-}" -a -z "${ZSH_NAME-}" ] ; then
@@ -546,6 +547,96 @@ __wakterm_user_vars_preexec() {
   # Tell wakterm the full command that is being run
   __wakterm_set_user_var "WAKTERM_PROG" "$1"
 }
+
+# Pane-local history. Wakterm gives each pane a WAKTERM_PANE_TOKEN that
+# survives mux restarts. The outermost interactive shell in a pane keeps the
+# commands entered in that pane in its own file, so Up recalls this pane's
+# commands first and then the shared history. Commands typed in this shell
+# collect in "<pane>.new" and are merged into both the pane file and the
+# shared HISTFILE when the shell exits; a later shell in the same pane merges
+# the leftovers of one that was killed. Live history sharing is turned off in
+# this shell so other panes' commands do not arrive while it runs.
+__wakterm_pane_history_merge() {
+  # Append a finished shell's commands to the pane and shared history.
+  local new="$1"
+  if [[ -s "$new" ]]; then
+    cat -- "$new" >> "$__wakterm_pane_histfile"
+    if [[ -n "$__wakterm_shared_histfile" ]]; then
+      cat -- "$new" >> "$__wakterm_shared_histfile"
+    fi
+  fi
+  rm -f -- "$new"
+}
+
+__wakterm_pane_history_exit() {
+  if [[ -n "${ZSH_NAME-}" ]]; then
+    fc -AI
+  else
+    history -a
+  fi
+  __wakterm_pane_history_merge "$__wakterm_pane_histfile.new"
+  # Nothing is left for the shell's own exit save to write.
+  HISTFILE=
+}
+
+__wakterm_pane_history_start() {
+  # Run once, at the first prompt, after the shell loaded its shared history.
+  [[ -n "${__wakterm_pane_history_started-}" ]] && return 0
+  __wakterm_pane_history_started=1
+  local dir="${XDG_STATE_HOME:-$HOME/.local/state}/wakterm/pane-history"
+  (umask 077 && mkdir -p -- "$dir") || return 0
+  __wakterm_shared_histfile="${HISTFILE-}"
+  if [[ -n "${ZSH_NAME-}" ]]; then
+    __wakterm_pane_histfile="$dir/$WAKTERM_PANE_TOKEN.zsh"
+  else
+    __wakterm_pane_histfile="$dir/$WAKTERM_PANE_TOKEN.bash"
+  fi
+  __wakterm_pane_history_merge "$__wakterm_pane_histfile.new"
+  if [[ -n "${ZSH_NAME-}" ]]; then
+    setopt no_share_history
+    [[ -o inc_append_history_time ]] || setopt inc_append_history
+    [[ -r "$__wakterm_pane_histfile" ]] && fc -R "$__wakterm_pane_histfile"
+    HISTFILE="$__wakterm_pane_histfile.new"
+    zshexit_functions+=(__wakterm_pane_history_exit)
+  else
+    [[ -r "$__wakterm_pane_histfile" ]] && history -r "$__wakterm_pane_histfile"
+    HISTFILE="$__wakterm_pane_histfile.new"
+    shopt -s histappend
+    if [[ -n "${BLE_VERSION-}" ]]; then
+      blehook PRECMD+=__wakterm_pane_history_save
+    else
+      precmd_functions+=(__wakterm_pane_history_save)
+    fi
+    local previous
+    previous="$(trap -p EXIT)"
+    if [[ -n "$previous" ]]; then
+      previous="${previous#trap -- \'}"
+      previous="${previous%\' EXIT}"
+      # shellcheck disable=SC2064
+      trap "__wakterm_pane_history_exit; $previous" EXIT
+    else
+      trap __wakterm_pane_history_exit EXIT
+    fi
+  fi
+}
+
+__wakterm_pane_history_save() {
+  history -a
+}
+
+# The owner check keeps a nested interactive shell, which inherits the token,
+# from sharing the pane's files with the shell that started it. `exec`
+# replaces the shell without changing its PID, so it keeps ownership.
+if [[ -z "${WAKTERM_SHELL_SKIP_PANE_HISTORY-}" && -z "${WSH_NATIVE_PANE_HISTORY-}" \
+      && "${WAKTERM_PANE_TOKEN-}" =~ ^[0-9a-f-]{36}$ \
+      && ( -z "${WAKTERM_PANE_HISTORY_OWNER-}" || "${WAKTERM_PANE_HISTORY_OWNER-}" == "$$" ) ]]; then
+  export WAKTERM_PANE_HISTORY_OWNER="$$"
+  if [[ -n "${BLE_VERSION-}" ]]; then
+    blehook PRECMD+=__wakterm_pane_history_start
+  else
+    precmd_functions+=(__wakterm_pane_history_start)
+  fi
+fi
 
 # Register the various functions; take care to perform osc7 after
 # the semantic zones as we don't want to perturb the last command

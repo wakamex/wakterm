@@ -35,6 +35,22 @@ can be found below.
 
 [Learn more about OSC 133 Semantic Prompt Escapes](https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md).
 
+## Pane-local history
+
+Wakterm sets `WAKTERM_PANE_TOKEN` in every local pane. It is an opaque identifier for the logical pane: it stays the same when the shell in that pane restarts, is replaced with `exec`, or is restored after the mux server restarts, and a split or new tab gets a new one. Unlike `WAKTERM_PANE`, it is not reused as a numeric index.
+
+When the Bash and Zsh integration script is loaded, it uses the token to keep each pane's command history:
+
+* Up and Down recall the commands entered in this pane first, then the shared history from `HISTFILE`.
+* Commands entered in a shell collect in a pane file while it runs. When the shell exits they are also appended to `HISTFILE`, so the shared history still contains every pane's commands.
+* If a shell is killed before it can exit normally, the next shell started in the same pane merges its commands.
+* Live history sharing (`setopt SHARE_HISTORY`) is turned off in these shells, because it would import other panes' commands while you work.
+* A nested interactive shell started inside the pane uses the shared history as usual.
+
+Pane history is stored in `${XDG_STATE_HOME:-$HOME/.local/state}/wakterm/pane-history/`. Set `WAKTERM_SHELL_SKIP_PANE_HISTORY=1` before sourcing the script to keep the shell's usual history behavior.
+
+Other shells can build the same behavior on `WAKTERM_PANE_TOKEN` by selecting a per-token history file at startup.
+
 ## User Vars
 
 `OSC 1337` provides a means for setting *user vars*, which are somewhat similar
