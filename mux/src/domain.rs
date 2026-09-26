@@ -481,6 +481,9 @@ impl LocalDomain {
         }
         cmd.env("WAKTERM_PANE", pane_id.to_string());
         Mux::get().assign_pane_token(pane_id, &mut cmd);
+        if config.shell_integration {
+            crate::shell_integration::inject(&mut cmd);
+        }
         if let Some(agent) = Mux::get().agent.as_ref() {
             cmd.env("SSH_AUTH_SOCK", agent.path());
         }

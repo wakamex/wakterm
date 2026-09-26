@@ -17,9 +17,10 @@ shell program to emit the escape sequences at the appropriate place.
 You can find some [examples for various shells in the wakterm
 repo](https://github.com/wakamex/wakterm/tree/main/assets/shell-integration).
 
-To use this file to setup shell integration in wakterm with Bash or Zsh, you can
-copy the file to your computer and source it via `. /path/to/file.sh` in your `.bashrc`
-or `.zshrc`, or you can install it at `/etc/profile.d` on most unix systems.
+Wakterm loads its integration automatically into bash, zsh and fish shells started in local panes, without changes to their startup files; see [shell_integration](reference/config/shell_integration.md). Sourcing the file yourself as well is harmless: it installs its hooks once per shell.
+
+To set it up yourself instead, for example on a remote host, copy the file to your computer and source it via `. /path/to/file.sh` in your `.bashrc`
+or `.zshrc`, or install it at `/etc/profile.d` on most unix systems.
 
 Wsh's bundled Zsh emits OSC 7 and OSC 133 natively. When Wsh marks itself as their owner, this script keeps its separate OSC 1337 user variables but skips its prompt, output, and working-directory hooks so each standard sequence has one owner.
 
@@ -49,7 +50,9 @@ When the Bash and Zsh integration script is loaded, it uses the token to keep ea
 
 Pane history is stored in `${XDG_STATE_HOME:-$HOME/.local/state}/wakterm/pane-history/`. Set `WAKTERM_SHELL_SKIP_PANE_HISTORY=1` before sourcing the script to keep the shell's usual history behavior.
 
-Other shells can build the same behavior on `WAKTERM_PANE_TOKEN` by selecting a per-token history file at startup.
+With automatic integration, fish gets the same pane history. A pane's history starts as a copy of the shared history and then uses its own fish history session, and its new commands are appended to the shared history on exit.
+
+Wsh implements pane history natively and marks it with `WSH_NATIVE_PANE_HISTORY=1`, which this script respects. Other shells can build the same behavior on `WAKTERM_PANE_TOKEN` by selecting a per-token history file at startup.
 
 ## User Vars
 

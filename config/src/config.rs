@@ -774,6 +774,11 @@ pub struct Config {
     #[dynamic(default = "default_true")]
     pub automatically_reload_config: bool,
 
+    /// When true, local bash, zsh and fish shells load Wakterm's shell
+    /// integration without changes to their startup files.
+    #[dynamic(default = "default_true")]
+    pub shell_integration: bool,
+
     #[dynamic(default = "default_check_for_updates")]
     pub check_for_updates: bool,
     #[dynamic(

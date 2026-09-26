@@ -38,6 +38,13 @@ if [[ $- != *i* ]] ; then
   return 0
 fi
 
+# Wakterm can load this file automatically, and it may also be sourced from
+# a startup file or /etc/profile.d. Install the hooks only once per shell.
+if [[ -n "${__wakterm_shell_integration_loaded-}" ]] ; then
+  return 0
+fi
+__wakterm_shell_integration_loaded=1
+
 case "$TERM" in
   linux | dumb )
     # Avoid terminals that don't like OSC sequences

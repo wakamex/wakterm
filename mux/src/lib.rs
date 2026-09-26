@@ -67,6 +67,7 @@ pub mod memory_report;
 pub mod pane;
 pub mod renderable;
 pub mod session_persistence;
+pub mod shell_integration;
 pub mod ssh;
 pub mod ssh_agent;
 pub mod tab;

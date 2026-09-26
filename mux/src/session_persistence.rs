@@ -905,7 +905,9 @@ fn restored_harness_then_shell(command: CommandBuilder) -> anyhow::Result<Comman
         "-l".into(),
         "-i".into(),
         "-c".into(),
-        format!("{invocation}; exec \"$0\" -l").into(),
+        // Injected shell integration defines __wakterm_reexec to keep the
+        // login shell that follows the agent integrated.
+        format!("{invocation}; eval \"${{__wakterm_reexec:-exec \\\"\\$0\\\" -l}}\"").into(),
         shell,
     ]))
 }
@@ -1073,7 +1075,7 @@ mod test {
                 "-l".to_string(),
                 "-i".to_string(),
                 "-c".to_string(),
-                format!("{invocation}; exec \"$0\" -l"),
+                format!("{invocation}; eval \"${{__wakterm_reexec:-exec \\\"\\$0\\\" -l}}\""),
                 shell,
             ]]
         }
@@ -1110,7 +1112,21 @@ mod test {
             .collect::<Vec<_>>();
 
         assert_eq!(&argv[..4], &["/usr/bin/zsh", "-l", "-i", "-c"]);
-        assert_eq!(argv[4], "codex 'argument with spaces'; exec \"$0\" -l");
+        assert_eq!(
+            argv[4],
+            "codex 'argument with spaces'; eval \"${__wakterm_reexec:-exec \\\"\\$0\\\" -l}\""
+        );
+        // Without injected integration the wrapper still becomes a plain
+        // login shell.
+        let output = std::process::Command::new("sh")
+            .args([
+                "-c",
+                &argv[4].replace("codex 'argument with spaces'", "true"),
+                "echo",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "-l\n");
         assert_eq!(argv[5], "/usr/bin/zsh");
     }
 
@@ -2568,7 +2584,10 @@ mod test {
         inherited.env("WAKTERM_PANE_HISTORY_OWNER", "4242");
         let mut spawned_from_left = inherited.clone();
         source_mux.assign_pane_token(right.pane_id(), &mut spawned_from_left);
-        assert_eq!(spawned_from_left.get_env("WAKTERM_PANE_HISTORY_OWNER"), None);
+        assert_eq!(
+            spawned_from_left.get_env("WAKTERM_PANE_HISTORY_OWNER"),
+            None
+        );
         let left_token = source_mux.pane_token(left.pane_id()).unwrap();
         let right_token = source_mux.pane_token(right.pane_id()).unwrap();
         assert_ne!(left_token, right_token);
