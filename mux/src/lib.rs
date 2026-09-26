@@ -79,6 +79,10 @@ pub mod window;
 use crate::activity::Activity;
 
 pub const DEFAULT_WORKSPACE: &str = "default";
+/// Environment variable carrying a pane's durable logical identity.
+pub const PANE_TOKEN_ENV: &str = "WAKTERM_PANE_TOKEN";
+/// Private spawn input that restores a saved pane token.
+pub(crate) const RESTORED_PANE_TOKEN_ENV: &str = "WAKTERM_RESTORED_PANE_TOKEN";
 const TAB_RESOURCE_STATUS_TTL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -229,6 +233,9 @@ pub struct Mux {
     agent_observer_tx: Sender<AgentObserverCommand>,
     agent_observer_timer_tx: Sender<PaneId>,
     codex_app_server: codex_app_server::CodexAppServer,
+    /// Durable logical pane identity exported as `WAKTERM_PANE_TOKEN`.
+    /// Unlike the numeric pane ID, it survives session restore.
+    pane_tokens: RwLock<HashMap<PaneId, String>>,
     agent: Option<AgentProxy>,
 }
 
@@ -1319,8 +1326,31 @@ impl Mux {
             agent_observer_tx,
             agent_observer_timer_tx,
             codex_app_server: codex_app_server::CodexAppServer::new(instance_id),
+            pane_tokens: RwLock::new(HashMap::new()),
             agent,
         }
+    }
+
+    pub fn pane_token(&self, pane_id: PaneId) -> Option<String> {
+        self.pane_tokens.read().get(&pane_id).cloned()
+    }
+
+    /// Choose the pane's durable token for a new pane process. A restored
+    /// pane passes its saved token through `RESTORED_PANE_TOKEN_ENV`, which
+    /// is removed so the shell and its children never see or inherit it.
+    pub(crate) fn assign_pane_token(&self, pane_id: PaneId, cmd: &mut CommandBuilder) {
+        let restored = cmd
+            .get_env(RESTORED_PANE_TOKEN_ENV)
+            .and_then(|token| token.to_str())
+            .and_then(|token| uuid::Uuid::parse_str(token).ok());
+        cmd.env_remove(RESTORED_PANE_TOKEN_ENV);
+        let token = self
+            .pane_tokens
+            .write()
+            .entry(pane_id)
+            .or_insert_with(|| restored.unwrap_or_else(uuid::Uuid::new_v4).to_string())
+            .clone();
+        cmd.env(PANE_TOKEN_ENV, token);
     }
 
     pub fn prepare_codex_app_server_launch(
@@ -5459,6 +5489,7 @@ impl Mux {
 
     fn remove_pane_internal(&self, pane_id: PaneId) {
         log::debug!("removing pane {}", pane_id);
+        self.pane_tokens.write().remove(&pane_id);
         let mut changed = false;
         let pane_location = self.resolve_pane_id(pane_id);
         self.invalidate_tab_resource_status();

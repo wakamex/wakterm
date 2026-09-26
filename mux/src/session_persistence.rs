@@ -76,6 +76,9 @@ pub struct SavedSession {
     pub windows: Vec<SavedWindow>,
     #[serde(default)]
     pub agent_restore_intents: Vec<SavedAgentRestoreIntent>,
+    /// Durable pane tokens keyed by the saved pane ID.
+    #[serde(default)]
+    pub pane_tokens: HashMap<PaneId, String>,
 }
 
 const SESSION_VERSION: u32 = 5;
@@ -212,6 +215,7 @@ fn legacy_session_path() -> PathBuf {
 fn build_saved_session(mux: &Mux) -> SavedSession {
     let mut windows = Vec::new();
     let mut agent_restore_intents = Vec::new();
+    let mut pane_tokens = HashMap::new();
     let mut window_ids = mux.iter_windows();
     window_ids.sort();
 
@@ -240,6 +244,7 @@ fn build_saved_session(mux: &Mux) -> SavedSession {
             let mut tree = tab.codec_pane_tree_with_active_pane_id(None);
             mux.annotate_pane_tree_with_agent_metadata(&mut tree);
             collect_agent_restore_intents(mux, &tree, &mut agent_restore_intents);
+            collect_pane_tokens(mux, &tree, &mut pane_tokens);
             // Fix any degenerate splits (< 3 cols/rows on one side)
             // before saving, so the restore produces a usable layout
             heal_tree(&mut tree);
@@ -261,6 +266,22 @@ fn build_saved_session(mux: &Mux) -> SavedSession {
         version: SESSION_VERSION,
         windows,
         agent_restore_intents,
+        pane_tokens,
+    }
+}
+
+fn collect_pane_tokens(mux: &Mux, node: &PaneNode, tokens: &mut HashMap<PaneId, String>) {
+    match node {
+        PaneNode::Empty => {}
+        PaneNode::Leaf(entry) => {
+            if let Some(token) = mux.pane_token(entry.pane_id) {
+                tokens.insert(entry.pane_id, token);
+            }
+        }
+        PaneNode::Split { left, right, .. } => {
+            collect_pane_tokens(mux, left, tokens);
+            collect_pane_tokens(mux, right, tokens);
+        }
     }
 }
 
@@ -543,6 +564,7 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
                 default_size,
                 *window_id,
                 &restore_intents,
+                &session.pane_tokens,
             )
             .await
             {
@@ -597,15 +619,12 @@ async fn restore_tab(
     default_size: wakterm_term::TerminalSize,
     window_id: crate::WindowId,
     restore_intents: &HashMap<PaneId, SavedAgentRestoreIntent>,
+    pane_tokens: &HashMap<PaneId, String>,
 ) -> anyhow::Result<crate::tab::TabId> {
     let first_entry = first_leaf_entry(&saved_tab.tree);
     let first_cwd = first_entry.and_then(|entry| restore_cwd_for_entry(entry, restore_intents));
-    let first_restore = match first_entry {
-        Some(entry) => prepare_restore_for_entry(entry, restore_intents)?,
-        None => None,
-    };
-    let (first_command, first_intent) = match first_restore {
-        Some(prepared) => (Some(prepared.command), Some(prepared.intent)),
+    let (first_command, first_intent) = match first_entry {
+        Some(entry) => restore_command_for_entry(entry, restore_intents, pane_tokens)?,
         None => (None, None),
     };
 
@@ -653,6 +672,7 @@ async fn restore_tab(
         &saved_tab.tree,
         &mut leaf_index,
         restore_intents,
+        pane_tokens,
     )
     .await?;
 
@@ -675,6 +695,7 @@ fn restore_node<'a>(
     node: &'a PaneNode,
     leaf_index: &'a mut usize,
     restore_intents: &'a HashMap<PaneId, SavedAgentRestoreIntent>,
+    pane_tokens: &'a HashMap<PaneId, String>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + 'a>> {
     Box::pin(async move {
         match node {
@@ -690,7 +711,7 @@ fn restore_node<'a>(
             } => {
                 // First, recursively restore the left subtree.
                 // After this, all left-side leaves exist in the tab.
-                restore_node(domain, tab, left, leaf_index, restore_intents).await?;
+                restore_node(domain, tab, left, leaf_index, restore_intents, pane_tokens).await?;
 
                 // The pane we need to split is the one just before
                 // the current leaf_index (the last leaf of the left subtree)
@@ -700,12 +721,8 @@ fn restore_node<'a>(
                 let right_entry = first_leaf_entry(right);
                 let cwd =
                     right_entry.and_then(|entry| restore_cwd_for_entry(entry, restore_intents));
-                let right_restore = match right_entry {
-                    Some(entry) => prepare_restore_for_entry(entry, restore_intents)?,
-                    None => None,
-                };
-                let (right_command, right_intent) = match right_restore {
-                    Some(prepared) => (Some(prepared.command), Some(prepared.intent)),
+                let (right_command, right_intent) = match right_entry {
+                    Some(entry) => restore_command_for_entry(entry, restore_intents, pane_tokens)?,
                     None => (None, None),
                 };
                 let pane = domain
@@ -761,7 +778,7 @@ fn restore_node<'a>(
                 }
 
                 // Now recursively restore the right subtree
-                restore_node(domain, tab, right, leaf_index, restore_intents).await?;
+                restore_node(domain, tab, right, leaf_index, restore_intents, pane_tokens).await?;
             }
         }
         Ok(())
@@ -824,6 +841,25 @@ fn restore_agent_intent(pane_id: PaneId, intent: &SavedAgentRestoreIntent) -> an
         }
     }
     result
+}
+
+/// The spawn command for a restored pane: its agent restore command, if
+/// any, carrying the pane's saved token for `Mux::assign_pane_token`.
+fn restore_command_for_entry(
+    entry: &crate::tab::PaneEntry,
+    restore_intents: &HashMap<PaneId, SavedAgentRestoreIntent>,
+    pane_tokens: &HashMap<PaneId, String>,
+) -> anyhow::Result<(Option<CommandBuilder>, Option<SavedAgentRestoreIntent>)> {
+    let (mut command, intent) = match prepare_restore_for_entry(entry, restore_intents)? {
+        Some(prepared) => (Some(prepared.command), Some(prepared.intent)),
+        None => (None, None),
+    };
+    if let Some(token) = pane_tokens.get(&entry.pane_id) {
+        command
+            .get_or_insert_with(CommandBuilder::new_default_prog)
+            .env(crate::RESTORED_PANE_TOKEN_ENV, token);
+    }
+    Ok((command, intent))
 }
 
 fn prepare_restore_for_entry(
@@ -1190,6 +1226,7 @@ mod test {
             version: SESSION_VERSION,
             windows: Vec::new(),
             agent_restore_intents: Vec::new(),
+            pane_tokens: HashMap::new(),
         })
         .unwrap();
         let second = serde_json::to_vec(&SavedSession {
@@ -1199,6 +1236,7 @@ mod test {
                 tabs: Vec::new(),
             }],
             agent_restore_intents: Vec::new(),
+            pane_tokens: HashMap::new(),
         })
         .unwrap();
         let mut committed = None;
@@ -1221,6 +1259,7 @@ mod test {
             version: SESSION_VERSION,
             windows: Vec::new(),
             agent_restore_intents: Vec::new(),
+            pane_tokens: HashMap::new(),
         };
         std::fs::write(&previous, serde_json::to_vec(&expected).unwrap()).unwrap();
 
@@ -1299,6 +1338,9 @@ mod test {
     struct TestDomain {
         commands: Arc<Mutex<Vec<Vec<String>>>>,
         command_dirs: Arc<Mutex<Vec<Option<String>>>>,
+        /// The pane token environment each spawned process would see, as
+        /// (pane ID, WAKTERM_PANE_TOKEN, restore marker still present).
+        spawned_tokens: Arc<Mutex<Vec<(PaneId, Option<String>, bool)>>>,
     }
 
     impl TestDomain {
@@ -1306,6 +1348,7 @@ mod test {
             Self {
                 commands: Arc::new(Mutex::new(Vec::new())),
                 command_dirs: Arc::new(Mutex::new(Vec::new())),
+                spawned_tokens: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
@@ -1319,7 +1362,7 @@ mod test {
             command_dir: Option<String>,
         ) -> anyhow::Result<Arc<dyn Pane>> {
             self.command_dirs.lock().unwrap().push(command_dir);
-            if let Some(command) = command {
+            if let Some(command) = command.as_ref() {
                 self.commands.lock().unwrap().push(
                     command
                         .get_argv()
@@ -1328,7 +1371,18 @@ mod test {
                         .collect(),
                 );
             }
-            Ok(TestPane::new(alloc_pane_id(), size))
+            // Mirror LocalDomain::build_command.
+            let pane_id = alloc_pane_id();
+            let mut spawned = command.unwrap_or_else(CommandBuilder::new_default_prog);
+            Mux::get().assign_pane_token(pane_id, &mut spawned);
+            self.spawned_tokens.lock().unwrap().push((
+                pane_id,
+                spawned
+                    .get_env(crate::PANE_TOKEN_ENV)
+                    .map(|token| token.to_string_lossy().into_owned()),
+                spawned.get_env(crate::RESTORED_PANE_TOKEN_ENV).is_some(),
+            ));
+            Ok(TestPane::new(pane_id, size))
         }
 
         fn detachable(&self) -> bool {
@@ -2217,9 +2271,16 @@ mod test {
         let domain: Arc<dyn Domain> = recording_domain;
 
         smol::block_on(async {
-            restore_tab(&domain, &saved_tab, tab_size, restored_window, &intents)
-                .await
-                .expect("restore tab");
+            restore_tab(
+                &domain,
+                &saved_tab,
+                tab_size,
+                restored_window,
+                &intents,
+                &HashMap::new(),
+            )
+            .await
+            .expect("restore tab");
         });
 
         assert_eq!(
@@ -2298,9 +2359,16 @@ mod test {
         let domain: Arc<dyn Domain> = recording_domain;
 
         smol::block_on(async {
-            restore_tab(&domain, &saved_tab, tab_size, restored_window, &intents)
-                .await
-                .expect("restore tab");
+            restore_tab(
+                &domain,
+                &saved_tab,
+                tab_size,
+                restored_window,
+                &intents,
+                &HashMap::new(),
+            )
+            .await
+            .expect("restore tab");
         });
 
         assert_eq!(
@@ -2388,9 +2456,16 @@ mod test {
         let domain: Arc<dyn Domain> = recording_domain;
 
         smol::block_on(async {
-            restore_tab(&domain, &saved_tab, tab_size, restored_window, &intents)
-                .await
-                .expect("restore tab");
+            restore_tab(
+                &domain,
+                &saved_tab,
+                tab_size,
+                restored_window,
+                &intents,
+                &HashMap::new(),
+            )
+            .await
+            .expect("restore tab");
         });
 
         assert_eq!(
@@ -2449,12 +2524,93 @@ mod test {
                 tab_size,
                 restored_window,
                 &HashMap::new(),
+                &HashMap::new(),
             )
             .await
             .expect("restore tab");
         });
 
         assert!(restored_mux.list_agents().is_empty());
+    }
+
+    #[test]
+    fn restored_panes_keep_their_pane_tokens() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let source_mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&source_mux);
+        let _guard = crate::TestMuxGuard;
+
+        let window_id = *source_mux.new_empty_window(Some("default".to_string()), None);
+        let tab_size = size(120, 40);
+        let tab = Arc::new(Tab::new(&tab_size));
+        let left = TestPane::new(alloc_pane_id(), tab_size);
+        tab.assign_pane(&left);
+        source_mux.add_tab_and_active_pane(&tab).unwrap();
+        source_mux.add_tab_to_window(&tab, window_id).unwrap();
+        let right = TestPane::new(alloc_pane_id(), size(60, 40));
+        source_mux.add_pane(&right).unwrap();
+        tab.split_and_insert(
+            0,
+            crate::tab::SplitRequest {
+                direction: crate::tab::SplitDirection::Horizontal,
+                target_is_second: true,
+                top_level: false,
+                size: crate::tab::SplitSize::Percent(50),
+            },
+            Arc::clone(&right),
+        )
+        .unwrap();
+        // A process inside a pane inherits its token; a new pane must not.
+        let mut inherited = CommandBuilder::new_default_prog();
+        source_mux.assign_pane_token(left.pane_id(), &mut inherited);
+        let mut spawned_from_left = inherited.clone();
+        source_mux.assign_pane_token(right.pane_id(), &mut spawned_from_left);
+        let left_token = source_mux.pane_token(left.pane_id()).unwrap();
+        let right_token = source_mux.pane_token(right.pane_id()).unwrap();
+        assert_ne!(left_token, right_token);
+
+        let session = build_saved_session(&source_mux);
+        assert_eq!(
+            session.pane_tokens,
+            HashMap::from([
+                (left.pane_id(), left_token.clone()),
+                (right.pane_id(), right_token.clone()),
+            ])
+        );
+        let session: SavedSession =
+            serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
+
+        let restored_mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&restored_mux);
+        let restored_window = *restored_mux.new_empty_window(Some("default".to_string()), None);
+        let domain = TestDomain::new();
+        let spawned_tokens = Arc::clone(&domain.spawned_tokens);
+        let domain: Arc<dyn Domain> = Arc::new(domain);
+        smol::block_on(async {
+            restore_tab(
+                &domain,
+                &session.windows[0].tabs[0],
+                tab_size,
+                restored_window,
+                &HashMap::new(),
+                &session.pane_tokens,
+            )
+            .await
+            .expect("restore tab");
+        });
+
+        let spawned = spawned_tokens.lock().unwrap().clone();
+        assert_eq!(
+            spawned
+                .iter()
+                .map(|(_, token, marker)| (token.clone(), *marker))
+                .collect::<Vec<_>>(),
+            vec![(Some(left_token), false), (Some(right_token), false)]
+        );
+        for (pane_id, token, _) in spawned {
+            assert_eq!(restored_mux.pane_token(pane_id), token);
+        }
     }
 
     #[test]
