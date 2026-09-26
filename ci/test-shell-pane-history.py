@@ -35,13 +35,14 @@ def drain(fd, seconds):
     return out
 
 
-def run(shell, home, token, commands, kill=False):
+def run(shell, home, token, commands, kill=False, extra_env=None):
     env = {
         "HOME": str(home),
         "TERM": "xterm-256color",
         "PATH": os.environ["PATH"],
         "XDG_STATE_HOME": str(home / "state"),
         "WAKTERM_PANE_TOKEN": token,
+        **(extra_env or {}),
     }
     if shell == "zsh":
         env["ZDOTDIR"] = str(home)
@@ -92,11 +93,14 @@ def scenario(shell):
         if shell == "zsh":
             (home / ".zshrc").write_text(
                 f"HISTFILE=$HOME/.zsh_history\nHISTSIZE=1000\nSAVEHIST=1000\n"
-                f"setopt share_history extended_history\nsource {SCRIPT}\n"
+                f"setopt share_history extended_history\n"
+                f"[[ -n $NO_HISTFILE ]] && unset HISTFILE\nsource {SCRIPT}\n"
             )
         else:
             (home / ".bashrc").write_text(
-                f"HISTFILE=$HOME/.bash_history\nHISTSIZE=1000\nHISTFILESIZE=1000\nsource {SCRIPT}\n"
+                f"HISTFILE=$HOME/.bash_history\nHISTSIZE=1000\nHISTFILESIZE=1000\n"
+                f"[[ -n $NO_HISTFILE ]] && unset HISTFILE\n[[ -n $EXPORT_HISTFILE ]] && export HISTFILE\n"
+                f"source {SCRIPT}\n"
             )
         t1, t2 = str(uuid.uuid4()), str(uuid.uuid4())
         pane = lambda token: home / "state/wakterm/pane-history" / f"{token}.{shell}"
@@ -128,6 +132,27 @@ def scenario(shell):
         ok &= check("nested command kept out of pane", "echo nested1" in entries(pane(t1)), False)
         ok &= check("outer command in pane", entries(pane(t1))[-1:], ["echo a5"])
         ok &= check("nested command in shared", "echo nested1" in entries(shared), True)
+
+        # A failed shared append keeps the commands pending.
+        shared.chmod(0o444)
+        run(shell, home, t1, ["echo a6"])
+        shared.chmod(0o644)
+        ok &= check("pending kept after failed append", entries(Path(f"{pane(t1)}.new")), ["echo a6"])
+        run(shell, home, t1, [])
+        ok &= check("pending merged once writable", entries(shared)[-1:], ["echo a6"])
+
+        # Without a HISTFILE the shell saves no history, pane or shared.
+        t3 = str(uuid.uuid4())
+        run(shell, home, t3, ["echo nohist"], extra_env={"NO_HISTFILE": "1"})
+        ok &= check("no pane history without HISTFILE", pane(t3).exists(), False)
+
+        if shell == "bash":
+            # An exported HISTFILE must not hand the pending file to a nested
+            # shell that reads no startup files.
+            run(shell, home, t1, ["bash --norc -i", "echo nested2", "exit", "echo a7"],
+                extra_env={"EXPORT_HISTFILE": "1"})
+            ok &= check("nested --norc command kept out of pane", "echo nested2" in entries(pane(t1)), False)
+            ok &= check("nested --norc command in shared", "echo nested2" in entries(shared), True)
     return ok
 
 

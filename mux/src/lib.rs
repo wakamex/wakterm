@@ -1344,6 +1344,9 @@ impl Mux {
             .and_then(|token| token.to_str())
             .and_then(|token| uuid::Uuid::parse_str(token).ok());
         cmd.env_remove(RESTORED_PANE_TOKEN_ENV);
+        // A pane spawned from inside another pane must not inherit that
+        // pane's history owner, which would disable its own pane history.
+        cmd.env_remove("WAKTERM_PANE_HISTORY_OWNER");
         let token = self
             .pane_tokens
             .write()

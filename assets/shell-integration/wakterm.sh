@@ -556,36 +556,66 @@ __wakterm_user_vars_preexec() {
 # shared HISTFILE when the shell exits; a later shell in the same pane merges
 # the leftovers of one that was killed. Live history sharing is turned off in
 # this shell so other panes' commands do not arrive while it runs.
+__wakterm_pane_history_append() {
+  # Append $1 to $2, holding the shared history's lock the way zsh does.
+  if [[ -z "${ZSH_NAME-}" ]]; then
+    cat -- "$1" >> "$2"
+    return
+  fi
+  if [[ -o hist_fcntl_lock ]] && zmodload zsh/system 2>/dev/null; then
+    local fd
+    zsystem flock -t 10 -f fd -- "$2" || return 1
+    cat -- "$1" >> "$2"
+    local rc=$?
+    zsystem flock -u "$fd"
+    return $rc
+  fi
+  local lock="$2.LOCK" tries=0
+  until ( setopt noclobber; : > "$lock" ) 2>/dev/null; do
+    # zsh itself takes over a lock older than ten seconds.
+    (( ++tries > 100 )) && break
+    sleep 0.1
+  done
+  cat -- "$1" >> "$2"
+  local rc=$?
+  rm -f -- "$lock"
+  return $rc
+}
+
 __wakterm_pane_history_merge() {
-  # Append a finished shell's commands to the pane and shared history.
+  # Append a finished shell's commands to the pane and shared history. Keep
+  # them pending if either append fails; a retry may repeat some entries,
+  # but none are lost.
   local new="$1"
   if [[ -s "$new" ]]; then
-    cat -- "$new" >> "$__wakterm_pane_histfile"
-    if [[ -n "$__wakterm_shared_histfile" ]]; then
-      cat -- "$new" >> "$__wakterm_shared_histfile"
-    fi
+    cat -- "$new" >> "$__wakterm_pane_histfile" || return 1
+    __wakterm_pane_history_append "$new" "$__wakterm_shared_histfile" || return 1
   fi
   rm -f -- "$new"
 }
 
 __wakterm_pane_history_exit() {
   if [[ -n "${ZSH_NAME-}" ]]; then
+    # zsh has already saved to HISTFILE by the time zshexit runs.
     fc -AI
+    __wakterm_pane_history_merge "$__wakterm_pane_histfile.new"
   else
     history -a
+    __wakterm_pane_history_merge "$__wakterm_pane_histfile.new"
+    # bash saves after the EXIT trap; everything is already written.
+    HISTFILE=
   fi
-  __wakterm_pane_history_merge "$__wakterm_pane_histfile.new"
-  # Nothing is left for the shell's own exit save to write.
-  HISTFILE=
 }
 
 __wakterm_pane_history_start() {
   # Run once, at the first prompt, after the shell loaded its shared history.
   [[ -n "${__wakterm_pane_history_started-}" ]] && return 0
   __wakterm_pane_history_started=1
+  # A shell that does not save history keeps doing so.
+  [[ -n "${HISTFILE-}" ]] || return 0
   local dir="${XDG_STATE_HOME:-$HOME/.local/state}/wakterm/pane-history"
   (umask 077 && mkdir -p -- "$dir") || return 0
-  __wakterm_shared_histfile="${HISTFILE-}"
+  __wakterm_shared_histfile="$HISTFILE"
   if [[ -n "${ZSH_NAME-}" ]]; then
     __wakterm_pane_histfile="$dir/$WAKTERM_PANE_TOKEN.zsh"
   else
@@ -593,13 +623,17 @@ __wakterm_pane_history_start() {
   fi
   __wakterm_pane_history_merge "$__wakterm_pane_histfile.new"
   if [[ -n "${ZSH_NAME-}" ]]; then
-    setopt no_share_history
+    # Appending keeps zsh's own saves to the pending file incremental.
+    setopt no_share_history append_history
     [[ -o inc_append_history_time ]] || setopt inc_append_history
     [[ -r "$__wakterm_pane_histfile" ]] && fc -R "$__wakterm_pane_histfile"
+    # Nested shells must not inherit the pending file as their HISTFILE.
+    typeset +x HISTFILE
     HISTFILE="$__wakterm_pane_histfile.new"
     zshexit_functions+=(__wakterm_pane_history_exit)
   else
     [[ -r "$__wakterm_pane_histfile" ]] && history -r "$__wakterm_pane_histfile"
+    export -n HISTFILE
     HISTFILE="$__wakterm_pane_histfile.new"
     shopt -s histappend
     if [[ -n "${BLE_VERSION-}" ]]; then

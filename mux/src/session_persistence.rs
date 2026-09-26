@@ -2561,11 +2561,14 @@ mod test {
             Arc::clone(&right),
         )
         .unwrap();
-        // A process inside a pane inherits its token; a new pane must not.
+        // A process inside a pane inherits its token and history owner; a
+        // new pane must not.
         let mut inherited = CommandBuilder::new_default_prog();
         source_mux.assign_pane_token(left.pane_id(), &mut inherited);
+        inherited.env("WAKTERM_PANE_HISTORY_OWNER", "4242");
         let mut spawned_from_left = inherited.clone();
         source_mux.assign_pane_token(right.pane_id(), &mut spawned_from_left);
+        assert_eq!(spawned_from_left.get_env("WAKTERM_PANE_HISTORY_OWNER"), None);
         let left_token = source_mux.pane_token(left.pane_id()).unwrap();
         let right_token = source_mux.pane_token(right.pane_id()).unwrap();
         assert_ne!(left_token, right_token);
