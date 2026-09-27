@@ -10917,6 +10917,80 @@ mod test {
 
     #[test]
     #[cfg(target_os = "linux")]
+    fn unconfirmed_managed_codex_binding_yields_to_another_harness() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        // An unrelated failing test must not fail this one through a poisoned lock.
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _config = TestConfigGuard::new_with_auto_adopt("attention", "", true);
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        // The restored Codex TUI exited to its login shell, where the user
+        // started Claude.
+        let mut process = LocalProcessInfo::with_root_pid(std::process::id()).unwrap();
+        process.name = "claude".to_string();
+        process.executable = PathBuf::from("/usr/bin/claude");
+        process.argv = vec!["claude".to_string()];
+        process.cwd = PathBuf::from("/tmp/llama-project");
+        let pane: Arc<dyn Pane> = Arc::new(FakePane {
+            id: 158,
+            size: Mutex::new(size),
+            domain_id: domain.id,
+            title: "claude".to_string(),
+            cwd: Some(FakePane::test_file_url("/tmp/llama-project")),
+            foreground_process_name: Some("/usr/bin/claude".to_string()),
+            foreground_process_info: Some(process),
+            foreground_process_root_pid: None,
+            foreground_process_info_calls: None,
+            submitted_prompts: None,
+        });
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let mut managed = sample_agent_metadata("llama-codex");
+        managed.declared_cwd = "/tmp/llama-project".to_string();
+        managed.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "01a072c6-98d6-7cc2-a748-7cff46ae95f3".to_string(),
+            session_id: "01a072c6-98d6-7cc2-a748-7cff46ae95f3".to_string(),
+            executable: "/usr/bin/codex".to_string(),
+            version: "codex-cli test".to_string(),
+            tui_args: vec![],
+        });
+        mux.restore_agent_metadata(pane_id, managed).unwrap();
+
+        mux.record_agent_output(pane_id);
+
+        assert!(
+            mux.get_agent_metadata_for_pane(pane_id)
+                .map_or(true, |metadata| metadata.codex_app_server.is_none()),
+            "the Codex binding outlived its frontend"
+        );
+        assert_eq!(
+            mux.agent_adoption_candidates
+                .read()
+                .get(&pane_id)
+                .map(|candidate| candidate.harness.clone()),
+            Some(AgentHarness::Claude)
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
     fn alternate_codex_home_session_is_auto_adopted_and_publishes_later_final() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();

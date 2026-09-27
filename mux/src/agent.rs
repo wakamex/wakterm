@@ -1047,7 +1047,20 @@ pub fn agent_metadata_matches_process_info(
             if metadata.adopted_pid.is_some() {
                 return false;
             }
-            if harness_tui_process(&AgentHarness::Codex, process).is_some() {
+            // Another harness, or a plain Codex TUI, replaced the managed
+            // frontend before it was confirmed, for example after the
+            // restored TUI exited to its shell.
+            if [
+                AgentHarness::Agy,
+                AgentHarness::Claude,
+                AgentHarness::Codex,
+                AgentHarness::Gemini,
+                AgentHarness::Opencode,
+                AgentHarness::Zcode,
+            ]
+            .iter()
+            .any(|harness| harness_tui_process(harness, process).is_some())
+            {
                 return false;
             }
             // A restored pane starts as a login shell before execing the
