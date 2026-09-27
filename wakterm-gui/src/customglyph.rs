@@ -249,6 +249,7 @@ pub const HARNESS_ICON_GEMINI: char = '\u{e002}';
 pub const HARNESS_ICON_OPENCODE: char = '\u{e003}';
 pub const HARNESS_ICON_AGY: char = '\u{e004}';
 pub const TAB_HIDDEN_ICON: char = '\u{e005}';
+pub const HARNESS_ICON_ZCODE: char = '\u{e006}';
 pub const HARNESS_ICON_STACK_BASE: u32 = 0xe010;
 pub const HARNESS_ICON_STACK_CELL_WIDTH: usize = 3;
 
@@ -281,7 +282,7 @@ fn harness_icon_stack_layout(
 }
 
 pub fn harness_icon_stack_glyph(mask: u8) -> Option<char> {
-    let mask = mask & 0x1f;
+    let mask = mask & 0x3f;
     if mask == 0 {
         None
     } else {
@@ -454,6 +455,100 @@ pub const HARNESS_ICON_AGY_POLY: &[Poly] = &[Poly {
         PolyCommand::LineTo(
             BlockCoord::SquareFrac(47, 120),
             BlockCoord::SquareFrac(8, 120),
+        ),
+        PolyCommand::Close,
+    ],
+    intensity: BlockAlpha::Full,
+    style: PolyStyle::Fill,
+}];
+
+/// ZCode's split Z mark, traced from the official monochrome logo on
+/// zcode.z.ai with vtracer and simplified at RDP 1.0 (docs/tab-bar-agent-icons.md).
+pub const HARNESS_ICON_ZCODE_POLY: &[Poly] = &[Poly {
+    path: &[
+        PolyCommand::MoveTo(
+            BlockCoord::SquareFrac(3, 120),
+            BlockCoord::SquareFrac(9, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(63, 120),
+            BlockCoord::SquareFrac(9, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(62, 120),
+            BlockCoord::SquareFrac(10, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(54, 120),
+            BlockCoord::SquareFrac(22, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(52, 120),
+            BlockCoord::SquareFrac(23, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(50, 120),
+            BlockCoord::SquareFrac(24, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(3, 120),
+            BlockCoord::SquareFrac(24, 120),
+        ),
+        PolyCommand::Close,
+        PolyCommand::MoveTo(
+            BlockCoord::SquareFrac(72, 120),
+            BlockCoord::SquareFrac(9, 120),
+        ),
+        PolyCommand::LineTo(BlockCoord::SquareOne, BlockCoord::SquareFrac(9, 120)),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(119, 120),
+            BlockCoord::SquareFrac(10, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(113, 120),
+            BlockCoord::SquareFrac(19, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(48, 120),
+            BlockCoord::SquareFrac(111, 120),
+        ),
+        PolyCommand::LineTo(BlockCoord::SquareZero, BlockCoord::SquareFrac(111, 120)),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(1, 120),
+            BlockCoord::SquareFrac(110, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(4, 120),
+            BlockCoord::SquareFrac(105, 120),
+        ),
+        PolyCommand::Close,
+        PolyCommand::MoveTo(
+            BlockCoord::SquareFrac(70, 120),
+            BlockCoord::SquareFrac(96, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(117, 120),
+            BlockCoord::SquareFrac(96, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(117, 120),
+            BlockCoord::SquareFrac(111, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(57, 120),
+            BlockCoord::SquareFrac(111, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(58, 120),
+            BlockCoord::SquareFrac(110, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(66, 120),
+            BlockCoord::SquareFrac(98, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(68, 120),
+            BlockCoord::SquareFrac(97, 120),
         ),
         PolyCommand::Close,
     ],
@@ -1858,7 +1953,7 @@ impl BlockKey {
     pub fn from_char(c: char) -> Option<Self> {
         let c = c as u32;
         Some(match c {
-            x if (HARNESS_ICON_STACK_BASE + 1..=HARNESS_ICON_STACK_BASE + 31).contains(&x) => {
+            x if (HARNESS_ICON_STACK_BASE + 1..=HARNESS_ICON_STACK_BASE + 63).contains(&x) => {
                 Self::HarnessIconStack((c - HARNESS_ICON_STACK_BASE) as u8)
             }
             x if x == HARNESS_ICON_AGY as u32 => Self::Poly(HARNESS_ICON_AGY_POLY),
@@ -1866,6 +1961,7 @@ impl BlockKey {
             x if x == HARNESS_ICON_CODEX as u32 => Self::Poly(HARNESS_ICON_CODEX_POLY),
             x if x == HARNESS_ICON_GEMINI as u32 => Self::Poly(HARNESS_ICON_GEMINI_POLY),
             x if x == HARNESS_ICON_OPENCODE as u32 => Self::Poly(HARNESS_ICON_OPENCODE_POLY),
+            x if x == HARNESS_ICON_ZCODE as u32 => Self::Poly(HARNESS_ICON_ZCODE_POLY),
             x if x == TAB_HIDDEN_ICON as u32 => Self::Poly(TAB_HIDDEN_ICON_POLY),
             // [─] BOX DRAWINGS LIGHT HORIZONTAL
             0x2500 => Self::Poly(&[Poly {
@@ -6394,6 +6490,7 @@ impl GlyphCache {
                     (4, HARNESS_ICON_GEMINI_POLY),
                     (8, HARNESS_ICON_OPENCODE_POLY),
                     (16, HARNESS_ICON_AGY_POLY),
+                    (32, HARNESS_ICON_ZCODE_POLY),
                 ];
                 let mut icon_index = 0;
                 for (bit, polys) in icon_polys {
@@ -7298,7 +7395,11 @@ mod test {
             BlockKey::from_char(HARNESS_ICON_AGY),
             Some(BlockKey::Poly(HARNESS_ICON_AGY_POLY))
         );
-        for mask in 1..=31 {
+        assert_eq!(
+            BlockKey::from_char(HARNESS_ICON_ZCODE),
+            Some(BlockKey::Poly(HARNESS_ICON_ZCODE_POLY))
+        );
+        for mask in 1..=63 {
             let glyph = harness_icon_stack_glyph(mask).unwrap();
             assert_eq!(
                 BlockKey::from_char(glyph),

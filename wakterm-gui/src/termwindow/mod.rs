@@ -4,7 +4,7 @@ use super::utilsprites::RenderMetrics;
 use crate::colorease::ColorEase;
 use crate::customglyph::{
     HARNESS_ICON_AGY, HARNESS_ICON_CLAUDE, HARNESS_ICON_CODEX, HARNESS_ICON_GEMINI,
-    HARNESS_ICON_OPENCODE,
+    HARNESS_ICON_OPENCODE, HARNESS_ICON_ZCODE,
 };
 use crate::frontend::{front_end, try_front_end};
 use crate::inputmap::InputMap;
@@ -250,6 +250,7 @@ pub enum TabHarnessIcon {
     Codex,
     Gemini,
     OpenCode,
+    ZCode,
 }
 
 impl TabHarnessIcon {
@@ -260,8 +261,8 @@ impl TabHarnessIcon {
             AgentHarness::Codex => Some(Self::Codex),
             AgentHarness::Gemini => Some(Self::Gemini),
             AgentHarness::Opencode => Some(Self::OpenCode),
-            // No tab icon has been drawn for zcode yet.
-            AgentHarness::Zcode | AgentHarness::Unknown => None,
+            AgentHarness::Zcode => Some(Self::ZCode),
+            AgentHarness::Unknown => None,
         }
     }
 
@@ -272,6 +273,7 @@ impl TabHarnessIcon {
             Self::Codex => "codex",
             Self::Gemini => "gemini",
             Self::OpenCode => "opencode",
+            Self::ZCode => "zcode",
         }
     }
 
@@ -282,6 +284,7 @@ impl TabHarnessIcon {
             Self::Codex => HARNESS_ICON_CODEX,
             Self::Gemini => HARNESS_ICON_GEMINI,
             Self::OpenCode => HARNESS_ICON_OPENCODE,
+            Self::ZCode => HARNESS_ICON_ZCODE,
         }
     }
 }
