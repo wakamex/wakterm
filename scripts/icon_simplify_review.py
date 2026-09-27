@@ -307,12 +307,20 @@ def rasterize_svg(svg_path: Path, png_path: Path, render_size: int) -> None:
     if not magick:
         raise SystemExit("ImageMagick 'magick' command is required.")
 
+    # Rasterize at about twice the output size so a small viewBox is not
+    # upscaled from 72 dpi, and set the background before reading the SVG so
+    # the icon stays transparent.
+    view_box = parse_view_box(ET.parse(svg_path).getroot()).split()
+    extent = max(float(view_box[2]), float(view_box[3]))
+    density = max(72.0, 72.0 * 2 * render_size / extent)
     subprocess.run(
         [
             magick,
-            str(svg_path),
             "-background",
             "none",
+            "-density",
+            f"{density:.0f}",
+            str(svg_path),
             "-trim",
             "+repage",
             "-resize",

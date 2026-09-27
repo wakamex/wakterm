@@ -188,6 +188,18 @@ It is intentionally narrow:
 That matches the problem we actually solved. Trace output is a bootstrap tool,
 not the final asset.
 
+The Agy and ZCode icons were traced from the official monochrome mark with [vtracer](https://github.com/visioncortex/vtracer) (`cargo install vtracer`):
+
+```bash
+magick -background none -density 1200 official.svg -fill '#000000' \
+  -colorize 100 -resize 512x official-512.png
+magick official-512.png -alpha extract -negate mask.png
+vtracer --input mask.png --output traced.svg --colormode bw \
+  --mode polygon --filter_speckle 4 --path_precision 2
+```
+
+Keep only the black `fill="#000000"` paths, apply each path's `translate` transform, and write them as one absolute `M`/`L`/`Z` path with the trace's `width`/`height` as the viewBox; that stripped SVG is the review script's input. Candidates are then reviewed at 12, 16 and 20 px and beside the shipped icons on dark and light tab bars.
+
 Simplification is optional. If the original or traced source already reads best
 at tab size, ship that instead of forcing a lower-complexity version.
 
