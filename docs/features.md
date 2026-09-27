@@ -9,7 +9,7 @@ wakterm keeps the core WezTerm terminal foundation, with extra focus on multiple
 
 - Persistent layouts: auto-save and restore tabs, split trees, working directories, titles, and active-tab selection across mux server restarts and reboot
 - Manual layout snapshots via `wakterm cli save-layout` and `wakterm cli restore-layout`
-- First-class [agent harness panes](agent-lifecycle.md) for Agy, Claude, Codex, Gemini, and OpenCode
+- First-class [agent harness panes](agent-lifecycle.md) for Agy, Claude, Codex, Gemini, OpenCode, and ZCode
 - Automatic agent detection and cached session adoption
 - Exact-session Codex restoration across mux restarts and system reboot
 - Supervised Codex app-server TUI via `wakterm agent launch codex`

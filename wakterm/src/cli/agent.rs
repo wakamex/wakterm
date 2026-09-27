@@ -187,6 +187,7 @@ enum AgentStartHarness {
     Codex,
     Gemini,
     Opencode,
+    Zcode,
 }
 
 impl AgentStartHarness {
@@ -197,6 +198,7 @@ impl AgentStartHarness {
             Self::Codex => AgentHarness::Codex,
             Self::Gemini => AgentHarness::Gemini,
             Self::Opencode => AgentHarness::Opencode,
+            Self::Zcode => AgentHarness::Zcode,
         }
     }
 
@@ -207,6 +209,7 @@ impl AgentStartHarness {
             Self::Codex => "codex",
             Self::Gemini => "gemini",
             Self::Opencode => "opencode",
+            Self::Zcode => "zcode",
         }
     }
 }
@@ -915,9 +918,10 @@ fn resolve_spawn_agent_name(
         AgentHarness::Claude => "claude",
         AgentHarness::Gemini => "gemini",
         AgentHarness::Opencode => "opencode",
+        AgentHarness::Zcode => "zcode",
         AgentHarness::Unknown => {
             bail!(
-                "agent start requires a recognized harness (currently: agy, claude, codex, gemini, opencode)"
+                "agent start requires a recognized harness (currently: agy, claude, codex, gemini, opencode, zcode)"
             )
         }
     };
@@ -2829,6 +2833,7 @@ fn harness_label(harness: &AgentHarness) -> String {
         AgentHarness::Codex => "codex",
         AgentHarness::Gemini => "gemini",
         AgentHarness::Opencode => "opencode",
+        AgentHarness::Zcode => "zcode",
     }
     .to_string()
 }

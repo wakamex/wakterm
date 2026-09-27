@@ -260,7 +260,8 @@ impl TabHarnessIcon {
             AgentHarness::Codex => Some(Self::Codex),
             AgentHarness::Gemini => Some(Self::Gemini),
             AgentHarness::Opencode => Some(Self::OpenCode),
-            AgentHarness::Unknown => None,
+            // No tab icon has been drawn for zcode yet.
+            AgentHarness::Zcode | AgentHarness::Unknown => None,
         }
     }
 

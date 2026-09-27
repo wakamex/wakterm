@@ -67,6 +67,8 @@ pub enum AgentHarness {
     Codex,
     Gemini,
     Opencode,
+    /// Z.ai's ZCode CLI, which stores sessions in OpenCode's schema.
+    Zcode,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -305,6 +307,17 @@ pub fn infer_harness(launch_cmd: &str, foreground_process_name: Option<&str>) ->
         {
             return AgentHarness::Agy;
         }
+        // Match the program name exactly: "zcode" also appears in paths.
+        if candidate.split_whitespace().next().is_some_and(|program| {
+            matches!(
+                Path::new(program)
+                    .file_name()
+                    .and_then(|name| name.to_str()),
+                Some("zcode" | "zcode.cjs")
+            )
+        }) {
+            return AgentHarness::Zcode;
+        }
         if candidate.contains("claude") {
             return AgentHarness::Claude;
         }
@@ -331,6 +344,7 @@ pub fn default_launch_cmd_for_harness(harness: &AgentHarness) -> Option<&'static
         AgentHarness::Codex => Some("codex"),
         AgentHarness::Gemini => Some("gemini"),
         AgentHarness::Opencode => Some("opencode"),
+        AgentHarness::Zcode => Some("zcode"),
         AgentHarness::Unknown => None,
     }
 }
@@ -342,6 +356,7 @@ fn infer_harness_from_process_info(process: &LocalProcessInfo) -> AgentHarness {
         AgentHarness::Codex,
         AgentHarness::Gemini,
         AgentHarness::Opencode,
+        AgentHarness::Zcode,
     ]
     .iter()
     .cloned()
@@ -463,6 +478,7 @@ fn is_harness_tui_program(harness: &AgentHarness, value: &str) -> bool {
                     matches!(name.as_str(), "gemini" | "gemini.exe" | "gemini.js")
                 }
                 AgentHarness::Opencode => matches!(name.as_str(), "opencode" | "opencode.exe"),
+                AgentHarness::Zcode => matches!(name.as_str(), "zcode" | "zcode.cjs"),
                 _ => false,
             }
         })
@@ -794,6 +810,46 @@ fn normalize_claude_argv(argv: &mut Vec<String>) {
     }
 }
 
+/// The session a zcode process was started with through `--resume`.
+fn zcode_resumed_session(harness: &AgentHarness, launch_cmd: &str) -> Option<String> {
+    if harness != &AgentHarness::Zcode {
+        return None;
+    }
+    let argv = shell_words::split(launch_cmd).ok()?;
+    argv.iter()
+        .enumerate()
+        .find_map(|(index, arg)| match arg.strip_prefix("--resume=") {
+            Some(session_id) => Some(session_id.to_string()),
+            None if arg == "--resume" => argv.get(index + 1).cloned(),
+            None => None,
+        })
+        .filter(|session_id| is_zcode_session_id(session_id))
+}
+
+fn is_zcode_session_id(value: &str) -> bool {
+    value.strip_prefix("sess_").is_some_and(is_uuid)
+}
+
+/// Keep a zcode command's options and drop its session selectors and
+/// one-shot prompt options, which would start a new turn on restore.
+fn normalize_zcode_argv(argv: &mut Vec<String>) {
+    let original = std::mem::take(argv);
+    let mut args = original.into_iter();
+    argv.extend(args.next());
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-c" | "--continue" | "--target-replace" => {}
+            "--resume" | "-p" | "--prompt" | "--target" | "--attach" => {
+                args.next();
+            }
+            _ if ["--resume=", "--prompt=", "--target=", "--attach="]
+                .iter()
+                .any(|prefix| arg.starts_with(prefix)) => {}
+            _ => argv.push(arg),
+        }
+    }
+}
+
 fn normalize_agy_argv(argv: &mut Vec<String>) {
     let original = std::mem::take(argv);
     let Some(program) = original.first() else {
@@ -873,6 +929,7 @@ fn remove_native_resume_selector(harness: &AgentHarness, argv: &mut Vec<String>)
                 argv.truncate(resume);
             }
         }
+        AgentHarness::Zcode => normalize_zcode_argv(argv),
         _ => return false,
     }
     true
@@ -1246,10 +1303,16 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
             runtime.session_path.as_deref(),
             runtime.observer_started_at,
         ),
-        AgentHarness::Opencode => observe_opencode(
+        AgentHarness::Opencode | AgentHarness::Zcode => observe_opencode(
+            &observing_harness,
             cwd,
             runtime.session_path.as_deref(),
             runtime.observer_started_at,
+            expected_session
+                .filter(|expected| expected.harness == observing_harness)
+                .map(|expected| expected.session_id.clone())
+                .or_else(|| zcode_resumed_session(&observing_harness, &metadata.launch_cmd))
+                .as_deref(),
         ),
         AgentHarness::Unknown => Ok(None),
     };
@@ -1359,9 +1422,11 @@ pub fn pending_observer_detail(
         AgentHarness::Gemini => describe_pending_gemini_observer(cwd, updated_after)
             .ok()
             .flatten(),
-        AgentHarness::Opencode => describe_pending_opencode_observer(cwd, updated_after)
-            .ok()
-            .flatten(),
+        AgentHarness::Opencode | AgentHarness::Zcode => {
+            describe_pending_opencode_observer(&runtime.harness, cwd, updated_after)
+                .ok()
+                .flatten()
+        }
         AgentHarness::Unknown => None,
     }
 }
@@ -2270,11 +2335,13 @@ fn observe_gemini(
 }
 
 fn observe_opencode(
+    harness: &AgentHarness,
     cwd: &str,
     preferred_session: Option<&str>,
     updated_after: Option<DateTime<Utc>>,
+    exact_session: Option<&str>,
 ) -> anyhow::Result<Option<HarnessObservation>> {
-    let Some(db_path) = opencode_db_path() else {
+    let Some(db_path) = opencode_schema_db_path(harness) else {
         return Ok(None);
     };
     if !db_path.is_file() {
@@ -2284,6 +2351,12 @@ fn observe_opencode(
     let connection =
         Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     connection.busy_timeout(std::time::Duration::from_secs(2))?;
+
+    // A session named on the command line or by restore is exact; the
+    // directory and recency selection below is only a fallback.
+    if let Some(session_id) = exact_session {
+        return read_last_opencode_observation(&connection, &db_path, session_id, None);
+    }
 
     if let Some(preferred_session) = preferred_session {
         if let Some((preferred_db_path, preferred_session_id)) =
@@ -2463,16 +2536,18 @@ fn describe_pending_gemini_observer(
 }
 
 fn describe_pending_opencode_observer(
+    harness: &AgentHarness,
     cwd: &str,
     updated_after: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Option<String>> {
-    let Some(db_path) = opencode_db_path() else {
+    let Some(db_path) = opencode_schema_db_path(harness) else {
         return Ok(None);
     };
+    let name = default_launch_cmd_for_harness(harness).unwrap_or("agent");
     if !db_path.is_file() {
-        return Ok(Some(
-            "opencode session database has not appeared yet".to_string(),
-        ));
+        return Ok(Some(format!(
+            "{name} session database has not appeared yet"
+        )));
     }
 
     let connection =
@@ -2483,11 +2558,11 @@ fn describe_pending_opencode_observer(
     let has_session = select_opencode_session(&connection, cwd, None)?.is_some();
 
     Ok(Some(if has_recent_session {
-        "opencode session exists but observer has not attached yet".to_string()
+        format!("{name} session exists but observer has not attached yet")
     } else if has_session {
-        "opencode session exists but no new turn appeared yet".to_string()
+        format!("{name} session exists but no new turn appeared yet")
     } else {
-        "opencode session has not appeared yet".to_string()
+        format!("{name} session has not appeared yet")
     }))
 }
 
@@ -2513,6 +2588,23 @@ fn gemini_root() -> Option<PathBuf> {
     std::env::var_os("WAKTERM_AGENT_GEMINI_DIR")
         .map(PathBuf::from)
         .or_else(|| home_dir().map(|home| home.join(".gemini")))
+}
+
+/// The session database for a harness that uses OpenCode's schema.
+fn opencode_schema_db_path(harness: &AgentHarness) -> Option<PathBuf> {
+    match harness {
+        AgentHarness::Opencode => opencode_db_path(),
+        AgentHarness::Zcode => zcode_db_path(),
+        _ => None,
+    }
+}
+
+fn zcode_db_path() -> Option<PathBuf> {
+    std::env::var_os("WAKTERM_AGENT_ZCODE_DB")
+        .map(PathBuf::from)
+        .or_else(|| {
+            home_dir().map(|home| home.join(".zcode").join("cli").join("db").join("db.sqlite"))
+        })
 }
 
 fn opencode_db_path() -> Option<PathBuf> {
@@ -2544,6 +2636,12 @@ pub fn native_resume_command(
             harness
         );
     }
+    if harness == &AgentHarness::Zcode {
+        anyhow::ensure!(
+            is_zcode_session_id(session_id.trim()),
+            "zcode restore requires an exact sess_ session ID"
+        );
+    }
     let mut argv = shell_words::split(launch_cmd).context("parsing agent launch command")?;
     anyhow::ensure!(!argv.is_empty(), "agent launch command must not be empty");
     anyhow::ensure!(
@@ -2559,7 +2657,7 @@ pub fn native_resume_command(
     argv.push(
         match harness {
             AgentHarness::Agy => "--conversation",
-            AgentHarness::Claude => "--resume",
+            AgentHarness::Claude | AgentHarness::Zcode => "--resume",
             AgentHarness::Codex => "resume",
             _ => unreachable!(),
         }
@@ -2597,9 +2695,8 @@ pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> V
                 project_dirs
             }
         }),
-        AgentHarness::Opencode => {
-            opencode_db_path().and_then(|path| path.parent().map(|path| vec![path.to_path_buf()]))
-        }
+        AgentHarness::Opencode | AgentHarness::Zcode => opencode_schema_db_path(harness)
+            .and_then(|path| path.parent().map(|path| vec![path.to_path_buf()])),
         AgentHarness::Unknown => None,
     };
 
@@ -2615,7 +2712,7 @@ pub(crate) fn agent_observer_artifact_paths(
     session_path: &str,
 ) -> Vec<PathBuf> {
     match harness {
-        AgentHarness::Opencode => parse_opencode_session_path(session_path)
+        AgentHarness::Opencode | AgentHarness::Zcode => parse_opencode_session_path(session_path)
             .map(|(path, _)| {
                 let path = path.to_string_lossy();
                 ["", "-wal", "-shm", "-journal"]
@@ -2737,6 +2834,11 @@ pub fn restorable_session_id(
             .map(ToOwned::to_owned)),
         AgentHarness::Claude => claude_session_id(path),
         AgentHarness::Codex => codex_session_id(path),
+        AgentHarness::Zcode => Ok(path
+            .to_str()
+            .and_then(parse_opencode_session_path)
+            .map(|(_, session_id)| session_id)
+            .filter(|session_id| is_zcode_session_id(session_id))),
         _ => Ok(None),
     }
 }
@@ -3293,6 +3395,7 @@ fn read_last_opencode_observation(
 
     let mut last_user_at = None;
     let mut last_assistant_at = None;
+    let mut failed = false;
     let mut message_stmt = connection.prepare(
         "SELECT time_created, data \
          FROM message \
@@ -3311,8 +3414,18 @@ fn read_last_opencode_observation(
         };
         let timestamp = parse_unix_millis(time_created);
         match role {
-            "user" if last_user_at.is_none() => last_user_at = timestamp,
-            "assistant" if last_assistant_at.is_none() => last_assistant_at = timestamp,
+            // Notifications and reminders the harness injects continue the
+            // current turn rather than starting one.
+            "user"
+                if last_user_at.is_none()
+                    && !crate::agent_event::opencode_runtime_message(&message) =>
+            {
+                last_user_at = timestamp
+            }
+            "assistant" if last_assistant_at.is_none() => {
+                last_assistant_at = timestamp;
+                failed = message.get("error").is_some();
+            }
             _ => {}
         }
         if last_user_at.is_some() && last_assistant_at.is_some() {
@@ -3358,7 +3471,7 @@ fn read_last_opencode_observation(
         session_path: Some(encode_opencode_session_path(db_path, session_id)),
         progress_summary: summary,
         harness_mode: None,
-        turn_phase: None,
+        turn_phase: failed.then(|| "failed".to_string()),
         updated_at: parse_unix_millis(updated_millis),
         turn_state,
         last_turn_completed_at,
@@ -6338,9 +6451,10 @@ mod test {
         drop(connection);
 
         set_env_path("WAKTERM_AGENT_OPENCODE_DB", &db_path);
-        let observed = observe_opencode("/tmp/project-j", None, None)
-            .unwrap()
-            .unwrap();
+        let observed =
+            observe_opencode(&AgentHarness::Opencode, "/tmp/project-j", None, None, None)
+                .unwrap()
+                .unwrap();
         remove_env_var("WAKTERM_AGENT_OPENCODE_DB");
 
         assert_eq!(observed.progress_summary.as_deref(), Some("all good"));
@@ -6357,6 +6471,170 @@ mod test {
             parse_opencode_session_path(observed.session_path.as_deref().unwrap()).unwrap();
         assert_eq!(session_db_path, db_path);
         assert_eq!(session_id, "session-1");
+    }
+
+    #[test]
+    fn detects_zcode_by_program_name_only() {
+        assert_eq!(infer_harness("zcode", None), AgentHarness::Zcode);
+        assert_eq!(
+            infer_harness(
+                "/home/u/.local/share/zcode-cli/versions/v/zcode.cjs --resume sess_x",
+                None
+            ),
+            AgentHarness::Zcode
+        );
+        assert_eq!(infer_harness("", Some("zcode")), AgentHarness::Zcode);
+        assert_eq!(
+            infer_harness("codex --cd /code/zcode", None),
+            AgentHarness::Codex
+        );
+        assert_eq!(
+            infer_harness("vim /code/zcode/notes", None),
+            AgentHarness::Unknown
+        );
+    }
+
+    #[test]
+    fn zcode_restore_resumes_the_exact_session_with_the_panes_options() {
+        let session = "sess_64d771f3-373b-4147-9529-0f35c720bfc8";
+        let command = native_resume_command(
+            &AgentHarness::Zcode,
+            "zcode --mode yolo --resume sess_00000000-0000-4000-8000-000000000001 -p 'do it' -c",
+            session,
+        )
+        .unwrap();
+        assert_eq!(
+            command
+                .get_argv()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["zcode", "--mode", "yolo", "--resume", session]
+        );
+        assert!(native_resume_command(&AgentHarness::Zcode, "zcode", "not-a-session").is_err());
+        assert_eq!(
+            zcode_resumed_session(&AgentHarness::Zcode, &format!("zcode --resume={session}")),
+            Some(session.to_string())
+        );
+        assert_eq!(zcode_resumed_session(&AgentHarness::Zcode, "zcode"), None);
+        let url = format!("opencode://session?db=/tmp/db.sqlite&id={session}");
+        assert_eq!(
+            restorable_session_id(&AgentHarness::Zcode, Path::new(&url)).unwrap(),
+            Some(session.to_string())
+        );
+    }
+
+    #[test]
+    fn zcode_observes_the_resumed_session_over_a_newer_one() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("db.sqlite");
+        let connection = create_opencode_test_db(&db_path);
+        for (session, updated, text) in [
+            (
+                "sess_00000000-0000-4000-8000-00000000000a",
+                1_000_i64,
+                "resumed",
+            ),
+            (
+                "sess_00000000-0000-4000-8000-00000000000b",
+                2_000_i64,
+                "newer",
+            ),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO session (id, directory, time_updated) VALUES (?1, ?2, ?3)",
+                    params![session, "/tmp/zcode-project", updated],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+                    params![format!("m-{session}"), session, updated, r#"{"role":"assistant"}"#],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        format!("p-{session}"),
+                        format!("m-{session}"),
+                        session,
+                        updated,
+                        format!(r#"{{"type":"text","text":"{text}"}}"#)
+                    ],
+                )
+                .unwrap();
+        }
+        drop(connection);
+
+        set_env_path("WAKTERM_AGENT_ZCODE_DB", &db_path);
+        let by_directory =
+            observe_opencode(&AgentHarness::Zcode, "/tmp/zcode-project", None, None, None)
+                .unwrap()
+                .unwrap();
+        let resumed = observe_opencode(
+            &AgentHarness::Zcode,
+            "/tmp/zcode-project",
+            None,
+            None,
+            Some("sess_00000000-0000-4000-8000-00000000000a"),
+        )
+        .unwrap()
+        .unwrap();
+        remove_env_var("WAKTERM_AGENT_ZCODE_DB");
+
+        assert_eq!(by_directory.progress_summary.as_deref(), Some("newer"));
+        assert_eq!(resumed.progress_summary.as_deref(), Some("resumed"));
+        let (session_db, session_id) =
+            parse_opencode_session_path(resumed.session_path.as_deref().unwrap()).unwrap();
+        assert_eq!(session_db, db_path);
+        assert_eq!(session_id, "sess_00000000-0000-4000-8000-00000000000a");
+    }
+
+    /// Runs against a copy of a real ZCode database, whose schema belongs to
+    /// ZCode: WAKTERM_TEST_ZCODE_DB=~/.zcode/cli/db/db.sqlite.
+    #[test]
+    #[ignore = "requires WAKTERM_TEST_ZCODE_DB pointing to a real ZCode database"]
+    fn zcode_real_database_observation() {
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let source = PathBuf::from(std::env::var_os("WAKTERM_TEST_ZCODE_DB").unwrap());
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("db.sqlite");
+        // VACUUM INTO takes a consistent copy that includes the WAL.
+        Connection::open_with_flags(&source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap()
+            .execute("VACUUM INTO ?1", params![db_path.to_string_lossy()])
+            .unwrap();
+        let (session, directory): (String, String) = Connection::open(&db_path)
+            .unwrap()
+            .query_row(
+                "SELECT id, directory FROM session ORDER BY time_updated DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        set_env_path("WAKTERM_AGENT_ZCODE_DB", &db_path);
+        let observed =
+            observe_opencode(&AgentHarness::Zcode, &directory, None, None, Some(&session))
+                .unwrap()
+                .unwrap();
+        remove_env_var("WAKTERM_AGENT_ZCODE_DB");
+
+        let session_path = observed.session_path.unwrap();
+        assert_eq!(
+            restorable_session_id(&AgentHarness::Zcode, Path::new(&session_path)).unwrap(),
+            Some(session.clone())
+        );
+        eprintln!(
+            "session {session} in {directory}: {:?}, summary {:?}",
+            observed.turn_state,
+            observed
+                .progress_summary
+                .map(|text| text.chars().take(80).collect::<String>())
+        );
     }
 
     #[test]

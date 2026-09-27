@@ -936,7 +936,10 @@ fn prepare_agent_restore(
         anyhow::bail!("automatic restore cannot reconstruct launch supervisor {supervisor}");
     }
     let harness = intent.harness();
-    if matches!(harness, AgentHarness::Agy | AgentHarness::Claude) {
+    if matches!(
+        harness,
+        AgentHarness::Agy | AgentHarness::Claude | AgentHarness::Zcode
+    ) {
         return Ok(PreparedAgentRestore {
             command: native_resume_command(
                 &harness,

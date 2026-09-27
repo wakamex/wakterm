@@ -2,7 +2,7 @@
 
 The `agent` subcommand starts, observes, and interacts with AI coding agents and harness panes.
 
-Supported harnesses include Agy, Claude, Codex, Gemini, and OpenCode.
+Supported harnesses include Agy, Claude, Codex, Gemini, OpenCode, and ZCode.
 
 ## Overview of agent subcommands
 

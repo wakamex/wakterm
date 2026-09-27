@@ -1125,7 +1125,7 @@ fn project_provider_events(
         AgentHarness::Codex => project_codex(Path::new(session_path), cursor),
         AgentHarness::Claude => project_claude(Path::new(session_path), cursor),
         AgentHarness::Gemini => project_gemini(Path::new(session_path), cursor),
-        AgentHarness::Opencode => project_opencode(session_path, cursor),
+        AgentHarness::Opencode | AgentHarness::Zcode => project_opencode(session_path, cursor),
         AgentHarness::Unknown => bail!("unknown harness has no provider event projection"),
     }
 }
@@ -2070,7 +2070,9 @@ fn project_opencode(
         for row in rows {
             let (rowid, message_id, time_created, data) = row?;
             let message: Value = serde_json::from_str(&data)?;
-            if message.get("role").and_then(Value::as_str) == Some("user") {
+            if message.get("role").and_then(Value::as_str) == Some("user")
+                && !opencode_runtime_message(&message)
+            {
                 let timestamp =
                     DateTime::from_timestamp_millis(time_created).unwrap_or_else(Utc::now);
                 let mut started = PendingEvent::new(
@@ -2158,7 +2160,8 @@ fn project_opencode(
              FROM message m
              WHERE m.session_id = ?1 AND m.rowid > ?2
                AND json_extract(m.data, '$.role') = 'assistant'
-               AND json_extract(m.data, '$.finish') = 'stop'
+               AND (json_extract(m.data, '$.finish') = 'stop'
+                    OR json_extract(m.data, '$.error') IS NOT NULL)
              ORDER BY m.rowid",
         )?;
         let rows = stmt.query_map(params![source_id, cursor.last_final_message_rowid], |row| {
@@ -2191,6 +2194,23 @@ fn project_opencode(
                 .unwrap_or_else(|| {
                     DateTime::from_timestamp_millis(time_created).unwrap_or_else(Utc::now)
                 });
+            if let Some(error) = message.get("error") {
+                // A provider failure ends the step without a final answer.
+                let detail = error
+                    .pointer("/data/message")
+                    .or_else(|| error.get("message"))
+                    .or_else(|| error.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("OpenCode reported a provider failure");
+                events.push(observer_failure(
+                    format!("opencode:{source_id}:{message_id}:provider-failure"),
+                    timestamp,
+                    Some(turn_id.to_string()),
+                    detail,
+                ));
+                cursor.last_final_message_rowid = rowid;
+                continue;
+            }
             let mut final_event = PendingEvent::new(
                 format!("opencode:{source_id}:{message_id}:final"),
                 AgentEventKind::TurnFinal,
@@ -2219,6 +2239,13 @@ fn project_opencode(
     })
 }
 
+/// A user-role message the harness injected itself, such as ZCode's task
+/// notifications and reminders; it continues the current turn.
+pub(crate) fn opencode_runtime_message(message: &Value) -> bool {
+    message.get("synthetic").and_then(Value::as_bool) == Some(true)
+        || message.pointer("/semantics/origin").and_then(Value::as_str) == Some("agent_runtime")
+}
+
 fn opencode_maxima(
     conn: &Connection,
     session_id: &str,
@@ -2242,7 +2269,8 @@ fn opencode_maxima(
     let final_message = conn.query_row(
         "SELECT COALESCE(MAX(rowid), 0) FROM message
          WHERE session_id = ?1 AND json_extract(data, '$.role') = 'assistant'
-           AND json_extract(data, '$.finish') = 'stop'",
+           AND (json_extract(data, '$.finish') = 'stop'
+                OR json_extract(data, '$.error') IS NOT NULL)",
         params![session_id],
         |row| row.get(0),
     )?;
@@ -2284,6 +2312,66 @@ fn opencode_checkpoint_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Projects the complete message history of the newest session in a
+    /// copy of a real ZCode database, whose schema belongs to ZCode:
+    /// WAKTERM_TEST_ZCODE_DB=~/.zcode/cli/db/db.sqlite.
+    #[test]
+    #[ignore = "requires WAKTERM_TEST_ZCODE_DB pointing to a real ZCode database"]
+    fn zcode_real_database_events() {
+        let source = std::path::PathBuf::from(std::env::var_os("WAKTERM_TEST_ZCODE_DB").unwrap());
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("db.sqlite");
+        Connection::open_with_flags(&source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap()
+            .execute("VACUUM INTO ?1", [db_path.to_string_lossy()])
+            .unwrap();
+        let session: String = Connection::open(&db_path)
+            .unwrap()
+            .query_row(
+                "SELECT id FROM session ORDER BY time_updated DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let session_path = format!("opencode://session?db={}&id={session}", db_path.display());
+        let from_start = ProviderCursor::Opencode(OpencodeCursor {
+            source_id: session.clone(),
+            last_message_rowid: 0,
+            last_message_id: None,
+            last_part_rowid: 0,
+            last_part_id: None,
+            last_final_message_rowid: 0,
+        });
+        let projected = project_opencode(&session_path, Some(from_start)).unwrap();
+        let count = |kind| {
+            projected
+                .events
+                .iter()
+                .filter(|event| event.kind == kind)
+                .count()
+        };
+        let prompts: i64 = Connection::open(&db_path)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM message WHERE session_id = ?1
+                   AND json_extract(data, '$.role') = 'user'
+                   AND json_extract(data, '$.semantics.origin') = 'real_user'",
+                [&session],
+                |row| row.get(0),
+            )
+            .unwrap();
+        eprintln!(
+            "{session}: {} events, {} turns started for {prompts} real prompts, {} assistant messages, {} finals, {} failures",
+            projected.events.len(),
+            count(AgentEventKind::TurnStarted),
+            count(AgentEventKind::AssistantMessage),
+            count(AgentEventKind::TurnFinal),
+            count(AgentEventKind::ObserverFailure)
+        );
+        // Injected notifications and reminders do not start turns.
+        assert_eq!(count(AgentEventKind::TurnStarted) as i64, prompts);
+    }
     use crate::agent::{AgentStatus, AgentTransport, AgentTurnState};
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -3060,6 +3148,74 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    #[test]
+    fn zcode_skips_injected_prompts_and_reports_provider_failures_once() {
+        let temp = TempDir::new().unwrap();
+        let provider_db = temp.path().join("db.sqlite");
+        let conn = create_opencode_db(&provider_db);
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("zcode");
+        let session = "sess_00000000-0000-4000-8000-0000000000aa";
+        let session_path = format!(
+            "opencode://session?db={}&id={session}",
+            url::form_urlencoded::byte_serialize(provider_db.to_string_lossy().as_bytes())
+                .collect::<String>()
+        );
+        let runtime = runtime(&metadata, AgentHarness::Zcode, session_path);
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        let insert = |id: &str, at: i64, data: &str| {
+            conn.execute(
+                "INSERT INTO message VALUES (?1, ?2, ?3, ?4)",
+                params![id, session, at, data],
+            )
+            .unwrap();
+        };
+        insert(
+            "z-prompt",
+            1_776_700_000_000,
+            r#"{"role":"user","semantics":{"origin":"real_user","kind":"user_prompt"}}"#,
+        );
+        insert(
+            "z-reminder",
+            1_776_700_000_100,
+            r#"{"role":"user","synthetic":true,"semantics":{"origin":"agent_runtime","kind":"todo_reminder"}}"#,
+        );
+        insert(
+            "z-step",
+            1_776_700_000_200,
+            r#"{"role":"assistant","parentID":"z-prompt"}"#,
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        // ZCode records the failure on the step after first writing it.
+        conn.execute(
+            "UPDATE message SET data = ?1 WHERE id = 'z-step'",
+            params![r#"{"role":"assistant","parentID":"z-prompt","time":{"completed":1776700001000},"error":{"name":"AiSdkModelAdapterError","data":{"message":"Usage limit reached for 5 hour","code":"model_rate_limit"}}}"#],
+        )
+        .unwrap();
+        store.observe_agent(&metadata, &runtime).unwrap();
+        store.observe_agent(&metadata, &runtime).unwrap();
+
+        let page = store.read_page(after, 100).unwrap();
+        let of_kind = |kind| {
+            page.events
+                .iter()
+                .filter(|event| event.kind == kind)
+                .collect::<Vec<_>>()
+        };
+        let started = of_kind(AgentEventKind::TurnStarted);
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].turn_id.as_deref(), Some("z-prompt"));
+        let failures = of_kind(AgentEventKind::ObserverFailure);
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].turn_id.as_deref(), Some("z-prompt"));
+        assert_eq!(
+            failures[0].detail.as_deref(),
+            Some("Usage limit reached for 5 hour")
+        );
+        assert!(of_kind(AgentEventKind::TurnFinal).is_empty());
     }
 
     #[test]

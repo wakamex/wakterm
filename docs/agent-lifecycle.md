@@ -2,7 +2,7 @@
 
 ## Status
 
-Wakterm supports agent harnesses as terminal processes running in PTY panes. It detects supported harnesses (Agy, Claude, Codex, Gemini, OpenCode), observes provider session state, and automatically adopts confirmed sessions into its persistent agent registry.
+Wakterm supports agent harnesses as terminal processes running in PTY panes. It detects supported harnesses (Agy, Claude, Codex, Gemini, OpenCode, ZCode), observes provider session state, and automatically adopts confirmed sessions into its persistent agent registry.
 
 Restorable Claude and Codex sessions are restored automatically across
 multiplexer restart and system reboot in their declared working directory,
@@ -290,6 +290,7 @@ The provider stance is:
 | Agy | Native observed and restorable PTY; investigate structured supervision | The interactive TUI exposes exact conversation presence and a persistent transcript; stream JSON and state callbacks apply to managed launches rather than attachment to an existing TUI |
 | Gemini | Native TUI; investigate same-session supervision | Direct ACP makes the client the UI unless Gemini supports concurrent native-TUI attachment |
 | OpenCode | Native TUI; investigate same-session supervision | Direct ACP is not sufficient if it replaces the provider TUI |
+| ZCode | Native observed and restorable PTY; investigate its app-server | Sessions use OpenCode's database schema, and `--resume` reopens an exact session; ZCode also ships a stdio app server whose attachment to the native TUI is untested |
 | Claude | Native observed and restorable PTY | Remote Control preserves the TUI but exposes no supported local observer; reverse-engineered `--sdk-url`, SDK, and ACP paths are headless, cloud-constrained, or infer state from a PTY |
 | Codex | Native app-server TUI | The mux and native TUI attach to the same exact app-server thread |
 
