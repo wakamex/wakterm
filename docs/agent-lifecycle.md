@@ -122,6 +122,10 @@ On Linux, an interactive harness may run behind a foreground supervisor. Discove
 
 Supervised Claude observation requires its process-owned session record and transcript to be readable by the host mux. Wakterm matches the record's PID in Claude's namespace, process start time, machine and PID namespace identity, working directory, interactive mode, and session UUID. A missing or mismatched record leaves observation pending. The existing Agent API, native TUI input, and durable output stream use the confirmed child session. Observing a sandboxed process does not grant that process host mux control authority or require access to host runtime sockets.
 
+Claude can move a conversation to a background job run by its daemon, and a pane may then show that job: either the window that sent it there or `claude attach <job>`. Wakterm observes such a pane through the job's live worker and its session, and the pane keeps its agent identity. While the job runs, the pane's runtime reports `background_job` with a hint for moving the conversation back into the pane, because the worker runs outside the pane and a mux restart stops it. When the worker is gone, observation reports an error naming the job's saved session and the command that resumes it in the pane, rather than choosing a session from transcript timestamps.
+
+ZCode stores sessions in OpenCode's database schema in its own database. A ZCode pane started with `--resume sess_...`, as every restoration is, is observed as exactly that session. Otherwise, as for OpenCode, the observer selects the most recently updated session in the pane's working directory, so two ZCode sessions in one directory can be confused until one is resumed explicitly.
+
 Wakterm records the presence of a launch supervisor separately from the inner harness command. Automatic restoration currently retains that session intent and displays a diagnostic pane requesting an explicit supervised resume recipe. It does not execute the inner command without its supervisor. Run the offline native-TUI regression with `WAKTERM_TEST_CLAUDE=/path/to/claude cargo test --locked -p mux real_sandboxed_claude_process_and_session_are_observed --lib -- --ignored --nocapture`. It requires Python 3 and bubblewrap, uses private provider storage, resumes a local fixture without a model request, and checks mount, PID, IPC and UTS isolation plus absence of host control sockets.
 
 Provider artifact observation continues after adoption. Filesystem changes are
@@ -177,7 +181,7 @@ launch command does not.
 Native restoration has one shared provider boundary: identify a restorable
 harness, extract its stable session ID, normalize its concrete process argv,
 construct its exact resume invocation, and confirm the session after launch.
-Agy, Claude, and Codex implement that boundary. Provider-specific managed
+Agy, Claude, Codex, and ZCode implement that boundary. Provider-specific managed
 transports remain optional preparation paths layered on the same persisted
 restore intent.
 

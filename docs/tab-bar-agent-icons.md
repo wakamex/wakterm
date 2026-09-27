@@ -12,6 +12,7 @@ Initial targets:
 - Codex
 - Gemini
 - OpenCode
+- ZCode
 
 This is a tab bar feature, not a tab title string feature.
 
@@ -409,7 +410,7 @@ Use the existing GUI image/sprite atlas infrastructure.
 
 ## Done When
 
-- Tabs with active Agy/Claude/Codex/Gemini/OpenCode panes show a small icon beside
+- Tabs with active Agy/Claude/Codex/Gemini/OpenCode/ZCode panes show a small icon beside
   the title in the fancy tab bar.
 - Switching panes in a split tab updates the icon correctly.
 - Reconnect/attach restores icons correctly.
