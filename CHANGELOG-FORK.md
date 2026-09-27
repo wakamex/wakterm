@@ -2,6 +2,62 @@
 
 All changes relative to upstream wakterm/wakterm main at 05343b387.
 
+## Changes from 2026-08-23 through 2026-09-27 (commits 6f9043880 through 09a30ab99)
+
+### Agent Harnesses and Agent API
+
+- ZCode (Z.ai's coding CLI) as a harness: detection, status and events from its OpenCode-schema session database, exact restore with `zcode --resume`, `wakterm agent start zcode`, and a tab icon traced from the official ZCode mark ([d7751d4](https://github.com/wakamex/wakterm/commit/d7751d483), [d757cbd](https://github.com/wakamex/wakterm/commit/d757cbd63)).
+- OpenCode-schema event projection skips injected runtime messages instead of opening phantom turns, and reports provider failures such as rate limits once per turn ([d7751d4](https://github.com/wakamex/wakterm/commit/d7751d483)).
+- Claude panes that show a background job, either the window that sent it there or `claude attach`, are observed through the job's live worker; the pane reports the job with a hint for moving the conversation back, and a clear error when the worker is gone ([c1005ec](https://github.com/wakamex/wakterm/commit/c1005ecbb), [2fe9827](https://github.com/wakamex/wakterm/commit/2fe9827e7), [df7b155](https://github.com/wakamex/wakterm/commit/df7b155d0)).
+- Exact Claude restoration through shared agent recovery, keeping the values of options such as `--append-system-prompt-file` and `--system-prompt-snapshot` ([fcc15c5](https://github.com/wakamex/wakterm/commit/fcc15c5ee), [2eea046](https://github.com/wakamex/wakterm/commit/2eea046f9)).
+- Exact Agy conversation restoration ([8b34ef2](https://github.com/wakamex/wakterm/commit/8b34ef2da), [94acdec](https://github.com/wakamex/wakterm/commit/94acdeca5)).
+- Foreground harnesses running under a sandbox supervisor are observed and bound by process incarnation, and restoration keeps the supervised session instead of launching the inner harness unconfined ([638ca88](https://github.com/wakamex/wakterm/commit/638ca88ff), [efedff3](https://github.com/wakamex/wakterm/commit/efedff3ea)).
+- Managed Codex:
+  - Restore through the current app server, promote connected sessions to managed restore, and preserve managed identity and last-turn timestamps ([57a2e8b](https://github.com/wakamex/wakterm/commit/57a2e8b2c), [e9999e8](https://github.com/wakamex/wakterm/commit/e9999e8d6), [329358b](https://github.com/wakamex/wakterm/commit/329358bb3), [44b5180](https://github.com/wakamex/wakterm/commit/44b518036), [c033720](https://github.com/wakamex/wakterm/commit/c03372022), [47d2e3e](https://github.com/wakamex/wakterm/commit/47d2e3e44)).
+  - Follow thread changes, native forks, and TUI replacement within a pane; make launch readiness atomic ([7941d17](https://github.com/wakamex/wakterm/commit/7941d17ab), [14d51ca](https://github.com/wakamex/wakterm/commit/14d51ca5f), [8aa0bda](https://github.com/wakamex/wakterm/commit/8aa0bda30), [afff1fe](https://github.com/wakamex/wakterm/commit/afff1febe)).
+  - Model and reasoning-effort overrides, options kept across argument positions, and permission flags kept off remote resume, which current Codex rejects ([720002d](https://github.com/wakamex/wakterm/commit/720002d40), [39bef1f](https://github.com/wakamex/wakterm/commit/39bef1f47), [60d8548](https://github.com/wakamex/wakterm/commit/60d8548d1), [541ac25](https://github.com/wakamex/wakterm/commit/541ac25e5)).
+  - `--return-final` support, a resume picker scoped to the pane's working directory, and bounded resume responses ([9f266b7](https://github.com/wakamex/wakterm/commit/9f266b7b8), [d19b9cf](https://github.com/wakamex/wakterm/commit/d19b9cf23), [160734b](https://github.com/wakamex/wakterm/commit/160734bdd)).
+  - Failed turns expose safe terminal details and distinguish model capacity from connection failures; terminal turn state survives delayed activity ([5df52d3](https://github.com/wakamex/wakterm/commit/5df52d379), [1dd8d46](https://github.com/wakamex/wakterm/commit/1dd8d465f), [f6279a6](https://github.com/wakamex/wakterm/commit/f6279a668), [e5ec1b1](https://github.com/wakamex/wakterm/commit/e5ec1b15a)).
+  - Internal worker sessions and ephemeral threads stay out of pane identity; rollouts are discovered from process descriptors ([2206725](https://github.com/wakamex/wakterm/commit/2206725f6), [df1b673](https://github.com/wakamex/wakterm/commit/df1b67383), [6265dcf](https://github.com/wakamex/wakterm/commit/6265dcfee)).
+  - App-server events are persisted, bound replies are recovered, and oversized provider records are skipped ([360d7be](https://github.com/wakamex/wakterm/commit/360d7be1c), [b35c94f](https://github.com/wakamex/wakterm/commit/b35c94f50), [e292fa0](https://github.com/wakamex/wakterm/commit/e292fa047), [c28ee97](https://github.com/wakamex/wakterm/commit/c28ee9725)).
+- Agent status updates are driven by pane output and provider artifacts instead of polling, with artifact events routed by exact session, bounded watcher state, lossless observer batches, and owed trailing refreshes ([e7b57f8](https://github.com/wakamex/wakterm/commit/e7b57f826), [f804bd9](https://github.com/wakamex/wakterm/commit/f804bd98c), [828cd0a](https://github.com/wakamex/wakterm/commit/828cd0acf), [6583a2e](https://github.com/wakamex/wakterm/commit/6583a2e85), [1a31165](https://github.com/wakamex/wakterm/commit/1a3116579), [2dead1c](https://github.com/wakamex/wakterm/commit/2dead1c9d), [d363c22](https://github.com/wakamex/wakterm/commit/d363c22ef)).
+- Agent event and catalog consistency: single-snapshot event pages, blocking idle reads, reused output workers, unique catalog identities, catalog aligned with durable turns, primed cursors for adopted sessions, and return correlation kept through steering ([3fbd2e7](https://github.com/wakamex/wakterm/commit/3fbd2e765), [d3521ca](https://github.com/wakamex/wakterm/commit/d3521ca2e), [a188c57](https://github.com/wakamex/wakterm/commit/a188c57bb), [4a00853](https://github.com/wakamex/wakterm/commit/4a00853f0), [3ccdb7e](https://github.com/wakamex/wakterm/commit/3ccdb7e6a), [eb90e52](https://github.com/wakamex/wakterm/commit/eb90e521b), [24ae141](https://github.com/wakamex/wakterm/commit/24ae14191), [f98775d](https://github.com/wakamex/wakterm/commit/f98775d41), [fac0ead](https://github.com/wakamex/wakterm/commit/fac0eade0), [a150a30](https://github.com/wakamex/wakterm/commit/a150a3082)).
+
+### Shell Integration
+
+- Local bash, zsh, fish, and Wsh shells load Wakterm's shell integration automatically without changes to their startup files; `shell_integration = false` turns it off ([2f27987](https://github.com/wakamex/wakterm/commit/2f279879d)).
+- Each pane has a durable `WAKTERM_PANE_TOKEN` that survives mux restarts ([84190a6](https://github.com/wakamex/wakterm/commit/84190a623)).
+- Pane-local shell history: Up recalls the pane's own commands first, and commands merge into the shared history on exit, including those of a killed shell ([902d052](https://github.com/wakamex/wakterm/commit/902d052c8), [d40862b](https://github.com/wakamex/wakterm/commit/d40862b83)).
+- Wsh owns OSC 7, OSC 133, pane history, and restored foreground jobs natively where it implements them ([6f4377e](https://github.com/wakamex/wakterm/commit/6f4377e95), [e33307f](https://github.com/wakamex/wakterm/commit/e33307f0b), [4147a3d](https://github.com/wakamex/wakterm/commit/4147a3dd8)).
+
+### Tabs and Tab Navigator
+
+- Parked tabs are presented as hidden tabs ([75f37a4](https://github.com/wakamex/wakterm/commit/75f37a473)).
+- Tab navigator: filter by tab name, select the best search match, clearer agent indicators, and mux-scoped Codex memory totals ([bb74a62](https://github.com/wakamex/wakterm/commit/bb74a6290), [afa6811](https://github.com/wakamex/wakterm/commit/afa68110d), [174984d](https://github.com/wakamex/wakterm/commit/174984d2a), [43bf07d](https://github.com/wakamex/wakterm/commit/43bf07da4)).
+- `ToggleTabBarPosition` (`Ctrl-Shift-A`) moves the tab bar between the top and bottom of the window ([8639ea0](https://github.com/wakamex/wakterm/commit/8639ea023)).
+- Automatic tab titles persist across nested shells ([a133db1](https://github.com/wakamex/wakterm/commit/a133db191)).
+- Exhaustive generated tab color palettes ([d6d0c16](https://github.com/wakamex/wakterm/commit/d6d0c1661)).
+
+### Multiplexer Security and Reliability
+
+- On Linux, clients from a different user, mount, PID, or IPC namespace get metadata-only mux access ([97932a0](https://github.com/wakamex/wakterm/commit/97932a068), [033ec8b](https://github.com/wakamex/wakterm/commit/033ec8b8e), [d558c19](https://github.com/wakamex/wakterm/commit/d558c192c)).
+- Crash-safe session recovery: restorable panes stay in the layout when their processes exit, and snapshots are written atomically with one previous generation retained ([def8bad](https://github.com/wakamex/wakterm/commit/def8bad78)).
+- Remote clients no longer loop on resize echoes and replace agent status atomically across reconciliation ([c132108](https://github.com/wakamex/wakterm/commit/c13210850), [934fe55](https://github.com/wakamex/wakterm/commit/934fe559e), [8346f0f](https://github.com/wakamex/wakterm/commit/8346f0f74)).
+- App-server terminal state is preserved, and the user service includes user binaries in `PATH` ([d6e8bfb](https://github.com/wakamex/wakterm/commit/d6e8bfb92), [2b6e6af](https://github.com/wakamex/wakterm/commit/2b6e6af42)).
+
+### Performance and Benchmarks
+
+- Repeatable 20-workspace benchmark: restoring 20 tabs and 27 PTYs takes 149 ms and holds 34.44 MiB PSS at 0.0016% of one core ([5b35480](https://github.com/wakamex/wakterm/commit/5b35480b6)).
+- Repeatable agent infrastructure workloads and tab navigator resource-sampling profiles; cached process-tree lookups fell from 1.321 s to 7.33 ms for 200 lookups ([0746c2d](https://github.com/wakamex/wakterm/commit/0746c2db8), [3510ac0](https://github.com/wakamex/wakterm/commit/3510ac004), [e7b57f8](https://github.com/wakamex/wakterm/commit/e7b57f826)).
+
+### Docs, Packaging, and Tooling
+
+- Documentation moved from MkDocs to Zola, with a mobile drawer, route-driven navigation, a full-width layout, and a separate configuration reference ([7b5b447](https://github.com/wakamex/wakterm/commit/7b5b44756), [b477fee](https://github.com/wakamex/wakterm/commit/b477feedb), [6ccece7](https://github.com/wakamex/wakterm/commit/6ccece753), [72f9e55](https://github.com/wakamex/wakterm/commit/72f9e5543), [d81ece3](https://github.com/wakamex/wakterm/commit/d81ece359), [6feaab8](https://github.com/wakamex/wakterm/commit/6feaab8c7)).
+- Default key documentation is generated from a versioned `wakterm show-keys` JSON catalog ([ac5d20a](https://github.com/wakamex/wakterm/commit/ac5d20a9f)).
+- Public documentation audit and hardened derived generation ([6f90438](https://github.com/wakamex/wakterm/commit/6f9043880), [78d6b8c](https://github.com/wakamex/wakterm/commit/78d6b8cbb)).
+- Regenerated app icons, an optional Linux desktop launcher in `install.sh`, and cold Nix CI builds fixed ([8cafe2a](https://github.com/wakamex/wakterm/commit/8cafe2a03), [956f9f2](https://github.com/wakamex/wakterm/commit/956f9f217), [e305c98](https://github.com/wakamex/wakterm/commit/e305c9884), [feafa8c](https://github.com/wakamex/wakterm/commit/feafa8c8d)).
+- Tab icon review sheets render transparently at full resolution, and the icon tracing steps are documented ([c7e8f00](https://github.com/wakamex/wakterm/commit/c7e8f000e)).
+
 ## Changes from 2026-03-20 through 2026-08-23 (commits 711022567 through 8b4429a98)
 
 ### Agent Harnesses and Agent API
