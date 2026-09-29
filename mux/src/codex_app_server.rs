@@ -359,6 +359,16 @@ struct State {
 }
 
 impl CodexAppServer {
+    pub(crate) fn respond(&self, id: Value, result: Value) -> anyhow::Result<()> {
+        let connection = self
+            .state
+            .lock()
+            .connection
+            .clone()
+            .context("Codex app-server is disconnected")?;
+        connection.send(&json!({"id": id, "result": result}))
+    }
+
     pub(crate) fn process_id(&self) -> Option<u32> {
         let mut state = self.state.lock();
         let child = state.child.as_mut()?;
@@ -1528,7 +1538,8 @@ pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
                 }
                 "item/commandExecution/requestApproval"
                 | "item/fileChange/requestApproval"
-                | "item/permissions/requestApproval" => {
+                | "item/permissions/requestApproval"
+                | "item/tool/requestUserInput" => {
                     runtime.turn_state = AgentTurnState::WaitingOnUser;
                     runtime.attention_reason = Some("approval-requested".to_string());
                 }
@@ -1547,7 +1558,14 @@ pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
         }
         let runtime = runtime.clone();
         drop(runtimes);
-        if matches!(method, "turn/started" | "item/completed" | "turn/completed") {
+        if matches!(
+            method,
+            "turn/started"
+                | "item/completed"
+                | "turn/completed"
+                | "item/commandExecution/requestApproval"
+                | "item/tool/requestUserInput"
+        ) {
             if let Some(metadata) = mux.agent_metadata_by_pane.read().get(&pane_id).cloned() {
                 mux.persist_codex_app_server_notification(
                     (*metadata).clone(),

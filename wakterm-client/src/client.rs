@@ -1870,6 +1870,11 @@ impl Client {
         PromoteCodexAppServer,
         UnitResponse
     );
+    rpc!(
+        resolve_agent_approval,
+        ResolveAgentApproval,
+        ResolveAgentApprovalResponse
+    );
     rpc!(get_image_cell, GetImageCell, GetImageCellResponse);
     rpc!(set_configured_palette_for_pane, SetPalette, UnitResponse);
     rpc!(set_tab_title, TabTitleChanged, UnitResponse);

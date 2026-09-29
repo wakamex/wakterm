@@ -54,6 +54,7 @@ use winapi::um::winsock2::{SOL_SOCKET, SO_RCVBUF, SO_SNDBUF};
 pub mod activity;
 pub mod agent;
 pub mod agent_admission;
+pub mod agent_approval;
 pub mod agent_event;
 pub mod agent_request;
 pub mod agent_service;
@@ -216,6 +217,7 @@ pub struct Mux {
     agent_request_store: AgentRequestStore,
     agent_admission_store: agent_admission::AgentAdmissionStore,
     agent_event_store: AgentEventStore,
+    pending_agent_approvals: RwLock<HashMap<String, agent_approval::PendingAgentApproval>>,
     agent_output_reader: agent_service::AgentOutputReader,
     agent_input_generation_by_pane: RwLock<HashMap<PaneId, u64>>,
     agent_attention_seen_at: RwLock<HashMap<PaneId, DateTime<Utc>>>,
@@ -1309,6 +1311,7 @@ impl Mux {
             agent_request_store: AgentRequestStore::new(agent_state_path.clone()),
             agent_admission_store: agent_admission::AgentAdmissionStore::new(agent_state_path),
             agent_event_store,
+            pending_agent_approvals: RwLock::new(HashMap::new()),
             agent_output_reader,
             agent_input_generation_by_pane: RwLock::new(HashMap::new()),
             agent_attention_seen_at: RwLock::new(HashMap::new()),
@@ -1435,6 +1438,8 @@ impl Mux {
 
     pub(crate) fn apply_codex_app_server_notification(&self, message: &serde_json::Value) {
         self.codex_app_server.record_notification(message);
+        self.capture_agent_approval(message);
+        self.expire_agent_approval(message);
         codex_app_server::apply_notification_to_runtime(self, message);
     }
 

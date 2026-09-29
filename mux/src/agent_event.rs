@@ -3,6 +3,7 @@ use crate::agent::{
     AgentRuntimeSnapshot, AgentTurnState,
 };
 use crate::agent_admission::incarnation_id;
+use crate::agent_approval::AgentApprovalRequest;
 use anyhow::{anyhow, bail, Context};
 use chrono::{DateTime, Utc};
 use event_listener::Event;
@@ -40,6 +41,7 @@ pub enum AgentEventKind {
     AssistantMessage,
     ObserverFailure,
     TurnFinal,
+    ApprovalRequested,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -58,6 +60,8 @@ pub struct AgentEvent {
     pub outcome: Option<String>,
     pub recoverable: Option<bool>,
     pub detail: Option<String>,
+    #[serde(default)]
+    pub approval: Option<AgentApprovalRequest>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -140,6 +144,7 @@ struct PendingEvent {
     outcome: Option<String>,
     recoverable: Option<bool>,
     detail: Option<String>,
+    approval: Option<AgentApprovalRequest>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -169,6 +174,7 @@ impl PendingEvent {
             outcome: None,
             recoverable: None,
             detail: None,
+            approval: None,
         }
     }
 }
@@ -422,8 +428,12 @@ impl AgentEventStore {
                 runtime.session_path.as_deref(),
                 matches!(runtime.harness, AgentHarness::Unknown),
             ) {
-                match project_provider_events(&runtime.harness, session_path, state.cursor.clone())
-                {
+                match project_provider_events(
+                    &runtime.harness,
+                    session_path,
+                    state.cursor.clone(),
+                    metadata,
+                ) {
                     Ok(projected) => {
                         runtime_update = provider_runtime_update(&projected.events);
                         pending.extend(
@@ -550,6 +560,27 @@ impl AgentEventStore {
 
     pub fn read_page(&self, after_sequence: u64, limit: usize) -> anyhow::Result<AgentEventPage> {
         promise::spawn::block_on(self.read_page_async(after_sequence, limit))
+    }
+
+    pub(crate) fn find_approval(
+        &self,
+        request_id: &str,
+    ) -> anyhow::Result<Option<AgentApprovalRequest>> {
+        let connection = self.connect()?;
+        let record = connection
+            .query_row(
+                "SELECT record_json FROM agent_event_v1
+                 WHERE json_extract(record_json, '$.approval.request_id') = ?1
+                 ORDER BY sequence DESC LIMIT 1",
+                [request_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(record) = record else {
+            return Ok(None);
+        };
+        let event: AgentEvent = serde_json::from_str(&record)?;
+        Ok(event.approval)
     }
 
     pub fn read_page_async(
@@ -923,6 +954,23 @@ impl AgentEventStore {
                 state.turn_state = Some("waiting_on_user".to_string());
                 pending.push(state);
             }
+            "item/commandExecution/requestApproval" | "item/tool/requestUserInput" => {
+                let Some(approval) = crate::agent_approval::approval_from_event(message, metadata)
+                else {
+                    return Ok(());
+                };
+                let mut event = PendingEvent::new(
+                    format!(
+                        "codex-app-server:{}:approval:{}",
+                        session.thread_id, approval.request_id
+                    ),
+                    AgentEventKind::ApprovalRequested,
+                    approval.observed_at,
+                );
+                event.turn_id = Some(approval.turn_id.clone());
+                event.approval = Some(approval);
+                pending.push(event);
+            }
             _ => return Ok(()),
         }
 
@@ -1002,6 +1050,7 @@ fn insert_event(
         outcome: pending.outcome,
         recoverable: pending.recoverable,
         detail: pending.detail,
+        approval: pending.approval,
     };
     let inserted = tx.execute(
         "INSERT OR IGNORE INTO agent_event_v1(event_key, record_json) VALUES (?1, ?2)",
@@ -1119,11 +1168,12 @@ fn project_provider_events(
     harness: &AgentHarness,
     session_path: &str,
     cursor: Option<ProviderCursor>,
+    metadata: &AgentMetadata,
 ) -> anyhow::Result<ProjectedEvents> {
     match harness {
         AgentHarness::Agy => bail!("agy harness has no provider event projection"),
         AgentHarness::Codex => project_codex(Path::new(session_path), cursor),
-        AgentHarness::Claude => project_claude(Path::new(session_path), cursor),
+        AgentHarness::Claude => project_claude(Path::new(session_path), cursor, metadata),
         AgentHarness::Gemini => project_gemini(Path::new(session_path), cursor),
         AgentHarness::Opencode | AgentHarness::Zcode => project_opencode(session_path, cursor),
         AgentHarness::Unknown => bail!("unknown harness has no provider event projection"),
@@ -1500,7 +1550,11 @@ fn claude_human_user(record: &Value) -> bool {
     })
 }
 
-fn project_claude(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<ProjectedEvents> {
+fn project_claude(
+    path: &Path,
+    cursor: Option<ProviderCursor>,
+    metadata: &AgentMetadata,
+) -> anyhow::Result<ProjectedEvents> {
     let source_id = jsonl_source_id(path, "claude")?;
     let mut cursor = match cursor {
         Some(ProviderCursor::Claude(cursor)) if cursor.source_id == source_id => cursor,
@@ -1642,6 +1696,22 @@ fn project_claude(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result
                             );
                             event.turn_id = Some(turn_id.clone());
                             event.text = Some(plan.to_string());
+                            events.push(event);
+                        }
+                    }
+                    Some("tool_use")
+                        if block.get("name").and_then(Value::as_str) == Some("AskUserQuestion") =>
+                    {
+                        if let Some(approval) = crate::agent_approval::claude_question_from_block(
+                            block, metadata, &turn_id, timestamp,
+                        ) {
+                            let mut event = PendingEvent::new(
+                                format!("{record_key}:question:{index}"),
+                                AgentEventKind::ApprovalRequested,
+                                timestamp,
+                            );
+                            event.turn_id = Some(turn_id.clone());
+                            event.approval = Some(approval);
                             events.push(event);
                         }
                     }
@@ -2420,6 +2490,53 @@ mod tests {
     }
 
     #[test]
+    fn managed_command_approval_is_a_durable_exact_identity_event() {
+        let directory = TempDir::new().unwrap();
+        let store = AgentEventStore::new(directory.path().join("events.sqlite3"));
+        store.start_runtime_epoch().unwrap();
+        let mut metadata = metadata("codex");
+        metadata.adopted_pid = None;
+        metadata.adopted_start_time = None;
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "thread-approval".into(),
+            session_id: "session-approval".into(),
+            executable: "codex".into(),
+            version: "test".into(),
+            tui_args: vec![],
+        });
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Codex;
+        runtime.transport = AgentTransport::CodexAppServerTui;
+        runtime.alive = true;
+        let message = serde_json::json!({
+            "id": 41,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thread-approval",
+                "turnId": "turn-approval",
+                "itemId": "item-approval",
+                "command": "scp result host:/tmp/",
+                "availableDecisions": ["accept", "cancel"]
+            }
+        });
+        let mut writer = store.writer().unwrap();
+        writer
+            .observe_codex_app_server_notification(&metadata, &runtime, &message)
+            .unwrap();
+        let page = store.read_page(0, 100).unwrap();
+        let event = page
+            .events
+            .iter()
+            .find(|event| event.kind == AgentEventKind::ApprovalRequested)
+            .unwrap();
+        let approval = event.approval.as_ref().unwrap();
+        assert_eq!(approval.agent_id, metadata.agent_id);
+        assert_eq!(approval.incarnation_id, incarnation_id(&metadata).unwrap());
+        assert_eq!(approval.command.as_deref(), Some("scp result host:/tmp/"));
+        assert_eq!(approval.choices[0].id, "allow_once");
+    }
+
+    #[test]
     fn event_stream_is_not_live_until_runtime_start_succeeds() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join("events.sqlite3");
@@ -2919,6 +3036,77 @@ mod tests {
             .events
             .iter()
             .all(|event| event.turn_id.as_deref() == Some("claude-turn-1")));
+    }
+
+    #[test]
+    fn claude_projects_single_choice_questions() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude-question.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"mode\",\"sessionId\":\"session-claude\"}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("claude-question");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        append(
+            &session,
+            &format!(
+                "{}\n{}\n",
+                serde_json::json!({
+                    "type": "user",
+                    "uuid": "claude-turn-question",
+                    "message": {"content": "work"}
+                }),
+                serde_json::json!({
+                    "type": "assistant",
+                    "uuid": "claude-question",
+                    "message": {
+                        "model": "claude",
+                        "stop_reason": "tool_use",
+                        "content": [{
+                            "type": "tool_use",
+                            "id": "tool-question",
+                            "name": "AskUserQuestion",
+                            "input": {"questions": [{
+                                "header": "Promotion scope",
+                                "question": "How should I promote the build?",
+                                "multiSelect": false,
+                                "options": [
+                                    {"label": "Build and activate", "description": "Replace the shared runtime."},
+                                    {"label": "Hold off", "description": "Keep the current runtime."}
+                                ]
+                            }]}
+                        }]
+                    }
+                })
+            ),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let page = store.read_page(after, 100).unwrap();
+        let event = page
+            .events
+            .iter()
+            .find(|event| event.kind == AgentEventKind::ApprovalRequested)
+            .unwrap();
+        let approval = event.approval.as_ref().unwrap();
+        assert_eq!(approval.kind, "user_question");
+        assert_eq!(
+            approval.prompt.as_deref(),
+            Some("How should I promote the build?")
+        );
+        assert_eq!(approval.choices[1].label, "Hold off");
+        assert_eq!(
+            store.find_approval(&approval.request_id).unwrap().unwrap(),
+            *approval
+        );
     }
 
     #[test]

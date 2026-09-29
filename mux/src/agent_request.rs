@@ -896,6 +896,7 @@ mod tests {
             outcome: outcome.map(str::to_string),
             recoverable: None,
             detail: None,
+            approval: None,
         }
     }
 

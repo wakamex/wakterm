@@ -9,6 +9,7 @@
       "prompt_admission.v1",
       "return_request_terminal_stream.v1",
       "event_stream.v1",
+      "approval_control.v1",
       "codex_output_shadow.experimental.v1"
     ]
   },
@@ -21,6 +22,7 @@
       "prompt_admission.v1",
       "return_request_terminal_stream.v1",
       "event_stream.v1",
+      "approval_control.v1",
       "codex_output_shadow.experimental.v1"
     ]
   },

@@ -820,6 +820,22 @@ impl SessionHandler {
                     }))
                 });
             }
+            Pdu::ResolveAgentApproval(ResolveAgentApproval { resolution }) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let mux = Mux::get();
+                            Ok(Pdu::ResolveAgentApprovalResponse(
+                                ResolveAgentApprovalResponse {
+                                    resolution: mux.resolve_agent_approval(resolution)?,
+                                },
+                            ))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
             Pdu::SubmitAgentRequest(SubmitAgentRequest {
                 pane_id,
                 request_id,
@@ -1854,6 +1870,7 @@ impl SessionHandler {
             | Pdu::GetAgentApiCapabilitiesResponse { .. }
             | Pdu::ListAgentApiCatalogResponse { .. }
             | Pdu::AdmitAgentPromptResponse { .. }
+            | Pdu::ResolveAgentApprovalResponse { .. }
             | Pdu::PreparedCodexLaunch { .. }
             | Pdu::SetClipboard { .. }
             | Pdu::NotifyAlert { .. }
@@ -2696,6 +2713,14 @@ mod test {
                 after_sequence: 0,
                 limit: 10,
                 wait_ms: 0,
+            }),
+            Pdu::ResolveAgentApproval(ResolveAgentApproval {
+                resolution: mux::agent_approval::AgentApprovalResolutionRequest {
+                    request_id: "secret-approval".to_string(),
+                    agent_id: "secret-agent".to_string(),
+                    incarnation_id: "secret-incarnation".to_string(),
+                    choice_id: "allow_once".to_string(),
+                },
             }),
             Pdu::SearchScrollbackRequest(SearchScrollbackRequest {
                 pane_id: layout.left_pane_id,

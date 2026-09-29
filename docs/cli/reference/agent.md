@@ -255,6 +255,14 @@ Prints Agent API capabilities and the current narrow agent catalog.
 
 ```console
 {% include "../../generated/cli-help/cmd-synopsis-wakterm-agent-catalog--help.txt" %}
+
+## `wakterm agent approval`
+
+Resolves one advertised choice for an exact pending managed Codex command approval. The request ID, agent ID, incarnation, and choice come from the corresponding `approval_requested` Agent API event. Replayed or replaced requests fail instead of sending terminal input.
+
+```sh
+wakterm agent approval --request-id REQUEST_ID --agent-id AGENT_ID --incarnation INCARNATION_ID --choice CHOICE_ID
+```
 ```
 
 ## `wakterm agent interrupt`

@@ -17,6 +17,7 @@ use mux::agent::{AgentMetadata, AgentSnapshot, AgentTabBadgeState};
 use mux::agent_admission::{
     AgentAdmissionReceipt, AgentApiCapabilities, AgentCatalog, AgentPromptAdmissionRequest,
 };
+use mux::agent_approval::{AgentApprovalResolution, AgentApprovalResolutionRequest};
 use mux::agent_event::AgentEventPage;
 use mux::agent_request::AgentRequest;
 use mux::agent_service::AgentOutputPage;
@@ -574,6 +575,8 @@ pdu! {
     GetPaneStatus: 98,
     GetPaneStatusResponse: 99,
     PromoteCodexAppServer: 100,
+    ResolveAgentApproval: 101,
+    ResolveAgentApprovalResponse: 102,
 }
 
 impl Pdu {
@@ -599,7 +602,8 @@ impl Pdu {
             | Self::AdmitAgentPrompt(_)
             | Self::CancelAgentRequest(_)
             | Self::PrepareCodexLaunch(_)
-            | Self::PromoteCodexAppServer(_) => true,
+            | Self::PromoteCodexAppServer(_)
+            | Self::ResolveAgentApproval(_) => true,
             _ => false,
         }
     }
@@ -868,6 +872,16 @@ pub struct ReadAgentEvents {
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct ReadAgentEventsResponse {
     pub page: AgentEventPage,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ResolveAgentApproval {
+    pub resolution: AgentApprovalResolutionRequest,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ResolveAgentApprovalResponse {
+    pub resolution: AgentApprovalResolution,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
@@ -1932,7 +1946,23 @@ mod test {
                     oldest_available_sequence: 1,
                     latest_sequence: 12,
                     next_after_sequence: Some(12),
-                    events: vec![],
+                    events: vec![mux::agent_event::AgentEvent {
+                        sequence: 12,
+                        event_id: "event-12".to_string(),
+                        kind: mux::agent_event::AgentEventKind::TurnFinal,
+                        agent_id: "agent-1".to_string(),
+                        incarnation_id: "incarnation-1".to_string(),
+                        observed_at: "2026-09-29T21:00:00Z".parse().unwrap(),
+                        turn_id: Some("turn-1".to_string()),
+                        lifecycle: None,
+                        reason: None,
+                        turn_state: Some("waiting_on_user".to_string()),
+                        text: Some("done".to_string()),
+                        outcome: Some("completed".to_string()),
+                        recoverable: None,
+                        detail: None,
+                        approval: None,
+                    }],
                     recovery: None,
                 },
             }),

@@ -40,6 +40,24 @@ The durable event page provides:
 - explicit bounded-retention metadata and `cursor_too_old` recovery
 - classified incompatible-version and unknown-event failures
 
+## Interactive requests
+
+Wakterm publishes a structured `approval_requested` event for managed Codex command approvals and blocking single-choice questions, and for observer-backed Claude `AskUserQuestion` calls with one single-choice question. Its `approval` object carries the request kind, exact agent and incarnation, an opaque request ID, the provider turn and item IDs, the prompt or command context, and ordered choices. Consumers must present only the advertised choices and must treat the request ID as opaque.
+
+Resolve a choice through the supported Agent API rather than writing terminal keys:
+
+```sh
+wakterm agent approval \
+  --request-id REQUEST_ID \
+  --agent-id AGENT_ID \
+  --incarnation INCARNATION_ID \
+  --choice CHOICE_ID
+```
+
+Wakterm answers Codex through the original app-server request, causing the native TUI to dismiss the same modal. Claude has no equivalent control API, so Wakterm validates that the exact tool call is still pending in the exact live session and submits the selected label to that pane's native question UI. Resolution requires the exact live agent incarnation and a choice from that request. A repeated response, a provider-side response, a replaced agent, or a completed request is rejected as stale. Pending interactions are provider state, not a second durable authority; the durable event exists so a transport can notify the user and recover exact identity.
+
+`approval_control.v1` covers these single-choice requests. Multiple questions, multiselect questions, free-form questions, Codex file changes, and general permission methods remain owned by the native TUI until they receive an equally exact mapping.
+
 The public contract does not expose the event database, provider paths, parser
 cursors, or transport implementation. Wakterm's experimental Codex output page
 remains available for side-effect-free shadow comparison, but it is not the

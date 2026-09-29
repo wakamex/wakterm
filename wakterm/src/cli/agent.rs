@@ -108,6 +108,9 @@ enum AgentSubCommand {
     #[command(name = "admit", about = "atomically admit and submit an agent prompt")]
     Admit(AdmitAgentCommand),
 
+    #[command(name = "approval", about = "resolve an exact pending agent approval")]
+    Approval(ResolveAgentApprovalCommand),
+
     #[command(name = "send", about = "send a message to an agent pane")]
     Send(SendAgentCommand),
 
@@ -145,6 +148,7 @@ impl AgentCommand {
             AgentSubCommand::Capabilities(cmd) => cmd.run(client).await,
             AgentSubCommand::Catalog(cmd) => cmd.run(client).await,
             AgentSubCommand::Admit(cmd) => cmd.run(client).await,
+            AgentSubCommand::Approval(cmd) => cmd.run(client).await,
             AgentSubCommand::Send(cmd) => cmd.run(client).await,
             AgentSubCommand::Request(cmd) => cmd.run(client).await,
             AgentSubCommand::Interrupt(cmd) => cmd.run(client).await,
@@ -1524,6 +1528,41 @@ impl AgentCatalogCommand {
                 .await?
                 .catalog,
         )
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
+pub struct ResolveAgentApprovalCommand {
+    /// Opaque request id from an approval_requested Agent API event
+    #[arg(long)]
+    request_id: String,
+
+    /// Exact stable agent id from the approval event
+    #[arg(long)]
+    agent_id: String,
+
+    /// Exact process incarnation from the approval event
+    #[arg(long)]
+    incarnation: String,
+
+    /// Choice id advertised by the approval event
+    #[arg(long)]
+    choice: String,
+}
+
+impl ResolveAgentApprovalCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        let response = client
+            .resolve_agent_approval(codec::ResolveAgentApproval {
+                resolution: mux::agent_approval::AgentApprovalResolutionRequest {
+                    request_id: self.request_id.clone(),
+                    agent_id: self.agent_id.clone(),
+                    incarnation_id: self.incarnation.clone(),
+                    choice_id: self.choice.clone(),
+                },
+            })
+            .await?;
+        write_json(&response.resolution)
     }
 }
 
@@ -3185,6 +3224,7 @@ mod test {
             outcome: None,
             recoverable: None,
             detail: None,
+            approval: None,
         };
         let page =
             |requested_after_sequence, latest_sequence, events: Vec<AgentEvent>| AgentEventPage {
