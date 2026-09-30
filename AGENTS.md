@@ -8,6 +8,10 @@ details owned by another Wakterm component. Include a negative guarantee or a
 cross-component mechanism only when readers need it to use or implement the
 documented contract correctly.
 
+## Derived files
+
+After changing CLI arguments or help text, key assignments, or default key bindings, run `make update-derived` and commit the regenerated completions, CLI help, key tables, and `docs/guides/configuration/default-keys.md` with the change. CI runs `make check-derived` and fails on stale files, but only after a push.
+
 ## Multi-client mux synchronization
 
 Treat the server mux as the authority for shared window, tab, pane, and layout state. A GUI client has a local mirror of that state. Local active-tab and active-pane selection may remain client-specific unless a feature explicitly makes them shared.
