@@ -182,7 +182,7 @@ _arguments "${_arguments_options[@]}" : \
 '(--left --right --top)--bottom[Split vertically, with the new pane on the bottom]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'::harness -- Built-in harness to launch. Preferred for agy/claude/codex/gemini/opencode:(agy claude codex gemini opencode)' \
+'::harness -- Built-in harness to launch. Preferred for agy/claude/codex/gemini/opencode:(agy claude codex gemini opencode zcode)' \
 && ret=0
 ;;
 (launch)
@@ -336,6 +336,16 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 ':target -- Current agent id or unique display name from `agent catalog`:_default' \
 '::text -- Prompt text; reads stdin when omitted:_default' \
+&& ret=0
+;;
+(approval)
+_arguments "${_arguments_options[@]}" : \
+'--request-id=[Opaque request id from an approval_requested Agent API event]:REQUEST_ID:_default' \
+'--agent-id=[Exact stable agent id from the approval event]:AGENT_ID:_default' \
+'--incarnation=[Exact process incarnation from the approval event]:INCARNATION:_default' \
+'--choice=[Choice id advertised by the approval event]:CHOICE:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
 && ret=0
 ;;
 (send)
@@ -534,6 +544,10 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (admit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(approval)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -871,6 +885,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(approval)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (send)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -1048,7 +1066,7 @@ _arguments "${_arguments_options[@]}" : \
 '(--left --right --top)--bottom[Split vertically, with the new pane on the bottom]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'::harness -- Built-in harness to launch. Preferred for agy/claude/codex/gemini/opencode:(agy claude codex gemini opencode)' \
+'::harness -- Built-in harness to launch. Preferred for agy/claude/codex/gemini/opencode:(agy claude codex gemini opencode zcode)' \
 && ret=0
 ;;
 (launch)
@@ -1202,6 +1220,16 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 ':target -- Current agent id or unique display name from `agent catalog`:_default' \
 '::text -- Prompt text; reads stdin when omitted:_default' \
+&& ret=0
+;;
+(approval)
+_arguments "${_arguments_options[@]}" : \
+'--request-id=[Opaque request id from an approval_requested Agent API event]:REQUEST_ID:_default' \
+'--agent-id=[Exact stable agent id from the approval event]:AGENT_ID:_default' \
+'--incarnation=[Exact process incarnation from the approval event]:INCARNATION:_default' \
+'--choice=[Choice id advertised by the approval event]:CHOICE:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
 && ret=0
 ;;
 (send)
@@ -1400,6 +1428,10 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (admit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(approval)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -1650,6 +1682,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(approval)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (send)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -1862,6 +1898,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(approval)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (send)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -1980,6 +2020,7 @@ _wakterm__agent_commands() {
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
 'admit:atomically admit and submit an agent prompt' \
+'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
 'request:inspect and stream durable agent return requests' \
 'interrupt:interrupt a native harness turn' \
@@ -2003,6 +2044,11 @@ _wakterm__agent__adopt_commands() {
 _wakterm__agent__adopt-detected_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm agent adopt-detected commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__approval_commands] )) ||
+_wakterm__agent__approval_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent approval commands' commands "$@"
 }
 (( $+functions[_wakterm__agent__capabilities_commands] )) ||
 _wakterm__agent__capabilities_commands() {
@@ -2040,6 +2086,7 @@ _wakterm__agent__help_commands() {
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
 'admit:atomically admit and submit an agent prompt' \
+'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
 'request:inspect and stream durable agent return requests' \
 'interrupt:interrupt a native harness turn' \
@@ -2063,6 +2110,11 @@ _wakterm__agent__help__adopt_commands() {
 _wakterm__agent__help__adopt-detected_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm agent help adopt-detected commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__approval_commands] )) ||
+_wakterm__agent__help__approval_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help approval commands' commands "$@"
 }
 (( $+functions[_wakterm__agent__help__capabilities_commands] )) ||
 _wakterm__agent__help__capabilities_commands() {
@@ -2371,6 +2423,7 @@ _wakterm__cli__agent_commands() {
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
 'admit:atomically admit and submit an agent prompt' \
+'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
 'request:inspect and stream durable agent return requests' \
 'interrupt:interrupt a native harness turn' \
@@ -2394,6 +2447,11 @@ _wakterm__cli__agent__adopt_commands() {
 _wakterm__cli__agent__adopt-detected_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli agent adopt-detected commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__approval_commands] )) ||
+_wakterm__cli__agent__approval_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent approval commands' commands "$@"
 }
 (( $+functions[_wakterm__cli__agent__capabilities_commands] )) ||
 _wakterm__cli__agent__capabilities_commands() {
@@ -2431,6 +2489,7 @@ _wakterm__cli__agent__help_commands() {
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
 'admit:atomically admit and submit an agent prompt' \
+'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
 'request:inspect and stream durable agent return requests' \
 'interrupt:interrupt a native harness turn' \
@@ -2454,6 +2513,11 @@ _wakterm__cli__agent__help__adopt_commands() {
 _wakterm__cli__agent__help__adopt-detected_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli agent help adopt-detected commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__approval_commands] )) ||
+_wakterm__cli__agent__help__approval_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help approval commands' commands "$@"
 }
 (( $+functions[_wakterm__cli__agent__help__capabilities_commands] )) ||
 _wakterm__cli__agent__help__capabilities_commands() {
@@ -2767,6 +2831,7 @@ _wakterm__cli__help__agent_commands() {
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
 'admit:atomically admit and submit an agent prompt' \
+'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
 'request:inspect and stream durable agent return requests' \
 'interrupt:interrupt a native harness turn' \
@@ -2789,6 +2854,11 @@ _wakterm__cli__help__agent__adopt_commands() {
 _wakterm__cli__help__agent__adopt-detected_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli help agent adopt-detected commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__approval_commands] )) ||
+_wakterm__cli__help__agent__approval_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent approval commands' commands "$@"
 }
 (( $+functions[_wakterm__cli__help__agent__capabilities_commands] )) ||
 _wakterm__cli__help__agent__capabilities_commands() {
@@ -3098,6 +3168,7 @@ _wakterm__help__agent_commands() {
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
 'admit:atomically admit and submit an agent prompt' \
+'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
 'request:inspect and stream durable agent return requests' \
 'interrupt:interrupt a native harness turn' \
@@ -3120,6 +3191,11 @@ _wakterm__help__agent__adopt_commands() {
 _wakterm__help__agent__adopt-detected_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help agent adopt-detected commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__approval_commands] )) ||
+_wakterm__help__agent__approval_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent approval commands' commands "$@"
 }
 (( $+functions[_wakterm__help__agent__capabilities_commands] )) ||
 _wakterm__help__agent__capabilities_commands() {
@@ -3291,6 +3367,7 @@ _wakterm__help__cli__agent_commands() {
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
 'admit:atomically admit and submit an agent prompt' \
+'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
 'request:inspect and stream durable agent return requests' \
 'interrupt:interrupt a native harness turn' \
@@ -3313,6 +3390,11 @@ _wakterm__help__cli__agent__adopt_commands() {
 _wakterm__help__cli__agent__adopt-detected_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help cli agent adopt-detected commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__approval_commands] )) ||
+_wakterm__help__cli__agent__approval_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent approval commands' commands "$@"
 }
 (( $+functions[_wakterm__help__cli__agent__capabilities_commands] )) ||
 _wakterm__help__cli__agent__capabilities_commands() {
