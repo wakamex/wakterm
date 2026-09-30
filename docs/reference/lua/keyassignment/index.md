@@ -105,4 +105,5 @@ clear and convenient.
   - [ToggleAlwaysOnTop](ToggleAlwaysOnTop.md)
   - [ToggleFullScreen](ToggleFullScreen.md)
   - [TogglePaneZoomState](TogglePaneZoomState.md)
+  - [ToggleTabActivityOrder](ToggleTabActivityOrder.md)
   - [ToggleTabBarPosition](ToggleTabBarPosition.md)

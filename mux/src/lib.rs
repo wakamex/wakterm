@@ -32,7 +32,7 @@ use parking_lot::{
 };
 use percent_encoding::percent_decode_str;
 use portable_pty::{CommandBuilder, ExitStatus, PtySize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryInto;
 use std::io::{Read, Write};
 #[cfg(windows)]
@@ -1925,13 +1925,113 @@ impl Mux {
             "mirrored agent snapshot belongs to a different domain"
         );
 
-        let mut current = self.mirrored_agent_snapshot_by_pane.write();
-        current.retain(|_, snapshot| snapshot.domain_id != domain_id);
-        current.extend(
-            snapshots
+        let changed_windows = {
+            let mut current = self.mirrored_agent_snapshot_by_pane.write();
+            let before = Self::last_turn_by_tab(
+                current
+                    .values()
+                    .filter(|snapshot| snapshot.domain_id == domain_id),
+            );
+            current.retain(|_, snapshot| snapshot.domain_id != domain_id);
+            current.extend(
+                snapshots
+                    .into_iter()
+                    .map(|snapshot| (snapshot.pane_id, snapshot)),
+            );
+            let after = Self::last_turn_by_tab(
+                current
+                    .values()
+                    .filter(|snapshot| snapshot.domain_id == domain_id),
+            );
+            before
+                .keys()
+                .chain(after.keys())
+                .filter(|key| before.get(key) != after.get(key))
+                .map(|(window_id, _tab_id)| *window_id)
+                .collect::<BTreeSet<_>>()
+        };
+        // Tab bars read these times to order tabs by activity.
+        for window_id in changed_windows {
+            self.notify(MuxNotification::WindowInvalidated(window_id));
+        }
+    }
+
+    fn last_turn_by_tab<'a>(
+        snapshots: impl Iterator<Item = &'a AgentSnapshot>,
+    ) -> HashMap<(WindowId, TabId), DateTime<Utc>> {
+        let mut latest = HashMap::new();
+        for snapshot in snapshots {
+            if let Some(completed_at) = snapshot.runtime.last_turn_completed_at {
+                latest
+                    .entry((snapshot.window_id, snapshot.tab_id))
+                    .and_modify(|latest: &mut DateTime<Utc>| *latest = (*latest).max(completed_at))
+                    .or_insert(completed_at);
+            }
+        }
+        latest
+    }
+
+    /// A window's visible tabs ordered by their latest completed agent turn,
+    /// newest first. Tabs without a completed turn follow in tab order.
+    pub fn visible_tab_ids_by_last_turn(&self, window_id: WindowId) -> Vec<TabId> {
+        let Some(mut tab_ids) = self.get_window(window_id).map(|window| {
+            window
+                .iter_visible()
+                .map(|tab| tab.tab_id())
+                .collect::<Vec<_>>()
+        }) else {
+            return vec![];
+        };
+        let last_turns = self.last_turn_completed_at_by_tab(window_id);
+        // The stable sort keeps tab order among equal times and among tabs
+        // without a time, which sort after every tab with one.
+        tab_ids.sort_by_key(|tab_id| std::cmp::Reverse(last_turns.get(tab_id).copied()));
+        tab_ids
+    }
+
+    /// The most recent completed agent turn in each tab of a window, from
+    /// local agent runtimes and mirrored remote agent snapshots.
+    pub fn last_turn_completed_at_by_tab(
+        &self,
+        window_id: WindowId,
+    ) -> HashMap<TabId, DateTime<Utc>> {
+        let Some(tabs) = self
+            .get_window(window_id)
+            .map(|window| window.iter().cloned().collect::<Vec<_>>())
+        else {
+            return HashMap::new();
+        };
+        let mut latest = HashMap::new();
+        let mut record = |tab_id: TabId, completed_at: DateTime<Utc>| {
+            latest
+                .entry(tab_id)
+                .and_modify(|latest: &mut DateTime<Utc>| *latest = (*latest).max(completed_at))
+                .or_insert(completed_at);
+        };
+        for tab in &tabs {
+            let pane_ids = tab
+                .iter_panes_ignoring_zoom()
                 .into_iter()
-                .map(|snapshot| (snapshot.pane_id, snapshot)),
-        );
+                .map(|pos| pos.pane.pane_id())
+                .collect::<Vec<_>>();
+            let runtimes = self.agent_runtime_by_pane.read();
+            for pane_id in pane_ids {
+                if let Some(completed_at) = runtimes
+                    .get(&pane_id)
+                    .and_then(|runtime| runtime.last_turn_completed_at)
+                {
+                    record(tab.tab_id(), completed_at);
+                }
+            }
+        }
+        for ((snapshot_window_id, tab_id), completed_at) in
+            Self::last_turn_by_tab(self.mirrored_agent_snapshot_by_pane.read().values())
+        {
+            if snapshot_window_id == window_id {
+                record(tab_id, completed_at);
+            }
+        }
+        latest
     }
 
     pub fn mirrored_agent_snapshots_for_window(&self, window_id: WindowId) -> Vec<AgentSnapshot> {
@@ -11923,6 +12023,202 @@ mod test {
         assert_eq!(
             mux.visible_harness_icons_for_tab(tab.tab_id(), None).len(),
             1
+        );
+    }
+
+    #[test]
+    fn last_turn_completed_at_by_tab_combines_local_and_mirrored_agents() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let other_window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let mut tabs = vec![];
+        for (pane_id, target_window) in [
+            (251, window_id),
+            (252, window_id),
+            (253, window_id),
+            (254, other_window_id),
+        ] {
+            let tab = Arc::new(Tab::new(&size));
+            tab.assign_pane(&FakePane::new(pane_id, size, domain.id));
+            mux.add_tab_and_active_pane(&tab).unwrap();
+            mux.add_tab_to_window(&tab, target_window).unwrap();
+            tabs.push(tab);
+        }
+        let at = |minute| Utc.with_ymd_and_hms(2026, 9, 30, 12, minute, 0).unwrap();
+        let metadata = sample_agent_metadata("activity");
+
+        let mut local = AgentRuntimeSnapshot::new(&metadata);
+        local.last_turn_completed_at = Some(at(5));
+        mux.agent_runtime_by_pane.write().insert(251, local);
+        let mut idle = AgentRuntimeSnapshot::new(&metadata);
+        idle.last_turn_completed_at = None;
+        mux.agent_runtime_by_pane.write().insert(253, idle);
+
+        let invalidated = Arc::new(Mutex::new(Vec::new()));
+        let invalidated_for_sub = Arc::clone(&invalidated);
+        mux.subscribe(move |notification| {
+            if let MuxNotification::WindowInvalidated(id) = notification {
+                invalidated_for_sub.lock().push(id);
+            }
+            true
+        });
+
+        let snapshot = |tab: &Arc<Tab>, pane_id, target_window, minute: Option<u32>| {
+            let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+            runtime.last_turn_completed_at = minute.map(at);
+            AgentSnapshot {
+                metadata: metadata.clone(),
+                runtime,
+                pane_id,
+                tab_id: tab.tab_id(),
+                window_id: target_window,
+                workspace: DEFAULT_WORKSPACE.to_string(),
+                domain_id: domain.id,
+                origin: AgentOrigin::Adopted,
+                detection_source: None,
+                needs_attention: false,
+            }
+        };
+        mux.replace_mirrored_agent_snapshots_for_domain(
+            domain.id,
+            vec![
+                // A mirrored agent in the same tab as a local one keeps the newest time.
+                snapshot(&tabs[0], 1251, window_id, Some(3)),
+                snapshot(&tabs[1], 252, window_id, Some(9)),
+                snapshot(&tabs[3], 254, other_window_id, Some(20)),
+            ],
+        );
+        assert_eq!(
+            mux.last_turn_completed_at_by_tab(window_id),
+            HashMap::from([(tabs[0].tab_id(), at(5)), (tabs[1].tab_id(), at(9))])
+        );
+        assert_eq!(
+            mux.last_turn_completed_at_by_tab(other_window_id),
+            HashMap::from([(tabs[3].tab_id(), at(20))])
+        );
+        assert_eq!(*invalidated.lock(), vec![window_id, other_window_id]);
+
+        // An unchanged snapshot does not redraw; a new turn redraws only its window.
+        invalidated.lock().clear();
+        mux.replace_mirrored_agent_snapshots_for_domain(
+            domain.id,
+            vec![
+                snapshot(&tabs[0], 1251, window_id, Some(3)),
+                snapshot(&tabs[1], 252, window_id, Some(9)),
+                snapshot(&tabs[3], 254, other_window_id, Some(20)),
+            ],
+        );
+        assert!(invalidated.lock().is_empty());
+        mux.replace_mirrored_agent_snapshots_for_domain(
+            domain.id,
+            vec![
+                snapshot(&tabs[0], 1251, window_id, Some(3)),
+                snapshot(&tabs[1], 252, window_id, Some(9)),
+                snapshot(&tabs[3], 254, other_window_id, Some(30)),
+            ],
+        );
+        assert_eq!(*invalidated.lock(), vec![other_window_id]);
+        assert_eq!(
+            mux.last_turn_completed_at_by_tab(other_window_id),
+            HashMap::from([(tabs[3].tab_id(), at(30))])
+        );
+    }
+
+    #[test]
+    fn visible_tab_ids_by_last_turn_orders_newest_first_without_moving_tabs() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let mut tab_ids = vec![];
+        for pane_id in 261..=266 {
+            let tab = Arc::new(Tab::new(&size));
+            tab.assign_pane(&FakePane::new(pane_id, size, domain.id));
+            mux.add_tab_and_active_pane(&tab).unwrap();
+            mux.add_tab_to_window(&tab, window_id).unwrap();
+            tab_ids.push(tab.tab_id());
+        }
+        let at = |minute| Utc.with_ymd_and_hms(2026, 9, 30, 12, minute, 0).unwrap();
+        let metadata = sample_agent_metadata("activity");
+        let set_turn = |pane_id, minute: u32| {
+            let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+            runtime.last_turn_completed_at = Some(at(minute));
+            mux.agent_runtime_by_pane.write().insert(pane_id, runtime);
+        };
+        let server_order = || {
+            mux.get_window(window_id)
+                .unwrap()
+                .iter()
+                .map(|tab| tab.tab_id())
+                .collect::<Vec<_>>()
+        };
+
+        // Without any completed turn the order is the tab order.
+        assert_eq!(mux.visible_tab_ids_by_last_turn(window_id), tab_ids);
+
+        let order = |indices: &[usize]| indices.iter().map(|&i| tab_ids[i]).collect::<Vec<_>>();
+
+        // Tabs 1 and 4 tie and keep tab order; tabs 0, 2 and 5 have no turn
+        // and follow in tab order.
+        set_turn(262, 10);
+        set_turn(265, 10);
+        set_turn(264, 20);
+        assert_eq!(
+            mux.visible_tab_ids_by_last_turn(window_id),
+            order(&[3, 1, 4, 0, 2, 5])
+        );
+
+        // A newer turn moves its tab to the front.
+        set_turn(261, 30);
+        assert_eq!(
+            mux.visible_tab_ids_by_last_turn(window_id),
+            order(&[0, 3, 1, 4, 2, 5])
+        );
+
+        // A parked tab is left out even when it is the newest, and returns
+        // in activity position when it is unparked.
+        mux.set_tab_parked(window_id, tab_ids[0], true).unwrap();
+        assert_eq!(
+            mux.visible_tab_ids_by_last_turn(window_id),
+            order(&[3, 1, 4, 2, 5])
+        );
+        mux.set_tab_parked(window_id, tab_ids[0], false).unwrap();
+        assert_eq!(
+            mux.visible_tab_ids_by_last_turn(window_id),
+            order(&[0, 3, 1, 4, 2, 5])
+        );
+
+        // Ordering by activity never changes the shared tab order.
+        assert_eq!(server_order(), tab_ids);
+        assert_eq!(
+            mux.visible_tab_ids_by_last_turn(window_id + 1000),
+            Vec::<TabId>::new()
         );
     }
 

@@ -166,6 +166,7 @@ fn snapshot_rows(
 )> {
     let mux = Mux::get();
     let titles = mux.display_tab_titles_for_window(window_id);
+    let last_turns = mux.last_turn_completed_at_by_tab(window_id);
     let mut agents = mux.list_agents_cached();
     agents.extend(mux.mirrored_agent_snapshots_for_window(window_id));
     let mut agents_by_tab = HashMap::<TabId, Vec<_>>::new();
@@ -201,10 +202,7 @@ fn snapshot_rows(
         let tab_agents = agents_by_tab.remove(&tab_id).unwrap_or_default();
         let icons = harness_icons_for_agents(&tab_agents);
         let status = format_agents_status(&tab_agents);
-        let last_response = tab_agents
-            .iter()
-            .filter_map(|agent| agent.runtime.last_turn_completed_at)
-            .max();
+        let last_response = last_turns.get(&tab_id).copied();
         let branch = tab_agents
             .iter()
             .find_map(|agent| agent.metadata.branch.clone());

@@ -68,6 +68,7 @@ Use `wakterm show-keys` to inspect the bindings after loading your config. Use `
 | <code>PaneSelect</code> | Swap a pane with the active pane | <code>Ctrl+M</code><br><code>Ctrl+Shift+M</code><br><code>Ctrl+Shift+m</code> | <code>Ctrl+M</code><br><code>Ctrl+Shift+M</code><br><code>Ctrl+Shift+m</code> | <code>Ctrl+M</code><br><code>Ctrl+Shift+M</code><br><code>Ctrl+Shift+m</code> |
 | <code>ToggleFullScreen</code> | Toggle full screen mode | <code>Alt+Enter</code> | <code>Opt+Enter</code> | <code>Alt+Enter</code> |
 | <code>TogglePaneZoomState</code> | Toggle Pane Zoom | <code>Ctrl+Z</code><br><code>Ctrl+Shift+Z</code><br><code>Ctrl+Shift+z</code> | <code>Ctrl+Z</code><br><code>Ctrl+Shift+Z</code><br><code>Ctrl+Shift+z</code> | <code>Ctrl+Z</code><br><code>Ctrl+Shift+Z</code><br><code>Ctrl+Shift+z</code> |
+| <code>ToggleTabActivityOrder</code> | Toggle tab activity order | <code>Ctrl+Shift+B</code> | <code>Cmd+Shift+B</code> | <code>Ctrl+Shift+B</code> |
 | <code>ToggleTabBarPosition</code> | Toggle tab bar position | <code>Ctrl+A</code><br><code>Ctrl+Shift+A</code><br><code>Ctrl+Shift+a</code> | <code>Ctrl+A</code><br><code>Ctrl+Shift+A</code><br><code>Ctrl+Shift+a</code> | <code>Ctrl+A</code><br><code>Ctrl+Shift+A</code><br><code>Ctrl+Shift+a</code> |
 
 If you do not want the default assignments to be registered, you can disable all of them with this configuration:

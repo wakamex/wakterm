@@ -1747,6 +1747,23 @@ fn derive_command_from_key_assignment_for_platform(
             menubar: &["Window", "Select Tab"],
             icon: Some("cod_list_flat"),
         },
+        ToggleTabActivityOrder => CommandDef {
+            brief: "Toggle tab activity order".into(),
+            doc: "Orders the tab bar by the latest completed agent turn, newest first, \
+            without changing the shared tab order."
+                .into(),
+            keys: vec![(
+                if platform == KeyBindingPlatform::MacOs {
+                    Modifiers::SUPER | Modifiers::SHIFT
+                } else {
+                    Modifiers::CTRL | Modifiers::SHIFT
+                },
+                "B".into(),
+            )],
+            args: &[ArgType::ActiveWindow],
+            menubar: &["Window"],
+            icon: Some("md_sort_clock_descending_outline"),
+        },
         ActivateNextTabNeedingAttention => CommandDef {
             brief: "Review next agent response".into(),
             doc: "Activates the newest unseen agent response, including hidden tabs.".into(),
@@ -2262,6 +2279,7 @@ fn compute_default_actions(platform: KeyBindingPlatform) -> Vec<KeyAssignment> {
         ActivateLastTab,
         ShowLauncher,
         ShowTabNavigator,
+        ToggleTabActivityOrder,
         ActivateNextTabNeedingAttention,
         // ----------------- Help
         OpenUri("https://wakterm.org/".to_string()),
@@ -2292,6 +2310,21 @@ mod test {
             command.keys,
             vec![(Modifiers::CTRL.union(Modifiers::SHIFT), "a".into())]
         );
+        assert!(compute_default_actions(KeyBindingPlatform::current()).contains(&action));
+    }
+
+    #[test]
+    fn tab_activity_order_toggle_has_the_default_window_binding() {
+        let action = KeyAssignment::ToggleTabActivityOrder;
+        let command = derive_command_from_key_assignment(&action).unwrap();
+
+        assert_eq!(command.args, &[ArgType::ActiveWindow]);
+        let expected = if KeyBindingPlatform::current() == KeyBindingPlatform::MacOs {
+            Modifiers::SUPER | Modifiers::SHIFT
+        } else {
+            Modifiers::CTRL | Modifiers::SHIFT
+        };
+        assert_eq!(command.keys, vec![(expected, "B".into())]);
         assert!(compute_default_actions(KeyBindingPlatform::current()).contains(&action));
     }
 }

@@ -14,6 +14,7 @@ use config::configuration;
 use config::keyassignment::{KeyAssignment, SpawnCommand, SpawnTabDomain};
 use mux::domain::{DomainId, DomainState};
 use mux::pane::{CachePolicy, PaneId};
+use mux::tab::TabId;
 use mux::termwiztermtab::TermWizTerminal;
 use mux::window::WindowId;
 use mux::Mux;
@@ -76,6 +77,7 @@ impl LauncherArgs {
         title: &str,
         flags: LauncherFlags,
         mux_window_id: WindowId,
+        tab_ids: Vec<TabId>,
         pane_id: PaneId,
         domain_id_of_current_tab: DomainId,
         help_text: &str,
@@ -97,11 +99,10 @@ impl LauncherArgs {
             // overlay, but since the overlay runs in a different thread, accessing
             // the mux list is a bit awkward.  To get the ball rolling we capture
             // the list of tabs up front and live with a static list.
-            let window = mux
-                .get_window(mux_window_id)
-                .expect("to resolve my own window_id");
-            window
+            // tab_ids is in tab bar order, which ActivateTab indices follow.
+            tab_ids
                 .iter()
+                .filter_map(|tab_id| mux.get_tab(*tab_id))
                 .enumerate()
                 .map(|(tab_idx, tab)| {
                     let tab_title = mux.effective_tab_title(tab.tab_id());

@@ -513,10 +513,18 @@ enum EventState {
     InProgressWithQueued(Option<PaneId>),
 }
 
+fn display_position(tab_ids: &[TabId], tab_id: Option<TabId>) -> Option<usize> {
+    let tab_id = tab_id?;
+    tab_ids.iter().position(|candidate| *candidate == tab_id)
+}
+
 pub struct TermWindow {
     pub window: Option<Window>,
     pub config: ConfigHandle,
     pub config_overrides: wakterm_dynamic::Value,
+    /// Show this window's tabs by latest agent activity rather than in the
+    /// shared tab order.
+    tab_activity_order: bool,
     os_parameters: Option<parameters::Parameters>,
     /// When we most recently received keyboard focus
     pub focused: Option<Instant>,
@@ -884,6 +892,7 @@ impl TermWindow {
             window_background,
             config: config.clone(),
             config_overrides: wakterm_dynamic::Value::default(),
+            tab_activity_order: false,
             palette: None,
             focused: None,
             mux_window_id,
@@ -2002,6 +2011,23 @@ impl TermWindow {
         Ok(())
     }
 
+    fn toggle_tab_activity_order(&mut self) {
+        self.tab_activity_order = !self.tab_activity_order;
+        self.update_title();
+    }
+
+    /// Visible tabs in tab bar order. Tab indices in key assignments and the
+    /// tab bar refer to positions in this list.
+    fn display_tab_ids(&self) -> Vec<TabId> {
+        let mux = Mux::get();
+        if self.tab_activity_order {
+            return mux.visible_tab_ids_by_last_turn(self.mux_window_id);
+        }
+        mux.get_window(self.mux_window_id)
+            .map(|window| window.iter_visible().map(|tab| tab.tab_id()).collect())
+            .unwrap_or_default()
+    }
+
     fn palette(&mut self) -> &ColorPalette {
         if self.palette.is_none() {
             self.palette
@@ -2449,13 +2475,11 @@ impl TermWindow {
 
     fn activate_tab(&mut self, tab_idx: isize) -> anyhow::Result<()> {
         let mux = Mux::get();
-        let window = mux
-            .get_window(self.mux_window_id)
-            .ok_or_else(|| anyhow!("no such window"))?;
+        let tab_ids = self.display_tab_ids();
 
         // This logic is coupled with the CliSubCommand::ActivateTab
         // logic in wakterm/src/main.rs. If you update this, update that!
-        let max = window.visible_len();
+        let max = tab_ids.len();
 
         let tab_idx = if tab_idx < 0 {
             max.saturating_sub(tab_idx.abs() as usize)
@@ -2464,11 +2488,7 @@ impl TermWindow {
         };
 
         if tab_idx < max {
-            let tab_id = window
-                .get_visible_by_idx(tab_idx)
-                .map(|tab| tab.tab_id())
-                .ok_or_else(|| anyhow!("no such tab index {tab_idx}"))?;
-            drop(window);
+            let tab_id = tab_ids[tab_idx];
             let started = std::env::var_os("WAKTERM_TRACE_TAB_LATENCY")
                 .is_some()
                 .then(Instant::now);
@@ -2495,12 +2515,7 @@ impl TermWindow {
     }
 
     fn activate_tab_relative(&mut self, delta: isize, wrap: bool) -> anyhow::Result<()> {
-        let mux = Mux::get();
-        let window = mux
-            .get_window(self.mux_window_id)
-            .ok_or_else(|| anyhow!("no such window"))?;
-
-        let max = window.visible_len();
+        let max = self.display_tab_ids().len();
         ensure!(max > 0, "no more tabs");
 
         // This logic is coupled with the CliSubCommand::ActivateTab
@@ -2522,7 +2537,6 @@ impl TermWindow {
                 tab
             }
         };
-        drop(window);
         self.activate_tab(tab)
     }
 
@@ -2534,6 +2548,10 @@ impl TermWindow {
     }
 
     fn move_tab(&mut self, tab_idx: usize) -> anyhow::Result<()> {
+        ensure!(
+            !self.tab_activity_order,
+            "tabs cannot be moved while they are ordered by activity"
+        );
         let mux = Mux::get();
         let active = self
             .get_active_tab_index()
@@ -2741,6 +2759,7 @@ impl TermWindow {
             .domain_id();
         let pane_id = pane.pane_id();
         let tab_id = tab.tab_id();
+        let tab_ids = self.display_tab_ids();
         let title = args.title.unwrap();
         let flags = args.flags;
         let help_text = args.help_text.unwrap_or(
@@ -2760,6 +2779,7 @@ impl TermWindow {
                 &title,
                 flags,
                 mux_window_id,
+                tab_ids,
                 pane_id,
                 domain_id_of_current_pane,
                 &help_text,
@@ -2878,6 +2898,10 @@ impl TermWindow {
     }
 
     fn move_tab_relative(&mut self, delta: isize) -> anyhow::Result<()> {
+        ensure!(
+            !self.tab_activity_order,
+            "tabs cannot be moved while they are ordered by activity"
+        );
         let mux = Mux::get();
         let window = mux
             .get_window(self.mux_window_id)
@@ -3001,6 +3025,7 @@ impl TermWindow {
             ToggleTabBarPosition => {
                 self.toggle_tab_bar_position()?;
             }
+            ToggleTabActivityOrder => self.toggle_tab_activity_order(),
             ToggleAlwaysOnTop => {
                 let window = self.window.clone().unwrap();
                 let current_level = self.window_state.as_window_level();
@@ -3554,16 +3579,14 @@ impl TermWindow {
     fn close_specific_tab(&mut self, tab_idx: usize, confirm: bool) {
         let mux = Mux::get();
         let mux_window_id = self.mux_window_id;
-        let mux_window = match mux.get_window(mux_window_id) {
-            Some(w) => w,
+        let tab = match self
+            .display_tab_ids()
+            .get(tab_idx)
+            .and_then(|tab_id| mux.get_tab(*tab_id))
+        {
+            Some(tab) => tab,
             None => return,
         };
-
-        let tab = match mux_window.get_visible_by_idx(tab_idx) {
-            Some(tab) => Arc::clone(tab),
-            None => return,
-        };
-        drop(mux_window);
 
         let tab_id = tab.tab_id();
         if confirm && !tab.can_close_without_prompting(CloseReason::Tab) {
@@ -3720,26 +3743,34 @@ impl TermWindow {
                 mux.get_window(self.mux_window_id)
                     .is_some_and(|window| !window.is_tab_parked(tab.tab_id()))
             })
-            .or_else(|| {
-                mux.get_window(self.mux_window_id)?
-                    .get_visible_by_idx(0)
-                    .cloned()
-            })
+            .or_else(|| mux.get_tab(*self.display_tab_ids().first()?))
+    }
+
+    fn active_tab_id(&self) -> Option<TabId> {
+        Mux::get()
+            .get_active_tab_for_window_for_current_identity(self.mux_window_id)
+            .map(|tab| tab.tab_id())
+    }
+
+    fn last_active_tab_id(&self) -> Option<TabId> {
+        let mux = Mux::get();
+        let view_id = mux.active_view_id()?;
+        mux.get_last_active_tab_id_for_window_for_client(view_id.as_ref(), self.mux_window_id)
     }
 
     fn get_active_tab_index(&self) -> Option<usize> {
-        let mux = Mux::get();
-        mux.get_active_tab_idx_for_window_for_current_identity(self.mux_window_id)
-            .or_else(|| {
-                mux.get_window(self.mux_window_id)?
-                    .get_visible_by_idx(0)
-                    .map(|_| 0)
-            })
+        self.active_tab_position(&self.display_tab_ids())
+    }
+
+    /// The active tab's position in `tab_ids`, falling back to the first tab
+    /// when the active tab is not among them.
+    fn active_tab_position(&self, tab_ids: &[TabId]) -> Option<usize> {
+        display_position(tab_ids, self.active_tab_id())
+            .or_else(|| (!tab_ids.is_empty()).then_some(0))
     }
 
     fn get_last_active_tab_index(&self) -> Option<usize> {
-        let mux = Mux::get();
-        mux.get_last_active_tab_idx_for_window_for_current_identity(self.mux_window_id)
+        display_position(&self.display_tab_ids(), self.last_active_tab_id())
     }
 
     fn get_active_pane_no_overlay(&self) -> Option<Arc<dyn Pane>> {
@@ -3851,20 +3882,18 @@ impl TermWindow {
 
     fn get_tab_information(&mut self) -> Vec<TabInformation> {
         let mux = Mux::get();
-        let window = match mux.get_window(self.mux_window_id) {
-            Some(window) => window,
-            _ => return vec![],
-        };
-        let tab_index = self.get_active_tab_index();
-        let last_active_idx = self.get_last_active_tab_index();
+        let tab_ids = self.display_tab_ids();
+        let tab_index = self.active_tab_position(&tab_ids);
+        let last_active_idx = display_position(&tab_ids, self.last_active_tab_id());
         let effective_titles = mux.effective_tab_titles_for_window(self.mux_window_id);
         let display_titles = mux.display_tab_titles_for_window(self.mux_window_id);
 
-        let mut tabs: Vec<TabInformation> = window
-            .iter_visible()
+        let mut tabs: Vec<TabInformation> = tab_ids
+            .iter()
+            .filter_map(|tab_id| mux.get_tab(*tab_id))
             .enumerate()
             .map(|(idx, tab)| {
-                let panes = self.get_pos_panes_for_tab(tab);
+                let panes = self.get_pos_panes_for_tab(&tab);
                 let active_pane = panes.iter().find(|p| p.is_active);
                 let harness_icons: Vec<TabHarnessIcon> = mux
                     .visible_harness_icons_for_tab(tab.tab_id(), None)
@@ -4064,10 +4093,21 @@ impl Drop for TermWindow {
 #[cfg(test)]
 mod test {
     use super::{
-        default_window_title, tab_bar_position_override, PaneInformation, Progress, TabInformation,
+        default_window_title, display_position, tab_bar_position_override, PaneInformation,
+        Progress, TabInformation,
     };
     use std::collections::HashMap;
     use wakterm_dynamic::Value;
+
+    #[test]
+    fn display_position_finds_tabs_by_id() {
+        let tab_ids = [7, 3, 9];
+        assert_eq!(display_position(&tab_ids, Some(7)), Some(0));
+        assert_eq!(display_position(&tab_ids, Some(9)), Some(2));
+        assert_eq!(display_position(&tab_ids, Some(4)), None);
+        assert_eq!(display_position(&tab_ids, None), None);
+        assert_eq!(display_position(&[], Some(7)), None);
+    }
 
     #[test]
     fn tab_bar_position_toggle_returns_to_the_configured_position() {
