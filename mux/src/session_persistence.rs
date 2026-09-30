@@ -680,6 +680,8 @@ async fn restore_tab(
     // at intermediate sizes and may have accumulated inconsistencies
     // (e.g., column heights not matching across an H-split).
     tab.resize(restore_size);
+    // Each split activated its new pane; start the restored tab on its first.
+    tab.set_active_idx(0);
 
     Ok(tab.tab_id())
 }
@@ -2624,6 +2626,16 @@ mod test {
             .await
             .expect("restore tab");
         });
+
+        let restored_tab = restored_mux
+            .get_window(restored_window)
+            .unwrap()
+            .iter()
+            .next()
+            .cloned()
+            .unwrap();
+        assert_eq!(restored_tab.count_panes(), Some(2));
+        assert_eq!(restored_tab.get_active_idx(), 0);
 
         let spawned = spawned_tokens.lock().unwrap().clone();
         assert_eq!(
