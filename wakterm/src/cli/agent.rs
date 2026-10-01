@@ -1541,18 +1541,33 @@ impl AgentCatalogCommand {
 /// Resolves the calling agent from `WAKTERM_PANE`, or from
 /// `CODEX_THREAD_ID` for tool commands of a managed Codex thread.
 #[derive(Debug, Parser, Clone)]
-pub struct AgentCallerCommand {}
+pub struct AgentCallerCommand {
+    /// Resolve this pane instead of the environment. With either flag, the
+    /// environment is ignored.
+    #[arg(long)]
+    pane: Option<PaneId>,
+
+    /// Resolve this managed Codex thread instead of the environment. With
+    /// either flag, the environment is ignored.
+    #[arg(long)]
+    codex_thread: Option<String>,
+}
 
 impl AgentCallerCommand {
     async fn run(&self, client: Client) -> anyhow::Result<()> {
-        let wakterm_pane = std::env::var("WAKTERM_PANE")
-            .ok()
-            .map(|pane| {
-                pane.parse()
-                    .with_context(|| format!("WAKTERM_PANE {pane:?} is not a pane id"))
-            })
-            .transpose()?;
-        let codex_thread_id = std::env::var("CODEX_THREAD_ID").ok();
+        let (wakterm_pane, codex_thread_id) = if self.pane.is_some() || self.codex_thread.is_some()
+        {
+            (self.pane, self.codex_thread.clone())
+        } else {
+            let pane = std::env::var("WAKTERM_PANE")
+                .ok()
+                .map(|pane| {
+                    pane.parse()
+                        .with_context(|| format!("WAKTERM_PANE {pane:?} is not a pane id"))
+                })
+                .transpose()?;
+            (pane, std::env::var("CODEX_THREAD_ID").ok())
+        };
         let agents = client.list_agents().await?.agents;
         write_json(&mux::agent_admission::resolve_agent_caller(
             agents,

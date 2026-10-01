@@ -326,6 +326,8 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (caller)
 _arguments "${_arguments_options[@]}" : \
+'--pane=[Resolve this pane instead of the environment. With either flag, the environment is ignored]:PANE:_default' \
+'--codex-thread=[Resolve this managed Codex thread instead of the environment. With either flag, the environment is ignored]:CODEX_THREAD:_default' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
@@ -1224,6 +1226,8 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (caller)
 _arguments "${_arguments_options[@]}" : \
+'--pane=[Resolve this pane instead of the environment. With either flag, the environment is ignored]:PANE:_default' \
+'--codex-thread=[Resolve this managed Codex thread instead of the environment. With either flag, the environment is ignored]:CODEX_THREAD:_default' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0

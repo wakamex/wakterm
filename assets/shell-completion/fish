@@ -313,6 +313,8 @@ complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_s
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from events" -s h -l help -d 'Print help'
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from capabilities" -s h -l help -d 'Print help'
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from catalog" -s h -l help -d 'Print help'
+complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from caller" -l pane -d 'Resolve this pane instead of the environment. With either flag, the environment is ignored' -r
+complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from caller" -l codex-thread -d 'Resolve this managed Codex thread instead of the environment. With either flag, the environment is ignored' -r
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from caller" -s h -l help -d 'Print help'
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from admit" -l incarnation -d 'Opaque process incarnation from `agent catalog`' -r
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from admit" -l request-id -d 'Durable idempotency key' -r
