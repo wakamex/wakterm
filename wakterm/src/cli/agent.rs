@@ -105,6 +105,12 @@ enum AgentSubCommand {
     #[command(name = "catalog", about = "print the narrow Wakterm Agent API catalog")]
     Catalog(AgentCatalogCommand),
 
+    #[command(
+        name = "caller",
+        about = "print the catalog entry of the agent this command runs for"
+    )]
+    Caller(AgentCallerCommand),
+
     #[command(name = "admit", about = "atomically admit and submit an agent prompt")]
     Admit(AdmitAgentCommand),
 
@@ -147,6 +153,7 @@ impl AgentCommand {
             AgentSubCommand::Events(cmd) => cmd.run(client).await,
             AgentSubCommand::Capabilities(cmd) => cmd.run(client).await,
             AgentSubCommand::Catalog(cmd) => cmd.run(client).await,
+            AgentSubCommand::Caller(cmd) => cmd.run(client).await,
             AgentSubCommand::Admit(cmd) => cmd.run(client).await,
             AgentSubCommand::Approval(cmd) => cmd.run(client).await,
             AgentSubCommand::Send(cmd) => cmd.run(client).await,
@@ -1528,6 +1535,30 @@ impl AgentCatalogCommand {
                 .await?
                 .catalog,
         )
+    }
+}
+
+/// Resolves the calling agent from `WAKTERM_PANE`, or from
+/// `CODEX_THREAD_ID` for tool commands of a managed Codex thread.
+#[derive(Debug, Parser, Clone)]
+pub struct AgentCallerCommand {}
+
+impl AgentCallerCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        let wakterm_pane = std::env::var("WAKTERM_PANE")
+            .ok()
+            .map(|pane| {
+                pane.parse()
+                    .with_context(|| format!("WAKTERM_PANE {pane:?} is not a pane id"))
+            })
+            .transpose()?;
+        let codex_thread_id = std::env::var("CODEX_THREAD_ID").ok();
+        let agents = client.list_agents().await?.agents;
+        write_json(&mux::agent_admission::resolve_agent_caller(
+            agents,
+            wakterm_pane,
+            codex_thread_id.as_deref(),
+        )?)
     }
 }
 

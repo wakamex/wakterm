@@ -324,6 +324,12 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(caller)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
 (admit)
 _arguments "${_arguments_options[@]}" : \
 '--incarnation=[Opaque process incarnation from \`agent catalog\`]:INCARNATION:_default' \
@@ -540,6 +546,10 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (catalog)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(caller)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -881,6 +891,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(caller)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (admit)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -1208,6 +1222,12 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(caller)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
 (admit)
 _arguments "${_arguments_options[@]}" : \
 '--incarnation=[Opaque process incarnation from \`agent catalog\`]:INCARNATION:_default' \
@@ -1424,6 +1444,10 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (catalog)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(caller)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -1678,6 +1702,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(caller)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (admit)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -1894,6 +1922,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(caller)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (admit)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -2019,6 +2051,7 @@ _wakterm__agent_commands() {
 'events:read durable normalized Agent API events' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
+'caller:print the catalog entry of the agent this command runs for' \
 'admit:atomically admit and submit an agent prompt' \
 'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
@@ -2049,6 +2082,11 @@ _wakterm__agent__adopt-detected_commands() {
 _wakterm__agent__approval_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm agent approval commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__caller_commands] )) ||
+_wakterm__agent__caller_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent caller commands' commands "$@"
 }
 (( $+functions[_wakterm__agent__capabilities_commands] )) ||
 _wakterm__agent__capabilities_commands() {
@@ -2085,6 +2123,7 @@ _wakterm__agent__help_commands() {
 'events:read durable normalized Agent API events' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
+'caller:print the catalog entry of the agent this command runs for' \
 'admit:atomically admit and submit an agent prompt' \
 'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
@@ -2115,6 +2154,11 @@ _wakterm__agent__help__adopt-detected_commands() {
 _wakterm__agent__help__approval_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm agent help approval commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__caller_commands] )) ||
+_wakterm__agent__help__caller_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help caller commands' commands "$@"
 }
 (( $+functions[_wakterm__agent__help__capabilities_commands] )) ||
 _wakterm__agent__help__capabilities_commands() {
@@ -2422,6 +2466,7 @@ _wakterm__cli__agent_commands() {
 'events:read durable normalized Agent API events' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
+'caller:print the catalog entry of the agent this command runs for' \
 'admit:atomically admit and submit an agent prompt' \
 'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
@@ -2452,6 +2497,11 @@ _wakterm__cli__agent__adopt-detected_commands() {
 _wakterm__cli__agent__approval_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli agent approval commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__caller_commands] )) ||
+_wakterm__cli__agent__caller_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent caller commands' commands "$@"
 }
 (( $+functions[_wakterm__cli__agent__capabilities_commands] )) ||
 _wakterm__cli__agent__capabilities_commands() {
@@ -2488,6 +2538,7 @@ _wakterm__cli__agent__help_commands() {
 'events:read durable normalized Agent API events' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
+'caller:print the catalog entry of the agent this command runs for' \
 'admit:atomically admit and submit an agent prompt' \
 'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
@@ -2518,6 +2569,11 @@ _wakterm__cli__agent__help__adopt-detected_commands() {
 _wakterm__cli__agent__help__approval_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli agent help approval commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__caller_commands] )) ||
+_wakterm__cli__agent__help__caller_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help caller commands' commands "$@"
 }
 (( $+functions[_wakterm__cli__agent__help__capabilities_commands] )) ||
 _wakterm__cli__agent__help__capabilities_commands() {
@@ -2830,6 +2886,7 @@ _wakterm__cli__help__agent_commands() {
 'events:read durable normalized Agent API events' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
+'caller:print the catalog entry of the agent this command runs for' \
 'admit:atomically admit and submit an agent prompt' \
 'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
@@ -2859,6 +2916,11 @@ _wakterm__cli__help__agent__adopt-detected_commands() {
 _wakterm__cli__help__agent__approval_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli help agent approval commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__caller_commands] )) ||
+_wakterm__cli__help__agent__caller_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent caller commands' commands "$@"
 }
 (( $+functions[_wakterm__cli__help__agent__capabilities_commands] )) ||
 _wakterm__cli__help__agent__capabilities_commands() {
@@ -3167,6 +3229,7 @@ _wakterm__help__agent_commands() {
 'events:read durable normalized Agent API events' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
+'caller:print the catalog entry of the agent this command runs for' \
 'admit:atomically admit and submit an agent prompt' \
 'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
@@ -3196,6 +3259,11 @@ _wakterm__help__agent__adopt-detected_commands() {
 _wakterm__help__agent__approval_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help agent approval commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__caller_commands] )) ||
+_wakterm__help__agent__caller_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent caller commands' commands "$@"
 }
 (( $+functions[_wakterm__help__agent__capabilities_commands] )) ||
 _wakterm__help__agent__capabilities_commands() {
@@ -3366,6 +3434,7 @@ _wakterm__help__cli__agent_commands() {
 'events:read durable normalized Agent API events' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
+'caller:print the catalog entry of the agent this command runs for' \
 'admit:atomically admit and submit an agent prompt' \
 'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
@@ -3395,6 +3464,11 @@ _wakterm__help__cli__agent__adopt-detected_commands() {
 _wakterm__help__cli__agent__approval_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help cli agent approval commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__caller_commands] )) ||
+_wakterm__help__cli__agent__caller_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent caller commands' commands "$@"
 }
 (( $+functions[_wakterm__help__cli__agent__capabilities_commands] )) ||
 _wakterm__help__cli__agent__capabilities_commands() {

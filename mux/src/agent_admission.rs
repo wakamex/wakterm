@@ -565,6 +565,89 @@ fn classify_runtime(
     None
 }
 
+/// The environment value that identified a calling agent.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentCallerSource {
+    /// `WAKTERM_PANE`, inherited by a pane's shell and PTY harness tools.
+    WaktermPane,
+    /// `CODEX_THREAD_ID`, set for tool commands of a managed Codex thread,
+    /// which run in the shared app-server rather than in the pane.
+    CodexThread,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentCaller {
+    pub schema: String,
+    pub resolved_by: AgentCallerSource,
+    pub agent: AgentCatalogEntry,
+}
+
+/// Identifies the live registered agent a command runs for, from the
+/// command's `WAKTERM_PANE` and `CODEX_THREAD_ID`. Fails rather than guess
+/// when neither identifies exactly one agent or when they disagree.
+pub fn resolve_agent_caller(
+    agents: Vec<AgentSnapshot>,
+    wakterm_pane: Option<PaneId>,
+    codex_thread_id: Option<&str>,
+) -> anyhow::Result<AgentCaller> {
+    let agents = agents
+        .into_iter()
+        .filter(|agent| agent.origin.is_registered() && agent.runtime.alive)
+        .collect::<Vec<_>>();
+    let thread_agents = codex_thread_id.map(|thread_id| {
+        agents
+            .iter()
+            .filter(|agent| {
+                agent
+                    .metadata
+                    .codex_app_server
+                    .as_ref()
+                    .is_some_and(|session| session.thread_id == thread_id)
+            })
+            .collect::<Vec<_>>()
+    });
+    let (agent, resolved_by) = match (wakterm_pane, thread_agents) {
+        (Some(pane_id), thread_agents) => {
+            let agent = agents
+                .iter()
+                .find(|agent| agent.pane_id == pane_id)
+                .with_context(|| format!("pane {pane_id} has no live registered agent"))?;
+            if let Some(other) = thread_agents
+                .unwrap_or_default()
+                .into_iter()
+                .find(|other| other.metadata.agent_id != agent.metadata.agent_id)
+            {
+                anyhow::bail!(
+                    "WAKTERM_PANE {pane_id} names agent {} but CODEX_THREAD_ID names agent {}",
+                    agent.metadata.name,
+                    other.metadata.name
+                );
+            }
+            (agent, AgentCallerSource::WaktermPane)
+        }
+        (None, Some(thread_agents)) => {
+            let thread_id = codex_thread_id.unwrap_or_default();
+            match thread_agents.as_slice() {
+                [agent] => (*agent, AgentCallerSource::CodexThread),
+                [] => anyhow::bail!("Codex thread {thread_id} is not a live managed agent"),
+                _ => anyhow::bail!(
+                    "Codex thread {thread_id} is bound to {} live agents",
+                    thread_agents.len()
+                ),
+            }
+        }
+        (None, None) => {
+            anyhow::bail!("neither WAKTERM_PANE nor CODEX_THREAD_ID identifies the caller")
+        }
+    };
+    Ok(AgentCaller {
+        schema: AGENT_API_SCHEMA.to_string(),
+        resolved_by,
+        agent: catalog_entry(agent.clone()),
+    })
+}
+
 fn catalog_entry(agent: AgentSnapshot) -> AgentCatalogEntry {
     AgentCatalogEntry {
         agent_id: agent.metadata.agent_id.clone(),
@@ -847,6 +930,118 @@ mod tests {
             detection_source: None,
             needs_attention: false,
         }
+    }
+
+    fn managed_codex(
+        agent_id: &str,
+        name: &str,
+        thread_id: &str,
+        pane_id: PaneId,
+    ) -> AgentSnapshot {
+        let mut metadata = metadata();
+        metadata.agent_id = agent_id.to_string();
+        metadata.name = name.to_string();
+        metadata.adopted_pid = None;
+        metadata.adopted_start_time = None;
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: thread_id.to_string(),
+            session_id: thread_id.to_string(),
+            executable: "codex".to_string(),
+            version: "codex-cli test".to_string(),
+            tui_args: vec![],
+        });
+        let mut agent = snapshot(metadata, pane_id);
+        agent.origin = crate::agent::AgentOrigin::Managed;
+        agent.runtime.transport = crate::agent::AgentTransport::CodexAppServerTui;
+        agent
+    }
+
+    fn observed(agent_id: &str, name: &str, pane_id: PaneId) -> AgentSnapshot {
+        let mut metadata = metadata();
+        metadata.agent_id = agent_id.to_string();
+        metadata.name = name.to_string();
+        snapshot(metadata, pane_id)
+    }
+
+    #[test]
+    fn caller_resolution_finds_a_managed_codex_thread_among_shared_app_server_threads() {
+        // Many managed threads share one app-server, whose tool commands carry
+        // only CODEX_THREAD_ID.
+        let agents = vec![
+            managed_codex("panetone", "panetone_codex", "thread-17", 17),
+            managed_codex("wakterm", "wakterm_codex", "thread-8", 8),
+            observed("claude", "pacman_claude", 39),
+        ];
+
+        let caller = resolve_agent_caller(agents.clone(), None, Some("thread-17")).unwrap();
+        assert_eq!(caller.schema, AGENT_API_SCHEMA);
+        assert_eq!(caller.resolved_by, AgentCallerSource::CodexThread);
+        assert_eq!(caller.agent.agent_id, "panetone");
+        assert_eq!(caller.agent.pane_id, 17);
+        assert_eq!(
+            caller.agent.incarnation_id,
+            incarnation_id(&agents[0].metadata)
+        );
+
+        let caller = resolve_agent_caller(agents.clone(), None, Some("thread-8")).unwrap();
+        assert_eq!(caller.agent.agent_id, "wakterm");
+
+        let error = resolve_agent_caller(agents, None, Some("thread-unknown")).unwrap_err();
+        assert!(error.to_string().contains("not a live managed agent"));
+    }
+
+    #[test]
+    fn caller_resolution_uses_the_pane_for_pty_harness_tools() {
+        let agents = vec![
+            managed_codex("panetone", "panetone_codex", "thread-17", 17),
+            observed("claude", "pacman_claude", 39),
+        ];
+
+        let caller = resolve_agent_caller(agents.clone(), Some(39), None).unwrap();
+        assert_eq!(caller.resolved_by, AgentCallerSource::WaktermPane);
+        assert_eq!(caller.agent.agent_id, "claude");
+
+        // An observed Codex sets CODEX_THREAD_ID for an unmanaged thread too.
+        let caller =
+            resolve_agent_caller(agents.clone(), Some(39), Some("observed-thread")).unwrap();
+        assert_eq!(caller.agent.agent_id, "claude");
+
+        let caller = resolve_agent_caller(agents.clone(), Some(17), Some("thread-17")).unwrap();
+        assert_eq!(caller.resolved_by, AgentCallerSource::WaktermPane);
+        assert_eq!(caller.agent.agent_id, "panetone");
+
+        let error = resolve_agent_caller(agents, Some(5), None).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("pane 5 has no live registered agent"));
+    }
+
+    #[test]
+    fn caller_resolution_fails_rather_than_guess() {
+        let agents = vec![
+            managed_codex("panetone", "panetone_codex", "thread-17", 17),
+            managed_codex("copy", "copy_codex", "thread-17", 18),
+            observed("claude", "pacman_claude", 39),
+        ];
+
+        let error = resolve_agent_caller(agents.clone(), None, Some("thread-17")).unwrap_err();
+        assert!(error.to_string().contains("bound to 2 live agents"));
+
+        let error = resolve_agent_caller(agents.clone(), Some(39), Some("thread-17")).unwrap_err();
+        assert!(error.to_string().contains("names agent pacman_claude"));
+
+        let error = resolve_agent_caller(agents, None, None).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("neither WAKTERM_PANE nor CODEX_THREAD_ID"));
+
+        // Exited and merely detected agents are not callers.
+        let mut exited = managed_codex("exited", "exited_codex", "thread-dead", 21);
+        exited.runtime.alive = false;
+        let mut detected = observed("detected-pane-22", "detected", 22);
+        detected.origin = crate::agent::AgentOrigin::Detected;
+        assert!(resolve_agent_caller(vec![exited], None, Some("thread-dead")).is_err());
+        assert!(resolve_agent_caller(vec![detected], Some(22), None).is_err());
     }
 
     #[test]
