@@ -2161,22 +2161,30 @@ fn observe_codex(
     process_start_time: Option<u64>,
     expected_session_id: Option<&str>,
 ) -> anyhow::Result<Option<HarnessObservation>> {
-    if let Some(process_session) = codex_session_owned_by_process(
+    let process_session = match codex_session_owned_by_process(
         cwd,
         process_id,
         process_start_time,
         preferred_session,
         expected_session_id,
     )? {
+        Some(path) => Some((path, true)),
+        None => remote_codex_tui_session(process_id, process_start_time, expected_session_id)?
+            .map(|path| (path, false)),
+    };
+    if let Some((process_session, owned_by_process)) = process_session {
         let modified = fs::metadata(&process_session)?.modified()?;
         let modified_at = DateTime::<Utc>::from(modified);
         let mut details = read_last_codex_observation(&process_session)?;
+        // A remote TUI's turn runs in its app-server, which outlives the TUI.
         #[cfg(target_os = "linux")]
-        settle_codex_turn_interrupted_by_process_restart(
-            &mut details,
-            modified,
-            linux_process_started_at(process_id, process_start_time),
-        );
+        if owned_by_process {
+            settle_codex_turn_interrupted_by_process_restart(
+                &mut details,
+                modified,
+                linux_process_started_at(process_id, process_start_time),
+            );
+        }
         return Ok(Some(HarnessObservation {
             session_path: Some(process_session.to_string_lossy().to_string()),
             progress_summary: details.progress_summary,
@@ -2967,6 +2975,55 @@ fn codex_session_owned_by_process(
     Ok(expected_match
         .or_else(|| selected.map(|(path, _)| path))
         .or(preferred_match))
+}
+
+/// A remote Codex TUI's rollout is held open by its app-server, not by the
+/// TUI, so the confirmed process's own `resume <thread>` names its session.
+#[cfg(target_os = "linux")]
+fn remote_codex_tui_session(
+    process_id: Option<u32>,
+    process_start_time: Option<u64>,
+    expected_session_id: Option<&str>,
+) -> anyhow::Result<Option<PathBuf>> {
+    let (Some(process_id), Some(process_start_time)) = (process_id, process_start_time) else {
+        return Ok(None);
+    };
+    let Some(remote) = LocalProcessInfo::with_root_pid(process_id)
+        .as_ref()
+        .and_then(remote_codex_tui)
+        .filter(|remote| remote.pid == process_id && remote.start_time == process_start_time)
+    else {
+        return Ok(None);
+    };
+    if expected_session_id.is_some_and(|expected| expected != remote.thread_id) {
+        return Ok(None);
+    }
+    let Some(root) = codex_sessions_root() else {
+        return Ok(None);
+    };
+    let suffix = format!("-{}.jsonl", remote.thread_id);
+    let mut candidates = Vec::new();
+    collect_codex_rollout_sessions(&root, &mut candidates)?;
+    for path in candidates {
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(&suffix))
+            && codex_session_id(&path)?.as_deref() == Some(remote.thread_id.as_str())
+        {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn remote_codex_tui_session(
+    _process_id: Option<u32>,
+    _process_start_time: Option<u64>,
+    _expected_session_id: Option<&str>,
+) -> anyhow::Result<Option<PathBuf>> {
+    Ok(None)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -5651,6 +5708,133 @@ mod test {
         );
         assert_eq!(observed.progress_summary.as_deref(), Some("live"));
         assert!(mismatched_incarnation.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn observe_codex_binds_remote_tui_to_its_resumed_thread() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("sessions");
+        fs::create_dir_all(root.join("2026/09/03")).unwrap();
+        fs::create_dir_all(root.join("2026/09/30")).unwrap();
+        let thread_id = "01a0695c-adf5-7210-b90e-20b194cb78e6";
+        // The app-server holds this rollout open; the TUI process does not.
+        let resumed = root.join(format!(
+            "2026/09/03/rollout-2026-09-03T18-21-16-{thread_id}.jsonl"
+        ));
+        fs::write(
+            &resumed,
+            format!(
+                concat!(
+                    "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{}\",\"cwd\":\"/tmp/remote-tui\"}}}}\n",
+                    "{{\"timestamp\":\"2026-10-01T02:27:00.000Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}}}\n"
+                ),
+                thread_id
+            ),
+        )
+        .unwrap();
+        // A newer rollout in the same directory must not be chosen by recency.
+        let other = root.join(
+            "2026/09/30/rollout-2026-09-30T22-00-00-01a0f000-0000-7000-8000-000000000000.jsonl",
+        );
+        fs::write(
+            &other,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"01a0f000-0000-7000-8000-000000000000\",\"cwd\":\"/tmp/remote-tui\"}}\n",
+        )
+        .unwrap();
+
+        let tui = temp.path().join("codex");
+        fs::write(&tui, "#!/bin/sh\nsleep 60\n").unwrap();
+        fs::set_permissions(&tui, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = std::process::Command::new(&tui)
+            .args([
+                "--remote",
+                "unix:///run/user/1000/wakterm/codex-tui-1-11.sock",
+                "resume",
+                thread_id,
+                "--cd",
+                "/tmp/remote-tui",
+            ])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let start_time = LocalProcessInfo::with_root_pid(pid).unwrap().start_time;
+
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", &root);
+        // Adoption primes the observer with the creation time as its cutoff,
+        // and confirms the TUI process identity.
+        let metadata = AgentMetadata {
+            agent_id: "remote-codex".to_string(),
+            name: "codex".to_string(),
+            launch_cmd: format!(
+                "codex --remote unix:///run/user/1000/wakterm/codex-tui-1-11.sock resume {thread_id} --cd /tmp/remote-tui"
+            ),
+            declared_cwd: "/tmp/remote-tui".to_string(),
+            adopted_pid: Some(pid),
+            adopted_start_time: Some(start_time),
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+            launch_supervisor: None,
+            codex_app_server: None,
+        };
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        prime_runtime_for_new_agent(&mut runtime, &metadata, Some("codex"));
+        runtime.foreground_process_name = Some("codex".to_string());
+        refresh_runtime_from_harness(&mut runtime, &metadata);
+        let cutoff = runtime.observer_started_at.or(Some(metadata.created_at));
+        let observed = observe_codex(
+            "/tmp/remote-tui",
+            None,
+            cutoff,
+            Some(pid),
+            Some(start_time),
+            None,
+        );
+        let other_expected = observe_codex(
+            "/tmp/remote-tui",
+            None,
+            cutoff,
+            Some(pid),
+            Some(start_time),
+            Some("01a0f000-0000-7000-8000-000000000000"),
+        );
+        let other_incarnation = observe_codex(
+            "/tmp/remote-tui",
+            None,
+            cutoff,
+            Some(pid),
+            Some(start_time + 1),
+            None,
+        );
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        // Admission reports a running turn as busy rather than unavailable.
+        assert_eq!(
+            runtime.session_path.as_deref(),
+            Some(resumed.to_string_lossy().as_ref())
+        );
+        assert_eq!(runtime.transport, AgentTransport::ObservedPty);
+        assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnAgent);
+        assert_eq!(runtime.status, AgentStatus::Busy);
+
+        let observed = observed.unwrap().unwrap();
+        assert_eq!(
+            observed.session_path.as_deref(),
+            Some(resumed.to_string_lossy().as_ref())
+        );
+        assert_eq!(observed.turn_state, AgentTurnState::WaitingOnAgent);
+        assert!(other_expected.unwrap().is_none());
+        assert!(other_incarnation.unwrap().is_none());
     }
 
     #[cfg(target_os = "linux")]
