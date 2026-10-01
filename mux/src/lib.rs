@@ -11005,9 +11005,15 @@ mod test {
             },
             "old child unavailable",
         );
-        assert!(mux
-            .visible_harness_icons_for_tab(tab.tab_id(), None)
-            .is_empty());
+        // Re-detecting the supervisor without a harness child is queued work.
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.visible_harness_icons_for_tab(tab.tab_id(), None)
+                    .is_empty()
+            },
+            "supervisor without a harness child is no longer detected",
+        );
         assert_eq!(
             pane.downcast_ref::<FakePane>()
                 .unwrap()
