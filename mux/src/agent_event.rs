@@ -632,6 +632,40 @@ impl AgentEventStore {
     }
 }
 
+impl AgentEventStore {
+    /// Waits up to `wait` for a turn of exactly this agent incarnation to start
+    /// after `after_sequence`.
+    pub async fn wait_for_turn_started(
+        &self,
+        agent_id: &str,
+        incarnation_id: &str,
+        mut after_sequence: u64,
+        wait: Duration,
+    ) -> anyhow::Result<bool> {
+        let deadline = Instant::now() + wait;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let page = self
+                .read_page_wait_async(after_sequence, 256, remaining)
+                .await?;
+            if page.status != AgentEventStatus::Ok {
+                return Ok(false);
+            }
+            if page.events.iter().any(|event| {
+                event.kind == AgentEventKind::TurnStarted
+                    && event.agent_id == agent_id
+                    && event.incarnation_id == incarnation_id
+            }) {
+                return Ok(true);
+            }
+            after_sequence = page.next_after_sequence.unwrap_or(page.latest_sequence);
+            if remaining.is_zero() {
+                return Ok(false);
+            }
+        }
+    }
+}
+
 fn connect_reader(path: &Path) -> anyhow::Result<Connection> {
     let conn = connect_event_store(path)?;
     conn.pragma_update(None, "query_only", true)?;
@@ -2675,6 +2709,90 @@ mod tests {
             assert_eq!(page.events.len(), 1);
             assert_eq!(page.events[0].reason.as_deref(), Some("test_unavailable"));
         }
+    }
+
+    #[test]
+    fn turn_confirmation_requires_a_new_turn_of_the_exact_incarnation() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("codex.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-codex\"}}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        store.start_runtime_epoch().unwrap();
+        let metadata = metadata("codex");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Codex,
+            session.to_string_lossy().into(),
+        );
+        let incarnation = crate::agent_admission::incarnation_id(&metadata).unwrap();
+        let mut writer = store.writer().unwrap();
+        writer.observe_agent(&metadata, &runtime).unwrap();
+        let wait = |after: u64, agent_id: &str, incarnation_id: &str, wait: Duration| {
+            promise::spawn::block_on(store.wait_for_turn_started(
+                agent_id,
+                incarnation_id,
+                after,
+                wait,
+            ))
+            .unwrap()
+        };
+        let short = Duration::from_millis(50);
+
+        // Written input that never starts a turn is not confirmed.
+        let before_write = store.latest_sequence();
+        assert!(!wait(before_write, &metadata.agent_id, &incarnation, short));
+
+        append(
+            &session,
+            "{\"ordinal\":1,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}\n",
+        );
+        writer.observe_agent(&metadata, &runtime).unwrap();
+        assert!(wait(before_write, &metadata.agent_id, &incarnation, short));
+        assert!(!wait(
+            before_write,
+            &metadata.agent_id,
+            "other-incarnation",
+            short
+        ));
+        assert!(!wait(before_write, "other-agent", &incarnation, short));
+        // A turn that started before the write does not confirm it.
+        assert!(!wait(
+            store.latest_sequence(),
+            &metadata.agent_id,
+            &incarnation,
+            short
+        ));
+
+        // A turn that starts while admission is waiting confirms it.
+        let before_second_write = store.latest_sequence();
+        let waiter = {
+            let store = store.clone();
+            let agent_id = metadata.agent_id.clone();
+            let incarnation = incarnation.clone();
+            thread::spawn(move || {
+                promise::spawn::block_on(store.wait_for_turn_started(
+                    &agent_id,
+                    &incarnation,
+                    before_second_write,
+                    Duration::from_secs(5),
+                ))
+                .unwrap()
+            })
+        };
+        thread::sleep(Duration::from_millis(50));
+        append(
+            &session,
+            concat!(
+                "{\"ordinal\":2,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\"}}\n",
+                "{\"ordinal\":3,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-2\"}}\n"
+            ),
+        );
+        writer.observe_agent(&metadata, &runtime).unwrap();
+        assert!(waiter.join().unwrap());
     }
 
     #[test]

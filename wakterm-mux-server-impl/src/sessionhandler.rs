@@ -1918,6 +1918,9 @@ fn schedule_agent_prompt_admission<SND>(
     .detach();
 }
 
+/// How long a one-way admission waits for the written prompt to start a turn.
+const ADMISSION_TURN_CONFIRMATION: std::time::Duration = std::time::Duration::from_secs(15);
+
 async fn admit_agent_prompt(
     request: mux::agent_admission::AgentPromptAdmissionRequest,
 ) -> anyhow::Result<mux::agent_admission::AgentAdmissionReceipt> {
@@ -2105,6 +2108,8 @@ async fn admit_agent_prompt(
         return Ok(receipt);
     }
 
+    let event_store = Mux::get().agent_service().event_store();
+    let events_before_write = event_store.latest_sequence();
     let delivery = Mux::get().agent_service().write_admitted_prompt(&candidate);
     match delivery {
         Ok(()) => {
@@ -2127,7 +2132,42 @@ async fn admit_agent_prompt(
                     )),
                 }
             } else {
-                let receipt = AgentAdmissionReceipt::accepted(&request, None);
+                // Written bytes are not delivery: a harness can drop input, for
+                // example while one of its own dialogs holds keyboard focus.
+                let receipt = match event_store
+                    .wait_for_turn_started(
+                        &request.agent_id,
+                        &request.incarnation_id,
+                        events_before_write,
+                        ADMISSION_TURN_CONFIRMATION,
+                    )
+                    .await
+                {
+                    Ok(true) => AgentAdmissionReceipt::accepted(&request, None),
+                    Ok(false) => {
+                        let mut receipt = AgentAdmissionReceipt::indeterminate(
+                            &request,
+                            None,
+                            format!(
+                                "prompt was written, but the agent did not start a turn within {} s",
+                                ADMISSION_TURN_CONFIRMATION.as_secs()
+                            ),
+                        );
+                        receipt.prompt_written = Some(true);
+                        receipt
+                    }
+                    Err(err) => {
+                        let mut receipt = AgentAdmissionReceipt::indeterminate(
+                            &request,
+                            None,
+                            format!(
+                                "prompt was written, but its turn could not be observed: {err:#}"
+                            ),
+                        );
+                        receipt.prompt_written = Some(true);
+                        receipt
+                    }
+                };
                 let store = admission_store;
                 let stored_receipt = receipt.clone();
                 match promise::spawn::spawn_into_new_thread(move || store.finish(&stored_receipt))
