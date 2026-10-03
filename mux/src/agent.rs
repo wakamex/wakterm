@@ -4231,15 +4231,21 @@ fn truncate_summary(summary: &str) -> String {
     format!("{truncated}...")
 }
 
+/// Harnesses record their working directory without a trailing slash, and
+/// observers compare it exactly.
 fn normalize_declared_cwd(cwd: &str) -> String {
+    let mut cwd = cwd.trim().to_string();
     if cwd.starts_with("file://") {
-        if let Ok(url) = Url::parse(cwd) {
-            if let Ok(path) = url.to_file_path() {
-                return path.to_string_lossy().to_string();
+        if let Ok(path) = Url::parse(&cwd).map(|url| url.to_file_path()) {
+            if let Ok(path) = path {
+                cwd = path.to_string_lossy().to_string();
             }
         }
     }
-    cwd.to_string()
+    while cwd.len() > 1 && cwd.ends_with('/') {
+        cwd.pop();
+    }
+    cwd
 }
 
 #[cfg(test)]
@@ -4253,6 +4259,115 @@ mod test {
     use tempfile::TempDir;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn declared_cwd_normalization_drops_trailing_slashes() {
+        assert_eq!(
+            normalize_declared_cwd("/code/inquisition/"),
+            "/code/inquisition"
+        );
+        assert_eq!(
+            normalize_declared_cwd("/code/inquisition//"),
+            "/code/inquisition"
+        );
+        assert_eq!(
+            normalize_declared_cwd("/code/inquisition"),
+            "/code/inquisition"
+        );
+        assert_eq!(normalize_declared_cwd("/"), "/");
+        assert_eq!(
+            normalize_declared_cwd("file:///code/inquisition/"),
+            "/code/inquisition"
+        );
+        assert_eq!(normalize_declared_cwd(""), "");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn claude_registry_binds_a_session_declared_with_a_trailing_slash() {
+        use std::os::unix::process::CommandExt;
+
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = TempDir::new().unwrap();
+        let cwd = "/tmp/claude-slash";
+        let projects = temp.path().join("projects");
+        let project = projects.join(cwd.replace('/', "-"));
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(temp.path().join("sessions")).unwrap();
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let child = Child(
+            std::process::Command::new("sleep")
+                .arg0("claude")
+                .arg("60")
+                .spawn()
+                .unwrap(),
+        );
+        let process = LocalProcessInfo::with_root_pid(child.0.id()).unwrap();
+        let sid = "30e773ff-f0a3-4ae7-9502-594f32d21c0b";
+        let session = project.join(format!("{sid}.jsonl"));
+        let now = Utc::now();
+        fs::write(
+            &session,
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({"type":"user","uuid":"turn","sessionId":sid,"cwd":cwd,
+                    "timestamp":now - chrono::Duration::seconds(2),
+                    "message":{"role":"user","content":"work"}}),
+                serde_json::json!({"type":"assistant","uuid":"turn-assistant","sessionId":sid,"cwd":cwd,
+                    "timestamp":now - chrono::Duration::seconds(1),"parentUuid":"turn",
+                    "message":{"id":"msg-turn","role":"assistant","model":"claude","stop_reason":"end_turn",
+                    "content":[{"type":"text","text":"done"}]}}),
+            ),
+        )
+        .unwrap();
+        let namespace = fs::read_link(format!("/proc/{}/ns/pid", process.pid)).unwrap();
+        let machine_id = fs::read_to_string("/etc/machine-id").unwrap();
+        // Claude records its working directory without a trailing slash.
+        fs::write(
+            temp.path()
+                .join("sessions")
+                .join(format!("{}.json", process.pid)),
+            serde_json::json!({"pid": process.pid, "procStart": process.start_time.to_string(),
+                "pidDomain": format!("linux:{}:{}", machine_id.trim(), namespace.to_string_lossy()),
+                "sessionId": sid, "cwd": cwd, "kind": "interactive"})
+            .to_string(),
+        )
+        .unwrap();
+        set_env_path("WAKTERM_AGENT_CLAUDE_DIR", &projects);
+
+        let metadata = AgentMetadata {
+            agent_id: "inquisition-claude3".to_string(),
+            name: "inquisition_claude3".to_string(),
+            launch_cmd: format!("claude --dangerously-skip-permissions --resume {sid}"),
+            declared_cwd: format!("{cwd}/"),
+            adopted_pid: Some(process.pid),
+            adopted_start_time: Some(process.start_time),
+            created_at: now - chrono::Duration::minutes(1),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+            launch_supervisor: None,
+            codex_app_server: None,
+        };
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        prime_runtime_for_new_agent(&mut runtime, &metadata, Some("claude"));
+        runtime.foreground_process_name = Some("claude".to_string());
+        refresh_runtime_from_harness(&mut runtime, &metadata);
+        remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
+
+        assert_eq!(runtime.session_path.as_deref(), session.to_str());
+        assert_eq!(runtime.transport, AgentTransport::ObservedPty);
+        assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
+    }
 
     #[test]
     fn registered_origin_tracks_transport_ownership() {
