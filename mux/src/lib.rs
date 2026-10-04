@@ -8,9 +8,7 @@ use crate::agent::{
     AgentTransport, AgentTurnState, ExpectedAgentSession,
 };
 use crate::agent_event::{AgentEventRuntimeUpdate, AgentEventStore};
-use crate::agent_request::{
-    AgentRequest, AgentRequestCorrelation, AgentRequestState, AgentRequestStore,
-};
+use crate::agent_request::{AgentRequest, AgentRequestState, AgentRequestStore};
 use crate::client::{ClientId, ClientInfo, ClientViewId, ClientViewState, ClientWindowViewState};
 use crate::pane::{CachePolicy, Pane, PaneId};
 use crate::ssh_agent::AgentProxy;
@@ -3492,15 +3490,11 @@ impl Mux {
                 .get(&request.target_pane_id)
                 .cloned();
             request.reconcile(metadata.as_deref(), runtime.as_ref(), now);
-            if matches!(
-                request.correlation,
-                AgentRequestCorrelation::CodexAppServerEvents
-            ) && !request.state.is_terminal()
-            {
+            if request.correlates_from_events() && !request.state.is_terminal() {
                 loop {
                     let cursor = request.reconciled_event_sequence;
                     let page = self.agent_event_store.read_page(cursor, 256)?;
-                    request.reconcile_managed_event_page(&page, now);
+                    request.reconcile_event_page(&page, now);
                     if request.state.is_terminal()
                         || request.reconciled_event_sequence <= cursor
                         || request.reconciled_event_sequence >= page.latest_sequence

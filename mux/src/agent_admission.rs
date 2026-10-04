@@ -226,6 +226,9 @@ impl AgentAdmissionCandidate {
                 &self.metadata,
                 self.pane_id,
                 &self.runtime,
+                self.request.incarnation_id.clone(),
+                self.event_sequence,
+                self.event_stream_live,
                 &self.request.prompt,
                 self.request.paste,
                 self.request.timeout_ms,
@@ -1259,23 +1262,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_baseline_cursor_is_definitive_observer_failure_without_prompt_write() {
-        let mut request = request("request-no-cursor", "work");
+    fn return_final_without_the_event_stream_is_definitive_observer_failure_without_prompt_write() {
+        let mut request = request("request-no-events", "work");
         request.return_final = true;
         let mut runtime = runtime();
         runtime.transport = crate::agent::AgentTransport::ObservedPty;
         runtime.session_path = Some("/tmp/codex-session.jsonl".to_string());
-        runtime.observed_turn = Some(crate::agent::AgentObservedTurn {
-            provider_turn_id: "turn-1".to_string(),
-            outcome: crate::agent::AgentObservedTurnOutcome::Completed,
-            started_at: None,
-            completed_at: Some(Utc::now()),
-            started_cursor: Some(1),
-            latest_cursor: None,
-            primary_user_message_sha256: None,
-            user_message_count: 1,
-            final_message: Some("done".to_string()),
-        });
         let candidate = AgentAdmissionCandidate {
             request,
             pane_id: 7,
@@ -1283,7 +1275,7 @@ mod tests {
             runtime,
             input_generation: 0,
             event_sequence: 0,
-            event_stream_live: true,
+            event_stream_live: false,
         };
 
         let Err(receipt) = candidate.proposed_return_request() else {
@@ -1295,7 +1287,7 @@ mod tests {
         assert!(receipt
             .detail
             .as_deref()
-            .is_some_and(|detail| detail.contains("observer cursor for the baseline turn")));
+            .is_some_and(|detail| detail.contains("durable agent event stream")));
     }
 
     #[test]

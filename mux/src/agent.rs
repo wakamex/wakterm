@@ -1840,17 +1840,6 @@ fn observe_claude_process(
                     observation.last_turn_completed_at =
                         observation.last_turn_completed_at.max(reported.changed_at);
                 }
-                // A turn Claude left without a reply is over once it is idle.
-                let settled = observation
-                    .session_path
-                    .as_deref()
-                    .is_some_and(|path| claude_transcript_settled(Path::new(path)));
-                if let Some(turn) = observation.observed_turn.as_mut().filter(|turn| {
-                    settled && matches!(turn.outcome, AgentObservedTurnOutcome::Running)
-                }) {
-                    turn.outcome = AgentObservedTurnOutcome::Aborted;
-                    turn.completed_at = reported.changed_at;
-                }
                 observation.turn_state = AgentTurnState::WaitingOnUser;
                 observation.turn_phase = Some("idle".to_string());
             }
@@ -3738,105 +3727,21 @@ pub(crate) fn claude_transcript_settled(path: &Path) -> bool {
         .is_some_and(|elapsed| elapsed >= CLAUDE_IDLE_SETTLE)
 }
 
-/// Tracks the newest Claude turn: input starts a turn, input that arrives
-/// while it runs joins it, and an end_turn reply or an interruption ends it.
-#[derive(Default)]
-struct ClaudeTurnTracker {
-    turn: Option<AgentObservedTurn>,
-}
-
-impl ClaudeTurnTracker {
-    fn user(&mut self, cursor: u64, record: &Value) {
-        if record.get("isMeta").and_then(Value::as_bool) == Some(true) {
-            return;
-        }
-        let Some(text) = claude_user_text(record) else {
-            return;
-        };
-        let running = self
-            .turn
-            .as_ref()
-            .is_some_and(|turn| matches!(turn.outcome, AgentObservedTurnOutcome::Running));
-        if text
-            .trim_start()
-            .starts_with("[Request interrupted by user")
-        {
-            if let Some(turn) = self.turn.as_mut().filter(|_| running) {
-                turn.outcome = AgentObservedTurnOutcome::Aborted;
-                turn.completed_at = parse_record_timestamp(record);
-                turn.latest_cursor = Some(cursor);
-            }
-            return;
-        }
-        if let Some(turn) = self.turn.as_mut().filter(|_| running) {
-            turn.user_message_count += 1;
-            turn.latest_cursor = Some(cursor);
-            return;
-        }
-        let Some(turn_id) = record.get("uuid").and_then(Value::as_str) else {
-            self.turn = None;
-            return;
-        };
-        self.turn = Some(AgentObservedTurn {
-            provider_turn_id: turn_id.to_string(),
-            outcome: AgentObservedTurnOutcome::Running,
-            started_at: parse_record_timestamp(record),
-            completed_at: None,
-            started_cursor: Some(cursor),
-            latest_cursor: Some(cursor),
-            primary_user_message_sha256: Some(message_sha256(unwrap_claude_paste(&text))),
-            user_message_count: 1,
-            final_message: None,
-        });
-    }
-
-    fn assistant(&mut self, cursor: u64, record: &Value, text: Option<String>) {
-        let Some(turn) = self
-            .turn
-            .as_mut()
-            .filter(|turn| matches!(turn.outcome, AgentObservedTurnOutcome::Running))
-        else {
-            return;
-        };
-        turn.latest_cursor = Some(cursor);
-        let end_turn = record
-            .get("message")
-            .and_then(|message| message.get("stop_reason"))
-            .and_then(Value::as_str)
-            == Some("end_turn");
-        if end_turn && text.is_some() {
-            turn.outcome = AgentObservedTurnOutcome::Completed;
-            turn.completed_at = parse_record_timestamp(record);
-            turn.final_message = text;
-        }
-    }
-}
-
 fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservationDetails> {
-    let mut reader = BufReader::new(fs::File::open(path)?);
+    let reader = BufReader::new(fs::File::open(path)?);
     let mut summary = None;
     let mut harness_mode = None;
     let mut last_user_at = None;
     let mut last_assistant_at = None;
     let mut last_queued_input_at = None;
-    let mut turns = ClaudeTurnTracker::default();
-    let mut offset = 0u64;
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let read = reader.read_line(&mut line)?;
-        if read == 0 {
-            break;
-        }
-        let cursor = offset;
-        offset += read as u64;
+    for line in reader.lines() {
+        let line = line?;
         let Ok(record) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
         match record.get("type").and_then(Value::as_str) {
             Some("user") => {
                 last_user_at = parse_record_timestamp(&record).or(last_user_at);
-                turns.user(cursor, &record);
             }
             Some("assistant") => {}
             // Input that arrives during a running turn is queued into it.
@@ -3881,7 +3786,6 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
         }
 
         let mut parts = vec![];
-        let mut reply = vec![];
         for block in content {
             match block.get("type").and_then(Value::as_str) {
                 Some("text") => {
@@ -3889,7 +3793,6 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
                         let text = text.trim();
                         if !text.is_empty() {
                             parts.push(text.to_string());
-                            reply.push(text.to_string());
                         }
                     }
                 }
@@ -3911,11 +3814,6 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
                 _ => {}
             }
         }
-        turns.assistant(
-            cursor,
-            &record,
-            (!reply.is_empty()).then(|| reply.join("\n")),
-        );
         if !parts.is_empty() {
             summary = Some(truncate_summary(&parts.join("\n")));
         }
@@ -3928,7 +3826,7 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
         updated_at: last_queued_input_at,
         turn_state,
         last_turn_completed_at,
-        observed_turn: turns.turn,
+        observed_turn: None,
     })
 }
 
@@ -3981,115 +3879,6 @@ fn visit_lines_reverse(
     }
 
     Ok(())
-}
-
-/// Recover only an already-correlated turn, never infer a binding from history.
-/// The finished Claude turn `turn_id` that started after `baseline_cursor`,
-/// for a request whose turn a newer turn has since replaced.
-pub(crate) fn read_claude_terminal_turn(
-    path: &Path,
-    turn_id: &str,
-    baseline_cursor: u64,
-) -> anyhow::Result<Option<AgentObservedTurn>> {
-    let mut reader = BufReader::new(fs::File::open(path)?);
-    let mut turns = ClaudeTurnTracker::default();
-    let mut found = None;
-    let mut offset = 0u64;
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let read = reader.read_line(&mut line)?;
-        if read == 0 {
-            break;
-        }
-        let cursor = offset;
-        offset += read as u64;
-        let Ok(record) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        match record.get("type").and_then(Value::as_str) {
-            Some("user") => turns.user(cursor, &record),
-            Some("assistant") => {
-                let text = record
-                    .get("message")
-                    .and_then(|message| message.get("content"))
-                    .and_then(Value::as_array)
-                    .map(|blocks| {
-                        blocks
-                            .iter()
-                            .filter(|block| {
-                                block.get("type").and_then(Value::as_str) == Some("text")
-                            })
-                            .filter_map(|block| block.get("text").and_then(Value::as_str))
-                            .map(str::trim)
-                            .filter(|text| !text.is_empty())
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    })
-                    .filter(|text| !text.is_empty());
-                turns.assistant(cursor, &record, text);
-            }
-            _ => continue,
-        }
-        if let Some(turn) = turns.turn.as_ref().filter(|turn| {
-            turn.provider_turn_id == turn_id
-                && turn
-                    .started_cursor
-                    .is_some_and(|cursor| cursor > baseline_cursor)
-                && !matches!(turn.outcome, AgentObservedTurnOutcome::Running)
-        }) {
-            found = Some(turn.clone());
-        }
-    }
-    Ok(found)
-}
-
-pub(crate) fn read_codex_terminal_turn(
-    path: &Path,
-    turn_id: &str,
-    baseline_cursor: u64,
-) -> anyhow::Result<Option<AgentObservedTurn>> {
-    let mut terminal = None;
-    visit_lines_reverse(path, |line| {
-        let record: Value = serde_json::from_str(line)?;
-        let Some(cursor) = codex_record_cursor(&record) else {
-            return Ok(false);
-        };
-        if cursor <= baseline_cursor {
-            return Ok(true);
-        }
-        if record.get("type").and_then(Value::as_str) != Some("event_msg")
-            || codex_record_turn_id(&record) != Some(turn_id)
-        {
-            return Ok(false);
-        }
-        let payload = &record["payload"];
-        let outcome = match payload.get("type").and_then(Value::as_str) {
-            Some("task_complete") => AgentObservedTurnOutcome::Completed,
-            Some("turn_aborted") => AgentObservedTurnOutcome::Aborted,
-            // A start without a terminal boundary is genuinely indeterminate.
-            Some("task_started") => return Ok(true),
-            _ => return Ok(false),
-        };
-        terminal = Some(AgentObservedTurn {
-            provider_turn_id: turn_id.to_string(),
-            outcome,
-            started_at: None,
-            completed_at: parse_record_timestamp(&record),
-            started_cursor: None,
-            latest_cursor: Some(cursor),
-            primary_user_message_sha256: None,
-            user_message_count: 0,
-            final_message: payload
-                .get("last_agent_message")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-                .map(str::to_string),
-        });
-        Ok(true)
-    })?;
-    Ok(terminal)
 }
 
 fn codex_record_turn_id(record: &Value) -> Option<&str> {
@@ -4853,38 +4642,69 @@ mod test {
             runtime.foreground_process_name = Some("claude".to_string());
             refresh_runtime_from_harness(runtime, &metadata);
         };
+        let store = crate::agent_event::AgentEventStore::new(temp.path().join("events.sqlite3"));
+        store.start_runtime_epoch().unwrap();
+        let mut writer = store.writer().unwrap();
+        let incarnation = crate::agent_admission::incarnation_id(&metadata).unwrap();
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         refreshed(&mut runtime);
+        writer.observe_agent(&metadata, &runtime).unwrap();
         let prompt = "[Panetone cross-agent message]\nsummarize the logs";
-        let request = |runtime: &AgentRuntimeSnapshot, id: &str| {
-            let mut request =
-                AgentRequest::new(id.to_string(), &metadata, 1, runtime, prompt, true, 0, None)
-                    .unwrap();
+        let request = |runtime: &AgentRuntimeSnapshot| {
+            let mut request = AgentRequest::new(
+                "request".to_string(),
+                &metadata,
+                1,
+                runtime,
+                incarnation.clone(),
+                store.latest_sequence(),
+                true,
+                prompt,
+                true,
+                0,
+                None,
+            )
+            .unwrap();
             request.mark_submitted();
             request
         };
+        // One mux observation pass, then one request reconcile pass.
+        let mut observe = |runtime: &mut AgentRuntimeSnapshot, request: &mut AgentRequest| {
+            refreshed(runtime);
+            writer.observe_agent(&metadata, runtime).unwrap();
+            request.reconcile(Some(&metadata), Some(runtime), Utc::now());
+            let page = store
+                .read_page(request.reconciled_event_sequence, 256)
+                .unwrap();
+            request.reconcile_event_page(&page, Utc::now());
+        };
+        let queued = |second: i64, content: &str| {
+            [
+                serde_json::json!({"type":"queue-operation","operation":"enqueue",
+                    "timestamp": at(second),"sessionId":sid,"content":content})
+                .to_string(),
+                serde_json::json!({"type":"attachment","uuid":format!("queued-{second}"),
+                    "timestamp": at(second),"sessionId":sid,
+                    "attachment":{"type":"queued_command","prompt":content}})
+                .to_string(),
+            ]
+        };
 
-        // The prompt, stored as a paste, starts a turn; a steer joins it; the
-        // turn's reply completes the request.
-        let mut completed = request(&runtime, "completes");
-        append(&[
-            user(
-                "turn-1",
-                10,
-                &format!(
-                    "\n\n<pasted_content id=\"0551\">\n{prompt}\n</pasted_content id=\"0551\">\n"
-                ),
-            ),
-            user("steer-1", 12, "also check stderr"),
-        ]);
+        // The prompt, stored as a paste, starts a turn; a queued steer joins
+        // it; the turn's reply completes the request.
+        let mut completed = request(&runtime);
+        append(&[user(
+            "turn-1",
+            10,
+            &format!("\n\n<pasted_content id=\"0551\">\n{prompt}\n</pasted_content id=\"0551\">\n"),
+        )]);
+        append(&queued(12, "also check stderr"));
         set_status("busy", at(10));
-        refreshed(&mut runtime);
-        completed.reconcile(Some(&metadata), Some(&runtime), Utc::now());
+        observe(&mut runtime, &mut completed);
         assert_eq!(completed.state, AgentRequestState::Bound);
         append(&[reply("reply-1", 20, "the logs show two timeouts")]);
         set_status("idle", at(20));
-        refreshed(&mut runtime);
-        completed.reconcile(Some(&metadata), Some(&runtime), Utc::now());
+        observe(&mut runtime, &mut completed);
         assert_eq!(completed.state, AgentRequestState::Completed);
         assert_eq!(
             completed.final_message.as_deref(),
@@ -4892,29 +4712,26 @@ mod test {
         );
 
         // A different input that starts the next turn first cannot be bound.
-        let mut raced = request(&runtime, "raced");
+        let mut raced = request(&runtime);
         append(&[user(
             "turn-2",
             30,
             "<task-notification>done</task-notification>",
         )]);
-        refreshed(&mut runtime);
-        raced.reconcile(Some(&metadata), Some(&runtime), Utc::now());
+        observe(&mut runtime, &mut raced);
         assert_eq!(raced.state, AgentRequestState::Indeterminate);
         append(&[reply("reply-2", 31, "noted")]);
-        refreshed(&mut runtime);
+        observe(&mut runtime, &mut raced);
 
         // A prompt Claude records but never answers ends once Claude is idle
         // and the transcript is quiet.
-        let mut unanswered = request(&runtime, "unanswered");
+        let mut unanswered = request(&runtime);
         append(&[user("turn-3", 40, prompt)]);
         set_status("idle", at(41));
-        refreshed(&mut runtime);
-        unanswered.reconcile(Some(&metadata), Some(&runtime), Utc::now());
+        observe(&mut runtime, &mut unanswered);
         assert_eq!(unanswered.state, AgentRequestState::Bound);
         age_transcript();
-        refreshed(&mut runtime);
-        unanswered.reconcile(Some(&metadata), Some(&runtime), Utc::now());
+        observe(&mut runtime, &mut unanswered);
         remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
         assert_eq!(unanswered.state, AgentRequestState::Aborted);
     }

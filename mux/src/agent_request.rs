@@ -1,6 +1,5 @@
 use crate::agent::{
-    AgentHarness, AgentMetadata, AgentObservedTurn, AgentObservedTurnOutcome, AgentRuntimeSnapshot,
-    AgentTransport, AgentTurnState,
+    AgentHarness, AgentMetadata, AgentRuntimeSnapshot, AgentTransport, AgentTurnState,
 };
 use crate::agent_event::{AgentEventKind, AgentEventPage, AgentEventStatus};
 use crate::pane::PaneId;
@@ -28,9 +27,14 @@ pub enum AgentRequestState {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRequestCorrelation {
+    /// Registered before requests correlated from provider events; such a
+    /// request ends indeterminate.
     #[default]
     ObservedPty,
     CodexAppServerEvents,
+    /// An observer-backed PTY agent, correlated from the agent's provider
+    /// events by the hash of the input that started each turn.
+    ProviderEvents,
 }
 
 impl AgentRequestState {
@@ -90,16 +94,15 @@ impl AgentRequest {
         metadata: &AgentMetadata,
         pane_id: PaneId,
         runtime: &AgentRuntimeSnapshot,
+        target_incarnation_id: String,
+        baseline_event_sequence: u64,
+        event_stream_live: bool,
         prompt: &str,
         submission_paste: bool,
         timeout_ms: u64,
         deadline_at: Option<DateTime<Utc>>,
     ) -> anyhow::Result<Self> {
-        validate_baseline(metadata, runtime)?;
-        let turn = runtime
-            .observed_turn
-            .as_ref()
-            .expect("baseline was validated");
+        validate_baseline(metadata, runtime, event_stream_live)?;
         let now = Utc::now();
         Ok(Self {
             request_id,
@@ -107,18 +110,22 @@ impl AgentRequest {
             target_agent_name: metadata.name.clone(),
             target_pane_id: pane_id,
             target_harness: runtime.harness.clone(),
-            correlation: AgentRequestCorrelation::ObservedPty,
-            target_incarnation_id: String::new(),
+            correlation: AgentRequestCorrelation::ProviderEvents,
+            target_incarnation_id,
             target_pid: metadata.adopted_pid.expect("baseline was validated"),
             target_process_start_time: metadata.adopted_start_time.expect("baseline was validated"),
             target_session_path: runtime
                 .session_path
                 .clone()
                 .expect("baseline was validated"),
-            baseline_provider_turn_id: turn.provider_turn_id.clone(),
-            baseline_cursor: turn.latest_cursor.expect("baseline was validated"),
-            reconciled_event_sequence: 0,
-            baseline_user_message_count: turn.user_message_count,
+            baseline_provider_turn_id: runtime
+                .observed_turn
+                .as_ref()
+                .map(|turn| turn.provider_turn_id.clone())
+                .unwrap_or_default(),
+            baseline_cursor: baseline_event_sequence,
+            reconciled_event_sequence: baseline_event_sequence,
+            baseline_user_message_count: 0,
             submission_sha256: submission_sha256(prompt),
             prompt_sha256: prompt_sha256(prompt),
             submission_paste,
@@ -189,6 +196,15 @@ impl AgentRequest {
         })
     }
 
+    /// Whether provider events, rather than runtime snapshots, bind and
+    /// complete this request.
+    pub fn correlates_from_events(&self) -> bool {
+        matches!(
+            self.correlation,
+            AgentRequestCorrelation::CodexAppServerEvents | AgentRequestCorrelation::ProviderEvents
+        )
+    }
+
     pub fn mark_submitted(&mut self) {
         self.state = AgentRequestState::Submitted;
         self.updated_at = Utc::now();
@@ -238,7 +254,7 @@ impl AgentRequest {
             return;
         };
         let identity_matches = match self.correlation {
-            AgentRequestCorrelation::ObservedPty => {
+            AgentRequestCorrelation::ObservedPty | AgentRequestCorrelation::ProviderEvents => {
                 metadata.agent_id == self.target_agent_id
                     && metadata.adopted_pid == Some(self.target_pid)
                     && metadata.adopted_start_time == Some(self.target_process_start_time)
@@ -282,10 +298,7 @@ impl AgentRequest {
             }
             return;
         }
-        let Some(session_path) = runtime.session_path.as_deref() else {
-            return;
-        };
-        if session_path != self.target_session_path {
+        if runtime.session_path.as_deref() != Some(self.target_session_path.as_str()) {
             self.finish(
                 AgentRequestState::Indeterminate,
                 now,
@@ -293,54 +306,20 @@ impl AgentRequest {
             );
             return;
         }
-        let Some(turn) = runtime.observed_turn.as_ref() else {
-            return;
-        };
-        if let Some(bound) = self.provider_turn_id.as_deref() {
-            if turn.provider_turn_id != bound {
-                // The live snapshot holds only the newest turn. A bound turn
-                // may have completed between request reconciliation passes.
-                // Identity and session checks above still apply, and this
-                // lookup cannot bind an uncorrelated prompt or replay input.
-                let path = std::path::Path::new(session_path);
-                let completed = match self.target_harness {
-                    AgentHarness::Codex => Some(crate::agent::read_codex_terminal_turn(
-                        path,
-                        bound,
-                        self.baseline_cursor,
-                    )),
-                    AgentHarness::Claude => Some(crate::agent::read_claude_terminal_turn(
-                        path,
-                        bound,
-                        self.baseline_cursor,
-                    )),
-                    _ => None,
-                };
-                if let Some(completed) = completed {
-                    match completed {
-                        Ok(Some(completed)) => {
-                            self.reconcile_turn(&completed, now);
-                            return;
-                        }
-                        Ok(None) => {}
-                        Err(err) => log::warn!(
-                            "unable to recover bound turn for request {}: {err:#}",
-                            self.request_id
-                        ),
-                    }
-                }
-            }
+        if matches!(self.correlation, AgentRequestCorrelation::ObservedPty) {
+            self.finish(
+                AgentRequestState::Indeterminate,
+                now,
+                "request was registered before event correlation, so its final cannot be confirmed",
+            );
         }
-        self.reconcile_turn(turn, now);
+        // Provider events bind and complete the request.
     }
 
-    pub fn reconcile_managed_event_page(&mut self, page: &AgentEventPage, now: DateTime<Utc>) {
+    pub fn reconcile_event_page(&mut self, page: &AgentEventPage, now: DateTime<Utc>) {
         if self.state.is_terminal()
             || matches!(self.state, AgentRequestState::Registered)
-            || !matches!(
-                self.correlation,
-                AgentRequestCorrelation::CodexAppServerEvents
-            )
+            || !self.correlates_from_events()
         {
             return;
         }
@@ -378,6 +357,29 @@ impl AgentRequest {
                             return;
                         }
                     } else {
+                        // A managed app-server turn started from this request.
+                        // A PTY turn must have started from its prompt.
+                        if matches!(self.correlation, AgentRequestCorrelation::ProviderEvents) {
+                            match event.input_sha256.as_deref() {
+                                Some(hash) if hash == self.prompt_sha256 => {}
+                                Some(_) => {
+                                    self.finish(
+                                        AgentRequestState::Indeterminate,
+                                        now,
+                                        "a different prompt started the next provider turn",
+                                    );
+                                    return;
+                                }
+                                None => {
+                                    self.finish(
+                                        AgentRequestState::Indeterminate,
+                                        now,
+                                        "provider turn started without observable prompt identity",
+                                    );
+                                    return;
+                                }
+                            }
+                        }
                         self.provider_turn_id = Some(turn_id.to_string());
                         self.state = AgentRequestState::Bound;
                         self.updated_at = now;
@@ -431,90 +433,6 @@ impl AgentRequest {
             .max(page.next_after_sequence.unwrap_or(page.latest_sequence));
     }
 
-    fn reconcile_turn(&mut self, turn: &AgentObservedTurn, now: DateTime<Utc>) {
-        if turn.provider_turn_id == self.baseline_provider_turn_id {
-            if turn.latest_cursor.unwrap_or(self.baseline_cursor) > self.baseline_cursor
-                && turn.user_message_count > self.baseline_user_message_count
-            {
-                self.finish(
-                    AgentRequestState::Indeterminate,
-                    now,
-                    "prompt was attached to the baseline provider turn",
-                );
-            }
-            return;
-        }
-
-        if let Some(bound) = self.provider_turn_id.as_deref() {
-            if turn.provider_turn_id != bound {
-                self.finish(
-                    AgentRequestState::Indeterminate,
-                    now,
-                    "agent advanced beyond the correlated provider turn",
-                );
-                return;
-            }
-        } else {
-            if turn
-                .started_cursor
-                .is_none_or(|cursor| cursor <= self.baseline_cursor)
-            {
-                self.finish(
-                    AgentRequestState::Indeterminate,
-                    now,
-                    "new provider turn did not start after the armed output cursor",
-                );
-                return;
-            }
-            let Some(primary_prompt_sha256) = turn.primary_user_message_sha256.as_deref() else {
-                if matches!(turn.outcome, AgentObservedTurnOutcome::Running) {
-                    return;
-                }
-                self.finish(
-                    AgentRequestState::Indeterminate,
-                    now,
-                    "provider turn ended without observable prompt identity",
-                );
-                return;
-            };
-            if primary_prompt_sha256 != self.prompt_sha256 {
-                self.finish(
-                    AgentRequestState::Indeterminate,
-                    now,
-                    "a different prompt started the next provider turn",
-                );
-                return;
-            }
-            self.provider_turn_id = Some(turn.provider_turn_id.clone());
-            self.state = AgentRequestState::Bound;
-            self.updated_at = now;
-        }
-
-        match turn.outcome {
-            AgentObservedTurnOutcome::Running => {}
-            AgentObservedTurnOutcome::Aborted => self.finish(
-                AgentRequestState::Aborted,
-                turn.completed_at.unwrap_or(now),
-                "the correlated provider turn was aborted",
-            ),
-            AgentObservedTurnOutcome::Completed => {
-                if let Some(message) = turn.final_message.clone() {
-                    self.state = AgentRequestState::Completed;
-                    self.completed_at = turn.completed_at.or(Some(now));
-                    self.final_message = Some(message);
-                    self.detail = None;
-                    self.updated_at = now;
-                } else {
-                    self.finish(
-                        AgentRequestState::Indeterminate,
-                        now,
-                        "provider completed the correlated turn without a final assistant message",
-                    );
-                }
-            }
-        }
-    }
-
     pub fn finish(&mut self, state: AgentRequestState, now: DateTime<Utc>, detail: &str) {
         debug_assert!(state.is_terminal());
         self.state = state;
@@ -535,6 +453,7 @@ fn submission_sha256(prompt: &str) -> String {
 fn validate_baseline(
     metadata: &AgentMetadata,
     runtime: &AgentRuntimeSnapshot,
+    event_stream_live: bool,
 ) -> anyhow::Result<()> {
     if !matches!(runtime.harness, AgentHarness::Codex | AgentHarness::Claude) {
         bail!("--return-final currently requires a Codex or Claude agent");
@@ -551,15 +470,8 @@ fn validate_baseline(
     if runtime.session_path.is_none() {
         bail!("--return-final requires an exact observer session");
     }
-    let turn = runtime
-        .observed_turn
-        .as_ref()
-        .context("--return-final requires stable provider turn identity")?;
-    if matches!(turn.outcome, AgentObservedTurnOutcome::Running) {
-        bail!("--return-final requires a finished baseline turn");
-    }
-    if turn.latest_cursor.is_none() {
-        bail!("--return-final requires an observer cursor for the baseline turn");
+    if !event_stream_live {
+        bail!("--return-final requires the durable agent event stream");
     }
     Ok(())
 }
@@ -822,25 +734,6 @@ mod tests {
         }
     }
 
-    fn turn(
-        id: &str,
-        cursor: u64,
-        prompt: Option<&str>,
-        outcome: AgentObservedTurnOutcome,
-    ) -> AgentObservedTurn {
-        AgentObservedTurn {
-            provider_turn_id: id.to_string(),
-            outcome,
-            started_at: Some(Utc::now()),
-            completed_at: None,
-            started_cursor: Some(cursor),
-            latest_cursor: Some(cursor),
-            primary_user_message_sha256: prompt.map(prompt_sha256),
-            user_message_count: 1,
-            final_message: None,
-        }
-    }
-
     fn runtime() -> AgentRuntimeSnapshot {
         let metadata = metadata();
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
@@ -848,16 +741,7 @@ mod tests {
         runtime.transport = AgentTransport::ObservedPty;
         runtime.turn_state = AgentTurnState::WaitingOnUser;
         runtime.session_path = Some("/sessions/exact.jsonl".to_string());
-        runtime.observed_turn = Some(AgentObservedTurn {
-            completed_at: Some(Utc::now()),
-            final_message: Some("old".to_string()),
-            ..turn(
-                "baseline",
-                10,
-                Some("old"),
-                AgentObservedTurnOutcome::Completed,
-            )
-        });
+        runtime.alive = true;
         runtime
     }
 
@@ -911,6 +795,204 @@ mod tests {
         }
     }
 
+    fn started(
+        sequence: u64,
+        turn_id: &str,
+        prompt: Option<&str>,
+    ) -> crate::agent_event::AgentEvent {
+        let mut event = managed_event(sequence, AgentEventKind::TurnStarted, turn_id, None, None);
+        event.incarnation_id = "incarnation-pty".to_string();
+        event.input_sha256 = prompt.map(prompt_sha256);
+        event
+    }
+
+    fn pty_event(
+        sequence: u64,
+        kind: AgentEventKind,
+        turn_id: &str,
+        outcome: Option<&str>,
+        text: Option<&str>,
+    ) -> crate::agent_event::AgentEvent {
+        let mut event = managed_event(sequence, kind, turn_id, outcome, text);
+        event.incarnation_id = "incarnation-pty".to_string();
+        event
+    }
+
+    fn pty_request(prompt: &str) -> AgentRequest {
+        let mut request = AgentRequest::new(
+            "request-pty".to_string(),
+            &metadata(),
+            7,
+            &runtime(),
+            "incarnation-pty".to_string(),
+            10,
+            true,
+            prompt,
+            true,
+            0,
+            None,
+        )
+        .unwrap();
+        request.mark_submitted();
+        request
+    }
+
+    #[test]
+    fn pty_request_binds_the_turn_its_prompt_started_and_returns_its_final() {
+        let mut request = pty_request("do work");
+        request.reconcile(Some(&metadata()), Some(&runtime()), Utc::now());
+        request.reconcile_event_page(
+            &managed_page(vec![
+                started(11, "turn-2", Some("do work")),
+                pty_event(
+                    12,
+                    AgentEventKind::AssistantMessage,
+                    "turn-2",
+                    None,
+                    Some("working"),
+                ),
+            ]),
+            Utc::now(),
+        );
+        assert_eq!(request.state, AgentRequestState::Bound);
+        assert_eq!(request.provider_turn_id.as_deref(), Some("turn-2"));
+        request.reconcile_event_page(
+            &managed_page(vec![pty_event(
+                13,
+                AgentEventKind::TurnFinal,
+                "turn-2",
+                Some("completed"),
+                Some("done"),
+            )]),
+            Utc::now(),
+        );
+        assert_eq!(request.state, AgentRequestState::Completed);
+        assert_eq!(request.final_message.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn pty_request_never_binds_a_turn_another_input_started() {
+        for (prompt, detail) in [
+            (
+                Some("something else"),
+                "a different prompt started the next provider turn",
+            ),
+            (
+                None,
+                "provider turn started without observable prompt identity",
+            ),
+        ] {
+            let mut request = pty_request("do work");
+            request.reconcile_event_page(
+                &managed_page(vec![started(11, "turn-2", prompt)]),
+                Utc::now(),
+            );
+            assert_eq!(request.state, AgentRequestState::Indeterminate);
+            assert_eq!(request.detail.as_deref(), Some(detail));
+        }
+    }
+
+    #[test]
+    fn pty_request_ignores_other_incarnations_and_ends_at_a_newer_turn() {
+        let mut request = pty_request("do work");
+        let mut foreign = started(11, "turn-x", Some("other"));
+        foreign.incarnation_id = "incarnation-old".to_string();
+        request.reconcile_event_page(
+            &managed_page(vec![foreign, started(12, "turn-2", Some("do work"))]),
+            Utc::now(),
+        );
+        assert_eq!(request.state, AgentRequestState::Bound);
+        request.reconcile_event_page(
+            &managed_page(vec![started(13, "turn-3", Some("next"))]),
+            Utc::now(),
+        );
+        assert_eq!(request.state, AgentRequestState::Indeterminate);
+        assert_eq!(
+            request.detail.as_deref(),
+            Some("agent advanced beyond the correlated provider turn")
+        );
+    }
+
+    #[test]
+    fn pty_request_reports_an_aborted_turn() {
+        let mut request = pty_request("do work");
+        let mut aborted = pty_event(
+            12,
+            AgentEventKind::TurnFinal,
+            "turn-2",
+            Some("aborted"),
+            None,
+        );
+        aborted.reason = Some("no_reply".to_string());
+        request.reconcile_event_page(
+            &managed_page(vec![started(11, "turn-2", Some("do work")), aborted]),
+            Utc::now(),
+        );
+        assert_eq!(request.state, AgentRequestState::Aborted);
+    }
+
+    #[test]
+    fn pty_request_ends_when_its_process_or_session_changes() {
+        let mut replaced = metadata();
+        replaced.adopted_start_time = Some(100);
+        let mut request = pty_request("do work");
+        request.reconcile(Some(&replaced), Some(&runtime()), Utc::now());
+        assert_eq!(request.state, AgentRequestState::Indeterminate);
+
+        let mut moved = runtime();
+        moved.session_path = Some("/sessions/other.jsonl".to_string());
+        let mut request = pty_request("do work");
+        request.reconcile(Some(&metadata()), Some(&moved), Utc::now());
+        assert_eq!(request.state, AgentRequestState::Indeterminate);
+
+        // A restored agent may not have reappeared yet.
+        let mut request = pty_request("do work");
+        request.reconcile(None, None, Utc::now());
+        assert_eq!(request.state, AgentRequestState::Submitted);
+    }
+
+    #[test]
+    fn requests_registered_before_event_correlation_end_indeterminate() {
+        let mut request = pty_request("do work");
+        request.correlation = AgentRequestCorrelation::ObservedPty;
+        request.reconcile(Some(&metadata()), Some(&runtime()), Utc::now());
+        assert_eq!(request.state, AgentRequestState::Indeterminate);
+    }
+
+    #[test]
+    fn store_persists_and_sequences_terminal_results_idempotently() {
+        let dir = tempdir().unwrap();
+        let store = AgentRequestStore::new(dir.path().join("requests.sqlite3"));
+        let mut request = AgentRequest::new(
+            "request-1".to_string(),
+            &metadata(),
+            7,
+            &runtime(),
+            "incarnation-pty".to_string(),
+            10,
+            true,
+            "do work",
+            true,
+            300_000,
+            Some(Utc::now() + Duration::minutes(5)),
+        )
+        .unwrap();
+        assert!(request.matches_submission("agent-1", "do work", true, 300_000));
+        assert!(!request.matches_submission("agent-1", "do work ", true, 300_000));
+        assert!(store.create(&request).unwrap().1);
+        assert!(!store.create(&request).unwrap().1);
+        request.mark_submitted();
+        store.save(&mut request).unwrap();
+        request.finish(AgentRequestState::Cancelled, Utc::now(), "cancelled");
+        store.save(&mut request).unwrap();
+        let sequence = request.terminal_event_sequence.unwrap();
+        store.save(&mut request).unwrap();
+        assert_eq!(request.terminal_event_sequence, Some(sequence));
+        assert_eq!(store.events_after(0, 10).unwrap(), vec![request.clone()]);
+        assert!(store.events_after(sequence, 10).unwrap().is_empty());
+        assert_eq!(store.get("request-1").unwrap(), Some(request));
+    }
+
     fn managed_page(events: Vec<crate::agent_event::AgentEvent>) -> AgentEventPage {
         let latest_sequence = events.last().map(|event| event.sequence).unwrap_or(10);
         AgentEventPage {
@@ -945,7 +1027,7 @@ mod tests {
         .unwrap();
         request.mark_submitted();
 
-        request.reconcile_managed_event_page(
+        request.reconcile_event_page(
             &managed_page(vec![
                 managed_event(11, AgentEventKind::TurnStarted, "turn-managed", None, None),
                 managed_event(
@@ -992,7 +1074,7 @@ mod tests {
         .unwrap();
         request.mark_submitted();
 
-        request.reconcile_managed_event_page(
+        request.reconcile_event_page(
             &managed_page(vec![
                 managed_event(11, AgentEventKind::TurnStarted, "turn-managed", None, None),
                 managed_event(12, AgentEventKind::TurnStarted, "turn-other", None, None),
@@ -1008,260 +1090,19 @@ mod tests {
     }
 
     #[test]
-    fn binds_only_matching_prompt_after_armed_cursor() {
-        let metadata = metadata();
-        let runtime = runtime();
-        let mut request = AgentRequest::new(
-            "request-1".to_string(),
-            &metadata,
-            7,
-            &runtime,
-            "do work",
-            true,
-            0,
-            None,
-        )
-        .unwrap();
-        request.mark_submitted();
-        let mut next = turn(
-            "turn-2",
-            11,
-            Some("do work"),
-            AgentObservedTurnOutcome::Running,
-        );
-        let mut observed = runtime.clone();
-        observed.observed_turn = Some(next.clone());
-        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
-        assert_eq!(request.state, AgentRequestState::Bound);
-
-        next.outcome = AgentObservedTurnOutcome::Completed;
-        next.completed_at = Some(Utc::now());
-        next.latest_cursor = Some(14);
-        next.final_message = Some("done".to_string());
-        observed.observed_turn = Some(next);
-        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
-        assert_eq!(request.state, AgentRequestState::Completed);
-        assert_eq!(request.final_message.as_deref(), Some("done"));
-    }
-
-    #[test]
-    fn steering_within_the_bound_provider_turn_preserves_correlation() {
-        let metadata = metadata();
-        let runtime = runtime();
-        let mut request = AgentRequest::new(
-            "request-1".to_string(),
-            &metadata,
-            7,
-            &runtime,
-            "do work",
-            true,
-            0,
-            None,
-        )
-        .unwrap();
-        request.mark_submitted();
-
-        let mut correlated = turn(
-            "turn-2",
-            11,
-            Some("do work"),
-            AgentObservedTurnOutcome::Running,
-        );
-        let mut observed = runtime.clone();
-        observed.observed_turn = Some(correlated.clone());
-        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
-        assert_eq!(request.state, AgentRequestState::Bound);
-
-        correlated.latest_cursor = Some(12);
-        correlated.user_message_count = 2;
-        observed.observed_turn = Some(correlated.clone());
-        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
-        assert_eq!(request.state, AgentRequestState::Bound);
-
-        correlated.outcome = AgentObservedTurnOutcome::Completed;
-        correlated.completed_at = Some(Utc::now());
-        correlated.latest_cursor = Some(14);
-        correlated.final_message = Some("done after steering".to_string());
-        observed.observed_turn = Some(correlated);
-        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
-
-        assert_eq!(request.state, AgentRequestState::Completed);
-        assert_eq!(
-            request.final_message.as_deref(),
-            Some("done after steering")
-        );
-    }
-
-    #[test]
-    fn bound_pty_turn_completion_survives_newer_runtime_snapshot() {
-        // Captured Codex boundaries from the reported incident; the bound
-        // task_complete record is unchanged from the authoritative rollout.
-        let fixture = include_str!("../test-data/codex-completion-before-next-turn.jsonl");
-        let bound = "01a0b363-569f-7b40-833d-62e7c68ed841";
-        let newer = "01a0b364-3dcc-72e2-a553-e0809afd58a1";
-        for case in [
-            "completed",
-            "aborted",
-            "missing",
-            "no_text",
-            "other_turn",
-            "old_cursor",
-            "wrong_process",
-            "wrong_session",
-            "unbound",
-        ] {
-            let temp = tempfile::TempDir::new().unwrap();
-            let path = temp.path().join("rollout.jsonl");
-            let mut records: Vec<serde_json::Value> = fixture
-                .lines()
-                .map(|line| serde_json::from_str(line).unwrap())
-                .collect();
-            let expected_text = records[2]["payload"]["last_agent_message"]
-                .as_str()
-                .unwrap()
-                .to_string();
-            match case {
-                "aborted" => records[2]["payload"]["type"] = "turn_aborted".into(),
-                "missing" => {
-                    records.remove(2);
-                }
-                "no_text" => {
-                    records[2]["payload"]
-                        .as_object_mut()
-                        .unwrap()
-                        .remove("last_agent_message");
-                }
-                "other_turn" => records[2]["payload"]["turn_id"] = "unrelated".into(),
-                "old_cursor" => records[2]["ordinal"] = 9626.into(),
-                _ => {}
-            }
-            std::fs::write(
-                &path,
-                records
-                    .iter()
-                    .map(|record| format!("{record}\n"))
-                    .collect::<String>(),
-            )
-            .unwrap();
-            let mut metadata = metadata();
-            let mut baseline = runtime();
-            baseline.session_path = Some(path.to_string_lossy().into_owned());
-            baseline.observed_turn.as_mut().unwrap().latest_cursor = Some(9626);
-            let mut request = AgentRequest::new(
-                "request-history".to_string(),
-                &metadata,
-                7,
-                &baseline,
-                "do work",
-                true,
-                0,
-                None,
-            )
-            .unwrap();
-            request.mark_submitted();
-            let mut observed = baseline.clone();
-            observed.observed_turn = Some(turn(
-                bound,
-                9628,
-                Some("do work"),
-                AgentObservedTurnOutcome::Running,
-            ));
-            if case != "unbound" {
-                request.reconcile(Some(&metadata), Some(&observed), Utc::now());
-                assert_eq!(request.state, AgentRequestState::Bound);
-            }
-            observed.observed_turn = Some(turn(
-                newer,
-                9640,
-                Some("other prompt"),
-                AgentObservedTurnOutcome::Completed,
-            ));
-            observed.observed_turn.as_mut().unwrap().final_message =
-                Some("wrong newer reply".to_string());
-            if case == "wrong_process" {
-                metadata.adopted_start_time = Some(999);
-            }
-            if case == "wrong_session" {
-                observed.session_path = Some("/different/session.jsonl".to_string());
-            }
-            request.reconcile(Some(&metadata), Some(&observed), Utc::now());
-            match case {
-                "completed" => {
-                    assert_eq!(request.state, AgentRequestState::Completed);
-                    assert_eq!(
-                        request.final_message.as_deref(),
-                        Some(expected_text.as_str())
-                    );
-                    assert_eq!(
-                        request.completed_at,
-                        Some("2026-09-18T07:20:40.630Z".parse().unwrap())
-                    );
-                }
-                "aborted" => assert_eq!(request.state, AgentRequestState::Aborted),
-                _ => assert_eq!(request.state, AgentRequestState::Indeterminate, "{case}"),
-            }
-            if case != "completed" {
-                assert!(request.final_message.is_none(), "{}", case);
-            }
-        }
-    }
-
-    #[test]
-    fn advancing_beyond_the_bound_provider_turn_is_indeterminate() {
-        let metadata = metadata();
-        let runtime = runtime();
-        let mut request = AgentRequest::new(
-            "request-1".to_string(),
-            &metadata,
-            7,
-            &runtime,
-            "do work",
-            true,
-            0,
-            None,
-        )
-        .unwrap();
-        request.mark_submitted();
-
-        let mut observed = runtime.clone();
-        observed.observed_turn = Some(turn(
-            "turn-2",
-            11,
-            Some("do work"),
-            AgentObservedTurnOutcome::Running,
-        ));
-        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
-        assert_eq!(request.state, AgentRequestState::Bound);
-
-        observed.observed_turn = Some(turn(
-            "turn-3",
-            15,
-            Some("different turn"),
-            AgentObservedTurnOutcome::Completed,
-        ));
-        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
-
-        assert_eq!(request.state, AgentRequestState::Indeterminate);
-        assert_eq!(
-            request.detail.as_deref(),
-            Some("agent advanced beyond the correlated provider turn")
-        );
-        assert!(request.final_message.is_none());
-    }
-
-    #[test]
     fn managed_app_server_events_ignore_a_late_baseline_turn_commit() {
         let metadata = managed_metadata();
         let mut runtime = managed_runtime(&metadata);
-        runtime.observed_turn = Some(AgentObservedTurn {
+        runtime.observed_turn = Some(crate::agent::AgentObservedTurn {
+            provider_turn_id: "turn-baseline".to_string(),
+            outcome: crate::agent::AgentObservedTurnOutcome::Completed,
+            started_at: Some(Utc::now()),
             completed_at: Some(Utc::now()),
+            started_cursor: Some(10),
+            latest_cursor: Some(10),
+            primary_user_message_sha256: Some(prompt_sha256("previous prompt")),
+            user_message_count: 1,
             final_message: Some("previous final".to_string()),
-            ..turn(
-                "turn-baseline",
-                10,
-                Some("previous prompt"),
-                AgentObservedTurnOutcome::Completed,
-            )
         });
         let mut request = AgentRequest::new_managed_codex(
             "request-managed-late-baseline".to_string(),
@@ -1279,7 +1120,7 @@ mod tests {
         .unwrap();
         request.mark_submitted();
 
-        request.reconcile_managed_event_page(
+        request.reconcile_event_page(
             &managed_page(vec![
                 managed_event(11, AgentEventKind::TurnStarted, "turn-baseline", None, None),
                 managed_event(
@@ -1307,146 +1148,6 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_next_prompt_is_terminal_indeterminate() {
-        let metadata = metadata();
-        let runtime = runtime();
-        let mut request = AgentRequest::new(
-            "request-1".to_string(),
-            &metadata,
-            7,
-            &runtime,
-            "expected",
-            true,
-            0,
-            None,
-        )
-        .unwrap();
-        request.mark_submitted();
-        let mut observed = runtime.clone();
-        observed.observed_turn = Some(turn(
-            "turn-2",
-            11,
-            Some("unrelated"),
-            AgentObservedTurnOutcome::Completed,
-        ));
-        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
-        assert_eq!(request.state, AgentRequestState::Indeterminate);
-        assert!(request.final_message.is_none());
-    }
-
-    #[test]
-    fn waits_for_new_turn_prompt_before_deciding_correlation() {
-        let metadata = metadata();
-        let runtime = runtime();
-        let mut request = AgentRequest::new(
-            "request-1".to_string(),
-            &metadata,
-            7,
-            &runtime,
-            "expected",
-            true,
-            0,
-            None,
-        )
-        .unwrap();
-        request.mark_submitted();
-
-        let mut next = turn("turn-2", 11, None, AgentObservedTurnOutcome::Running);
-        let mut observed = runtime.clone();
-        observed.observed_turn = Some(next.clone());
-        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
-        assert_eq!(request.state, AgentRequestState::Submitted);
-        assert!(request.provider_turn_id.is_none());
-
-        next.primary_user_message_sha256 = Some(prompt_sha256("expected"));
-        observed.observed_turn = Some(next);
-        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
-        assert_eq!(request.state, AgentRequestState::Bound);
-        assert_eq!(request.provider_turn_id.as_deref(), Some("turn-2"));
-    }
-
-    #[test]
-    fn terminal_turn_without_prompt_identity_is_indeterminate() {
-        let metadata = metadata();
-        let runtime = runtime();
-        let mut request = AgentRequest::new(
-            "request-1".to_string(),
-            &metadata,
-            7,
-            &runtime,
-            "expected",
-            true,
-            0,
-            None,
-        )
-        .unwrap();
-        request.mark_submitted();
-
-        let mut observed = runtime.clone();
-        observed.observed_turn = Some(turn(
-            "turn-2",
-            11,
-            None,
-            AgentObservedTurnOutcome::Completed,
-        ));
-        request.reconcile(Some(&metadata), Some(&observed), Utc::now());
-
-        assert_eq!(request.state, AgentRequestState::Indeterminate);
-        assert_eq!(
-            request.detail.as_deref(),
-            Some("provider turn ended without observable prompt identity")
-        );
-    }
-
-    #[test]
-    fn session_or_process_reuse_cannot_complete_request() {
-        let metadata = metadata();
-        let runtime = runtime();
-        let mut request = AgentRequest::new(
-            "request-1".to_string(),
-            &metadata,
-            7,
-            &runtime,
-            "expected",
-            true,
-            0,
-            None,
-        )
-        .unwrap();
-        request.mark_submitted();
-        let mut reused = metadata.clone();
-        reused.adopted_start_time = Some(100);
-        request.reconcile(Some(&reused), Some(&runtime), Utc::now());
-        assert_eq!(request.state, AgentRequestState::Indeterminate);
-    }
-
-    #[test]
-    fn restored_request_waits_for_metadata_and_observer_to_reappear() {
-        let metadata = metadata();
-        let runtime = runtime();
-        let mut request = AgentRequest::new(
-            "request-1".to_string(),
-            &metadata,
-            7,
-            &runtime,
-            "expected",
-            true,
-            0,
-            None,
-        )
-        .unwrap();
-        request.mark_submitted();
-        request.reconcile(None, None, Utc::now());
-        assert_eq!(request.state, AgentRequestState::Submitted);
-
-        let mut restoring = runtime;
-        restoring.session_path = None;
-        restoring.observed_turn = None;
-        request.reconcile(Some(&metadata), Some(&restoring), Utc::now());
-        assert_eq!(request.state, AgentRequestState::Submitted);
-    }
-
-    #[test]
     fn registered_request_waits_for_submission_during_observation() {
         let metadata = managed_metadata();
         let runtime = managed_runtime(&metadata);
@@ -1467,7 +1168,7 @@ mod tests {
         let registered = request.clone();
         request.reconcile(Some(&metadata), Some(&runtime), Utc::now());
         assert_eq!(request, registered);
-        request.reconcile_managed_event_page(
+        request.reconcile_event_page(
             &managed_page(vec![
                 managed_event(11, AgentEventKind::TurnStarted, "turn-new", None, None),
                 managed_event(
@@ -1481,36 +1182,5 @@ mod tests {
             Utc::now(),
         );
         assert_eq!(request, registered);
-    }
-
-    #[test]
-    fn store_persists_and_sequences_terminal_results_idempotently() {
-        let dir = tempdir().unwrap();
-        let store = AgentRequestStore::new(dir.path().join("requests.sqlite3"));
-        let mut request = AgentRequest::new(
-            "request-1".to_string(),
-            &metadata(),
-            7,
-            &runtime(),
-            "do work",
-            true,
-            300_000,
-            Some(Utc::now() + Duration::minutes(5)),
-        )
-        .unwrap();
-        assert!(request.matches_submission("agent-1", "do work", true, 300_000));
-        assert!(!request.matches_submission("agent-1", "do work ", true, 300_000));
-        assert!(store.create(&request).unwrap().1);
-        assert!(!store.create(&request).unwrap().1);
-        request.mark_submitted();
-        store.save(&mut request).unwrap();
-        request.finish(AgentRequestState::Cancelled, Utc::now(), "cancelled");
-        store.save(&mut request).unwrap();
-        let sequence = request.terminal_event_sequence.unwrap();
-        store.save(&mut request).unwrap();
-        assert_eq!(request.terminal_event_sequence, Some(sequence));
-        assert_eq!(store.events_after(0, 10).unwrap(), vec![request.clone()]);
-        assert!(store.events_after(sequence, 10).unwrap().is_empty());
-        assert_eq!(store.get("request-1").unwrap(), Some(request));
     }
 }
