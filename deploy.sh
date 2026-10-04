@@ -12,6 +12,7 @@ usage() {
     echo ""
     echo "  (no flags)  Build, save manual layout snapshot, copy binaries"
     echo "  --restart   Also kill the mux server (Mac reconnect triggers new binary)"
+    echo "              Saves the agent list and catalog first, to compare after restart"
     echo "  --no-save   Skip wakterm cli save-layout (use when layout/session state is known bad)"
     echo "  --wipe-session  Remove saved session state after restart for a clean session"
     echo "  --clean     Run cargo clean for deployed crates before building"
@@ -162,6 +163,21 @@ if $SAVE_SESSION; then
 else
     echo "=== Step 2: Skip manual layout snapshot ==="
     echo "  Leaving layout.json/session.json untouched"
+    echo ""
+fi
+
+if $RESTART; then
+    # Use the installed CLI, which matches the running server, before Step 3
+    # replaces it.
+    SNAPSHOT_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/wakterm/deployments/$(date +%Y%m%d-%H%M%S)-$CURRENT_HEAD"
+    echo "=== Step 2b: Save agent snapshot ==="
+    mkdir -p "$SNAPSHOT_DIR"
+    if "$DEST/wakterm" agent list --format json >"$SNAPSHOT_DIR/agents-before-restart.json" &&
+        "$DEST/wakterm" agent catalog >"$SNAPSHOT_DIR/catalog-before-restart.json"; then
+        echo "  $SNAPSHOT_DIR"
+    else
+        echo "  Warning: could not save the agent snapshot; continuing"
+    fi
     echo ""
 fi
 
