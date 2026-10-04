@@ -296,6 +296,11 @@ complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_s
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from promote-codex" -s h -l help -d 'Print help'
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from list" -l format -d 'Controls the output format. "table" and "json" are possible formats' -r
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from list" -l poll-ms -d 'Poll interval for follow/watch mode' -r
+complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from list" -l status -d 'List only agents with this status. Repeat or separate with commas to match any of several' -r -f -a "starting\t''
+busy\t''
+idle\t''
+errored\t''
+exited\t''"
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from list" -s v -l verbose -d 'Show pane ids, workspace, turn state, transport, progress, and command'
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from list" -s f -l follow -d 'Stream latest observer-backed harness message updates instead of printing a snapshot'
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from list" -s h -l help -d 'Print help'

@@ -1619,7 +1619,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__agent__list)
-            opts="-v -f -h --format --verbose --follow --poll-ms --help"
+            opts="-v -f -h --format --verbose --follow --poll-ms --status --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1631,6 +1631,10 @@ _wakterm() {
                     ;;
                 --poll-ms)
                     COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --status)
+                    COMPREPLY=($(compgen -W "starting busy idle errored exited" -- "${cur}"))
                     return 0
                     ;;
                 *)
@@ -2817,7 +2821,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__agent__list)
-            opts="-v -f -h --format --verbose --follow --poll-ms --help"
+            opts="-v -f -h --format --verbose --follow --poll-ms --status --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2829,6 +2833,10 @@ _wakterm() {
                     ;;
                 --poll-ms)
                     COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --status)
+                    COMPREPLY=($(compgen -W "starting busy idle errored exited" -- "${cur}"))
                     return 0
                     ;;
                 *)

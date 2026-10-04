@@ -1191,7 +1191,7 @@ fn command_builder_from_cmd(cmd: &str) -> anyhow::Result<CommandBuilder> {
     ))
 }
 
-#[derive(Debug, Parser, Clone, Copy)]
+#[derive(Debug, Parser, Clone)]
 pub struct ListAgentsCommand {
     /// Controls the output format.
     /// "table" and "json" are possible formats.
@@ -1209,6 +1209,33 @@ pub struct ListAgentsCommand {
     /// Poll interval for follow/watch mode.
     #[arg(long, default_value_t = 500, requires = "follow")]
     poll_ms: u64,
+
+    /// List only agents with this status. Repeat or separate with commas
+    /// to match any of several.
+    #[arg(long, value_enum, value_delimiter = ',', conflicts_with = "follow")]
+    status: Vec<AgentStatusFilter>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum AgentStatusFilter {
+    Starting,
+    Busy,
+    Idle,
+    Errored,
+    Exited,
+}
+
+impl AgentStatusFilter {
+    fn matches(self, status: &AgentStatus) -> bool {
+        matches!(
+            (self, status),
+            (Self::Starting, AgentStatus::Starting)
+                | (Self::Busy, AgentStatus::Busy)
+                | (Self::Idle, AgentStatus::Idle)
+                | (Self::Errored, AgentStatus::Errored)
+                | (Self::Exited, AgentStatus::Exited)
+        )
+    }
 }
 
 impl ListAgentsCommand {
@@ -1222,7 +1249,14 @@ impl ListAgentsCommand {
             .await;
         }
 
-        let agents = client.list_agents().await?.agents;
+        let mut agents = client.list_agents().await?.agents;
+        if !self.status.is_empty() {
+            agents.retain(|agent| {
+                self.status
+                    .iter()
+                    .any(|filter| filter.matches(&agent.runtime.status))
+            });
+        }
 
         match self.format {
             CliOutputFormatKind::Json => write_json(&agents),
@@ -3696,6 +3730,31 @@ mod test {
         let summary = inline_progress_summary_for_table(&agent);
         assert!(summary.len() <= 99);
         assert!(summary.ends_with("..."));
+    }
+
+    #[test]
+    fn agent_list_status_filter_accepts_several_statuses() {
+        let command = ListAgentsCommand::try_parse_from([
+            "list",
+            "--status",
+            "busy,errored",
+            "--status",
+            "idle",
+        ])
+        .unwrap();
+        assert_eq!(
+            command.status,
+            vec![
+                AgentStatusFilter::Busy,
+                AgentStatusFilter::Errored,
+                AgentStatusFilter::Idle
+            ]
+        );
+        assert!(AgentStatusFilter::Busy.matches(&AgentStatus::Busy));
+        assert!(!AgentStatusFilter::Busy.matches(&AgentStatus::Idle));
+        assert!(
+            ListAgentsCommand::try_parse_from(["list", "--status", "idle", "--follow"]).is_err()
+        );
     }
 
     #[test]

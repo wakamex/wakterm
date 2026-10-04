@@ -270,6 +270,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--format=[Controls the output format. "table" and "json" are possible formats]:FORMAT:_default' \
 '--poll-ms=[Poll interval for follow/watch mode]:POLL_MS:_default' \
+'(-f --follow)*--status=[List only agents with this status. Repeat or separate with commas to match any of several]:STATUS:(starting busy idle errored exited)' \
 '-v[Show pane ids, workspace, turn state, transport, progress, and command]' \
 '--verbose[Show pane ids, workspace, turn state, transport, progress, and command]' \
 '-f[Stream latest observer-backed harness message updates instead of printing a snapshot]' \
@@ -1170,6 +1171,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--format=[Controls the output format. "table" and "json" are possible formats]:FORMAT:_default' \
 '--poll-ms=[Poll interval for follow/watch mode]:POLL_MS:_default' \
+'(-f --follow)*--status=[List only agents with this status. Repeat or separate with commas to match any of several]:STATUS:(starting busy idle errored exited)' \
 '-v[Show pane ids, workspace, turn state, transport, progress, and command]' \
 '--verbose[Show pane ids, workspace, turn state, transport, progress, and command]' \
 '-f[Stream latest observer-backed harness message updates instead of printing a snapshot]' \

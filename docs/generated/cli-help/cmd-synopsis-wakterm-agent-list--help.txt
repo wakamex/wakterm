@@ -7,4 +7,5 @@ Options:
   -v, --verbose            Show pane ids, workspace, turn state, transport, progress, and command
   -f, --follow             Stream latest observer-backed harness message updates instead of printing a snapshot
       --poll-ms <POLL_MS>  Poll interval for follow/watch mode [default: 500]
+      --status <STATUS>    List only agents with this status. Repeat or separate with commas to match any of several [possible values: starting, busy, idle, errored, exited]
   -h, --help               Print help
