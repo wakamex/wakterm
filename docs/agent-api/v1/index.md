@@ -119,6 +119,8 @@ Descriptions come from Wakterm's fixed mapping of structured provider error code
 
 Codex `serverOverloaded` maps to `model_at_capacity` with the fixed detail “Selected model is at capacity. Please try a different model.” HTTP and stream connection failures retain `provider_unavailable`, including HTTP 503 errors without the explicit capacity code. The `capacity_aborted_turn_final` fixture covers the capacity notice. Consumers that display `detail` need no compatibility change.
 
+A Claude turn that starts from input Claude never works on, such as a notice it displays, has no reply to end it. When Claude reports its process idle and the transcript has been unchanged for 5 seconds, the turn ends with `turn_final` `outcome: "aborted"`, `reason: "no_reply"` and the detail "Claude went idle without replying.", followed by `waiting_on_user`.
+
 Consumers may present an aborted terminal event's nonempty `detail` as a failure notice, including when `text` is null, and deduplicate it by `event_id`. It is not an assistant message. Successful turns and ordinary interrupted turns retain their existing behavior. A transient error notification does not itself produce a terminal event; failure detail comes from the authoritative turn-completion payload.
 
 This uses existing Agent API v1 fields and requires no new event kind or capability. Events already committed without failure detail remain unchanged; the new normalization applies to newly recorded completions. Return-request receipts are a separate stream and retain their existing generic aborted detail.

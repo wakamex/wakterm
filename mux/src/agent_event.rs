@@ -109,6 +109,9 @@ struct JsonlCursor {
     checkpoint_sha256: String,
     current_turn_id: Option<String>,
     last_assistant_text: Option<String>,
+    /// Whether the current Claude turn has started without a final reply.
+    #[serde(default)]
+    turn_open: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -434,7 +437,14 @@ impl AgentEventStore {
                     state.cursor.clone(),
                     metadata,
                 ) {
-                    Ok(projected) => {
+                    Ok(mut projected) => {
+                        if let Some(closed) = close_unanswered_claude_turn(
+                            &mut projected.cursor,
+                            runtime,
+                            Path::new(session_path),
+                        ) {
+                            projected.events.extend(closed);
+                        }
                         runtime_update = provider_runtime_update(&projected.events);
                         pending.extend(
                             projected
@@ -1249,6 +1259,54 @@ fn jsonl_source_id(path: &Path, provider: &str) -> anyhow::Result<String> {
     bail!("{provider} session lacks an exact provider session id")
 }
 
+/// How long a Claude transcript must be unchanged before an open turn is
+/// closed by Claude's idle report, since Claude writes its final reply and
+/// goes idle at about the same time.
+const CLAUDE_IDLE_SETTLE: Duration = Duration::from_secs(5);
+
+/// Closes an open Claude turn that Claude reports idle without a reply,
+/// such as input it displayed without working on it.
+fn close_unanswered_claude_turn(
+    cursor: &mut ProviderCursor,
+    runtime: &AgentRuntimeSnapshot,
+    path: &Path,
+) -> Option<Vec<PendingEvent>> {
+    let ProviderCursor::Claude(cursor) = cursor else {
+        return None;
+    };
+    if !cursor.turn_open || runtime.turn_phase.as_deref() != Some("idle") {
+        return None;
+    }
+    let quiet = fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|elapsed| elapsed >= CLAUDE_IDLE_SETTLE);
+    if !quiet {
+        return None;
+    }
+    let turn_id = cursor.current_turn_id.clone()?;
+    cursor.turn_open = false;
+    let key = format!("claude:{}:{turn_id}:no-reply", cursor.source_id);
+    let mut final_event = PendingEvent::new(
+        format!("{key}:final"),
+        AgentEventKind::TurnFinal,
+        runtime.observed_at,
+    );
+    final_event.turn_id = Some(turn_id.clone());
+    final_event.outcome = Some("aborted".to_string());
+    final_event.reason = Some("no_reply".to_string());
+    final_event.detail = Some("Claude went idle without replying.".to_string());
+    let mut state = PendingEvent::new(
+        format!("{key}:state"),
+        AgentEventKind::TurnStateChanged,
+        runtime.observed_at,
+    );
+    state.turn_id = Some(turn_id);
+    state.turn_state = Some("waiting_on_user".to_string());
+    Some(vec![final_event, state])
+}
+
 fn initial_jsonl_cursor(
     path: &Path,
     provider: &str,
@@ -1262,6 +1320,7 @@ fn initial_jsonl_cursor(
         checkpoint_sha256: checkpoint_sha256(path, offset)?,
         current_turn_id,
         last_assistant_text: None,
+        turn_open: false,
     })
 }
 
@@ -1625,6 +1684,7 @@ fn project_claude(
             };
             cursor.current_turn_id = Some(turn_id.clone());
             cursor.last_assistant_text = None;
+            cursor.turn_open = true;
             let mut started = PendingEvent::new(
                 format!("{record_key}:started"),
                 AgentEventKind::TurnStarted,
@@ -1792,6 +1852,7 @@ fn project_claude(
             state.turn_id = Some(turn_id);
             state.turn_state = Some("waiting_on_user".to_string());
             events.push(state);
+            cursor.turn_open = false;
         }
         Ok(events)
     }) {
@@ -3154,6 +3215,98 @@ mod tests {
             .events
             .iter()
             .all(|event| event.turn_id.as_deref() == Some("claude-turn-1")));
+    }
+
+    #[test]
+    fn claude_idle_report_closes_a_turn_left_without_a_reply() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"mode\",\"sessionId\":\"session-claude\"}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("claude");
+        let mut runtime = runtime(
+            &metadata,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        // Claude displays a notice as input but never works on it.
+        append(
+            &session,
+            "{\"type\":\"user\",\"uuid\":\"claude-notice\",\"sessionId\":\"session-claude\",\"timestamp\":\"2026-10-04T14:50:06Z\",\"message\":{\"content\":\"<task-notification>done</task-notification>\"}}\n",
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let set_age = |seconds: u64| {
+            fs::File::options()
+                .write(true)
+                .open(&session)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - Duration::from_secs(seconds))
+                .unwrap();
+        };
+        let finals = || {
+            store
+                .read_page(after, 100)
+                .unwrap()
+                .events
+                .into_iter()
+                .filter(|event| event.kind == AgentEventKind::TurnFinal)
+                .collect::<Vec<_>>()
+        };
+
+        // Without Claude's idle report the turn stays open.
+        set_age(60);
+        store.observe_agent(&metadata, &runtime).unwrap();
+        assert!(finals().is_empty());
+
+        // An idle report right after a write may precede the final reply.
+        runtime.turn_phase = Some("idle".to_string());
+        set_age(0);
+        store.observe_agent(&metadata, &runtime).unwrap();
+        assert!(finals().is_empty());
+
+        set_age(60);
+        store.observe_agent(&metadata, &runtime).unwrap();
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let finals = finals();
+        assert_eq!(finals.len(), 1);
+        assert_eq!(finals[0].turn_id.as_deref(), Some("claude-notice"));
+        assert_eq!(finals[0].outcome.as_deref(), Some("aborted"));
+        assert_eq!(finals[0].reason.as_deref(), Some("no_reply"));
+        let page = store.read_page(after, 100).unwrap();
+        assert_eq!(
+            page.events
+                .last()
+                .and_then(|event| event.turn_state.as_deref()),
+            Some("waiting_on_user")
+        );
+
+        // A turn that ends with a reply is not closed again.
+        let after_close = store.latest_sequence();
+        append(
+            &session,
+            concat!(
+                "{\"type\":\"user\",\"uuid\":\"claude-turn-2\",\"sessionId\":\"session-claude\",\"timestamp\":\"2026-10-04T15:00:00Z\",\"message\":{\"content\":\"work\"}}\n",
+                "{\"type\":\"assistant\",\"uuid\":\"claude-reply\",\"sessionId\":\"session-claude\",\"timestamp\":\"2026-10-04T15:00:02Z\",\"message\":{\"id\":\"msg-2\",\"model\":\"claude\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n"
+            ),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        set_age(60);
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let outcomes = store
+            .read_page(after_close, 100)
+            .unwrap()
+            .events
+            .into_iter()
+            .filter(|event| event.kind == AgentEventKind::TurnFinal)
+            .map(|event| event.outcome)
+            .collect::<Vec<_>>();
+        assert_eq!(outcomes, vec![Some("completed".to_string())]);
     }
 
     #[test]
