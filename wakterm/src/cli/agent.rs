@@ -1830,13 +1830,25 @@ impl SendAgentCommand {
         let agent = find_agent(&agents, &self.target)
             .cloned()
             .with_context(|| format!("no agent named or identified by {}", self.target))?;
-        if let Some(reason) = mux::agent::input_blocked_reason(&agent.runtime) {
-            // Panetone matches the "not sending to <name>:" prefix to keep the
-            // message queued until the agent is idle. Keep it stable.
-            bail!(
-                "not sending to {}: {reason}, so the text would not reach its prompt",
-                agent.metadata.name
-            );
+        if let Some(detail) = mux::agent::input_blocked_reason(&agent.runtime) {
+            return Ok(AgentSendResult {
+                agent_id: agent.metadata.agent_id.clone(),
+                agent_name: agent.metadata.name.clone(),
+                pane_id: agent.pane_id,
+                transport: agent.runtime.transport,
+                submitted: false,
+                acknowledgement: AgentSendAcknowledgement {
+                    kind: AgentAckKind::NotRequested,
+                    acknowledged: false,
+                    latency_ms: None,
+                    session_path: agent.runtime.session_path.clone(),
+                    detail: None,
+                },
+                refusal: Some(AgentSendRefusal {
+                    reason: AgentSendRefusalReason::InputBlocked,
+                    detail,
+                }),
+            });
         }
         let text = self.read_text()?;
         let baseline = AgentAckBaseline::from_agent(&agent);
@@ -1878,6 +1890,7 @@ impl SendAgentCommand {
             transport: agent.runtime.transport,
             submitted,
             acknowledgement,
+            refusal: None,
         })
     }
 
@@ -2589,6 +2602,22 @@ struct AgentSendResult {
     transport: AgentTransport,
     submitted: bool,
     acknowledgement: AgentSendAcknowledgement,
+    /// Set when nothing was written because the text would not reach the
+    /// agent's prompt. Callers can retry once the agent is idle.
+    refusal: Option<AgentSendRefusal>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentSendRefusal {
+    reason: AgentSendRefusalReason,
+    detail: String,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum AgentSendRefusalReason {
+    /// A dialog, question, startup prompt or shell mode has the keyboard.
+    InputBlocked,
 }
 
 #[derive(Debug, Serialize)]
@@ -3672,7 +3701,7 @@ mod test {
         let mut agent = sample_agent(30, "reviewer");
         agent.runtime.turn_phase = Some("waiting for dialog open".to_string());
 
-        let error = promise::spawn::block_on(command.run_with(
+        let result = promise::spawn::block_on(command.run_with(
             move || {
                 let agent = agent.clone();
                 async move {
@@ -3696,13 +3725,16 @@ mod test {
                 }
             },
         ))
-        .unwrap_err();
+        .unwrap();
 
-        // Panetone matches this prefix.
-        assert!(error
-            .to_string()
-            .starts_with("not sending to reviewer: the target is waiting for dialog open"));
+        assert!(!result.submitted);
         assert_eq!(*writes.borrow(), 0);
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["refusal"]["reason"], "input_blocked");
+        assert_eq!(
+            json["refusal"]["detail"],
+            "the target is waiting for dialog open"
+        );
     }
 
     #[test]

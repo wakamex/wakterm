@@ -4,6 +4,8 @@
 the prompt to the native harness pane, submits it, waits briefly for observer
 acknowledgement, and prints structured JSON.
 
+When the text would not reach the agent's prompt, because a dialog, question, startup prompt or shell mode has the keyboard, the command writes nothing and still exits successfully. Its JSON then has `submitted: false` and `refusal: {"reason": "input_blocked", "detail": "..."}`; `refusal` is `null` otherwise. `reason` is a stable code that callers can match to retry once the agent is idle, and `detail` is human-readable text that may change.
+
 For an idle Codex agent with an exact observer-backed PTY session or managed app-server session, `--return-final` creates a durable asynchronous return request:
 
 ```sh
