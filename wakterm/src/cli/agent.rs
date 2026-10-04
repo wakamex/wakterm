@@ -3016,7 +3016,7 @@ fn write_agent_table<W: Write>(
                 alignment: Alignment::Left,
             },
             Column {
-                name: "LAST TURN END".to_string(),
+                name: "LAST TURN".to_string(),
                 alignment: Alignment::Left,
             },
         ]
@@ -3053,7 +3053,8 @@ fn write_agent_table<W: Write>(
                     runtime_status_label(&agent.runtime.status),
                     harness_label(&agent.runtime.harness),
                     agent.metadata.declared_cwd.clone(),
-                    last_turn_age_label(agent.runtime.last_turn_completed_at, now),
+                    last_turn_age_label(agent.runtime.last_turn_completed_at, now)
+                        .map_or_else(|| "-".to_string(), |age| format!("{age} ago")),
                 ]
             }
         })
@@ -3066,32 +3067,30 @@ fn write_agent_table<W: Write>(
 fn last_turn_age_label(
     last_turn_completed_at: Option<chrono::DateTime<Utc>>,
     now: chrono::DateTime<Utc>,
-) -> String {
-    let Some(completed_at) = last_turn_completed_at else {
-        return "-".to_string();
-    };
+) -> Option<String> {
+    let completed_at = last_turn_completed_at?;
 
     let seconds = now.signed_duration_since(completed_at).num_seconds().max(0);
     if seconds < 60 {
-        return format!("{seconds}s");
+        return Some(format!("{seconds}s"));
     }
 
     let minutes = seconds / 60;
     if minutes < 60 {
-        return format!("{}m {}s", minutes, seconds % 60);
+        return Some(format!("{}m {}s", minutes, seconds % 60));
     }
 
     let hours = minutes / 60;
     if hours < 24 {
-        return format!("{}h {}m", hours, minutes % 60);
+        return Some(format!("{}h {}m", hours, minutes % 60));
     }
 
     let days = hours / 24;
     if days < 7 {
-        return format!("{}d {}h", days, hours % 24);
+        return Some(format!("{}d {}h", days, hours % 24));
     }
 
-    format!("{}w {}d", days / 7, days % 7)
+    Some(format!("{}w {}d", days / 7, days % 7))
 }
 
 fn inline_progress_summary(agent: &AgentSnapshot) -> String {
@@ -3704,8 +3703,11 @@ mod test {
         let now = Utc.with_ymd_and_hms(2026, 3, 17, 14, 30, 0).unwrap();
         let completed_at = Utc.with_ymd_and_hms(2026, 3, 17, 12, 15, 0).unwrap();
 
-        assert_eq!(last_turn_age_label(Some(completed_at), now), "2h 15m");
-        assert_eq!(last_turn_age_label(None, now), "-");
+        assert_eq!(
+            last_turn_age_label(Some(completed_at), now).as_deref(),
+            Some("2h 15m")
+        );
+        assert_eq!(last_turn_age_label(None, now), None);
     }
 
     #[test]
@@ -3721,10 +3723,10 @@ mod test {
         let mut compact = Vec::new();
         write_agent_table(&[agent.clone()], false, now, &mut compact).unwrap();
         let compact = String::from_utf8(compact).unwrap();
-        assert!(compact.contains("LAST TURN END"));
+        assert!(compact.contains("LAST TURN"));
         assert!(compact.contains("busy"));
         assert!(compact.contains("managed"));
-        assert!(compact.contains("2h 15m"));
+        assert!(compact.contains("2h 15m ago"));
         assert!(!compact.contains("PANEID"));
         assert!(!compact.contains("PROGRESS"));
 
