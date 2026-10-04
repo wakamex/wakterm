@@ -3564,6 +3564,7 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
     let mut harness_mode = None;
     let mut last_user_at = None;
     let mut last_assistant_at = None;
+    let mut last_queued_input_at = None;
     for line in reader.lines() {
         let line = line?;
         let Ok(record) = serde_json::from_str::<Value>(&line) else {
@@ -3574,6 +3575,20 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
                 last_user_at = parse_record_timestamp(&record).or(last_user_at);
             }
             Some("assistant") => {}
+            // Input that arrives during a running turn is queued into it.
+            // Background task notifications are queued the same way but are
+            // not input.
+            Some("queue-operation") => {
+                if record.get("operation").and_then(Value::as_str) == Some("enqueue")
+                    && !record
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .is_some_and(|content| content.starts_with("<task-notification>"))
+                {
+                    last_queued_input_at = parse_record_timestamp(&record).or(last_queued_input_at);
+                }
+                continue;
+            }
             _ => continue,
         }
         if record.get("type").and_then(Value::as_str) != Some("assistant") {
@@ -3639,7 +3654,7 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
         progress_summary: summary,
         harness_mode,
         turn_phase: None,
-        updated_at: None,
+        updated_at: last_queued_input_at,
         turn_state,
         last_turn_completed_at,
         observed_turn: None,
@@ -4281,6 +4296,49 @@ mod test {
     use tempfile::TempDir;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn claude_input_queued_into_a_running_turn_counts_as_progress() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("session.jsonl");
+        let queued = |second: u32, content: &str| {
+            serde_json::json!({"type":"queue-operation","operation":"enqueue",
+                "timestamp": format!("2026-10-04T18:07:{second:02}.000Z"),
+                "sessionId":"s","content": content})
+            .to_string()
+        };
+        let mut lines = vec![
+            serde_json::json!({"type":"user","timestamp":"2026-10-04T18:07:00.000Z",
+                "message":{"role":"user","content":"work"}})
+            .to_string(),
+            serde_json::json!({"type":"assistant","timestamp":"2026-10-04T18:07:01.000Z",
+                "message":{"role":"assistant","stop_reason":"tool_use",
+                "content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{}}]}})
+            .to_string(),
+            queued(
+                2,
+                "<task-notification>\n<task-id>b1</task-id>\n</task-notification>",
+            ),
+        ];
+        let write = |lines: &[String]| fs::write(&session, lines.join("\n") + "\n").unwrap();
+
+        // A background task notification is not input.
+        write(&lines);
+        assert_eq!(
+            read_last_claude_observation(&session).unwrap().updated_at,
+            None
+        );
+
+        lines.push(queued(5, "concord agent tried to send a message"));
+        write(&lines);
+        let observed = read_last_claude_observation(&session).unwrap();
+        assert_eq!(
+            observed.updated_at,
+            Some(Utc.with_ymd_and_hms(2026, 10, 4, 18, 7, 5).unwrap())
+        );
+        // Queued input does not end the running turn.
+        assert_eq!(observed.turn_state, AgentTurnState::WaitingOnAgent);
+    }
 
     #[test]
     fn claude_project_dir_name_matches_claude_code() {
