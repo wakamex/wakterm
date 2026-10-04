@@ -1259,11 +1259,6 @@ fn jsonl_source_id(path: &Path, provider: &str) -> anyhow::Result<String> {
     bail!("{provider} session lacks an exact provider session id")
 }
 
-/// How long a Claude transcript must be unchanged before an open turn is
-/// closed by Claude's idle report, since Claude writes its final reply and
-/// goes idle at about the same time.
-const CLAUDE_IDLE_SETTLE: Duration = Duration::from_secs(5);
-
 /// Closes an open Claude turn that Claude reports idle without a reply,
 /// such as input it displayed without working on it.
 fn close_unanswered_claude_turn(
@@ -1277,12 +1272,7 @@ fn close_unanswered_claude_turn(
     if !cursor.turn_open || runtime.turn_phase.as_deref() != Some("idle") {
         return None;
     }
-    let quiet = fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| modified.elapsed().ok())
-        .is_some_and(|elapsed| elapsed >= CLAUDE_IDLE_SETTLE);
-    if !quiet {
+    if !crate::agent::claude_transcript_settled(path) {
         return None;
     }
     let turn_id = cursor.current_turn_id.clone()?;

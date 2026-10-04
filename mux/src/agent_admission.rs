@@ -570,11 +570,13 @@ fn classify_runtime(
             "the target is not authoritatively idle",
         ));
     }
-    if request.return_final && !matches!(runtime.harness, AgentHarness::Codex) {
+    if request.return_final
+        && !matches!(runtime.harness, AgentHarness::Codex | AgentHarness::Claude)
+    {
         return Some(AgentAdmissionReceipt::rejected(
             request,
             AgentAdmissionStatus::Unsupported,
-            "return-final admission currently supports only Codex",
+            "return-final admission currently supports only Codex and Claude",
         ));
     }
     None

@@ -1840,6 +1840,17 @@ fn observe_claude_process(
                     observation.last_turn_completed_at =
                         observation.last_turn_completed_at.max(reported.changed_at);
                 }
+                // A turn Claude left without a reply is over once it is idle.
+                let settled = observation
+                    .session_path
+                    .as_deref()
+                    .is_some_and(|path| claude_transcript_settled(Path::new(path)));
+                if let Some(turn) = observation.observed_turn.as_mut().filter(|turn| {
+                    settled && matches!(turn.outcome, AgentObservedTurnOutcome::Running)
+                }) {
+                    turn.outcome = AgentObservedTurnOutcome::Aborted;
+                    turn.completed_at = reported.changed_at;
+                }
                 observation.turn_state = AgentTurnState::WaitingOnUser;
                 observation.turn_phase = Some("idle".to_string());
             }
@@ -3681,21 +3692,151 @@ fn read_last_opencode_observation(
     }))
 }
 
+/// The text of a Claude user record, or None for a record that carries only
+/// tool results.
+fn claude_user_text(record: &Value) -> Option<String> {
+    match record.get("message")?.get("content")? {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(blocks) => {
+            let texts = blocks
+                .iter()
+                .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>();
+            (!texts.is_empty()).then(|| texts.join("\n"))
+        }
+        _ => None,
+    }
+}
+
+/// Claude stores pasted input inside a `<pasted_content id="N">` wrapper.
+/// Returns the pasted text when the message is exactly one such paste.
+fn unwrap_claude_paste(text: &str) -> &str {
+    let trimmed = text.trim();
+    let Some(rest) = trimmed.strip_prefix("<pasted_content id=\"") else {
+        return trimmed;
+    };
+    let Some((id, body)) = rest.split_once("\">") else {
+        return trimmed;
+    };
+    body.strip_suffix(&format!("</pasted_content id=\"{id}\">"))
+        .map(str::trim)
+        .unwrap_or(trimmed)
+}
+
+/// How long a Claude transcript must be unchanged before an idle report
+/// ends a turn that has no reply, since Claude writes its final reply and
+/// goes idle at about the same time.
+const CLAUDE_IDLE_SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether the transcript has been unchanged for the settle period.
+pub(crate) fn claude_transcript_settled(path: &Path) -> bool {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|elapsed| elapsed >= CLAUDE_IDLE_SETTLE)
+}
+
+/// Tracks the newest Claude turn: input starts a turn, input that arrives
+/// while it runs joins it, and an end_turn reply or an interruption ends it.
+#[derive(Default)]
+struct ClaudeTurnTracker {
+    turn: Option<AgentObservedTurn>,
+}
+
+impl ClaudeTurnTracker {
+    fn user(&mut self, cursor: u64, record: &Value) {
+        if record.get("isMeta").and_then(Value::as_bool) == Some(true) {
+            return;
+        }
+        let Some(text) = claude_user_text(record) else {
+            return;
+        };
+        let running = self
+            .turn
+            .as_ref()
+            .is_some_and(|turn| matches!(turn.outcome, AgentObservedTurnOutcome::Running));
+        if text
+            .trim_start()
+            .starts_with("[Request interrupted by user")
+        {
+            if let Some(turn) = self.turn.as_mut().filter(|_| running) {
+                turn.outcome = AgentObservedTurnOutcome::Aborted;
+                turn.completed_at = parse_record_timestamp(record);
+                turn.latest_cursor = Some(cursor);
+            }
+            return;
+        }
+        if let Some(turn) = self.turn.as_mut().filter(|_| running) {
+            turn.user_message_count += 1;
+            turn.latest_cursor = Some(cursor);
+            return;
+        }
+        let Some(turn_id) = record.get("uuid").and_then(Value::as_str) else {
+            self.turn = None;
+            return;
+        };
+        self.turn = Some(AgentObservedTurn {
+            provider_turn_id: turn_id.to_string(),
+            outcome: AgentObservedTurnOutcome::Running,
+            started_at: parse_record_timestamp(record),
+            completed_at: None,
+            started_cursor: Some(cursor),
+            latest_cursor: Some(cursor),
+            primary_user_message_sha256: Some(message_sha256(unwrap_claude_paste(&text))),
+            user_message_count: 1,
+            final_message: None,
+        });
+    }
+
+    fn assistant(&mut self, cursor: u64, record: &Value, text: Option<String>) {
+        let Some(turn) = self
+            .turn
+            .as_mut()
+            .filter(|turn| matches!(turn.outcome, AgentObservedTurnOutcome::Running))
+        else {
+            return;
+        };
+        turn.latest_cursor = Some(cursor);
+        let end_turn = record
+            .get("message")
+            .and_then(|message| message.get("stop_reason"))
+            .and_then(Value::as_str)
+            == Some("end_turn");
+        if end_turn && text.is_some() {
+            turn.outcome = AgentObservedTurnOutcome::Completed;
+            turn.completed_at = parse_record_timestamp(record);
+            turn.final_message = text;
+        }
+    }
+}
+
 fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservationDetails> {
-    let reader = BufReader::new(fs::File::open(path)?);
+    let mut reader = BufReader::new(fs::File::open(path)?);
     let mut summary = None;
     let mut harness_mode = None;
     let mut last_user_at = None;
     let mut last_assistant_at = None;
     let mut last_queued_input_at = None;
-    for line in reader.lines() {
-        let line = line?;
+    let mut turns = ClaudeTurnTracker::default();
+    let mut offset = 0u64;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = reader.read_line(&mut line)?;
+        if read == 0 {
+            break;
+        }
+        let cursor = offset;
+        offset += read as u64;
         let Ok(record) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
         match record.get("type").and_then(Value::as_str) {
             Some("user") => {
                 last_user_at = parse_record_timestamp(&record).or(last_user_at);
+                turns.user(cursor, &record);
             }
             Some("assistant") => {}
             // Input that arrives during a running turn is queued into it.
@@ -3740,6 +3881,7 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
         }
 
         let mut parts = vec![];
+        let mut reply = vec![];
         for block in content {
             match block.get("type").and_then(Value::as_str) {
                 Some("text") => {
@@ -3747,6 +3889,7 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
                         let text = text.trim();
                         if !text.is_empty() {
                             parts.push(text.to_string());
+                            reply.push(text.to_string());
                         }
                     }
                 }
@@ -3768,6 +3911,11 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
                 _ => {}
             }
         }
+        turns.assistant(
+            cursor,
+            &record,
+            (!reply.is_empty()).then(|| reply.join("\n")),
+        );
         if !parts.is_empty() {
             summary = Some(truncate_summary(&parts.join("\n")));
         }
@@ -3780,7 +3928,7 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
         updated_at: last_queued_input_at,
         turn_state,
         last_turn_completed_at,
-        observed_turn: None,
+        observed_turn: turns.turn,
     })
 }
 
@@ -3836,6 +3984,66 @@ fn visit_lines_reverse(
 }
 
 /// Recover only an already-correlated turn, never infer a binding from history.
+/// The finished Claude turn `turn_id` that started after `baseline_cursor`,
+/// for a request whose turn a newer turn has since replaced.
+pub(crate) fn read_claude_terminal_turn(
+    path: &Path,
+    turn_id: &str,
+    baseline_cursor: u64,
+) -> anyhow::Result<Option<AgentObservedTurn>> {
+    let mut reader = BufReader::new(fs::File::open(path)?);
+    let mut turns = ClaudeTurnTracker::default();
+    let mut found = None;
+    let mut offset = 0u64;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = reader.read_line(&mut line)?;
+        if read == 0 {
+            break;
+        }
+        let cursor = offset;
+        offset += read as u64;
+        let Ok(record) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        match record.get("type").and_then(Value::as_str) {
+            Some("user") => turns.user(cursor, &record),
+            Some("assistant") => {
+                let text = record
+                    .get("message")
+                    .and_then(|message| message.get("content"))
+                    .and_then(Value::as_array)
+                    .map(|blocks| {
+                        blocks
+                            .iter()
+                            .filter(|block| {
+                                block.get("type").and_then(Value::as_str) == Some("text")
+                            })
+                            .filter_map(|block| block.get("text").and_then(Value::as_str))
+                            .map(str::trim)
+                            .filter(|text| !text.is_empty())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .filter(|text| !text.is_empty());
+                turns.assistant(cursor, &record, text);
+            }
+            _ => continue,
+        }
+        if let Some(turn) = turns.turn.as_ref().filter(|turn| {
+            turn.provider_turn_id == turn_id
+                && turn
+                    .started_cursor
+                    .is_some_and(|cursor| cursor > baseline_cursor)
+                && !matches!(turn.outcome, AgentObservedTurnOutcome::Running)
+        }) {
+            found = Some(turn.clone());
+        }
+    }
+    Ok(found)
+}
+
 pub(crate) fn read_codex_terminal_turn(
     path: &Path,
     turn_id: &str,
@@ -4540,6 +4748,175 @@ mod test {
                 "{name}"
             );
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn claude_return_request_follows_the_turn_its_prompt_started() {
+        use crate::agent_request::{AgentRequest, AgentRequestState};
+        use std::os::unix::process::CommandExt;
+
+        let _env_lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = TempDir::new().unwrap();
+        let cwd = "/tmp/claude-return";
+        let projects = temp.path().join("projects");
+        let project = projects.join("-tmp-claude-return");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(temp.path().join("sessions")).unwrap();
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let child = Child(
+            std::process::Command::new("sleep")
+                .arg0("claude")
+                .arg("60")
+                .spawn()
+                .unwrap(),
+        );
+        let process = LocalProcessInfo::with_root_pid(child.0.id()).unwrap();
+        let sid = "4c0a7e4e-8a6b-4a39-9d55-0f7c2f7ad001";
+        let session = project.join(format!("{sid}.jsonl"));
+        let registry = temp
+            .path()
+            .join("sessions")
+            .join(format!("{}.json", process.pid));
+        let namespace = fs::read_link(format!("/proc/{}/ns/pid", process.pid)).unwrap();
+        let machine_id = fs::read_to_string("/etc/machine-id").unwrap();
+        let set_status = |status: &str, changed: DateTime<Utc>| {
+            fs::write(
+                &registry,
+                serde_json::json!({"pid": process.pid, "procStart": process.start_time.to_string(),
+                    "pidDomain": format!("linux:{}:{}", machine_id.trim(), namespace.to_string_lossy()),
+                    "sessionId": sid, "cwd": cwd, "kind": "interactive",
+                    "status": status, "statusUpdatedAt": changed.timestamp_millis()})
+                .to_string(),
+            )
+            .unwrap();
+        };
+        let at = |second: i64| {
+            Utc::now() - chrono::Duration::minutes(10) + chrono::Duration::seconds(second)
+        };
+        let user = |uuid: &str, second: i64, content: &str| {
+            serde_json::json!({"type":"user","uuid":uuid,"sessionId":sid,"cwd":cwd,
+                "timestamp": at(second),"message":{"role":"user","content":content}})
+            .to_string()
+        };
+        let reply = |uuid: &str, second: i64, text: &str| {
+            serde_json::json!({"type":"assistant","uuid":uuid,"sessionId":sid,"cwd":cwd,
+                "timestamp": at(second),"message":{"role":"assistant","stop_reason":"end_turn",
+                "content":[{"type":"text","text":text}]}})
+            .to_string()
+        };
+        let append = |lines: &[String]| {
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&session)
+                .unwrap();
+            for line in lines {
+                writeln!(file, "{line}").unwrap();
+            }
+        };
+        let age_transcript = || {
+            fs::File::options()
+                .write(true)
+                .open(&session)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60))
+                .unwrap();
+        };
+        append(&[user("turn-0", 0, "hello"), reply("reply-0", 1, "hi")]);
+        set_status("idle", at(1));
+        set_env_path("WAKTERM_AGENT_CLAUDE_DIR", &projects);
+        let metadata = AgentMetadata {
+            agent_id: "claude-return".to_string(),
+            name: "claude".to_string(),
+            launch_cmd: "claude".to_string(),
+            declared_cwd: cwd.to_string(),
+            adopted_pid: Some(process.pid),
+            adopted_start_time: Some(process.start_time),
+            created_at: at(0),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+            launch_supervisor: None,
+            codex_app_server: None,
+        };
+        let refreshed = |runtime: &mut AgentRuntimeSnapshot| {
+            runtime.foreground_process_name = Some("claude".to_string());
+            refresh_runtime_from_harness(runtime, &metadata);
+        };
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        refreshed(&mut runtime);
+        let prompt = "[Panetone cross-agent message]\nsummarize the logs";
+        let request = |runtime: &AgentRuntimeSnapshot, id: &str| {
+            let mut request =
+                AgentRequest::new(id.to_string(), &metadata, 1, runtime, prompt, true, 0, None)
+                    .unwrap();
+            request.mark_submitted();
+            request
+        };
+
+        // The prompt, stored as a paste, starts a turn; a steer joins it; the
+        // turn's reply completes the request.
+        let mut completed = request(&runtime, "completes");
+        append(&[
+            user(
+                "turn-1",
+                10,
+                &format!(
+                    "\n\n<pasted_content id=\"0551\">\n{prompt}\n</pasted_content id=\"0551\">\n"
+                ),
+            ),
+            user("steer-1", 12, "also check stderr"),
+        ]);
+        set_status("busy", at(10));
+        refreshed(&mut runtime);
+        completed.reconcile(Some(&metadata), Some(&runtime), Utc::now());
+        assert_eq!(completed.state, AgentRequestState::Bound);
+        append(&[reply("reply-1", 20, "the logs show two timeouts")]);
+        set_status("idle", at(20));
+        refreshed(&mut runtime);
+        completed.reconcile(Some(&metadata), Some(&runtime), Utc::now());
+        assert_eq!(completed.state, AgentRequestState::Completed);
+        assert_eq!(
+            completed.final_message.as_deref(),
+            Some("the logs show two timeouts")
+        );
+
+        // A different input that starts the next turn first cannot be bound.
+        let mut raced = request(&runtime, "raced");
+        append(&[user(
+            "turn-2",
+            30,
+            "<task-notification>done</task-notification>",
+        )]);
+        refreshed(&mut runtime);
+        raced.reconcile(Some(&metadata), Some(&runtime), Utc::now());
+        assert_eq!(raced.state, AgentRequestState::Indeterminate);
+        append(&[reply("reply-2", 31, "noted")]);
+        refreshed(&mut runtime);
+
+        // A prompt Claude records but never answers ends once Claude is idle
+        // and the transcript is quiet.
+        let mut unanswered = request(&runtime, "unanswered");
+        append(&[user("turn-3", 40, prompt)]);
+        set_status("idle", at(41));
+        refreshed(&mut runtime);
+        unanswered.reconcile(Some(&metadata), Some(&runtime), Utc::now());
+        assert_eq!(unanswered.state, AgentRequestState::Bound);
+        age_transcript();
+        refreshed(&mut runtime);
+        unanswered.reconcile(Some(&metadata), Some(&runtime), Utc::now());
+        remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
+        assert_eq!(unanswered.state, AgentRequestState::Aborted);
     }
 
     #[test]

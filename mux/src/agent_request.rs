@@ -296,25 +296,35 @@ impl AgentRequest {
         let Some(turn) = runtime.observed_turn.as_ref() else {
             return;
         };
-        if self.target_harness == AgentHarness::Codex {
-            if let Some(bound) = self.provider_turn_id.as_deref() {
-                if turn.provider_turn_id != bound {
-                    // The live snapshot holds only the newest turn. A bound turn
-                    // may have completed between request reconciliation passes.
-                    // Identity and session checks above still apply, and this
-                    // lookup cannot bind an uncorrelated prompt or replay input.
-                    match crate::agent::read_codex_terminal_turn(
-                        std::path::Path::new(session_path),
+        if let Some(bound) = self.provider_turn_id.as_deref() {
+            if turn.provider_turn_id != bound {
+                // The live snapshot holds only the newest turn. A bound turn
+                // may have completed between request reconciliation passes.
+                // Identity and session checks above still apply, and this
+                // lookup cannot bind an uncorrelated prompt or replay input.
+                let path = std::path::Path::new(session_path);
+                let completed = match self.target_harness {
+                    AgentHarness::Codex => Some(crate::agent::read_codex_terminal_turn(
+                        path,
                         bound,
                         self.baseline_cursor,
-                    ) {
+                    )),
+                    AgentHarness::Claude => Some(crate::agent::read_claude_terminal_turn(
+                        path,
+                        bound,
+                        self.baseline_cursor,
+                    )),
+                    _ => None,
+                };
+                if let Some(completed) = completed {
+                    match completed {
                         Ok(Some(completed)) => {
                             self.reconcile_turn(&completed, now);
                             return;
                         }
                         Ok(None) => {}
                         Err(err) => log::warn!(
-                            "unable to recover bound Codex turn for request {}: {err:#}",
+                            "unable to recover bound turn for request {}: {err:#}",
                             self.request_id
                         ),
                     }
@@ -526,8 +536,8 @@ fn validate_baseline(
     metadata: &AgentMetadata,
     runtime: &AgentRuntimeSnapshot,
 ) -> anyhow::Result<()> {
-    if !matches!(runtime.harness, AgentHarness::Codex) {
-        bail!("--return-final currently requires a codex agent");
+    if !matches!(runtime.harness, AgentHarness::Codex | AgentHarness::Claude) {
+        bail!("--return-final currently requires a Codex or Claude agent");
     }
     if !matches!(runtime.transport, AgentTransport::ObservedPty) {
         bail!("--return-final requires an observer-backed session");
@@ -545,8 +555,8 @@ fn validate_baseline(
         .observed_turn
         .as_ref()
         .context("--return-final requires stable provider turn identity")?;
-    if !matches!(turn.outcome, AgentObservedTurnOutcome::Completed) {
-        bail!("--return-final requires a completed baseline turn");
+    if matches!(turn.outcome, AgentObservedTurnOutcome::Running) {
+        bail!("--return-final requires a finished baseline turn");
     }
     if turn.latest_cursor.is_none() {
         bail!("--return-final requires an observer cursor for the baseline turn");

@@ -6,7 +6,7 @@ acknowledgement, and prints structured JSON.
 
 When the text would not reach the agent's prompt, because a dialog, question, startup prompt or shell mode has the keyboard, the command writes nothing and still exits successfully. Its JSON then has `submitted: false` and `refusal: {"reason": "input_blocked", "detail": "..."}`; `refusal` is `null` otherwise. `reason` is a stable code that callers can match to retry once the agent is idle, and `detail` is human-readable text that may change.
 
-For an idle Codex agent with an exact observer-backed PTY session or managed app-server session, `--return-final` creates a durable asynchronous return request:
+For an idle Codex agent with an exact observer-backed PTY session or managed app-server session, or an idle Claude agent with an exact observer-backed PTY session, `--return-final` creates a durable asynchronous return request:
 
 ```sh
 wakterm agent send zola --return-final "Complete phases 2 and 3"
@@ -137,7 +137,7 @@ adopted process tree and verifies the adopted process start time and declared
 working directory. A reused pane can no longer remain attached to an older
 rollout merely because that file was the previous preferred observer session.
 
-The current return mode is Codex-only because Codex rollout records and app-server notifications expose stable provider turn IDs with exact cursor boundaries. Other harnesses need equivalent evidence before they can safely support this primitive.
+The return mode supports Codex and Claude because both expose stable provider turn IDs with exact cursor boundaries: Codex rollout records and app-server notifications, and the UUID of the Claude transcript record that starts a turn, with byte offsets as cursors. Claude stores a pasted prompt inside a `<pasted_content>` wrapper, and the prompt hash is compared against the text inside it. Input that arrives while a Claude turn runs joins that turn. The turn completes at Claude's `end_turn` reply, aborts at an interruption, and also aborts when Claude reports its process idle without a reply and the transcript has been unchanged for 5 seconds. Other harnesses need equivalent evidence before they can safely support this primitive.
 
 One PTY limitation remains: byte delivery and the durable submitted marker
 cannot be a single transaction. Wakterm resolves a crash in that narrow window
