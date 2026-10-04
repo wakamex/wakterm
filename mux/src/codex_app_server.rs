@@ -1076,6 +1076,8 @@ struct TuiProxyProtocolState {
     switched_thread: bool,
     pending: HashMap<String, PendingTuiThreadChange>,
     buffered_notifications: Vec<Value>,
+    /// turn/steer request ids and the thread each one steers.
+    pending_steers: HashMap<String, String>,
 }
 
 impl TuiProxyProtocolState {
@@ -1085,6 +1087,7 @@ impl TuiProxyProtocolState {
             switched_thread: false,
             pending: HashMap::new(),
             buffered_notifications: Vec::new(),
+            pending_steers: HashMap::new(),
         }
     }
 
@@ -1092,6 +1095,15 @@ impl TuiProxyProtocolState {
         let Some(method) = message.get("method").and_then(Value::as_str) else {
             return;
         };
+        if method == "turn/steer" {
+            if let (Some(id), Some(thread_id)) = (
+                json_rpc_id(message.get("id")),
+                message.pointer("/params/threadId").and_then(Value::as_str),
+            ) {
+                self.pending_steers.insert(id, thread_id.to_string());
+            }
+            return;
+        }
         if !matches!(method, "thread/start" | "thread/resume" | "thread/fork") {
             return;
         }
@@ -1140,8 +1152,8 @@ impl TuiProxyProtocolState {
                 if thread_id == self.current_thread_id {
                     if self.switched_thread {
                         return TuiProxyDispatch {
-                            transition: None,
                             notifications: vec![message.clone()],
+                            ..TuiProxyDispatch::default()
                         };
                     }
                 } else if self
@@ -1158,6 +1170,12 @@ impl TuiProxyProtocolState {
         let Some(id) = json_rpc_id(message.get("id")) else {
             return TuiProxyDispatch::default();
         };
+        if let Some(thread_id) = self.pending_steers.remove(&id) {
+            return TuiProxyDispatch {
+                steered_thread_id: message.get("error").is_none().then_some(thread_id),
+                ..TuiProxyDispatch::default()
+            };
+        }
         let Some(pending) = self.pending.remove(&id) else {
             return TuiProxyDispatch::default();
         };
@@ -1217,6 +1235,7 @@ impl TuiProxyProtocolState {
                 bootstrap: message.get("result").cloned().unwrap_or(Value::Null),
             }),
             notifications,
+            steered_thread_id: None,
         }
     }
 }
@@ -1233,6 +1252,8 @@ struct TuiThreadTransition {
 struct TuiProxyDispatch {
     transition: Option<TuiThreadTransition>,
     notifications: Vec<Value>,
+    /// A thread whose running turn accepted a steer from the TUI.
+    steered_thread_id: Option<String>,
 }
 
 fn json_rpc_id(id: Option<&Value>) -> Option<String> {
@@ -1251,7 +1272,10 @@ pub(crate) fn notification_thread_id(message: &Value) -> Option<&str> {
 }
 
 fn dispatch_tui_proxy_messages(dispatch: TuiProxyDispatch) {
-    if dispatch.transition.is_none() && dispatch.notifications.is_empty() {
+    if dispatch.transition.is_none()
+        && dispatch.notifications.is_empty()
+        && dispatch.steered_thread_id.is_none()
+    {
         return;
     }
     promise::spawn::spawn_into_main_thread(async move {
@@ -1264,6 +1288,9 @@ fn dispatch_tui_proxy_messages(dispatch: TuiProxyDispatch) {
 }
 
 fn apply_tui_proxy_dispatch(mux: &Mux, dispatch: TuiProxyDispatch) {
+    if let Some(thread_id) = dispatch.steered_thread_id.as_deref() {
+        record_accepted_steer(mux, thread_id);
+    }
     let current_thread_id = if let Some(transition) = dispatch.transition {
         let new_thread_id = transition.new_thread_id.clone();
         if let Err(err) = mux.rebind_codex_app_server_pane(
@@ -1376,8 +1403,13 @@ fn relay_websocket_frames(
         let mut payload = vec![0u8; len];
         reader.read_exact(&mut payload)?;
         raw.extend_from_slice(&payload);
-        writer.write_all(&raw)?;
-        writer.flush()?;
+        // Inspect each message before forwarding it, so a request is recorded
+        // before the peer can answer it.
+        let forward = |writer: &mut UnixStream| -> anyhow::Result<()> {
+            writer.write_all(&raw)?;
+            writer.flush()?;
+            Ok(())
+        };
 
         if masked {
             for (index, byte) in payload.iter_mut().enumerate() {
@@ -1385,6 +1417,7 @@ fn relay_websocket_frames(
             }
         }
         if opcode == 8 {
+            forward(writer)?;
             return Ok(());
         }
         if opcode == 0 {
@@ -1413,6 +1446,7 @@ fn relay_websocket_frames(
                 inspect(&message);
             }
         }
+        forward(writer)?;
     }
 }
 
@@ -1576,6 +1610,27 @@ pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
         }
         if let Some((_, _, tab_id)) = mux.resolve_pane_id(pane_id) {
             mux.notify_tab_title_changed(tab_id);
+        }
+    }
+}
+
+/// Codex accepted input into the running turn, which acknowledges a send.
+fn record_accepted_steer(mux: &Mux, thread_id: &str) {
+    let pane_ids: Vec<_> = mux
+        .agent_metadata_by_pane
+        .read()
+        .iter()
+        .filter(|(_, metadata)| {
+            metadata
+                .codex_app_server
+                .as_ref()
+                .is_some_and(|session| session.thread_id == thread_id)
+        })
+        .map(|(pane_id, _)| *pane_id)
+        .collect();
+    for pane_id in pane_ids {
+        if let Some(runtime) = mux.agent_runtime_by_pane.write().get_mut(&pane_id) {
+            runtime.last_progress_at = Some(Utc::now());
         }
     }
 }
@@ -2563,6 +2618,55 @@ mod test {
             .expect("visible resume transition");
         assert_eq!(transition.old_thread_id, "thread-primary");
         assert_eq!(transition.new_thread_id, "thread-visible");
+    }
+
+    #[test]
+    fn tui_proxy_records_a_steer_codex_accepts_into_the_running_turn() {
+        let mux = Mux::new(None);
+        let metadata = metadata("steered", "thread-a");
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Codex;
+        runtime.alive = true;
+        mux.agent_metadata_by_pane
+            .write()
+            .insert(23, Arc::new(metadata));
+        mux.agent_runtime_by_pane.write().insert(23, runtime);
+        let progress = || mux.agent_runtime_by_pane.read()[&23].last_progress_at;
+        // Shapes follow Codex's TurnSteerParams and TurnSteerResponse.
+        let steer = |id: u64| {
+            json!({
+                "id": id,
+                "method": "turn/steer",
+                "params": {
+                    "threadId": "thread-a",
+                    "expectedTurnId": "turn-a",
+                    "input": [{"type": "text", "text": "also check the press release"}]
+                }
+            })
+        };
+        let mut proxy = TuiProxyProtocolState::new("thread-a");
+
+        // Codex rejects a steer whose turn already ended.
+        proxy.record_client_message(&steer(7));
+        let rejected = proxy.record_server_message(&json!({
+            "id": 7,
+            "error": {"code": -32600, "message": "expected turn mismatch"}
+        }));
+        assert_eq!(rejected.steered_thread_id, None);
+        apply_tui_proxy_dispatch(&mux, rejected);
+        assert_eq!(progress(), None);
+
+        // A reply to some other request does not acknowledge anything.
+        proxy.record_client_message(&steer(8));
+        let unrelated = proxy.record_server_message(&json!({"id": 9, "result": {}}));
+        assert_eq!(unrelated.steered_thread_id, None);
+
+        let accepted =
+            proxy.record_server_message(&json!({"id": 8, "result": {"turnId": "turn-a"}}));
+        assert_eq!(accepted.steered_thread_id.as_deref(), Some("thread-a"));
+        let before = Utc::now();
+        apply_tui_proxy_dispatch(&mux, accepted);
+        assert!(progress().is_some_and(|at| at >= before));
     }
 
     #[test]
