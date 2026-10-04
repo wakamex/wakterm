@@ -4642,7 +4642,7 @@ mod test {
         assert_eq!(runtime.status, AgentStatus::Idle);
         // Starting work counts as progress, which acknowledges a send.
         let started_at = Utc
-            .timestamp_millis_opt(Utc::now().timestamp_millis())
+            .timestamp_millis_opt(Utc::now().timestamp_millis() + 1000)
             .unwrap();
         let mut record: serde_json::Value =
             serde_json::from_slice(&fs::read(&registry_path).unwrap()).unwrap();
