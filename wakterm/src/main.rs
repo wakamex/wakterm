@@ -706,7 +706,40 @@ fn terminate_with_error_message(err: &str) -> ! {
 }
 
 fn terminate_with_error(err: anyhow::Error) -> ! {
+    if stdout_reader_closed(&err) {
+        // Like a command killed by SIGPIPE, as when output goes to `head`.
+        std::process::exit(141);
+    }
     terminate_with_error_message(&format!("{:#}", err));
+}
+
+/// Whether the error is a broken pipe on stdout because its reader exited,
+/// as opposed to a lost connection to the mux.
+fn stdout_reader_closed(err: &anyhow::Error) -> bool {
+    let broken_pipe = err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|err| err.kind() == std::io::ErrorKind::BrokenPipe)
+    });
+    #[cfg(unix)]
+    {
+        broken_pipe && pipe_reader_closed(libc::STDOUT_FILENO)
+    }
+    #[cfg(not(unix))]
+    {
+        broken_pipe
+    }
+}
+
+/// POLLERR on a pipe's write end means its read end is closed.
+#[cfg(unix)]
+fn pipe_reader_closed(fd: libc::c_int) -> bool {
+    let mut pollfd = libc::pollfd {
+        fd,
+        events: 0,
+        revents: 0,
+    };
+    unsafe { libc::poll(&mut pollfd, 1, 0) == 1 && pollfd.revents & libc::POLLERR != 0 }
 }
 
 fn main() {
@@ -813,5 +846,21 @@ fn delegate_to_gui(saver: UmaskSaver) -> anyhow::Result<()> {
         let status = child.wait()?;
         let code = status.code().unwrap_or(1);
         std::process::exit(code);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod pipe_test {
+    use super::pipe_reader_closed;
+
+    #[test]
+    fn pipe_reader_closed_reports_only_a_closed_read_end() {
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let [read_end, write_end] = fds;
+        assert!(!pipe_reader_closed(write_end));
+        unsafe { libc::close(read_end) };
+        assert!(pipe_reader_closed(write_end));
+        unsafe { libc::close(write_end) };
     }
 }
