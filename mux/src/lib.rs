@@ -646,6 +646,8 @@ enum AgentObserverCommand {
 struct AgentObserverUpdate {
     pane_id: PaneId,
     generation: u64,
+    /// The process the observation was made for, as a PID and start time.
+    process: Option<(u32, u64)>,
     runtime: AgentRuntimeSnapshot,
     queue_delay: Duration,
     refresh_elapsed: Duration,
@@ -1070,6 +1072,10 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                 let update = AgentObserverUpdate {
                     pane_id: request.pane_id,
                     generation: request.generation,
+                    process: request
+                        .metadata
+                        .adopted_pid
+                        .zip(request.metadata.adopted_start_time),
                     runtime,
                     queue_delay,
                     refresh_elapsed,
@@ -3232,6 +3238,19 @@ impl Mux {
         self.dispatch_agent_observer_request(request);
     }
 
+    /// The process an observation of the pane must have been made for: the
+    /// registered agent's, or the detected candidate's.
+    fn observed_process(&self, pane_id: PaneId) -> Option<(u32, u64)> {
+        match self.get_agent_metadata_for_pane(pane_id) {
+            Some(metadata) => metadata.adopted_pid.zip(metadata.adopted_start_time),
+            None => self
+                .agent_adoption_candidates
+                .read()
+                .get(&pane_id)
+                .and_then(|candidate| candidate.foreground_pid.zip(candidate.process_start_time)),
+        }
+    }
+
     fn apply_agent_observer_update(&self, update: AgentObserverUpdate) {
         if self
             .get_agent_metadata_for_pane(update.pane_id)
@@ -3245,6 +3264,7 @@ impl Mux {
         }
 
         let schedule_trailing_refresh = update.schedule_trailing_refresh;
+        let current_process = self.observed_process(update.pane_id);
         let next_request = {
             let mut observer_state_by_pane = self.agent_observer_state_by_pane.write();
             let Some(observer_state) = observer_state_by_pane.get_mut(&update.pane_id) else {
@@ -3256,7 +3276,12 @@ impl Mux {
                 observer_state.inflight_generation = None;
             }
 
-            let is_stale = update.generation < observer_state.latest_generation;
+            // Observations of a pane complete in request order, so the newest
+            // completed one is applied even while a newer one is queued.
+            // Waiting for no queued request would starve an agent that keeps
+            // producing output. An observation of a replaced process is
+            // stale.
+            let is_stale = update.process != current_process;
             let next_request = observer_state.pending_request.take().map(|request| {
                 observer_state.inflight_generation = Some(request.generation);
                 request
@@ -8486,6 +8511,7 @@ mod test {
         mux.apply_agent_observer_update(AgentObserverUpdate {
             pane_id,
             generation: 1,
+            process: mux.observed_process(pane_id),
             runtime: AgentRuntimeSnapshot {
                 harness: crate::agent::AgentHarness::Codex,
                 transport: crate::agent::AgentTransport::ObservedPty,
@@ -9511,6 +9537,7 @@ mod test {
         let update = AgentObserverUpdate {
             pane_id,
             generation: 1,
+            process: mux.observed_process(pane_id),
             runtime,
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
@@ -9531,6 +9558,7 @@ mod test {
         mux.apply_agent_observer_update(AgentObserverUpdate {
             pane_id,
             generation: 1,
+            process: mux.observed_process(pane_id),
             runtime: adopted_runtime,
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
@@ -9615,6 +9643,8 @@ mod test {
         mux.apply_agent_observer_update(AgentObserverUpdate {
             pane_id,
             generation: 1,
+            // Made for the replaced process.
+            process: Some((1, 1)),
             runtime,
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
@@ -9665,6 +9695,7 @@ mod test {
         mux.apply_agent_observer_update(AgentObserverUpdate {
             pane_id,
             generation: 1,
+            process: mux.observed_process(pane_id),
             runtime,
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
@@ -10265,6 +10296,7 @@ mod test {
             mux.apply_agent_observer_update(AgentObserverUpdate {
                 pane_id,
                 generation: 1,
+                process: mux.observed_process(pane_id),
                 runtime,
                 queue_delay: Duration::ZERO,
                 refresh_elapsed: Duration::ZERO,
@@ -11259,6 +11291,92 @@ mod test {
     }
 
     #[test]
+    fn observer_result_applies_while_a_newer_observation_is_queued() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new(16_101, size, domain.id);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        let mut metadata = sample_agent_metadata("busy_claude");
+        metadata.adopted_pid = Some(4242);
+        metadata.adopted_start_time = Some(17);
+        mux.agent_metadata_by_pane
+            .write()
+            .insert(pane_id, Arc::new(metadata.clone()));
+        mux.agent_runtime_by_pane
+            .write()
+            .insert(pane_id, AgentRuntimeSnapshot::new(&metadata));
+        let queued_behind = || AgentObserverState {
+            // Observation 2 is running and output already queued 3.
+            latest_generation: 3,
+            inflight_generation: Some(2),
+            ..AgentObserverState::default()
+        };
+        let observed = |session: &str| {
+            let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+            runtime.session_path = Some(session.to_string());
+            runtime.transport = crate::agent::AgentTransport::ObservedPty;
+            runtime
+        };
+
+        // An agent that keeps producing output always has a newer observation
+        // queued; its completed observations must still apply.
+        mux.agent_observer_state_by_pane
+            .write()
+            .insert(pane_id, queued_behind());
+        mux.apply_agent_observer_update(AgentObserverUpdate {
+            pane_id,
+            generation: 2,
+            process: Some((4242, 17)),
+            runtime: observed("/tmp/busy.jsonl"),
+            queue_delay: Duration::ZERO,
+            refresh_elapsed: Duration::ZERO,
+            schedule_trailing_refresh: false,
+        });
+        assert_eq!(
+            mux.agent_runtime_by_pane.read()[&pane_id]
+                .session_path
+                .as_deref(),
+            Some("/tmp/busy.jsonl")
+        );
+
+        // An observation of a replaced process never applies.
+        mux.agent_observer_state_by_pane
+            .write()
+            .insert(pane_id, queued_behind());
+        mux.apply_agent_observer_update(AgentObserverUpdate {
+            pane_id,
+            generation: 2,
+            process: Some((4242, 16)),
+            runtime: observed("/tmp/old-process.jsonl"),
+            queue_delay: Duration::ZERO,
+            refresh_elapsed: Duration::ZERO,
+            schedule_trailing_refresh: false,
+        });
+        assert_eq!(
+            mux.agent_runtime_by_pane.read()[&pane_id]
+                .session_path
+                .as_deref(),
+            Some("/tmp/busy.jsonl")
+        );
+    }
+
+    #[test]
     #[cfg(target_os = "linux")]
     fn durable_final_reconciles_the_same_running_catalog_snapshot() {
         let _test_lock = TEST_MUX_LOCK.lock();
@@ -11392,6 +11510,7 @@ mod test {
         mux.apply_agent_observer_update(AgentObserverUpdate {
             pane_id,
             generation: 1,
+            process: mux.observed_process(pane_id),
             runtime: running,
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
@@ -13378,6 +13497,7 @@ mod test {
         mux.apply_agent_observer_update(AgentObserverUpdate {
             pane_id,
             generation: 1,
+            process: mux.observed_process(pane_id),
             runtime: stale_running_runtime,
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
