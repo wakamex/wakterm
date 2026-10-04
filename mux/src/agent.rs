@@ -1860,6 +1860,29 @@ fn observe_claude_process(
     Ok((observation, background_job))
 }
 
+/// Whether Claude recorded a status change for the agent's exact process
+/// after `since`. None when the agent has no confirmed Claude session record.
+pub fn claude_status_changed_since(
+    metadata: &AgentMetadata,
+    since: std::time::SystemTime,
+) -> Option<bool> {
+    if infer_harness(&metadata.launch_cmd, None) != AgentHarness::Claude {
+        return None;
+    }
+    let ClaudeOwnership::Owned(owned) = claude_session_owned_by_process(
+        &normalize_declared_cwd(&metadata.declared_cwd),
+        metadata.adopted_pid,
+        metadata.adopted_start_time,
+        &metadata.launch_cmd,
+    )
+    .ok()?
+    else {
+        return None;
+    };
+    let changed_at = owned.status?.changed_at?;
+    Some(changed_at > DateTime::<Utc>::from(since))
+}
+
 /// Resume a Claude session in the pane with the pane's own launch flags.
 /// An attach client has none, so it gets a plain command.
 fn claude_pane_resume_command(launch_cmd: &str, session_id: &str) -> (String, bool) {
@@ -4668,6 +4691,16 @@ mod test {
         assert!(transcript_end < Some(idle_at));
         assert_eq!(runtime.last_turn_completed_at, Some(idle_at));
         assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
+
+        // Admission confirms a Claude prompt only by a status change after
+        // the write.
+        let before = std::time::SystemTime::from(idle_at - chrono::Duration::seconds(1));
+        let after = std::time::SystemTime::from(idle_at + chrono::Duration::seconds(1));
+        assert_eq!(claude_status_changed_since(&metadata, before), Some(true));
+        assert_eq!(claude_status_changed_since(&metadata, after), Some(false));
+        let mut codex = metadata.clone();
+        codex.launch_cmd = "codex".to_string();
+        assert_eq!(claude_status_changed_since(&codex, before), None);
 
         // A dialog with the keyboard needs the user, and typed input would
         // go to the dialog.

@@ -19,7 +19,7 @@ incarnation. Native observed sessions use process identity, while managed
 Codex sessions use exact app-server provider identity. A definitive
 non-acceptance means no prompt bytes were written.
 
-A one-way admission is `accepted` only after the target's exact incarnation starts a turn following the write. Writing the prompt is not enough, because a harness can drop input, for example while one of its own dialogs has keyboard focus. If no turn starts within 15 seconds, the receipt is `indeterminate` with `prompt_written: true` and a detail, and the caller should report that delivery is unconfirmed rather than retry under a new request ID.
+A one-way admission is `accepted` only after the target's exact incarnation starts a turn following the write. Writing the prompt is not enough, because a harness can drop input, for example while one of its own dialogs has keyboard focus. For a Claude agent, Claude's own status must also change after the write, because Claude can record a prompt without working on it. If no turn starts within 15 seconds, the receipt is `indeterminate` with `prompt_written: true` and a detail, and the caller should report that delivery is unconfirmed rather than retry under a new request ID.
 
 Every live catalog entry has a unique agent ID. Wakterm assigns that ID when
 an agent is registered and persists it across restoration. Admission resolves

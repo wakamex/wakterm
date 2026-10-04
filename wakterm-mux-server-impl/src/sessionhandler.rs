@@ -1921,6 +1921,10 @@ fn schedule_agent_prompt_admission<SND>(
 /// How long a one-way admission waits for the written prompt to start a turn.
 const ADMISSION_TURN_CONFIRMATION: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// How long a Claude admission waits after its turn starts for Claude's own
+/// status to record the change.
+const CLAUDE_STATUS_CONFIRMATION: std::time::Duration = std::time::Duration::from_secs(3);
+
 async fn admit_agent_prompt(
     request: mux::agent_admission::AgentPromptAdmissionRequest,
 ) -> anyhow::Result<mux::agent_admission::AgentAdmissionReceipt> {
@@ -2110,6 +2114,7 @@ async fn admit_agent_prompt(
 
     let event_store = Mux::get().agent_service().event_store();
     let events_before_write = event_store.latest_sequence();
+    let written_at = std::time::SystemTime::now();
     let delivery = Mux::get().agent_service().write_admitted_prompt(&candidate);
     match delivery {
         Ok(()) => {
@@ -2143,7 +2148,38 @@ async fn admit_agent_prompt(
                     )
                     .await
                 {
-                    Ok(true) => AgentAdmissionReceipt::accepted(&request, None),
+                    Ok(true) => {
+                        // Claude can record a prompt without working on it.
+                        // Its own status must have changed since the write.
+                        let metadata = candidate.metadata.clone();
+                        let deadline = std::time::Instant::now() + CLAUDE_STATUS_CONFIRMATION;
+                        let mut changed;
+                        loop {
+                            let metadata = metadata.clone();
+                            changed = promise::spawn::spawn_into_new_thread(move || {
+                                Ok(mux::agent::claude_status_changed_since(
+                                    &metadata, written_at,
+                                ))
+                            })
+                            .await
+                            .unwrap_or(None);
+                            if changed != Some(false) || std::time::Instant::now() >= deadline {
+                                break;
+                            }
+                            smol::Timer::after(std::time::Duration::from_millis(200)).await;
+                        }
+                        if changed == Some(false) {
+                            let mut receipt = AgentAdmissionReceipt::indeterminate(
+                                &request,
+                                None,
+                                "prompt was written and recorded, but Claude did not start working on it",
+                            );
+                            receipt.prompt_written = Some(true);
+                            receipt
+                        } else {
+                            AgentAdmissionReceipt::accepted(&request, None)
+                        }
+                    }
                     Ok(false) => {
                         let mut receipt = AgentAdmissionReceipt::indeterminate(
                             &request,
