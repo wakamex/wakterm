@@ -1830,6 +1830,12 @@ impl SendAgentCommand {
         let agent = find_agent(&agents, &self.target)
             .cloned()
             .with_context(|| format!("no agent named or identified by {}", self.target))?;
+        if let Some(reason) = mux::agent::input_blocked_reason(&agent.runtime) {
+            bail!(
+                "not sending to {}: {reason}, so the text would not reach its prompt",
+                agent.metadata.name
+            );
+        }
         let text = self.read_text()?;
         let baseline = AgentAckBaseline::from_agent(&agent);
         let use_raw_write = self.no_paste || prefers_raw_input(&agent.runtime.harness);

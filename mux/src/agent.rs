@@ -1147,6 +1147,19 @@ pub fn derive_runtime_status(runtime: &AgentRuntimeSnapshot) -> AgentStatus {
     }
 }
 
+const CLAUDE_WAITING_PHASE_PREFIX: &str = "waiting for ";
+const CLAUDE_SHELL_PHASE: &str = "shell";
+
+/// Why typed input would not reach the harness's prompt: a dialog or
+/// question has the keyboard, or input would run in a shell mode.
+pub fn input_blocked_reason(runtime: &AgentRuntimeSnapshot) -> Option<String> {
+    let phase = runtime.turn_phase.as_deref()?;
+    if let Some(waiting_for) = phase.strip_prefix(CLAUDE_WAITING_PHASE_PREFIX) {
+        return Some(format!("the target is waiting for {waiting_for}"));
+    }
+    (phase == CLAUDE_SHELL_PHASE).then(|| "the target is in shell mode".to_string())
+}
+
 fn derive_effective_turn_state(runtime: &AgentRuntimeSnapshot) -> AgentTurnState {
     if !runtime.alive {
         return AgentTurnState::Unknown;
@@ -1157,10 +1170,10 @@ fn derive_effective_turn_state(runtime: &AgentRuntimeSnapshot) -> AgentTurnState
     }
 
     if matches!(runtime.turn_state, AgentTurnState::WaitingOnUser)
-        && matches!(
+        && (matches!(
             runtime.turn_phase.as_deref(),
             Some("aborted" | "interrupted" | "cancelled" | "idle")
-        )
+        ) || input_blocked_reason(runtime).is_some())
     {
         return AgentTurnState::WaitingOnUser;
     }
@@ -1203,10 +1216,14 @@ fn derive_attention_reason(runtime: &AgentRuntimeSnapshot) -> Option<String> {
         return Some("turn-aborted".to_string());
     }
 
-    if matches!(
+    if (matches!(
         runtime.attention_reason.as_deref(),
         Some("approval-requested")
-    ) && matches!(runtime.turn_state, AgentTurnState::WaitingOnUser)
+    ) || runtime
+        .turn_phase
+        .as_deref()
+        .is_some_and(|phase| phase.starts_with(CLAUDE_WAITING_PHASE_PREFIX)))
+        && matches!(runtime.turn_state, AgentTurnState::WaitingOnUser)
     {
         return Some("approval-requested".to_string());
     }
@@ -1335,6 +1352,8 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
             runtime.session_path = snapshot.session_path;
             runtime.progress_summary = snapshot.progress_summary;
             runtime.harness_mode = snapshot.harness_mode;
+            // Derived again from this observation's phase.
+            runtime.attention_reason = None;
             runtime.turn_phase = snapshot.turn_phase;
             runtime.turn_state = snapshot.turn_state;
             runtime.last_turn_completed_at = snapshot.last_turn_completed_at;
@@ -1802,11 +1821,11 @@ fn observe_claude_process(
     )?;
     // Claude's own report outranks inference from the transcript, which
     // cannot tell a running turn from input Claude showed without answering.
-    if let (Some(observation), Some(status)) = (
+    if let (Some(observation), Some(reported)) = (
         observation.as_mut(),
-        owned.as_ref().and_then(|owned| owned.status.as_deref()),
+        owned.as_ref().and_then(|owned| owned.status.as_ref()),
     ) {
-        match status {
+        match reported.status.as_str() {
             "busy" => {
                 observation.turn_state = AgentTurnState::WaitingOnAgent;
                 observation.turn_phase = None;
@@ -1814,6 +1833,17 @@ fn observe_claude_process(
             "idle" => {
                 observation.turn_state = AgentTurnState::WaitingOnUser;
                 observation.turn_phase = Some("idle".to_string());
+            }
+            "waiting" => {
+                observation.turn_state = AgentTurnState::WaitingOnUser;
+                observation.turn_phase = Some(format!(
+                    "{CLAUDE_WAITING_PHASE_PREFIX}{}",
+                    reported.waiting_for.as_deref().unwrap_or("input")
+                ));
+            }
+            "shell" => {
+                observation.turn_state = AgentTurnState::WaitingOnUser;
+                observation.turn_phase = Some(CLAUDE_SHELL_PHASE.to_string());
             }
             _ => {}
         }
@@ -1890,8 +1920,16 @@ struct OwnedClaudeSession {
     launched_id: String,
     current_id: String,
     job_id: Option<String>,
-    /// Claude's own report of the process, `idle` or `busy`.
-    status: Option<String>,
+    /// Claude's own report of the process.
+    status: Option<ClaudeReportedStatus>,
+}
+
+/// The status Claude records for a process: `busy`, `idle`, `waiting` while
+/// a dialog or question has the keyboard, or `shell` in its shell mode.
+struct ClaudeReportedStatus {
+    status: String,
+    /// What a `waiting` process waits for, such as "dialog open".
+    waiting_for: Option<String>,
 }
 
 /// The session a stopped or dead background job was running.
@@ -1993,51 +2031,57 @@ fn claude_session_owned_by_process(
         .context("Claude projects root has no parent")?
         .join("sessions");
     let registry = sessions_dir.join(format!("{namespace_pid}.json"));
-    let (launched_id, job_id, status) = match fs::read(&registry) {
-        Ok(bytes) => {
-            let record: Value = serde_json::from_slice(&bytes)?;
-            let machine_id = fs::read_to_string(format!("/proc/{pid}/root/etc/machine-id"))?;
-            let namespace = fs::read_link(format!("/proc/{pid}/ns/pid"))?;
-            let domain = format!(
-                "linux:{}:{}",
-                machine_id.trim(),
-                namespace.to_string_lossy()
-            );
-            let start = start_time.to_string();
-            if record.get("pid").and_then(Value::as_u64) != Some(u64::from(namespace_pid))
-                || record.get("procStart").and_then(Value::as_str) != Some(start.as_str())
-                || record.get("pidDomain").and_then(Value::as_str) != Some(domain.as_str())
-                || record.get("kind").and_then(Value::as_str) != Some("interactive")
-                || record.get("cwd").and_then(Value::as_str) != Some(cwd)
-                || linux_process_started_at(Some(pid), Some(start_time)).is_none()
-            {
-                return Ok(ClaudeOwnership::Unknown);
+    let (launched_id, job_id, status) =
+        match fs::read(&registry) {
+            Ok(bytes) => {
+                let record: Value = serde_json::from_slice(&bytes)?;
+                let machine_id = fs::read_to_string(format!("/proc/{pid}/root/etc/machine-id"))?;
+                let namespace = fs::read_link(format!("/proc/{pid}/ns/pid"))?;
+                let domain = format!(
+                    "linux:{}:{}",
+                    machine_id.trim(),
+                    namespace.to_string_lossy()
+                );
+                let start = start_time.to_string();
+                if record.get("pid").and_then(Value::as_u64) != Some(u64::from(namespace_pid))
+                    || record.get("procStart").and_then(Value::as_str) != Some(start.as_str())
+                    || record.get("pidDomain").and_then(Value::as_str) != Some(domain.as_str())
+                    || record.get("kind").and_then(Value::as_str) != Some("interactive")
+                    || record.get("cwd").and_then(Value::as_str) != Some(cwd)
+                    || linux_process_started_at(Some(pid), Some(start_time)).is_none()
+                {
+                    return Ok(ClaudeOwnership::Unknown);
+                }
+                let Some(session_id) = record
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .filter(|id| is_uuid(id))
+                else {
+                    return Ok(ClaudeOwnership::Unknown);
+                };
+                let parked = record
+                    .get("parkedJobId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let status = record.get("status").and_then(Value::as_str).map(|status| {
+                    ClaudeReportedStatus {
+                        status: status.to_string(),
+                        waiting_for: record
+                            .get("waitingFor")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    }
+                });
+                (Some(session_id.to_string()), parked, status)
             }
-            let Some(session_id) = record
-                .get("sessionId")
-                .and_then(Value::as_str)
-                .filter(|id| is_uuid(id))
-            else {
-                return Ok(ClaudeOwnership::Unknown);
-            };
-            let parked = record
-                .get("parkedJobId")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            let status = record
-                .get("status")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            (Some(session_id.to_string()), parked, status)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let Some(job_id) = claude_attach_job_id(launch_cmd) else {
-                return Ok(ClaudeOwnership::Unknown);
-            };
-            (None, Some(job_id), None)
-        }
-        Err(error) => return Err(error.into()),
-    };
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let Some(job_id) = claude_attach_job_id(launch_cmd) else {
+                    return Ok(ClaudeOwnership::Unknown);
+                };
+                (None, Some(job_id), None)
+            }
+            Err(error) => return Err(error.into()),
+        };
     let current_id = match job_id.as_deref() {
         Some(job_id) => match claude_background_session(&sessions_dir, job_id, cwd)? {
             Some(session_id) => session_id,
@@ -4583,9 +4627,37 @@ mod test {
         assert_eq!(runtime.status, AgentStatus::Idle);
         set_status("busy");
         refresh_runtime_from_harness(&mut runtime, &metadata);
-        remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
         assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnAgent);
         assert_eq!(runtime.status, AgentStatus::Busy);
+        assert_eq!(input_blocked_reason(&runtime), None);
+
+        // A dialog with the keyboard needs the user, and typed input would
+        // go to the dialog.
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).unwrap()).unwrap();
+        record["status"] = serde_json::json!("waiting");
+        record["waitingFor"] = serde_json::json!("dialog open");
+        fs::write(&registry_path, record.to_string()).unwrap();
+        refresh_runtime_from_harness(&mut runtime, &metadata);
+        assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(
+            runtime.attention_reason.as_deref(),
+            Some("approval-requested")
+        );
+        assert_eq!(
+            input_blocked_reason(&runtime).as_deref(),
+            Some("the target is waiting for dialog open")
+        );
+
+        set_status("shell");
+        refresh_runtime_from_harness(&mut runtime, &metadata);
+        remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
+        assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(runtime.status, AgentStatus::Idle);
+        assert_eq!(
+            input_blocked_reason(&runtime).as_deref(),
+            Some("the target is in shell mode")
+        );
     }
 
     #[test]

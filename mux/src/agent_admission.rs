@@ -542,6 +542,14 @@ fn classify_runtime(
             format!("the target observer failed: {error}"),
         ));
     }
+    // Typed input would go to a dialog or shell rather than the prompt.
+    if let Some(reason) = crate::agent::input_blocked_reason(runtime) {
+        return Some(AgentAdmissionReceipt::rejected(
+            request,
+            AgentAdmissionStatus::Busy,
+            reason,
+        ));
+    }
     if !matches!(runtime.turn_state, AgentTurnState::WaitingOnUser) {
         return Some(AgentAdmissionReceipt::rejected(
             request,
@@ -961,6 +969,25 @@ mod tests {
         metadata.agent_id = agent_id.to_string();
         metadata.name = name.to_string();
         snapshot(metadata, pane_id)
+    }
+
+    #[test]
+    fn admission_does_not_type_into_a_blocked_prompt() {
+        for (phase, detail) in [
+            (
+                "waiting for dialog open",
+                "the target is waiting for dialog open",
+            ),
+            ("shell", "the target is in shell mode"),
+        ] {
+            let mut runtime = runtime();
+            runtime.turn_phase = Some(phase.to_string());
+            let receipt = classify_runtime(&request("blocked", "work"), &runtime).unwrap();
+            assert_eq!(receipt.status, AgentAdmissionStatus::Busy);
+            assert_eq!(receipt.prompt_written, Some(false));
+            assert_eq!(receipt.detail.as_deref(), Some(detail));
+        }
+        assert!(classify_runtime(&request("idle", "work"), &runtime()).is_none());
     }
 
     #[test]
