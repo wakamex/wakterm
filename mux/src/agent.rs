@@ -2028,7 +2028,7 @@ fn claude_session_owned_by_process(
         None => launched_id.clone().expect("registry session without a job"),
     };
     let path = root
-        .join(cwd.replace('/', "-"))
+        .join(claude_project_dir_name(cwd))
         .join(format!("{current_id}.jsonl"));
     if !path.is_file()
         || claude_session_id(&path)?.as_deref() != Some(current_id.as_str())
@@ -2062,7 +2062,7 @@ fn observe_claude(
     let Some(root) = claude_sessions_root() else {
         return Ok(None);
     };
-    let project_dir = root.join(cwd.replace('/', "-"));
+    let project_dir = root.join(claude_project_dir_name(cwd));
     if !project_dir.is_dir() {
         return Ok(None);
     }
@@ -2402,6 +2402,15 @@ fn observe_opencode(
     read_last_opencode_observation(&connection, &db_path, &session_id, updated_after)
 }
 
+/// Claude names a project's transcript directory after its working
+/// directory, with every character other than an ASCII letter or digit
+/// replaced by `-`.
+fn claude_project_dir_name(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
 fn describe_pending_claude_observer(
     cwd: &str,
     updated_after: Option<DateTime<Utc>>,
@@ -2409,7 +2418,7 @@ fn describe_pending_claude_observer(
     let Some(root) = claude_sessions_root() else {
         return Ok(None);
     };
-    let project_dir = root.join(cwd.replace('/', "-"));
+    let project_dir = root.join(claude_project_dir_name(cwd));
     if !project_dir.is_dir() {
         return Ok(Some(
             "claude project directory has not appeared yet".to_string(),
@@ -2696,7 +2705,7 @@ pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> V
     let paths = match harness {
         AgentHarness::Agy => agy_root().map(|root| vec![root.join("presence"), root.join("brain")]),
         AgentHarness::Claude => claude_sessions_root().map(|root| {
-            let project = root.join(cwd.replace('/', "-"));
+            let project = root.join(claude_project_dir_name(cwd));
             let mut paths = if project.is_dir() {
                 vec![project]
             } else {
@@ -4274,6 +4283,26 @@ mod test {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
+    fn claude_project_dir_name_matches_claude_code() {
+        assert_eq!(
+            claude_project_dir_name("/code/llama.cpp"),
+            "-code-llama-cpp"
+        );
+        assert_eq!(
+            claude_project_dir_name("/code/agentic_ethereum_2025"),
+            "-code-agentic-ethereum-2025"
+        );
+        assert_eq!(
+            claude_project_dir_name("/code/hyperliquid-participant-feed-re"),
+            "-code-hyperliquid-participant-feed-re"
+        );
+        assert_eq!(
+            claude_project_dir_name("/home/mihai/my notes"),
+            "-home-mihai-my-notes"
+        );
+    }
+
+    #[test]
     fn claude_turn_stays_open_while_a_tool_runs() {
         let temp = TempDir::new().unwrap();
         let session = temp.path().join("session.jsonl");
@@ -4363,9 +4392,10 @@ mod test {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = TempDir::new().unwrap();
-        let cwd = "/tmp/claude-slash";
+        let cwd = "/tmp/claude.slash";
         let projects = temp.path().join("projects");
-        let project = projects.join(cwd.replace('/', "-"));
+        // Claude Code's own directory name for this working directory.
+        let project = projects.join("-tmp-claude-slash");
         fs::create_dir_all(&project).unwrap();
         fs::create_dir_all(temp.path().join("sessions")).unwrap();
         struct Child(std::process::Child);
