@@ -1831,6 +1831,8 @@ impl SendAgentCommand {
             .cloned()
             .with_context(|| format!("no agent named or identified by {}", self.target))?;
         if let Some(reason) = mux::agent::input_blocked_reason(&agent.runtime) {
+            // Panetone matches the "not sending to <name>:" prefix to keep the
+            // message queued until the agent is idle. Keep it stable.
             bail!(
                 "not sending to {}: {reason}, so the text would not reach its prompt",
                 agent.metadata.name
@@ -3651,6 +3653,56 @@ mod test {
         assert_eq!(write_calls.len(), 1);
         assert_eq!(write_calls[0].pane_id, 30);
         assert_eq!(write_calls[0].data, b"\r");
+    }
+
+    #[test]
+    fn send_refuses_without_writing_while_the_prompt_lacks_the_keyboard() {
+        let writes = Rc::new(RefCell::new(0usize));
+        let command = SendAgentCommand {
+            target: "reviewer".to_string(),
+            no_paste: false,
+            no_submit: false,
+            return_final: false,
+            request_id: None,
+            ack_timeout_ms: 0,
+            ack_poll_ms: 0,
+            final_timeout_ms: 0,
+            text: Some("fix this".to_string()),
+        };
+        let mut agent = sample_agent(30, "reviewer");
+        agent.runtime.turn_phase = Some("waiting for dialog open".to_string());
+
+        let error = promise::spawn::block_on(command.run_with(
+            move || {
+                let agent = agent.clone();
+                async move {
+                    Ok(ListAgentsResponse {
+                        agents: vec![agent],
+                    })
+                }
+            },
+            {
+                let writes = Rc::clone(&writes);
+                move |_: WriteToPane| {
+                    *writes.borrow_mut() += 1;
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            {
+                let writes = Rc::clone(&writes);
+                move |_: SendPaste| {
+                    *writes.borrow_mut() += 1;
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+        ))
+        .unwrap_err();
+
+        // Panetone matches this prefix.
+        assert!(error
+            .to_string()
+            .starts_with("not sending to reviewer: the target is waiting for dialog open"));
+        assert_eq!(*writes.borrow(), 0);
     }
 
     #[test]
