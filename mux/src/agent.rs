@@ -1829,6 +1829,8 @@ fn observe_claude_process(
             "busy" => {
                 observation.turn_state = AgentTurnState::WaitingOnAgent;
                 observation.turn_phase = None;
+                // Starting work acknowledges the input that started it.
+                observation.updated_at = observation.updated_at.max(reported.changed_at);
             }
             "idle" => {
                 observation.turn_state = AgentTurnState::WaitingOnUser;
@@ -1930,6 +1932,8 @@ struct ClaudeReportedStatus {
     status: String,
     /// What a `waiting` process waits for, such as "dialog open".
     waiting_for: Option<String>,
+    /// When the status last changed.
+    changed_at: Option<DateTime<Utc>>,
 }
 
 /// The session a stopped or dead background job was running.
@@ -2070,6 +2074,10 @@ fn claude_session_owned_by_process(
                             .get("waitingFor")
                             .and_then(Value::as_str)
                             .map(str::to_string),
+                        changed_at: record
+                            .get("statusUpdatedAt")
+                            .and_then(Value::as_i64)
+                            .and_then(DateTime::<Utc>::from_timestamp_millis),
                     }
                 });
                 (Some(session_id.to_string()), parked, status)
@@ -4625,10 +4633,19 @@ mod test {
         refresh_runtime_from_harness(&mut runtime, &metadata);
         assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
         assert_eq!(runtime.status, AgentStatus::Idle);
-        set_status("busy");
+        // Starting work counts as progress, which acknowledges a send.
+        let started_at = Utc
+            .timestamp_millis_opt(Utc::now().timestamp_millis())
+            .unwrap();
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).unwrap()).unwrap();
+        record["status"] = serde_json::json!("busy");
+        record["statusUpdatedAt"] = serde_json::json!(started_at.timestamp_millis());
+        fs::write(&registry_path, record.to_string()).unwrap();
         refresh_runtime_from_harness(&mut runtime, &metadata);
         assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnAgent);
         assert_eq!(runtime.status, AgentStatus::Busy);
+        assert_eq!(runtime.last_progress_at, Some(started_at));
         assert_eq!(input_blocked_reason(&runtime), None);
 
         // A dialog with the keyboard needs the user, and typed input would
