@@ -473,6 +473,13 @@ impl Mux {
                 ));
             }
         }
+        if crate::agent::claude_session_record_missing(&metadata) {
+            return Some(AgentAdmissionReceipt::rejected(
+                request,
+                AgentAdmissionStatus::Busy,
+                "Claude has not finished starting, so a startup prompt may have the keyboard",
+            ));
+        }
         if !pane.supports_atomic_prompt_submission() {
             return Some(AgentAdmissionReceipt::rejected(
                 request,

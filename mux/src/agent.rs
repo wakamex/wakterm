@@ -1860,6 +1860,22 @@ fn observe_claude_process(
     Ok((observation, background_job))
 }
 
+/// Whether the agent is Claude and its exact process has not yet written a
+/// session record. Claude writes one only after startup prompts, such as
+/// folder trust, are answered.
+pub fn claude_session_record_missing(metadata: &AgentMetadata) -> bool {
+    infer_harness(&metadata.launch_cmd, None) == AgentHarness::Claude
+        && !matches!(
+            claude_session_owned_by_process(
+                &normalize_declared_cwd(&metadata.declared_cwd),
+                metadata.adopted_pid,
+                metadata.adopted_start_time,
+                &metadata.launch_cmd,
+            ),
+            Ok(ClaudeOwnership::Owned(_))
+        )
+}
+
 /// Whether Claude recorded a status change for the agent's exact process
 /// after `since`. None when the agent has no confirmed Claude session record.
 pub fn claude_status_changed_since(
@@ -4625,6 +4641,21 @@ mod test {
             launch_supervisor: None,
             codex_app_server: None,
         };
+        // Claude writes its session record only after startup prompts such
+        // as folder trust are answered.
+        let registry = temp
+            .path()
+            .join("sessions")
+            .join(format!("{}.json", process.pid));
+        let parked = temp.path().join("registry-before-startup.json");
+        fs::rename(&registry, &parked).unwrap();
+        assert!(claude_session_record_missing(&metadata));
+        fs::rename(&parked, &registry).unwrap();
+        assert!(!claude_session_record_missing(&metadata));
+        let mut codex = metadata.clone();
+        codex.launch_cmd = "codex".to_string();
+        assert!(!claude_session_record_missing(&codex));
+
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         prime_runtime_for_new_agent(&mut runtime, &metadata, Some("claude"));
         runtime.foreground_process_name = Some("claude".to_string());
