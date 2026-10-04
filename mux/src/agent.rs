@@ -3570,14 +3570,27 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
         if record.get("type").and_then(Value::as_str) != Some("assistant") {
             continue;
         }
-        last_assistant_at = parse_record_timestamp(&record).or(last_assistant_at);
         let Some(content) = record
             .get("message")
             .and_then(|message| message.get("content"))
             .and_then(Value::as_array)
         else {
+            last_assistant_at = parse_record_timestamp(&record).or(last_assistant_at);
             continue;
         };
+        // A tool call keeps the turn running until Claude replies to its
+        // result, except for tools that wait on the user's answer.
+        if content.iter().any(|block| {
+            block.get("type").and_then(Value::as_str) == Some("tool_use")
+                && !matches!(
+                    block.get("name").and_then(Value::as_str),
+                    Some("ExitPlanMode" | "AskUserQuestion")
+                )
+        }) {
+            last_user_at = parse_record_timestamp(&record).or(last_user_at);
+        } else {
+            last_assistant_at = parse_record_timestamp(&record).or(last_assistant_at);
+        }
 
         let mut parts = vec![];
         for block in content {
@@ -4259,6 +4272,65 @@ mod test {
     use tempfile::TempDir;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn claude_turn_stays_open_while_a_tool_runs() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("session.jsonl");
+        let record = |kind: &str, second: u32, content: serde_json::Value, stop: Option<&str>| {
+            serde_json::json!({"type": kind, "timestamp": format!("2026-10-04T16:17:{second:02}.000Z"),
+                "message": {"role": kind, "content": content, "stop_reason": stop}})
+            .to_string()
+        };
+        let tool = |name: &str| {
+            serde_json::json!([{"type":"text","text":"checking"},
+                {"type":"tool_use","id":"toolu_1","name":name,"input":{}}])
+        };
+        let write = |lines: &[String]| fs::write(&session, lines.join("\n") + "\n").unwrap();
+        let mut lines = vec![
+            record("user", 0, serde_json::json!("run the tests"), None),
+            record("assistant", 5, tool("Bash"), Some("tool_use")),
+        ];
+
+        // Claude is running the tool, so the turn is still open.
+        write(&lines);
+        let running = read_last_claude_observation(&session).unwrap();
+        assert_eq!(running.turn_state, AgentTurnState::WaitingOnAgent);
+        assert_eq!(running.last_turn_completed_at, None);
+
+        lines.push(record(
+            "user",
+            9,
+            serde_json::json!([{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]),
+            None,
+        ));
+        lines.push(record(
+            "assistant",
+            12,
+            serde_json::json!([{"type":"text","text":"tests pass"}]),
+            Some("end_turn"),
+        ));
+        write(&lines);
+        let finished = read_last_claude_observation(&session).unwrap();
+        assert_eq!(finished.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(
+            finished.last_turn_completed_at,
+            Some(Utc.with_ymd_and_hms(2026, 10, 4, 16, 17, 12).unwrap())
+        );
+
+        // Tools that ask the user something leave the turn waiting on them.
+        for name in ["ExitPlanMode", "AskUserQuestion"] {
+            write(&[
+                record("user", 0, serde_json::json!("plan it"), None),
+                record("assistant", 5, tool(name), Some("tool_use")),
+            ]);
+            assert_eq!(
+                read_last_claude_observation(&session).unwrap().turn_state,
+                AgentTurnState::WaitingOnUser,
+                "{name}"
+            );
+        }
+    }
 
     #[test]
     fn declared_cwd_normalization_drops_trailing_slashes() {
