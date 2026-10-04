@@ -62,6 +62,10 @@ pub struct AgentEvent {
     pub detail: Option<String>,
     #[serde(default)]
     pub approval: Option<AgentApprovalRequest>,
+    /// On `turn_started`, the SHA-256 of the input that started the turn,
+    /// trimmed, when the provider records it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -112,6 +116,39 @@ struct JsonlCursor {
     /// Whether the current Claude turn has started without a final reply.
     #[serde(default)]
     turn_open: bool,
+    /// A Codex turn whose start waits for its first user input, so that
+    /// `turn_started` can carry the input's hash.
+    #[serde(default)]
+    pending_turn_start: Option<PendingTurnStart>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct PendingTurnStart {
+    record_key: String,
+    turn_id: String,
+    observed_at: DateTime<Utc>,
+}
+
+impl PendingTurnStart {
+    /// The start and state events for this turn, with the input's hash when
+    /// the turn has recorded input.
+    fn events(self, input_sha256: Option<String>) -> [PendingEvent; 2] {
+        let mut started = PendingEvent::new(
+            format!("{}:started", self.record_key),
+            AgentEventKind::TurnStarted,
+            self.observed_at,
+        );
+        started.turn_id = Some(self.turn_id.clone());
+        started.input_sha256 = input_sha256;
+        let mut state = PendingEvent::new(
+            format!("{}:state", self.record_key),
+            AgentEventKind::TurnStateChanged,
+            self.observed_at,
+        );
+        state.turn_id = Some(self.turn_id);
+        state.turn_state = Some("waiting_on_agent".to_string());
+        [started, state]
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -148,6 +185,7 @@ struct PendingEvent {
     recoverable: Option<bool>,
     detail: Option<String>,
     approval: Option<AgentApprovalRequest>,
+    input_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,6 +216,7 @@ impl PendingEvent {
             recoverable: None,
             detail: None,
             approval: None,
+            input_sha256: None,
         }
     }
 }
@@ -1095,6 +1134,7 @@ fn insert_event(
         recoverable: pending.recoverable,
         detail: pending.detail,
         approval: pending.approval,
+        input_sha256: pending.input_sha256,
     };
     let inserted = tx.execute(
         "INSERT OR IGNORE INTO agent_event_v1(event_key, record_json) VALUES (?1, ?2)",
@@ -1311,6 +1351,7 @@ fn initial_jsonl_cursor(
         current_turn_id,
         last_assistant_text: None,
         turn_open: false,
+        pending_turn_start: None,
     })
 }
 
@@ -1515,21 +1556,15 @@ fn project_codex(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<
                             )]);
                         };
                         cursor.last_assistant_text = None;
-                        let mut started = PendingEvent::new(
-                            format!("{record_key}:started"),
-                            AgentEventKind::TurnStarted,
-                            timestamp,
-                        );
-                        started.turn_id = Some(turn_id.clone());
-                        events.push(started);
-                        let mut state = PendingEvent::new(
-                            format!("{record_key}:state"),
-                            AgentEventKind::TurnStateChanged,
-                            timestamp,
-                        );
-                        state.turn_id = Some(turn_id);
-                        state.turn_state = Some("waiting_on_agent".to_string());
-                        events.push(state);
+                        // A previous turn that never recorded input starts now.
+                        if let Some(pending) = cursor.pending_turn_start.take() {
+                            events.extend(pending.events(None));
+                        }
+                        cursor.pending_turn_start = Some(PendingTurnStart {
+                            record_key: record_key.clone(),
+                            turn_id,
+                            observed_at: timestamp,
+                        });
                     }
                     Some("task_complete") | Some("turn_aborted") => {
                         let Some(turn_id) = turn_id.or_else(|| cursor.current_turn_id.clone())
@@ -1541,6 +1576,12 @@ fn project_codex(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<
                                 "Codex terminal event lacks an exact provider turn id",
                             )]);
                         };
+                        if let Some(pending) = cursor
+                            .pending_turn_start
+                            .take_if(|pending| pending.turn_id == turn_id)
+                        {
+                            events.extend(pending.events(None));
+                        }
                         let completed =
                             payload.get("type").and_then(Value::as_str) == Some("task_complete");
                         let text = payload
@@ -1575,6 +1616,18 @@ fn project_codex(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<
             Some("response_item") => {
                 let payload = record.get("payload").unwrap_or(&Value::Null);
                 if payload.get("type").and_then(Value::as_str) == Some("message")
+                    && payload.get("role").and_then(Value::as_str) == Some("user")
+                    && !crate::agent::codex_response_message_is_synthetic_context(payload)
+                {
+                    if let Some(message) = crate::agent::codex_response_message_text(payload) {
+                        if let Some(pending) = cursor.pending_turn_start.take() {
+                            events.extend(
+                                pending.events(Some(crate::agent::message_sha256(&message))),
+                            );
+                        }
+                    }
+                }
+                if payload.get("type").and_then(Value::as_str) == Some("message")
                     && payload.get("role").and_then(Value::as_str) == Some("assistant")
                 {
                     if let Some(text) = codex_message_text(payload) {
@@ -1587,6 +1640,12 @@ fn project_codex(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<
                                 "Codex assistant message lacks an exact provider turn id",
                             )]);
                         };
+                        if let Some(pending) = cursor
+                            .pending_turn_start
+                            .take_if(|pending| pending.turn_id == turn_id)
+                        {
+                            events.extend(pending.events(None));
+                        }
                         cursor.last_assistant_text = Some(text.clone());
                         let mut message = PendingEvent::new(
                             format!("{record_key}:message"),
@@ -1681,6 +1740,8 @@ fn project_claude(
                 timestamp,
             );
             started.turn_id = Some(turn_id.clone());
+            started.input_sha256 = crate::agent::claude_user_text(record)
+                .map(|text| crate::agent::message_sha256(crate::agent::unwrap_claude_paste(&text)));
             let mut state = PendingEvent::new(
                 format!("{record_key}:state"),
                 AgentEventKind::TurnStateChanged,
@@ -2799,7 +2860,10 @@ mod tests {
 
         append(
             &session,
-            "{\"ordinal\":1,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}\n",
+            concat!(
+                "{\"ordinal\":1,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}\n",
+                "{\"ordinal\":2,\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"work\"}]}}\n"
+            ),
         );
         writer.observe_agent(&metadata, &runtime).unwrap();
         assert!(wait(before_write, &metadata.agent_id, &incarnation, short));
@@ -2838,8 +2902,9 @@ mod tests {
         append(
             &session,
             concat!(
-                "{\"ordinal\":2,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\"}}\n",
-                "{\"ordinal\":3,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-2\"}}\n"
+                "{\"ordinal\":3,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\"}}\n",
+                "{\"ordinal\":4,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-2\"}}\n",
+                "{\"ordinal\":5,\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"more\"}]}}\n"
             ),
         );
         writer.observe_agent(&metadata, &runtime).unwrap();
@@ -3205,6 +3270,98 @@ mod tests {
             .events
             .iter()
             .all(|event| event.turn_id.as_deref() == Some("claude-turn-1")));
+    }
+
+    #[test]
+    fn turn_started_carries_the_hash_of_the_input_that_started_it() {
+        let started = |page: &AgentEventPage| {
+            page.events
+                .iter()
+                .filter(|event| event.kind == AgentEventKind::TurnStarted)
+                .map(|event| (event.turn_id.clone().unwrap(), event.input_sha256.clone()))
+                .collect::<Vec<_>>()
+        };
+        let hash = |text: &str| Some(crate::agent::message_sha256(text));
+
+        // Claude stores a paste inside a wrapper; the hash covers its text.
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude.jsonl");
+        fs::write(&session, "{\"type\":\"mode\",\"sessionId\":\"s\"}\n").unwrap();
+        let store = AgentEventStore::new(temp.path().join("claude.sqlite3"));
+        let claude = metadata("claude");
+        let claude_runtime = runtime(
+            &claude,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&claude, &claude_runtime).unwrap();
+        let after = store.latest_sequence();
+        append(
+            &session,
+            &format!(
+                "{}\n",
+                serde_json::json!({"type":"user","uuid":"claude-turn","sessionId":"s",
+                    "timestamp":"2026-10-04T12:00:00Z","message":{"content":
+                    "\n\n<pasted_content id=\"0551\">\nsummarize\n</pasted_content id=\"0551\">\n"}})
+            ),
+        );
+        store.observe_agent(&claude, &claude_runtime).unwrap();
+        assert_eq!(
+            started(&store.read_page(after, 100).unwrap()),
+            vec![("claude-turn".to_string(), hash("summarize"))]
+        );
+
+        // Codex records input after task_started; the start waits for the
+        // first input that is not injected context.
+        let session = temp.path().join("codex.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s\"}}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("codex.sqlite3"));
+        let codex = metadata("codex");
+        let codex_runtime = runtime(
+            &codex,
+            AgentHarness::Codex,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&codex, &codex_runtime).unwrap();
+        let after = store.latest_sequence();
+        append(
+            &session,
+            "{\"ordinal\":1,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}\n",
+        );
+        store.observe_agent(&codex, &codex_runtime).unwrap();
+        assert!(started(&store.read_page(after, 100).unwrap()).is_empty());
+        append(
+            &session,
+            concat!(
+                "{\"ordinal\":2,\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<environment_context>cwd</environment_context>\"}]}}\n",
+                "{\"ordinal\":3,\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"fix the build\"}]}}\n",
+                "{\"ordinal\":4,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\",\"last_agent_message\":\"done\"}}\n",
+                // A turn that records no input still starts before its final.
+                "{\"ordinal\":5,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-2\"}}\n",
+                "{\"ordinal\":6,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-2\",\"last_agent_message\":\"compacted\"}}\n"
+            ),
+        );
+        store.observe_agent(&codex, &codex_runtime).unwrap();
+        let page = store.read_page(after, 100).unwrap();
+        assert_eq!(
+            started(&page),
+            vec![
+                ("turn-1".to_string(), hash("fix the build")),
+                ("turn-2".to_string(), None)
+            ]
+        );
+        let kinds = event_kinds(&page);
+        let first_start = kinds
+            .iter()
+            .position(|kind| *kind == AgentEventKind::TurnStarted);
+        let first_final = kinds
+            .iter()
+            .position(|kind| *kind == AgentEventKind::TurnFinal);
+        assert!(first_start < first_final);
     }
 
     #[test]

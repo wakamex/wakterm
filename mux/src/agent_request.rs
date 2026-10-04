@@ -907,6 +907,7 @@ mod tests {
             recoverable: None,
             detail: None,
             approval: None,
+            input_sha256: None,
         }
     }
 

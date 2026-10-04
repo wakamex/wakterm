@@ -3341,6 +3341,7 @@ mod test {
             recoverable: None,
             detail: None,
             approval: None,
+            input_sha256: None,
         };
         let page =
             |requested_after_sequence, latest_sequence, events: Vec<AgentEvent>| AgentEventPage {

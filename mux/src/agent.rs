@@ -3694,7 +3694,7 @@ fn read_last_opencode_observation(
 
 /// The text of a Claude user record, or None for a record that carries only
 /// tool results.
-fn claude_user_text(record: &Value) -> Option<String> {
+pub(crate) fn claude_user_text(record: &Value) -> Option<String> {
     match record.get("message")?.get("content")? {
         Value::String(text) => Some(text.clone()),
         Value::Array(blocks) => {
@@ -3711,7 +3711,7 @@ fn claude_user_text(record: &Value) -> Option<String> {
 
 /// Claude stores pasted input inside a `<pasted_content id="N">` wrapper.
 /// Returns the pasted text when the message is exactly one such paste.
-fn unwrap_claude_paste(text: &str) -> &str {
+pub(crate) fn unwrap_claude_paste(text: &str) -> &str {
     let trimmed = text.trim();
     let Some(rest) = trimmed.strip_prefix("<pasted_content id=\"") else {
         return trimmed;
@@ -4106,7 +4106,7 @@ fn codex_record_cursor(record: &Value) -> Option<u64> {
     record.get("ordinal").and_then(Value::as_u64)
 }
 
-fn codex_response_message_text(payload: &Value) -> Option<String> {
+pub(crate) fn codex_response_message_text(payload: &Value) -> Option<String> {
     let content = payload.get("content")?.as_array()?;
     let parts = content
         .iter()
@@ -4118,7 +4118,7 @@ fn codex_response_message_text(payload: &Value) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
-fn codex_response_message_is_synthetic_context(payload: &Value) -> bool {
+pub(crate) fn codex_response_message_is_synthetic_context(payload: &Value) -> bool {
     payload
         .get("content")
         .and_then(Value::as_array)
@@ -4288,7 +4288,7 @@ pub(crate) fn read_codex_output_messages_from_file(
     Ok((messages, next_offset, next_offset < complete_tail))
 }
 
-fn message_sha256(message: &str) -> String {
+pub(crate) fn message_sha256(message: &str) -> String {
     format!("{:x}", Sha256::digest(message.trim().as_bytes()))
 }
 
