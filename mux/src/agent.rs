@@ -1833,6 +1833,13 @@ fn observe_claude_process(
                 observation.updated_at = observation.updated_at.max(reported.changed_at);
             }
             "idle" => {
+                // A turn Wakterm saw running ended when Claude went idle,
+                // including a turn that ended without a reply. An idle report
+                // alone may date from the process start.
+                if matches!(runtime.turn_state, AgentTurnState::WaitingOnAgent) {
+                    observation.last_turn_completed_at =
+                        observation.last_turn_completed_at.max(reported.changed_at);
+                }
                 observation.turn_state = AgentTurnState::WaitingOnUser;
                 observation.turn_phase = Some("idle".to_string());
             }
@@ -4647,6 +4654,20 @@ mod test {
         assert_eq!(runtime.status, AgentStatus::Busy);
         assert_eq!(runtime.last_progress_at, Some(started_at));
         assert_eq!(input_blocked_reason(&runtime), None);
+
+        // Going idle after Wakterm saw the turn running ends that turn, even
+        // though the transcript has no reply for it.
+        let transcript_end = runtime.last_turn_completed_at;
+        let idle_at = started_at + chrono::Duration::seconds(3);
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&fs::read(&registry_path).unwrap()).unwrap();
+        record["status"] = serde_json::json!("idle");
+        record["statusUpdatedAt"] = serde_json::json!(idle_at.timestamp_millis());
+        fs::write(&registry_path, record.to_string()).unwrap();
+        refresh_runtime_from_harness(&mut runtime, &metadata);
+        assert!(transcript_end < Some(idle_at));
+        assert_eq!(runtime.last_turn_completed_at, Some(idle_at));
+        assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
 
         // A dialog with the keyboard needs the user, and typed input would
         // go to the dialog.
