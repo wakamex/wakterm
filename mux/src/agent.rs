@@ -1159,7 +1159,7 @@ fn derive_effective_turn_state(runtime: &AgentRuntimeSnapshot) -> AgentTurnState
     if matches!(runtime.turn_state, AgentTurnState::WaitingOnUser)
         && matches!(
             runtime.turn_phase.as_deref(),
-            Some("aborted" | "interrupted" | "cancelled")
+            Some("aborted" | "interrupted" | "cancelled" | "idle")
         )
     {
         return AgentTurnState::WaitingOnUser;
@@ -1791,7 +1791,7 @@ fn observe_claude_process(
             job_id,
             session_id,
         });
-    let observation = observe_claude(
+    let mut observation = observe_claude(
         cwd,
         runtime.session_path.as_deref(),
         runtime.observer_started_at,
@@ -1800,6 +1800,24 @@ fn observe_claude_process(
             .map(|owned| owned.current_id.as_str())
             .or(expected_id),
     )?;
+    // Claude's own report outranks inference from the transcript, which
+    // cannot tell a running turn from input Claude showed without answering.
+    if let (Some(observation), Some(status)) = (
+        observation.as_mut(),
+        owned.as_ref().and_then(|owned| owned.status.as_deref()),
+    ) {
+        match status {
+            "busy" => {
+                observation.turn_state = AgentTurnState::WaitingOnAgent;
+                observation.turn_phase = None;
+            }
+            "idle" => {
+                observation.turn_state = AgentTurnState::WaitingOnUser;
+                observation.turn_phase = Some("idle".to_string());
+            }
+            _ => {}
+        }
+    }
     Ok((observation, background_job))
 }
 
@@ -1872,6 +1890,8 @@ struct OwnedClaudeSession {
     launched_id: String,
     current_id: String,
     job_id: Option<String>,
+    /// Claude's own report of the process, `idle` or `busy`.
+    status: Option<String>,
 }
 
 /// The session a stopped or dead background job was running.
@@ -1973,7 +1993,7 @@ fn claude_session_owned_by_process(
         .context("Claude projects root has no parent")?
         .join("sessions");
     let registry = sessions_dir.join(format!("{namespace_pid}.json"));
-    let (launched_id, job_id) = match fs::read(&registry) {
+    let (launched_id, job_id, status) = match fs::read(&registry) {
         Ok(bytes) => {
             let record: Value = serde_json::from_slice(&bytes)?;
             let machine_id = fs::read_to_string(format!("/proc/{pid}/root/etc/machine-id"))?;
@@ -2004,13 +2024,17 @@ fn claude_session_owned_by_process(
                 .get("parkedJobId")
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            (Some(session_id.to_string()), parked)
+            let status = record
+                .get("status")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            (Some(session_id.to_string()), parked, status)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let Some(job_id) = claude_attach_job_id(launch_cmd) else {
                 return Ok(ClaudeOwnership::Unknown);
             };
-            (None, Some(job_id))
+            (None, Some(job_id), None)
         }
         Err(error) => return Err(error.into()),
     };
@@ -2040,6 +2064,7 @@ fn claude_session_owned_by_process(
         launched_id: launched_id.unwrap_or_else(|| current_id.clone()),
         current_id,
         job_id,
+        status,
     }))
 }
 
@@ -4527,6 +4552,40 @@ mod test {
         assert_eq!(runtime.session_path.as_deref(), session.to_str());
         assert_eq!(runtime.transport, AgentTransport::ObservedPty);
         assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
+
+        // Input Claude showed without starting a turn leaves the transcript
+        // ending in a user record. Claude's own status decides the state.
+        let mut file = fs::OpenOptions::new().append(true).open(&session).unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({"type":"user","sessionId":sid,"cwd":cwd,"timestamp":now,
+                "message":{"role":"user","content":"<task-notification>done</task-notification>"}})
+        )
+        .unwrap();
+        drop(file);
+        let registry_path = temp
+            .path()
+            .join("sessions")
+            .join(format!("{}.json", process.pid));
+        let set_status = |status: &str| {
+            let mut record: serde_json::Value =
+                serde_json::from_slice(&fs::read(&registry_path).unwrap()).unwrap();
+            record["status"] = serde_json::json!(status);
+            fs::write(&registry_path, record.to_string()).unwrap();
+        };
+        set_env_path("WAKTERM_AGENT_CLAUDE_DIR", &projects);
+        set_status("idle");
+        // Typing a draft after the last turn does not make an idle Claude busy.
+        runtime.last_input_at = Some(Utc::now());
+        refresh_runtime_from_harness(&mut runtime, &metadata);
+        assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(runtime.status, AgentStatus::Idle);
+        set_status("busy");
+        refresh_runtime_from_harness(&mut runtime, &metadata);
+        remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
+        assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnAgent);
+        assert_eq!(runtime.status, AgentStatus::Busy);
     }
 
     #[test]
