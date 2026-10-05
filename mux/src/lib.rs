@@ -7033,7 +7033,7 @@ mod test {
                     status: LocalProcessStatus::Run,
                     start_time: 1,
                     #[cfg(windows)]
-                    console: 0,
+                    console: 1,
                     children: HashMap::new(),
                 }),
                 #[cfg(target_os = "linux")]
@@ -7078,7 +7078,7 @@ mod test {
                     status: LocalProcessStatus::Run,
                     start_time: 1,
                     #[cfg(windows)]
-                    console: 0,
+                    console: 1,
                     children: HashMap::new(),
                 }),
                 #[cfg(target_os = "linux")]
@@ -7149,7 +7149,7 @@ mod test {
                     status: LocalProcessStatus::Run,
                     start_time: 1,
                     #[cfg(windows)]
-                    console: 0,
+                    console: 1,
                     children: HashMap::new(),
                 }),
                 #[cfg(target_os = "linux")]
@@ -7882,7 +7882,7 @@ mod test {
                 status: LocalProcessStatus::Run,
                 start_time: 1,
                 #[cfg(windows)]
-                console: 0,
+                console: 1,
                 children: HashMap::new(),
             }),
             #[cfg(target_os = "linux")]
@@ -7972,7 +7972,7 @@ mod test {
             status: LocalProcessStatus::Run,
             start_time: 2,
             #[cfg(windows)]
-            console: 0,
+            console: 1,
             children: HashMap::new(),
         };
         mux.panes
@@ -8818,6 +8818,8 @@ mod test {
         );
     }
 
+    // Binding a Codex session to its exact process reads /proc.
+    #[cfg(target_os = "linux")]
     #[test]
     fn trailing_refresh_publishes_final_despite_recent_refresh_without_reads() {
         let _test_lock = TEST_MUX_LOCK.lock();
@@ -11655,6 +11657,8 @@ mod test {
         );
     }
 
+    // Binding a Codex session to its exact process reads /proc.
+    #[cfg(target_os = "linux")]
     #[test]
     fn filesystem_artifact_event_refreshes_adopted_agent() {
         let _test_lock = TEST_MUX_LOCK.lock();

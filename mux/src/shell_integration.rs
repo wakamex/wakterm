@@ -225,6 +225,17 @@ mod test {
             .map(|value| value.to_string_lossy().into_owned())
     }
 
+    /// `base` joined with `relative` using the platform's path separator, as
+    /// the injected paths are built.
+    fn joined(base: &str, relative: &str) -> Option<String> {
+        Some(
+            Path::new(base)
+                .join(relative)
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
+
     #[test]
     fn bash_invocations_become_posix_with_login_emulated() {
         let dir = Path::new("/run/wakterm/shell-integration/x");
@@ -275,13 +286,10 @@ mod test {
             if expected.is_some() {
                 inject_with_dir(&mut cmd, &shell, "bash", dir);
                 assert_eq!(
-                    env(&cmd, "ENV").as_deref(),
-                    Some("/run/wakterm/shell-integration/x/bash/inject.bash")
+                    env(&cmd, "ENV"),
+                    joined("/run/wakterm/shell-integration/x", "bash/inject.bash")
                 );
-                assert_eq!(
-                    env(&cmd, "HISTFILE").as_deref(),
-                    Some("/home/u/.bash_history")
-                );
+                assert_eq!(env(&cmd, "HISTFILE"), joined("/home/u", ".bash_history"));
                 assert_eq!(
                     env(&cmd, "WAKTERM_BASH_LOGIN").is_some(),
                     expected.unwrap().1,
@@ -306,7 +314,7 @@ mod test {
         let mut zsh = CommandBuilder::new_default_prog();
         zsh.env("ZDOTDIR", "/home/u/.config/zsh");
         inject_with_dir(&mut zsh, OsStr::new("/bin/zsh"), "zsh", dir);
-        assert_eq!(env(&zsh, "ZDOTDIR").as_deref(), Some("/d/zsh"));
+        assert_eq!(env(&zsh, "ZDOTDIR"), joined("/d", "zsh"));
         assert_eq!(
             env(&zsh, "WAKTERM_ORIG_ZDOTDIR").as_deref(),
             Some("/home/u/.config/zsh")
@@ -317,8 +325,8 @@ mod test {
         fish.env_remove("XDG_DATA_DIRS");
         inject_with_dir(&mut fish, OsStr::new("fish"), "fish", dir);
         assert_eq!(
-            env(&fish, "XDG_DATA_DIRS").as_deref(),
-            Some("/d/fish:/usr/local/share:/usr/share")
+            env(&fish, "XDG_DATA_DIRS"),
+            joined("/d", "fish").map(|dir| format!("{dir}:/usr/local/share:/usr/share"))
         );
         assert_eq!(env(&fish, "WAKTERM_FISH_ORIG_XDG_DATA_DIRS"), None);
         assert_eq!(env(&fish, DIR_ENV).as_deref(), Some("/d"));

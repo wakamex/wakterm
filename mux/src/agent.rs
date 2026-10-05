@@ -4839,6 +4839,8 @@ mod test {
             "/code/inquisition"
         );
         assert_eq!(normalize_declared_cwd("/"), "/");
+        // A file URL without a drive letter names a path only on Unix.
+        #[cfg(unix)]
         assert_eq!(
             normalize_declared_cwd("file:///code/inquisition/"),
             "/code/inquisition"
