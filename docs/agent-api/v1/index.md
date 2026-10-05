@@ -90,7 +90,7 @@ records an explicit plan artifact, currently Claude `ExitPlanMode`.
 
 For observer-backed sessions, a durable provider turn transition updates the catalog and admission snapshot in the same observation. A committed `waiting_on_user` transition therefore makes the exact agent idle without waiting for terminal input or unrelated API activity.
 
-`turn_started` carries `input_sha256`, the SHA-256 of the trimmed input that started the turn, when the provider records it: the text inside a Claude `<pasted_content>` wrapper, or the first Codex user message that is not injected environment context. Because Codex records that input after `task_started`, a Codex `turn_started` is emitted with its first input, keeping the `task_started` time. A Codex turn that records no input starts without the field, before its first message or final.
+`turn_started` carries `input_sha256`, the SHA-256 of the trimmed input that started the turn, when the provider records it: the text inside a Claude `<pasted_content>` wrapper, or the first Codex user message that is not injected environment context. Because Codex records that input after `task_started`, a Codex `turn_started` is emitted with its first input, keeping the `task_started` time. A Codex turn that records no input starts with `input_sha256: null`, before its first message or final. The field is `null` on every other event.
 
 Only output from the pane's user-visible primary provider session enters the normalized stream. Internal Codex worker sessions, including subagents, approval reviewers, model graders, summaries, and background feature sessions, cannot replace an observer-backed pane's primary session or emit assistant, final, or lifecycle events for it.
 
