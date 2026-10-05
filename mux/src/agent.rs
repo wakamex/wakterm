@@ -1926,6 +1926,13 @@ pub fn claude_status_changed_since(
     metadata: &AgentMetadata,
     since: std::time::SystemTime,
 ) -> Option<bool> {
+    Some(claude_status_changed_at(metadata)? > DateTime::<Utc>::from(since))
+}
+
+/// When Claude last recorded a status change for the agent's exact
+/// process. None when the agent has no confirmed Claude session record or
+/// the record has no change time.
+pub(crate) fn claude_status_changed_at(metadata: &AgentMetadata) -> Option<DateTime<Utc>> {
     if infer_harness(&metadata.launch_cmd, None) != AgentHarness::Claude {
         return None;
     }
@@ -1939,8 +1946,7 @@ pub fn claude_status_changed_since(
     else {
         return None;
     };
-    let changed_at = owned.status?.changed_at?;
-    Some(changed_at > DateTime::<Utc>::from(since))
+    owned.status?.changed_at
 }
 
 /// Resume a Claude session in the pane with the pane's own launch flags.
@@ -3717,18 +3723,24 @@ pub(crate) fn unwrap_claude_paste(text: &str) -> &str {
         .unwrap_or(trimmed)
 }
 
-/// How long a Claude transcript must be unchanged before an idle report
-/// ends a turn that has no reply, since Claude writes its final reply and
-/// goes idle at about the same time.
+/// How long both a Claude transcript and Claude's idle report must be
+/// unchanged before the report ends a turn that has no reply. Claude
+/// reports idle before it finishes writing the turn's final records, so a
+/// reply can reach the transcript after the idle report.
 const CLAUDE_IDLE_SETTLE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Whether the transcript has been unchanged for the settle period.
-pub(crate) fn claude_transcript_settled(path: &Path) -> bool {
+/// Whether the transcript and the idle report, reported at `idle_since`,
+/// have both been unchanged for the settle period. An idle report without
+/// a time is judged by the transcript alone.
+pub(crate) fn claude_idle_settled(path: &Path, idle_since: Option<DateTime<Utc>>) -> bool {
+    let settled = |at: std::time::SystemTime| {
+        at.elapsed()
+            .is_ok_and(|elapsed| elapsed >= CLAUDE_IDLE_SETTLE)
+    };
     fs::metadata(path)
         .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| modified.elapsed().ok())
-        .is_some_and(|elapsed| elapsed >= CLAUDE_IDLE_SETTLE)
+        .is_ok_and(settled)
+        && idle_since.is_none_or(|at| settled(at.into()))
 }
 
 fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservationDetails> {
@@ -4498,6 +4510,33 @@ mod test {
         assert_eq!(observed.progress_summary.as_deref(), Some("PLAN: old plan"));
         assert_eq!(observed.harness_mode.as_deref(), Some("plan"));
         assert_eq!(observed.turn_state, AgentTurnState::WaitingOnUser);
+    }
+
+    #[test]
+    fn claude_idle_settles_after_both_the_transcript_and_the_report() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("session.jsonl");
+        fs::write(&session, "{}\n").unwrap();
+        let age = |seconds: u64| {
+            fs::File::options()
+                .write(true)
+                .open(&session)
+                .unwrap()
+                .set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(seconds),
+                )
+                .unwrap();
+        };
+        let ago = |seconds: i64| Some(Utc::now() - Duration::seconds(seconds));
+
+        age(60);
+        assert!(claude_idle_settled(&session, ago(10)));
+        assert!(claude_idle_settled(&session, None));
+        // Claude reports idle before it writes the turn's final records, so
+        // a quiet transcript alone does not settle a fresh idle report.
+        assert!(!claude_idle_settled(&session, ago(1)));
+        age(1);
+        assert!(!claude_idle_settled(&session, ago(10)));
     }
 
     #[test]

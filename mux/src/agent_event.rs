@@ -479,6 +479,7 @@ impl AgentEventStore {
                     Ok(mut projected) => {
                         if let Some(closed) = close_unanswered_claude_turn(
                             &mut projected.cursor,
+                            metadata,
                             runtime,
                             Path::new(session_path),
                         ) {
@@ -1303,6 +1304,7 @@ fn jsonl_source_id(path: &Path, provider: &str) -> anyhow::Result<String> {
 /// such as input it displayed without working on it.
 fn close_unanswered_claude_turn(
     cursor: &mut ProviderCursor,
+    metadata: &AgentMetadata,
     runtime: &AgentRuntimeSnapshot,
     path: &Path,
 ) -> Option<Vec<PendingEvent>> {
@@ -1312,7 +1314,7 @@ fn close_unanswered_claude_turn(
     if !cursor.turn_open || runtime.turn_phase.as_deref() != Some("idle") {
         return None;
     }
-    if !crate::agent::claude_transcript_settled(path) {
+    if !crate::agent::claude_idle_settled(path, crate::agent::claude_status_changed_at(metadata)) {
         return None;
     }
     let turn_id = cursor.current_turn_id.clone()?;
