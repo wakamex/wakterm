@@ -731,7 +731,8 @@ fn stdout_reader_closed(err: &anyhow::Error) -> bool {
     }
 }
 
-/// POLLERR on a pipe's write end means its read end is closed.
+/// Whether the read end of the pipe `fd` writes to is closed. Linux reports
+/// that on the write end as POLLERR, and macOS and the BSDs as POLLHUP.
 #[cfg(unix)]
 fn pipe_reader_closed(fd: libc::c_int) -> bool {
     let mut pollfd = libc::pollfd {
@@ -739,7 +740,9 @@ fn pipe_reader_closed(fd: libc::c_int) -> bool {
         events: 0,
         revents: 0,
     };
-    unsafe { libc::poll(&mut pollfd, 1, 0) == 1 && pollfd.revents & libc::POLLERR != 0 }
+    unsafe {
+        libc::poll(&mut pollfd, 1, 0) == 1 && pollfd.revents & (libc::POLLERR | libc::POLLHUP) != 0
+    }
 }
 
 fn main() {
