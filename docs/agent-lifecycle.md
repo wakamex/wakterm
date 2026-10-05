@@ -213,6 +213,8 @@ If any step fails, keep the layout recoverable, surface the failure, and retain
 enough intent for an explicit retry. A failure pane or equivalent diagnostic
 surface is preferable to a convincing but incorrect fresh shell.
 
+When confirmation fails, Wakterm stops treating the pane as the expected agent and sends connected GUI clients a toast notification for that pane. It names the agent, the expected provider session, and the reason, such as the resumed process opening a different session, and the server log records the same reason. The GUI shows it according to its `notification_handling` setting.
+
 Restoration must be idempotent. Repeated reconciliation must not launch a
 second harness after the first one has started but before observation has
 finished. Persisted intent, launch attempts, and confirmed runtime bindings

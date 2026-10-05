@@ -2789,12 +2789,35 @@ impl Mux {
         );
     }
 
-    fn fail_pending_agent_restore(&self, pane_id: PaneId, candidate: &AgentAdoptionCandidate) {
-        let removed = self
-            .pending_agent_restores
-            .write()
-            .remove(&pane_id)
-            .is_some();
+    /// Gives up on restoring the agent expected in `pane_id`, and tells the
+    /// user why, since the pane now runs without the agent's identity.
+    fn fail_pending_agent_restore(
+        &self,
+        pane_id: PaneId,
+        candidate: &AgentAdoptionCandidate,
+        reason: String,
+    ) {
+        let pending = self.pending_agent_restores.write().remove(&pane_id);
+        let removed = pending.is_some();
+        if let Some(pending) = pending {
+            log::warn!(
+                "{:?} restore of {} in pane {pane_id} failed: {reason}",
+                pending.harness,
+                pending.metadata.name
+            );
+            self.notify(MuxNotification::Alert {
+                pane_id,
+                alert: wakterm_term::Alert::ToastNotification {
+                    title: Some(format!("Could not restore {}", pending.metadata.name)),
+                    body: format!(
+                        "Wakterm could not resume {:?} session {}. {reason} \
+                         The pane no longer runs as that agent.",
+                        pending.harness, pending.session_id
+                    ),
+                    focus: true,
+                },
+            });
+        }
         self.failed_agent_restores.write().insert(
             pane_id,
             FailedAgentRestore {
@@ -2819,23 +2842,20 @@ impl Mux {
         };
 
         if !self.candidate_matches_current_process(&candidate) {
-            log::warn!(
-                "{:?} restore pane {} changed process incarnation before confirmation",
-                pending.harness,
+            self.fail_pending_agent_restore(
                 pane_id,
+                &candidate,
+                "Its process changed before Wakterm confirmed the session.".to_string(),
             );
-            self.fail_pending_agent_restore(pane_id, &candidate);
             return AgentRestoreOutcome::Failed;
         }
 
         if candidate.harness != pending.harness || runtime.harness != pending.harness {
-            log::warn!(
-                "{:?} restore pane {} started {:?} instead",
-                pending.harness,
+            self.fail_pending_agent_restore(
                 pane_id,
-                candidate.harness,
+                &candidate,
+                format!("The pane started {:?} instead.", candidate.harness),
             );
-            self.fail_pending_agent_restore(pane_id, &candidate);
             return AgentRestoreOutcome::Failed;
         }
 
@@ -2846,36 +2866,29 @@ impl Mux {
             match restorable_session_id(&pending.harness, Path::new(session_path)) {
                 Ok(Some(session_id)) => session_id,
                 Ok(None) => {
-                    log::warn!(
-                        "{:?} restore pane {} session {} has no provider session ID",
-                        pending.harness,
+                    self.fail_pending_agent_restore(
                         pane_id,
-                        session_path
+                        &candidate,
+                        format!("Its session file {session_path} has no provider session ID."),
                     );
-                    self.fail_pending_agent_restore(pane_id, &candidate);
                     return AgentRestoreOutcome::Failed;
                 }
                 Err(err) => {
-                    log::warn!(
-                        "{:?} restore pane {} could not read provider session {}: {err:#}",
-                        pending.harness,
+                    self.fail_pending_agent_restore(
                         pane_id,
-                        session_path
+                        &candidate,
+                        format!("Its session file {session_path} could not be read: {err:#}."),
                     );
-                    self.fail_pending_agent_restore(pane_id, &candidate);
                     return AgentRestoreOutcome::Failed;
                 }
             };
 
         if actual_session_id != pending.session_id {
-            log::warn!(
-                "{:?} restore pane {} opened session {}, expected {}",
-                pending.harness,
+            self.fail_pending_agent_restore(
                 pane_id,
-                actual_session_id,
-                pending.session_id
+                &candidate,
+                format!("The resumed process opened session {actual_session_id} instead."),
             );
-            self.fail_pending_agent_restore(pane_id, &candidate);
             return AgentRestoreOutcome::Failed;
         }
 
@@ -2885,12 +2898,11 @@ impl Mux {
         if let Err(err) =
             self.install_agent_metadata_runtime_without_process_identity(pane_id, metadata, runtime)
         {
-            log::warn!(
-                "{:?} restore pane {} could not bind metadata: {err:#}",
-                pending.harness,
-                pane_id
+            self.fail_pending_agent_restore(
+                pane_id,
+                &candidate,
+                format!("Wakterm could not bind the agent: {err:#}."),
             );
-            self.fail_pending_agent_restore(pane_id, &candidate);
             return AgentRestoreOutcome::Failed;
         }
 
@@ -10067,6 +10079,18 @@ mod test {
         mux.agent_adoption_candidates
             .write()
             .insert(mismatching_pane_id, mismatching_candidate.clone());
+        let toasts = Arc::new(Mutex::new(Vec::new()));
+        let toasts_for_sub = Arc::clone(&toasts);
+        mux.subscribe(move |notification| {
+            if let MuxNotification::Alert {
+                pane_id,
+                alert: wakterm_term::Alert::ToastNotification { title, body, .. },
+            } = notification
+            {
+                toasts_for_sub.lock().push((pane_id, title, body));
+            }
+            true
+        });
 
         assert_eq!(
             mux.complete_pending_agent_restore(
@@ -10076,6 +10100,15 @@ mod test {
             ),
             AgentRestoreOutcome::Failed
         );
+        // Resuming into a different session is reported, never silent.
+        let toasts = toasts.lock();
+        assert_eq!(toasts.len(), 1);
+        assert_eq!(toasts[0].0, mismatching_pane_id);
+        assert_eq!(
+            toasts[0].1.as_deref(),
+            Some(format!("Could not restore {}", mismatching_metadata.name).as_str())
+        );
+        assert!(toasts[0].2.contains("opened session"), "{}", toasts[0].2);
         assert!(mux
             .get_agent_metadata_for_pane(mismatching_pane_id)
             .is_none());
