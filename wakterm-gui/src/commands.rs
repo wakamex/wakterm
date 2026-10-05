@@ -1180,7 +1180,7 @@ fn derive_command_from_key_assignment_for_platform(
                 } else {
                     Modifiers::CTRL | Modifiers::SHIFT
                 },
-                "S".into(),
+                "s".into(),
             )],
             args: &[ArgType::ActiveTab],
             menubar: &["Shell"],
@@ -2311,6 +2311,29 @@ mod test {
             vec![(Modifiers::CTRL.union(Modifiers::SHIFT), "a".into())]
         );
         assert!(compute_default_actions(KeyBindingPlatform::current()).contains(&action));
+    }
+
+    #[test]
+    fn park_current_tab_registers_every_form_of_its_shortcut() {
+        let command = derive_command_from_key_assignment(&KeyAssignment::ParkCurrentTab).unwrap();
+        let expected = if KeyBindingPlatform::current() == KeyBindingPlatform::MacOs {
+            Modifiers::SUPER | Modifiers::SHIFT
+        } else {
+            Modifiers::CTRL | Modifiers::SHIFT
+        };
+        let config = config::configuration();
+        let registered = command.permute_keys(&config, false);
+        for (mods, key) in [
+            (expected, "s"),
+            (expected, "S"),
+            (expected - Modifiers::SHIFT, "S"),
+        ] {
+            let key = <config::DeferredKeyCode as std::convert::TryFrom<&str>>::try_from(key)
+                .unwrap()
+                .resolve(config.key_map_preference)
+                .clone();
+            assert!(registered.contains(&(mods, key)), "{mods:?} {key:?}");
+        }
     }
 
     #[test]
