@@ -2616,7 +2616,7 @@ struct AgentSendRefusal {
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum AgentSendRefusalReason {
-    /// A dialog, question, startup prompt or shell mode has the keyboard.
+    /// A dialog, question or startup prompt has the keyboard.
     InputBlocked,
 }
 

@@ -1148,16 +1148,15 @@ pub fn derive_runtime_status(runtime: &AgentRuntimeSnapshot) -> AgentStatus {
 }
 
 const CLAUDE_WAITING_PHASE_PREFIX: &str = "waiting for ";
-const CLAUDE_SHELL_PHASE: &str = "shell";
 
 /// Why typed input would not reach the harness's prompt: a dialog or
-/// question has the keyboard, or input would run in a shell mode.
+/// question has the keyboard.
 pub fn input_blocked_reason(runtime: &AgentRuntimeSnapshot) -> Option<String> {
-    let phase = runtime.turn_phase.as_deref()?;
-    if let Some(waiting_for) = phase.strip_prefix(CLAUDE_WAITING_PHASE_PREFIX) {
-        return Some(format!("the target is waiting for {waiting_for}"));
-    }
-    (phase == CLAUDE_SHELL_PHASE).then(|| "the target is in shell mode".to_string())
+    let waiting_for = runtime
+        .turn_phase
+        .as_deref()?
+        .strip_prefix(CLAUDE_WAITING_PHASE_PREFIX)?;
+    Some(format!("the target is waiting for {waiting_for}"))
 }
 
 fn derive_effective_turn_state(runtime: &AgentRuntimeSnapshot) -> AgentTurnState {
@@ -1876,7 +1875,9 @@ fn observe_claude_process(
                 // Starting work acknowledges the input that started it.
                 observation.updated_at = observation.updated_at.max(reported.changed_at);
             }
-            "idle" => {
+            // `shell` is idle at the prompt while a background shell task
+            // runs, so the prompt takes input as it does when idle.
+            "idle" | "shell" => {
                 // A turn Wakterm saw running ended when Claude went idle,
                 // including a turn that ended without a reply. An idle report
                 // alone may date from the process start.
@@ -1893,10 +1894,6 @@ fn observe_claude_process(
                     "{CLAUDE_WAITING_PHASE_PREFIX}{}",
                     reported.waiting_for.as_deref().unwrap_or("input")
                 ));
-            }
-            "shell" => {
-                observation.turn_state = AgentTurnState::WaitingOnUser;
-                observation.turn_phase = Some(CLAUDE_SHELL_PHASE.to_string());
             }
             _ => {}
         }
@@ -2023,7 +2020,8 @@ struct OwnedClaudeSession {
 }
 
 /// The status Claude records for a process: `busy`, `idle`, `waiting` while
-/// a dialog or question has the keyboard, or `shell` in its shell mode.
+/// a dialog or question has the keyboard, or `shell` when idle while a
+/// background shell task runs.
 struct ClaudeReportedStatus {
     status: String,
     /// What a `waiting` process waits for, such as "dialog open".
@@ -5047,15 +5045,14 @@ mod test {
             Some("the target is waiting for dialog open")
         );
 
+        // Claude reports `shell` when idle with a background shell task
+        // running; its prompt still takes input.
         set_status("shell");
         refresh_runtime_from_harness(&mut runtime, &metadata);
         remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
         assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
         assert_eq!(runtime.status, AgentStatus::Idle);
-        assert_eq!(
-            input_blocked_reason(&runtime).as_deref(),
-            Some("the target is in shell mode")
-        );
+        assert_eq!(input_blocked_reason(&runtime), None);
     }
 
     #[test]

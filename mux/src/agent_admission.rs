@@ -988,13 +988,10 @@ mod tests {
 
     #[test]
     fn admission_does_not_type_into_a_blocked_prompt() {
-        for (phase, detail) in [
-            (
-                "waiting for dialog open",
-                "the target is waiting for dialog open",
-            ),
-            ("shell", "the target is in shell mode"),
-        ] {
+        for (phase, detail) in [(
+            "waiting for dialog open",
+            "the target is waiting for dialog open",
+        )] {
             let mut runtime = runtime();
             runtime.turn_phase = Some(phase.to_string());
             let receipt = classify_runtime(&request("blocked", "work"), &runtime).unwrap();
