@@ -8,11 +8,13 @@ TARGET_ROOT="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 SRC="$TARGET_ROOT/release"
 
 usage() {
-    echo "Usage: ./deploy.sh [--restart] [--no-save] [--wipe-session] [--clean] [--dest DIR]"
+    echo "Usage: ./deploy.sh [--restart [--notify]] [--no-save] [--wipe-session] [--clean] [--dest DIR]"
     echo ""
     echo "  (no flags)  Build, save manual layout snapshot, copy binaries"
     echo "  --restart   Also kill the mux server (Mac reconnect triggers new binary)"
     echo "              Saves the agent list and catalog first, to compare after restart"
+    echo "  --notify    With --restart, ask the agents that were busy to continue once"
+    echo "              they are back; logs to resume-busy-agents.log in the snapshot"
     echo "  --no-save   Skip wakterm cli save-layout (use when layout/session state is known bad)"
     echo "  --wipe-session  Remove saved session state after restart for a clean session"
     echo "  --clean     Run cargo clean for deployed crates before building"
@@ -30,6 +32,7 @@ usage() {
 }
 
 RESTART=false
+NOTIFY=false
 SAVE_SESSION=true
 WIPE_SESSION=false
 CLEAN_BUILD=false
@@ -37,6 +40,10 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --restart)
             RESTART=true
+            shift
+            ;;
+        --notify)
+            NOTIFY=true
             shift
             ;;
         --no-save)
@@ -97,6 +104,14 @@ should_skip_build() {
 
 if $WIPE_SESSION && ! $RESTART; then
     echo "--wipe-session requires --restart"
+    exit 1
+fi
+if $NOTIFY && ! $RESTART; then
+    echo "--notify requires --restart"
+    exit 1
+fi
+if $NOTIFY && ! command -v systemd-run >/dev/null 2>&1; then
+    echo "--notify requires systemd-run to outlive the mux restart"
     exit 1
 fi
 
@@ -194,6 +209,19 @@ else
 fi
 echo "  Version: $($DEST/wakterm --version 2>&1)"
 echo ""
+
+if $NOTIFY; then
+    # The restart ends every process started from a mux pane, including a
+    # deploy run from an agent, so the follow-up runs as its own unit.
+    echo "=== Step 3b: Schedule resume messages for busy agents ==="
+    systemd-run --user --quiet --collect \
+        --unit="wakterm-resume-busy-agents-$(date +%s)" \
+        --setenv=WAKTERM="$DEST/wakterm" \
+        "$REPO_ROOT/resume-busy-agents.sh" "$SNAPSHOT_DIR" \
+        "$(pgrep -f wakterm-mux-server | head -1 || true)"
+    echo "  Log: $SNAPSHOT_DIR/resume-busy-agents.log"
+    echo ""
+fi
 
 if $RESTART; then
     echo "=== Step 4: Restart mux server ==="
