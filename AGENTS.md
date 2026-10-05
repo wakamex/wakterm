@@ -12,6 +12,10 @@ documented contract correctly.
 
 After changing CLI arguments or help text, key assignments, or default key bindings, run `make update-derived` and commit the regenerated completions, CLI help, key tables, and `docs/guides/configuration/default-keys.md` with the change. CI runs `make check-derived` and fails on stale files, but only after a push.
 
+## Default key bindings
+
+Declare a default shortcut's letter in lowercase, such as `(Modifiers::CTRL | Modifiers::SHIFT, "b".into())`. The input map registers the shifted variants (Ctrl+Shift+b, Ctrl+Shift+B, and Ctrl with an uppercase B) only when shifting the declared letter changes it, so an uppercase `"B"` registers a single form, and platforms that report the shifted letter differently, such as Windows, never trigger it. Add a test that every form is registered, as `tab_activity_order_toggle_has_the_default_window_binding` does.
+
 ## Multi-client mux synchronization
 
 Treat the server mux as the authority for shared window, tab, pane, and layout state. A GUI client has a local mirror of that state. Local active-tab and active-pane selection may remain client-specific unless a feature explicitly makes them shared.
