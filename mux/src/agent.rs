@@ -6551,7 +6551,9 @@ mod test {
         .unwrap();
 
         let tui = temp.path().join("codex");
-        fs::write(&tui, "#!/bin/sh\nsleep 60\n").unwrap();
+        // A command after `sleep` keeps the shell from replacing itself with
+        // `sleep`, which would drop the Codex arguments this test observes.
+        fs::write(&tui, "#!/bin/sh\nsleep 60\nexit 0\n").unwrap();
         fs::set_permissions(&tui, fs::Permissions::from_mode(0o755)).unwrap();
         let mut child = std::process::Command::new(&tui)
             .args([
