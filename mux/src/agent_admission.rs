@@ -574,12 +574,15 @@ fn classify_runtime(
         ));
     }
     if request.return_final
-        && !matches!(runtime.harness, AgentHarness::Codex | AgentHarness::Claude)
+        && !matches!(
+            runtime.harness,
+            AgentHarness::Codex | AgentHarness::Claude | AgentHarness::Agy
+        )
     {
         return Some(AgentAdmissionReceipt::rejected(
             request,
             AgentAdmissionStatus::Unsupported,
-            "return-final admission currently supports only Codex and Claude",
+            "return-final admission currently supports only Codex, Claude, and agy",
         ));
     }
     None

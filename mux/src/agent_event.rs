@@ -102,6 +102,7 @@ struct ProjectionState {
 enum ProviderCursor {
     Codex(JsonlCursor),
     Claude(JsonlCursor),
+    Agy(JsonlCursor),
     Gemini(GeminiCursor),
     Opencode(OpencodeCursor),
 }
@@ -1256,7 +1257,7 @@ fn project_provider_events(
     metadata: &AgentMetadata,
 ) -> anyhow::Result<ProjectedEvents> {
     match harness {
-        AgentHarness::Agy => bail!("agy harness has no provider event projection"),
+        AgentHarness::Agy => project_agy(Path::new(session_path), cursor),
         AgentHarness::Codex => project_codex(Path::new(session_path), cursor),
         AgentHarness::Claude => project_claude(Path::new(session_path), cursor, metadata),
         AgentHarness::Gemini => project_gemini(Path::new(session_path), cursor),
@@ -1345,7 +1346,7 @@ fn initial_jsonl_cursor(
     source_id: String,
 ) -> anyhow::Result<JsonlCursor> {
     let offset = complete_jsonl_tail(path)?;
-    let current_turn_id = latest_jsonl_turn_id(path, provider)?;
+    let current_turn_id = latest_jsonl_turn_id(path, provider, &source_id)?;
     Ok(JsonlCursor {
         source_id,
         offset,
@@ -1383,7 +1384,11 @@ fn complete_jsonl_tail(path: &Path) -> anyhow::Result<u64> {
     }
 }
 
-fn latest_jsonl_turn_id(path: &Path, provider: &str) -> anyhow::Result<Option<String>> {
+fn latest_jsonl_turn_id(
+    path: &Path,
+    provider: &str,
+    source_id: &str,
+) -> anyhow::Result<Option<String>> {
     let reader = BufReader::new(fs::File::open(path)?);
     let mut current = None;
     for line in reader.lines() {
@@ -1402,6 +1407,9 @@ fn latest_jsonl_turn_id(path: &Path, provider: &str) -> anyhow::Result<Option<St
                     .get("uuid")
                     .and_then(Value::as_str)
                     .map(str::to_string);
+            }
+            "agy" if record.get("type").and_then(Value::as_str) == Some("USER_INPUT") => {
+                current = agy_turn_id(source_id, &record);
             }
             _ => {}
         }
@@ -1480,6 +1488,7 @@ fn read_new_jsonl(
 fn event_time(record: &Value) -> DateTime<Utc> {
     record
         .get("timestamp")
+        .or_else(|| record.get("created_at"))
         .and_then(Value::as_str)
         .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
         .map(|value| value.with_timezone(&Utc))
@@ -1921,6 +1930,155 @@ fn project_claude(
     })
 }
 
+/// The agy turn a user input record starts, named by its conversation and
+/// step so that each input is its own turn.
+fn agy_turn_id(conversation_id: &str, record: &Value) -> Option<String> {
+    let step = record.get("step_index")?.as_u64()?;
+    Some(format!("{conversation_id}:{step}"))
+}
+
+/// The text the user sent, which agy records between USER_REQUEST tags
+/// ahead of metadata it appends.
+fn agy_user_request(content: &str) -> Option<&str> {
+    let start = content.find("<USER_REQUEST>")? + "<USER_REQUEST>".len();
+    let end = content[start..].find("</USER_REQUEST>")? + start;
+    Some(content[start..end].trim())
+}
+
+/// Projects agy's step log. The observer binds the trimmed transcript,
+/// whose long fields can be truncated, so events come from its full
+/// sibling when agy writes one.
+fn project_agy(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<ProjectedEvents> {
+    let full = path.with_file_name("transcript_full.jsonl");
+    let path = if full.is_file() { full.as_path() } else { path };
+    // The transcript lives at brain/<conversation>/.system_generated/logs.
+    let source_id = path
+        .ancestors()
+        .nth(3)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .context("agy transcript is outside a conversation directory")?
+        .to_string();
+    let mut cursor = match cursor {
+        Some(ProviderCursor::Agy(cursor)) if cursor.source_id == source_id => cursor,
+        Some(_) => return reset_jsonl_projection(path, "agy", source_id, true),
+        None => {
+            return Ok(ProjectedEvents {
+                cursor: ProviderCursor::Agy(initial_jsonl_cursor(path, "agy", source_id)?),
+                events: Vec::new(),
+            })
+        }
+    };
+    let events = match read_new_jsonl(path, &mut cursor, |offset, record, cursor| {
+        let timestamp = event_time(record);
+        let step = record
+            .get("step_index")
+            .and_then(Value::as_u64)
+            .map(|step| step.to_string())
+            .unwrap_or_else(|| format!("offset-{offset}"));
+        let record_key = format!("agy:{}:{step}", cursor.source_id);
+        match record.get("type").and_then(Value::as_str) {
+            Some("USER_INPUT") => {
+                let Some(turn_id) = agy_turn_id(&cursor.source_id, record) else {
+                    return Ok(vec![observer_failure(
+                        format!("{record_key}:missing-turn"),
+                        timestamp,
+                        None,
+                        "agy user input lacks a step index",
+                    )]);
+                };
+                cursor.current_turn_id = Some(turn_id.clone());
+                cursor.last_assistant_text = None;
+                cursor.turn_open = true;
+                let mut started = PendingEvent::new(
+                    format!("{record_key}:started"),
+                    AgentEventKind::TurnStarted,
+                    timestamp,
+                );
+                started.turn_id = Some(turn_id.clone());
+                started.input_sha256 = record
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .and_then(agy_user_request)
+                    .map(crate::agent::message_sha256);
+                let mut state = PendingEvent::new(
+                    format!("{record_key}:state"),
+                    AgentEventKind::TurnStateChanged,
+                    timestamp,
+                );
+                state.turn_id = Some(turn_id);
+                state.turn_state = Some("waiting_on_agent".to_string());
+                Ok(vec![started, state])
+            }
+            Some("PLANNER_RESPONSE")
+                if record.get("status").and_then(Value::as_str) == Some("DONE") =>
+            {
+                let Some(turn_id) = cursor.current_turn_id.clone() else {
+                    return Ok(Vec::new());
+                };
+                let Some(text) = record
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string)
+                else {
+                    return Ok(Vec::new());
+                };
+                cursor.last_assistant_text = Some(text.clone());
+                let mut message = PendingEvent::new(
+                    format!("{record_key}:message"),
+                    AgentEventKind::AssistantMessage,
+                    timestamp,
+                );
+                message.turn_id = Some(turn_id.clone());
+                message.text = Some(text.clone());
+                let mut events = vec![message];
+                // A response that calls no tools ends the turn. Its tool
+                // calls are recorded as text, empty when there are none.
+                let calls_tools = record.get("tool_calls").is_some_and(|calls| match calls {
+                    Value::Array(calls) => !calls.is_empty(),
+                    Value::String(calls) => !matches!(calls.trim(), "" | "[]"),
+                    Value::Null => false,
+                    _ => true,
+                });
+                if !calls_tools && cursor.turn_open {
+                    let mut final_event = PendingEvent::new(
+                        format!("{record_key}:final"),
+                        AgentEventKind::TurnFinal,
+                        timestamp,
+                    );
+                    final_event.turn_id = Some(turn_id.clone());
+                    final_event.outcome = Some("completed".to_string());
+                    final_event.text = Some(text);
+                    let mut state = PendingEvent::new(
+                        format!("{record_key}:final-state"),
+                        AgentEventKind::TurnStateChanged,
+                        timestamp,
+                    );
+                    state.turn_id = Some(turn_id);
+                    state.turn_state = Some("waiting_on_user".to_string());
+                    events.extend([final_event, state]);
+                    cursor.turn_open = false;
+                }
+                Ok(events)
+            }
+            _ => Ok(Vec::new()),
+        }
+    }) {
+        Ok(events) => events,
+        Err(err) if err.to_string().contains("truncated or rewritten") => {
+            return reset_jsonl_projection(path, "agy", source_id, false);
+        }
+        Err(err) => return Err(err),
+    };
+    Ok(ProjectedEvents {
+        cursor: ProviderCursor::Agy(cursor),
+        events,
+    })
+}
+
 fn project_gemini(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<ProjectedEvents> {
     let conversation = read_gemini_conversation(path)?;
     let source_id = conversation
@@ -2125,6 +2283,7 @@ fn reset_jsonl_projection(
         cursor: match provider {
             "codex" => ProviderCursor::Codex(cursor),
             "claude" => ProviderCursor::Claude(cursor),
+            "agy" => ProviderCursor::Agy(cursor),
             _ => unreachable!(),
         },
         events: vec![event],
@@ -3364,6 +3523,108 @@ mod tests {
             .iter()
             .position(|kind| *kind == AgentEventKind::TurnFinal);
         assert!(first_start < first_final);
+    }
+
+    #[test]
+    fn agy_projects_turns_from_the_full_step_log() {
+        let temp = TempDir::new().unwrap();
+        let logs = temp
+            .path()
+            .join("brain")
+            .join("conversation-1")
+            .join(".system_generated")
+            .join("logs");
+        fs::create_dir_all(&logs).unwrap();
+        let record = |step: u64, kind: &str, fields: serde_json::Value| {
+            let mut record = serde_json::json!({"step_index": step, "source": "MODEL",
+                "type": kind, "status": "DONE", "created_at": "2026-10-05T06:00:00Z"});
+            record
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            record.to_string() + "\n"
+        };
+        let reply = "The logs show two timeouts.";
+        // The bound transcript truncates long fields; its full sibling does not.
+        let session = logs.join("transcript.jsonl");
+        let full = logs.join("transcript_full.jsonl");
+        let earlier = record(
+            0,
+            "USER_INPUT",
+            serde_json::json!({"content": "<USER_REQUEST>\nhi\n</USER_REQUEST>"}),
+        ) + &record(
+            1,
+            "PLANNER_RESPONSE",
+            serde_json::json!({"content": "hello"}),
+        );
+        fs::write(&session, &earlier).unwrap();
+        fs::write(&full, &earlier).unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("agy");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Agy,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+
+        append(
+            &full,
+            &(record(
+                10,
+                "USER_INPUT",
+                serde_json::json!({"content": "<USER_REQUEST>\nsummarize the logs\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nlocal time\n</ADDITIONAL_METADATA>"}),
+            ) + &record(
+                11,
+                "PLANNER_RESPONSE",
+                serde_json::json!({"content": "Reading them.", "tool_calls": [{"name": "view_file"}]}),
+            ) + &record(12, "VIEW_FILE", serde_json::json!({"content": "log text"}))
+                + &record(
+                    13,
+                    "FINISH",
+                    serde_json::json!({"content": "Task is complete."}),
+                )
+                + &record(
+                    14,
+                    "PLANNER_RESPONSE",
+                    serde_json::json!({"content": reply}),
+                )),
+        );
+        append(
+            &session,
+            &record(
+                14,
+                "PLANNER_RESPONSE",
+                serde_json::json!({"content": "The logs", "truncated_fields": ["content"]}),
+            ),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+
+        let events = store.read_page(after, 100).unwrap().events;
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.kind.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                AgentEventKind::TurnStarted,
+                AgentEventKind::TurnStateChanged,
+                AgentEventKind::AssistantMessage,
+                AgentEventKind::AssistantMessage,
+                AgentEventKind::TurnFinal,
+                AgentEventKind::TurnStateChanged,
+            ]
+        );
+        assert!(events
+            .iter()
+            .all(|event| event.turn_id.as_deref() == Some("conversation-1:10")));
+        assert_eq!(
+            events[0].input_sha256.as_deref(),
+            Some(crate::agent::message_sha256("summarize the logs").as_str())
+        );
+        assert_eq!(events[4].outcome.as_deref(), Some("completed"));
+        assert_eq!(events[4].text.as_deref(), Some(reply));
     }
 
     #[test]

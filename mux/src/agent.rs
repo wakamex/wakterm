@@ -2736,7 +2736,7 @@ fn claude_sessions_root() -> Option<PathBuf> {
 }
 
 fn agy_root() -> Option<PathBuf> {
-    std::env::var_os("WAKETERM_AGENT_AGY_DIR")
+    std::env::var_os("WAKTERM_AGENT_AGY_DIR")
         .map(PathBuf::from)
         .or_else(|| home_dir().map(|home| home.join(".gemini").join("antigravity-cli")))
 }
@@ -5382,7 +5382,7 @@ mod test {
         drop(second_lock);
         std::fs::remove_file(presence_dir.join(format!("{second_conversation_id}.lock"))).unwrap();
 
-        set_env_path("WAKETERM_AGENT_AGY_DIR", temp.path());
+        set_env_path("WAKTERM_AGENT_AGY_DIR", temp.path());
         let metadata = AgentMetadata {
             agent_id: "agy-observer".to_string(),
             name: "agy-observer".to_string(),
@@ -5401,7 +5401,7 @@ mod test {
         let mut runtime = AgentRuntimeSnapshot::new(&metadata);
         runtime.foreground_process_name = Some("/home/test/.local/bin/agy".to_string());
         refresh_runtime_from_harness(&mut runtime, &metadata);
-        remove_env_var("WAKETERM_AGENT_AGY_DIR");
+        remove_env_var("WAKTERM_AGENT_AGY_DIR");
 
         let transcript_string = transcript.to_string_lossy().to_string();
         assert_eq!(runtime.harness, AgentHarness::Agy);
