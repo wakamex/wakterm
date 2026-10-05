@@ -1758,7 +1758,7 @@ fn derive_command_from_key_assignment_for_platform(
                 } else {
                     Modifiers::CTRL | Modifiers::SHIFT
                 },
-                "B".into(),
+                "b".into(),
             )],
             args: &[ArgType::ActiveWindow],
             menubar: &["Window"],
@@ -2324,7 +2324,21 @@ mod test {
         } else {
             Modifiers::CTRL | Modifiers::SHIFT
         };
-        assert_eq!(command.keys, vec![(expected, "B".into())]);
+        assert_eq!(command.keys, vec![(expected, "b".into())]);
+        // Every form a keyboard may report for the shortcut is registered.
+        let config = config::configuration();
+        let registered = command.permute_keys(&config, false);
+        for (mods, key) in [
+            (expected, "b"),
+            (expected, "B"),
+            (expected - Modifiers::SHIFT, "B"),
+        ] {
+            let key = <config::DeferredKeyCode as std::convert::TryFrom<&str>>::try_from(key)
+                .unwrap()
+                .resolve(config.key_map_preference)
+                .clone();
+            assert!(registered.contains(&(mods, key)), "{mods:?} {key:?}");
+        }
         assert!(compute_default_actions(KeyBindingPlatform::current()).contains(&action));
     }
 }
