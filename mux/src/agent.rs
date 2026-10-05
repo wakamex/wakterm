@@ -2637,7 +2637,18 @@ fn describe_pending_codex_observer(
     }
 
     Ok(Some(if has_recent_matching_session {
-        "codex rollout session file exists but observer has not attached yet".to_string()
+        // A rollout appeared but the pane's process does not hold it. Codex's
+        // daemon_auto_start feature runs a plain TUI's conversation in a
+        // background daemon, which no pane process identifies.
+        if updated_after.is_some_and(|started| Utc::now() - started > Duration::seconds(10)) {
+            "codex rollout session file exists but this pane's process does not hold it; if \
+             Codex runs the conversation in its background daemon (the daemon_auto_start \
+             feature), Wakterm cannot follow it: start Codex with \
+             `codex -c features.daemon_auto_start=false` or `wakterm agent launch codex`"
+                .to_string()
+        } else {
+            "codex rollout session file exists but observer has not attached yet".to_string()
+        }
     } else if has_matching_session {
         "codex session history exists but no new rollout session file appeared yet".to_string()
     } else {
@@ -7065,11 +7076,23 @@ mod test {
         let detail = describe_pending_codex_observer("/tmp/project-live-pending", None)
             .unwrap()
             .unwrap();
+        // An observer still waiting well after its process started points at
+        // Codex's background daemon.
+        let waited = describe_pending_codex_observer(
+            "/tmp/project-live-pending",
+            Some(Utc::now() - Duration::seconds(30)),
+        )
+        .unwrap()
+        .unwrap();
         remove_env_var("WAKTERM_AGENT_CODEX_DIR");
 
         assert_eq!(
             detail,
             "codex rollout session file exists but observer has not attached yet"
+        );
+        assert!(
+            waited.contains("codex -c features.daemon_auto_start=false"),
+            "{waited}"
         );
     }
 

@@ -93,6 +93,8 @@ file, a database plus session ID, or another provider-owned record.
 
 On Linux, direct Codex confirmation accepts a user-visible rollout held open by the exact foreground process incarnation or one of its descendants after verifying that the rollout declares the pane working directory. This process-owned path works across nonstandard `CODEX_HOME` locations without scanning those locations. Directory scanning remains a fallback within the configured Codex sessions root when exact process evidence is unavailable.
 
+With Codex's `daemon_auto_start` feature, a plain Codex TUI runs its conversation in Codex's background daemon, so no process in the pane holds the rollout and Wakterm cannot confirm the session. When the observer is still waiting 10 seconds after the process started while a matching rollout exists, the agent's pending observer detail names this cause. Start such a TUI with `codex -c features.daemon_auto_start=false`, or use `wakterm agent launch codex`, which runs Codex through Wakterm's own app-server.
+
 On Linux, Agy confirmation matches the exact process incarnation to its open
 per-conversation presence lock, then observes that conversation's persistent
 transcript. Wakterm does not select an Agy conversation by modification time or
