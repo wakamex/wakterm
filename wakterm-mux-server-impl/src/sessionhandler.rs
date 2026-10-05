@@ -2835,6 +2835,7 @@ mod test {
     #[test]
     fn restricted_agent_metadata_redacts_output_derived_content() {
         let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = SimpleExecutor::new();
         let mux = test_mux();
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
