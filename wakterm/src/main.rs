@@ -733,11 +733,13 @@ fn stdout_reader_closed(err: &anyhow::Error) -> bool {
 
 /// Whether the read end of the pipe `fd` writes to is closed. Linux reports
 /// that on the write end as POLLERR, and macOS and the BSDs as POLLHUP.
+/// macOS reports either only for an event the caller asked for, so this asks
+/// for POLLOUT, which an open reader can set and is not itself a closure.
 #[cfg(unix)]
 fn pipe_reader_closed(fd: libc::c_int) -> bool {
     let mut pollfd = libc::pollfd {
         fd,
-        events: 0,
+        events: libc::POLLOUT,
         revents: 0,
     };
     unsafe {
