@@ -3336,6 +3336,12 @@ impl Mux {
             runtime.background_job = update.runtime.background_job;
             runtime.observer_started_at = update.runtime.observer_started_at;
             runtime.last_harness_refresh_at = update.runtime.last_harness_refresh_at;
+            // Observed progress, such as input a harness queued into its turn,
+            // acknowledges sends. Keep the newest of observed and recorded
+            // progress.
+            runtime.last_progress_at = runtime
+                .last_progress_at
+                .max(update.runtime.last_progress_at);
             finalize_runtime_snapshot(runtime);
             runtime.status = derive_runtime_status(runtime);
             (
@@ -11354,6 +11360,34 @@ mod test {
                 .as_deref(),
             Some("/tmp/busy.jsonl")
         );
+
+        // Observed progress reaches the stored runtime, which acknowledges
+        // sends, and an older observation never moves it back.
+        let progress_at = Utc::now();
+        for observed_progress in [
+            Some(progress_at),
+            Some(progress_at - chrono::Duration::minutes(5)),
+            None,
+        ] {
+            mux.agent_observer_state_by_pane
+                .write()
+                .insert(pane_id, queued_behind());
+            let mut runtime = observed("/tmp/busy.jsonl");
+            runtime.last_progress_at = observed_progress;
+            mux.apply_agent_observer_update(AgentObserverUpdate {
+                pane_id,
+                generation: 2,
+                process: Some((4242, 17)),
+                runtime,
+                queue_delay: Duration::ZERO,
+                refresh_elapsed: Duration::ZERO,
+                schedule_trailing_refresh: false,
+            });
+            assert_eq!(
+                mux.agent_runtime_by_pane.read()[&pane_id].last_progress_at,
+                Some(progress_at)
+            );
+        }
 
         // An observation of a replaced process never applies.
         mux.agent_observer_state_by_pane
