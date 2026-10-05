@@ -6466,6 +6466,7 @@ mod test {
 
     #[test]
     #[ignore]
+    #[cfg(target_os = "linux")]
     fn bench_agent_infra_repeated_process_lookups() {
         let pid = std::process::id();
         let started = Instant::now();
@@ -10401,6 +10402,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn claude_background_job_rebinds_parked_window_and_attach_client() {
         use crate::agent_event::AgentEventKind;
         use std::os::unix::process::CommandExt;
