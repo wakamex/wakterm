@@ -2355,6 +2355,37 @@ fn parse_opencode_session_path(value: &str) -> anyhow::Result<(PathBuf, String)>
     Ok((PathBuf::from(db.as_ref()), id.to_string()))
 }
 
+/// The text a user typed or pasted into an OpenCode message: its text
+/// parts that OpenCode did not add itself, in order.
+fn opencode_user_text(conn: &Connection, message_id: &str) -> anyhow::Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT json_extract(data, '$.text') FROM part
+         WHERE message_id = ?1 AND json_extract(data, '$.type') = 'text'
+           AND COALESCE(json_extract(data, '$.synthetic'), 0) = 0
+         ORDER BY rowid",
+    )?;
+    let parts = stmt
+        .query_map(params![message_id], |row| row.get::<_, Option<String>>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let text = parts.into_iter().flatten().collect::<Vec<_>>().join("\n");
+    Ok((!text.trim().is_empty()).then_some(text))
+}
+
+fn opencode_has_later_message(
+    conn: &Connection,
+    session_id: &str,
+    rowid: i64,
+) -> anyhow::Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM message WHERE session_id = ?1 AND rowid > ?2 LIMIT 1",
+            params![session_id, rowid],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
 fn project_opencode(
     session_path: &str,
     cursor: Option<ProviderCursor>,
@@ -2450,6 +2481,13 @@ fn project_opencode(
             if message.get("role").and_then(Value::as_str) == Some("user")
                 && !opencode_runtime_message(&message)
             {
+                // OpenCode writes a user message's text parts after the
+                // message. Wait for them so the turn carries its input's
+                // hash, unless a later message shows the input has none.
+                let text = opencode_user_text(&conn, &message_id)?;
+                if text.is_none() && !opencode_has_later_message(&conn, &source_id, rowid)? {
+                    break;
+                }
                 let timestamp =
                     DateTime::from_timestamp_millis(time_created).unwrap_or_else(Utc::now);
                 let mut started = PendingEvent::new(
@@ -2458,6 +2496,7 @@ fn project_opencode(
                     timestamp,
                 );
                 started.turn_id = Some(message_id.clone());
+                started.input_sha256 = text.as_deref().map(crate::agent::message_sha256);
                 events.push(started);
                 let mut state = PendingEvent::new(
                     format!("opencode:{source_id}:{message_id}:state"),
@@ -4085,6 +4124,65 @@ mod tests {
             Some("Usage limit reached for 5 hour")
         );
         assert!(of_kind(AgentEventKind::TurnFinal).is_empty());
+    }
+
+    #[test]
+    fn opencode_turn_start_waits_for_and_hashes_the_user_text() {
+        let temp = TempDir::new().unwrap();
+        let provider_db = temp.path().join("opencode.sqlite3");
+        let conn = create_opencode_db(&provider_db);
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("opencode");
+        let session_path = format!(
+            "opencode://session?db={}&id=session-hash",
+            url::form_urlencoded::byte_serialize(provider_db.to_string_lossy().as_bytes())
+                .collect::<String>()
+        );
+        let runtime = runtime(&metadata, AgentHarness::Opencode, session_path);
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        let started = || {
+            store
+                .read_page(after, 100)
+                .unwrap()
+                .events
+                .into_iter()
+                .filter(|event| event.kind == AgentEventKind::TurnStarted)
+                .collect::<Vec<_>>()
+        };
+        let part = |id: &str, data: &str| {
+            conn.execute(
+                "INSERT INTO part VALUES (?1, 'turn-hash', 'session-hash', 1776600000100, ?2)",
+                params![id, data],
+            )
+            .unwrap();
+        };
+        conn.execute(
+            "INSERT INTO message VALUES ('turn-hash', 'session-hash', 1776600000000, ?1)",
+            params![r#"{"role":"user"}"#],
+        )
+        .unwrap();
+
+        // OpenCode writes the message before its text.
+        store.observe_agent(&metadata, &runtime).unwrap();
+        assert!(started().is_empty());
+
+        part(
+            "part-file",
+            r#"{"type":"text","text":"file contents","synthetic":true}"#,
+        );
+        part(
+            "part-text",
+            r#"{"type":"text","text":"summarize the logs"}"#,
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let started = started();
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].turn_id.as_deref(), Some("turn-hash"));
+        assert_eq!(
+            started[0].input_sha256.as_deref(),
+            Some(crate::agent::message_sha256("summarize the logs").as_str())
+        );
     }
 
     #[test]
