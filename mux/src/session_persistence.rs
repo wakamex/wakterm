@@ -1069,7 +1069,24 @@ mod test {
     fn expected_restored_spawn(argv: Vec<String>) -> Vec<Vec<String>> {
         #[cfg(unix)]
         {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+            // The restored command's environment supplies SHELL, filled from
+            // the password database when the process has none.
+            let shell = CommandBuilder::new("harness")
+                .get_env("SHELL")
+                .and_then(|shell| shell.to_str())
+                .filter(|shell| !shell.is_empty())
+                .unwrap_or("/bin/sh")
+                .to_string();
+            if shell == "/usr/bin/wsh" || shell == "/bin/wsh" {
+                let mut command = vec![
+                    shell,
+                    "--run".to_string(),
+                    "--login".to_string(),
+                    "--".to_string(),
+                ];
+                command.extend(argv);
+                return vec![command];
+            }
             let invocation = argv
                 .iter()
                 .map(|arg| shell_words::quote(arg))
