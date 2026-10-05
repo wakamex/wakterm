@@ -60,6 +60,7 @@ wakterm-uds.workspace = true
 [target."cfg(windows)".dependencies]
 ntapi.workspace = true
 winapi = { workspace=true, features = [
+    "fileapi",
     "handleapi",
     "memoryapi",
     "psapi",

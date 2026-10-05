@@ -165,12 +165,13 @@ impl CodexOutputFileCache {
     }
 
     fn file(&mut self, path: &Path) -> anyhow::Result<&mut fs::File> {
-        let path_metadata = fs::metadata(path)?;
+        let current = fs::File::open(path)?;
+        let current_identity = file_identity(&current)?;
         let reusable = self
             .files
             .get(path)
-            .and_then(|cached| cached.file.metadata().ok())
-            .is_some_and(|cached_metadata| same_file(&cached_metadata, &path_metadata));
+            .and_then(|cached| file_identity(&cached.file).ok())
+            .is_some_and(|cached_identity| cached_identity == current_identity);
         if !reusable {
             self.files.remove(path);
             if self.files.len() >= MAX_OPEN_CODEX_OUTPUT_FILES {
@@ -186,7 +187,7 @@ impl CodexOutputFileCache {
             self.files.insert(
                 path.to_path_buf(),
                 CachedCodexOutputFile {
-                    file: fs::File::open(path)?,
+                    file: current,
                     last_used: 0,
                 },
             );
@@ -612,50 +613,41 @@ fn output_event_id(
 }
 
 fn file_matches_path(file: &fs::File, path: &Path) -> anyhow::Result<bool> {
-    Ok(same_file(&file.metadata()?, &fs::metadata(path)?))
+    Ok(file_identity(file)? == file_identity(&fs::File::open(path)?)?)
 }
 
-fn same_file(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+/// The identity of an open file, which a file later created at the same
+/// path does not share: the device and inode on Unix, and the volume serial
+/// number and file index on Windows. A Windows creation time cannot serve,
+/// because a file created under a recently deleted name inherits the deleted
+/// file's creation time.
+fn file_identity(file: &fs::File) -> std::io::Result<(u64, u64)> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        left.dev() == right.dev() && left.ino() == right.ino()
+        let metadata = file.metadata()?;
+        Ok((metadata.dev(), metadata.ino()))
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
-        left.creation_time() == right.creation_time()
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        left.created()
-            .ok()
-            .zip(right.created().ok())
-            .is_some_and(|(left, right)| left == right)
+        use std::os::windows::io::AsRawHandle;
+        use winapi::um::fileapi::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok((
+            info.dwVolumeSerialNumber.into(),
+            (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        ))
     }
 }
 
 fn codex_source_identity(file: &mut fs::File) -> anyhow::Result<String> {
-    let metadata = file.metadata()?;
+    let (volume, index) = file_identity(file)?;
     let mut identity = Sha256::new();
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        identity.update(metadata.dev().to_le_bytes());
-        identity.update(metadata.ino().to_le_bytes());
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        identity.update(metadata.creation_time().to_le_bytes());
-    }
-    #[cfg(not(any(unix, windows)))]
-    if let Ok(created) = metadata.created() {
-        if let Ok(duration) = created.duration_since(std::time::UNIX_EPOCH) {
-            identity.update(duration.as_nanos().to_le_bytes());
-        }
-    }
+    identity.update(volume.to_le_bytes());
+    identity.update(index.to_le_bytes());
 
     let mut first_record = Vec::new();
     file.seek(SeekFrom::Start(0))?;
