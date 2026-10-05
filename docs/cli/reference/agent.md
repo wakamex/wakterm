@@ -258,7 +258,9 @@ Prints Agent API capabilities and the current narrow agent catalog.
 
 ## `wakterm agent approval`
 
-Resolves one advertised choice for an exact pending managed Codex command approval. The request ID, agent ID, incarnation, and choice come from the corresponding `approval_requested` Agent API event. Replayed or replaced requests fail instead of sending terminal input.
+Resolves one advertised choice for an exact pending approval: a managed Codex command approval or question, or a Claude question with a single choice (`user_question`). The request ID, agent ID, incarnation, and choice come from the corresponding `approval_requested` Agent API event. Replayed or replaced requests fail instead of sending terminal input.
+
+A Claude question form with several questions or multi-select answers is reported as a `user_question_form` event. Its prompt lists every question with its options, and it advertises no choices, so it must be answered in the agent's pane.
 
 ```sh
 wakterm agent approval --request-id REQUEST_ID --agent-id AGENT_ID --incarnation INCARNATION_ID --choice CHOICE_ID

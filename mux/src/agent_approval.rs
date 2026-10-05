@@ -156,6 +156,10 @@ impl Mux {
             .find_approval(&resolution.request_id)?
             .context("approval request is no longer pending")?;
         anyhow::ensure!(
+            request.kind != "user_question_form",
+            "this question form has no choices and must be answered in the agent's pane"
+        );
+        anyhow::ensure!(
             request.kind == "user_question"
                 && request.agent_id == resolution.agent_id
                 && request.incarnation_id == resolution.incarnation_id,
@@ -294,6 +298,11 @@ pub(crate) fn approval_from_event(
     parse_codex_approval(message, metadata).map(|pending| pending.request)
 }
 
+/// The approval request for a Claude AskUserQuestion block. A single
+/// single-choice question is a `user_question` whose choices answer it. Any
+/// other form, with several questions or multi-select answers, is a
+/// `user_question_form` that lists every question in its prompt and has no
+/// choices, because it can only be answered in the agent's pane.
 pub(crate) fn claude_question_from_block(
     block: &Value,
     metadata: &AgentMetadata,
@@ -302,14 +311,7 @@ pub(crate) fn claude_question_from_block(
 ) -> Option<AgentApprovalRequest> {
     let item_id = block.get("id")?.as_str()?.to_string();
     let questions = block.pointer("/input/questions")?.as_array()?;
-    let [question] = questions.as_slice() else {
-        return None;
-    };
-    if question.get("multiSelect").and_then(Value::as_bool) == Some(true) {
-        return None;
-    }
-    let options = question.get("options")?.as_array()?;
-    if options.len() < 2 {
+    if questions.is_empty() {
         return None;
     }
     let incarnation = incarnation_id(metadata)?;
@@ -318,7 +320,52 @@ pub(crate) fn claude_question_from_block(
         metadata.agent_id
     );
     let request_id = format!("{:x}", Sha256::digest(request_key.as_bytes()))[..24].to_string();
-    let choices = options
+    let request = |kind: &str, prompt, reason, choices| AgentApprovalRequest {
+        schema: AGENT_APPROVAL_SCHEMA.to_string(),
+        kind: kind.to_string(),
+        request_id: request_id.clone(),
+        agent_id: metadata.agent_id.clone(),
+        incarnation_id: incarnation.clone(),
+        turn_id: turn_id.to_string(),
+        item_id: item_id.clone(),
+        observed_at,
+        prompt: Some(prompt),
+        reason,
+        command: None,
+        cwd: None,
+        choices,
+    };
+    if let [question] = questions.as_slice() {
+        if let Some(choices) = claude_single_choices(question) {
+            return Some(request(
+                "user_question",
+                question.get("question")?.as_str()?.to_string(),
+                question
+                    .get("header")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                choices,
+            ));
+        }
+    }
+    Some(request(
+        "user_question_form",
+        claude_question_form_text(questions)?,
+        None,
+        vec![],
+    ))
+}
+
+/// The choices of a single-choice question with at least two options.
+fn claude_single_choices(question: &Value) -> Option<Vec<AgentApprovalChoice>> {
+    if question.get("multiSelect").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    let options = question.get("options")?.as_array()?;
+    if options.len() < 2 {
+        return None;
+    }
+    options
         .iter()
         .enumerate()
         .map(|(index, option)| {
@@ -331,25 +378,36 @@ pub(crate) fn claude_question_from_block(
                     .map(str::to_string),
             })
         })
-        .collect::<Option<Vec<_>>>()?;
-    Some(AgentApprovalRequest {
-        schema: AGENT_APPROVAL_SCHEMA.to_string(),
-        kind: "user_question".to_string(),
-        request_id,
-        agent_id: metadata.agent_id.clone(),
-        incarnation_id: incarnation,
-        turn_id: turn_id.to_string(),
-        item_id,
-        observed_at,
-        prompt: Some(question.get("question")?.as_str()?.to_string()),
-        reason: question
-            .get("header")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        command: None,
-        cwd: None,
-        choices,
-    })
+        .collect()
+}
+
+/// Every question of a form with its options, one question per paragraph.
+fn claude_question_form_text(questions: &[Value]) -> Option<String> {
+    let mut paragraphs = vec![];
+    for (index, question) in questions.iter().enumerate() {
+        let mut text = format!("{}. ", index + 1);
+        if let Some(header) = question.get("header").and_then(Value::as_str) {
+            text.push_str(&format!("{header}: "));
+        }
+        text.push_str(question.get("question")?.as_str()?);
+        if question.get("multiSelect").and_then(Value::as_bool) == Some(true) {
+            text.push_str(" (choose any)");
+        }
+        for option in question
+            .get("options")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            text.push_str("\n- ");
+            text.push_str(option.get("label")?.as_str()?);
+            if let Some(description) = option.get("description").and_then(Value::as_str) {
+                text.push_str(&format!(": {description}"));
+            }
+        }
+        paragraphs.push(text);
+    }
+    Some(paragraphs.join("\n\n"))
 }
 
 fn command_approval_kind() -> String {
@@ -711,6 +769,49 @@ mod tests {
         assert_eq!(
             pending.responses["option_2"],
             json!({"answers": {"promotion": {"answers": ["Hold off"]}}})
+        );
+    }
+
+    #[test]
+    fn claude_question_forms_list_every_question_without_choices() {
+        let metadata = metadata();
+        let question = |header: &str, multi: bool| {
+            json!({"question": format!("Which {header}?"), "header": header, "multiSelect": multi,
+                "options": [{"label": "A", "description": "first"}, {"label": "B"}]})
+        };
+        let block = |questions: Vec<Value>| {
+            json!({"type": "tool_use", "id": "toolu_form", "name": "AskUserQuestion",
+                "input": {"questions": questions}})
+        };
+        let form = |questions| {
+            claude_question_from_block(&block(questions), &metadata, "turn", Utc::now()).unwrap()
+        };
+
+        let single = form(vec![question("Browser", false)]);
+        assert_eq!(single.kind, "user_question");
+        assert_eq!(single.choices.len(), 2);
+
+        // Several questions, or one with multi-select answers, cannot be
+        // answered with one choice.
+        let several = form(vec![
+            question("Browser", false),
+            question("Lifetime", false),
+        ]);
+        assert_eq!(several.kind, "user_question_form");
+        assert!(several.choices.is_empty());
+        assert_eq!(
+            several.prompt.as_deref(),
+            Some(
+                "1. Browser: Which Browser?\n- A: first\n- B\n\n\
+                 2. Lifetime: Which Lifetime?\n- A: first\n- B"
+            )
+        );
+        assert_eq!(several.request_id, single.request_id);
+        let multi = form(vec![question("Tools", true)]);
+        assert_eq!(multi.kind, "user_question_form");
+        assert_eq!(
+            multi.prompt.as_deref(),
+            Some("1. Tools: Which Tools? (choose any)\n- A: first\n- B")
         );
     }
 
