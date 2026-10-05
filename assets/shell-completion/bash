@@ -1014,7 +1014,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__agent__approval)
-            opts="-h --request-id --agent-id --incarnation --choice --help"
+            opts="-h --request-id --agent-id --incarnation --choice --answers --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1033,6 +1033,10 @@ _wakterm() {
                     return 0
                     ;;
                 --choice)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --answers)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -2216,7 +2220,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__agent__approval)
-            opts="-h --request-id --agent-id --incarnation --choice --help"
+            opts="-h --request-id --agent-id --incarnation --choice --answers --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2235,6 +2239,10 @@ _wakterm() {
                     return 0
                     ;;
                 --choice)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --answers)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

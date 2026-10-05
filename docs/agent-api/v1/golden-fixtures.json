@@ -10,6 +10,7 @@
       "return_request_terminal_stream.v1",
       "event_stream.v1",
       "approval_control.v1",
+      "question_form_answers.v1",
       "codex_output_shadow.experimental.v1"
     ]
   },
@@ -23,6 +24,7 @@
       "return_request_terminal_stream.v1",
       "event_stream.v1",
       "approval_control.v1",
+      "question_form_answers.v1",
       "codex_output_shadow.experimental.v1"
     ]
   },

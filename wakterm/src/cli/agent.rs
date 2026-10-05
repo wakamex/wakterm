@@ -1625,9 +1625,15 @@ pub struct ResolveAgentApprovalCommand {
     #[arg(long)]
     incarnation: String,
 
-    /// Choice id advertised by the approval event
+    /// Choice id advertised by the approval event, or `submit`, `chat` or
+    /// `cancel` for a Claude question
     #[arg(long)]
     choice: String,
+
+    /// With `--choice submit`, the answers as a JSON list such as
+    /// `[{"question":0,"choices":["option_2"]},{"question":1,"text":"..."}]`
+    #[arg(long)]
+    answers: Option<String>,
 }
 
 impl ResolveAgentApprovalCommand {
@@ -1639,6 +1645,12 @@ impl ResolveAgentApprovalCommand {
                     agent_id: self.agent_id.clone(),
                     incarnation_id: self.incarnation.clone(),
                     choice_id: self.choice.clone(),
+                    answers: match &self.answers {
+                        Some(answers) => {
+                            serde_json::from_str(answers).context("parsing --answers")?
+                        }
+                        None => vec![],
+                    },
                 },
             })
             .await?;

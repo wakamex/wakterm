@@ -260,10 +260,12 @@ Prints Agent API capabilities and the current narrow agent catalog.
 
 Resolves one advertised choice for an exact pending approval: a managed Codex command approval or question, or a Claude question with a single choice (`user_question`). The request ID, agent ID, incarnation, and choice come from the corresponding `approval_requested` Agent API event. Replayed or replaced requests fail instead of sending terminal input.
 
-A Claude question form with several questions or multi-select answers is reported as a `user_question_form` event. Its prompt lists every question with its options, and it advertises no choices, so it must be answered in the agent's pane.
+A Claude question form with several questions or multi-select answers is reported as a `user_question_form` event, which advertises no choices. Every Claude question event carries its `questions`, and any Claude question can be resolved with `--choice submit` and `--answers`, or with `--choice chat` or `--choice cancel`; the [Agent API](../../agent-api/v1/index.md) describes the answer format and the checks Wakterm makes while entering it.
 
 ```sh
 wakterm agent approval --request-id REQUEST_ID --agent-id AGENT_ID --incarnation INCARNATION_ID --choice CHOICE_ID
+wakterm agent approval --request-id REQUEST_ID --agent-id AGENT_ID --incarnation INCARNATION_ID \
+  --choice submit --answers '[{"question":0,"choices":["option_2"]}]'
 ```
 ```
 

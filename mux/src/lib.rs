@@ -56,6 +56,7 @@ pub mod agent_approval;
 pub mod agent_event;
 pub mod agent_request;
 pub mod agent_service;
+pub mod claude_question_keys;
 pub mod client;
 pub mod codex_app_server;
 pub mod codex_process_memory;

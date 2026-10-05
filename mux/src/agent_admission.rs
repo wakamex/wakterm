@@ -33,6 +33,7 @@ impl AgentApiCapabilities {
                 "return_request_terminal_stream.v1".to_string(),
                 "event_stream.v1".to_string(),
                 "approval_control.v1".to_string(),
+                "question_form_answers.v1".to_string(),
                 "codex_output_shadow.experimental.v1".to_string(),
             ],
         }

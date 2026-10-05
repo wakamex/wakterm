@@ -1930,6 +1930,10 @@ pub fn claude_status_changed_since(
 /// process. None when the agent has no confirmed Claude session record or
 /// the record has no change time.
 pub(crate) fn claude_status_changed_at(metadata: &AgentMetadata) -> Option<DateTime<Utc>> {
+    claude_reported_status(metadata)?.changed_at
+}
+
+fn claude_reported_status(metadata: &AgentMetadata) -> Option<ClaudeReportedStatus> {
     if infer_harness(&metadata.launch_cmd, None) != AgentHarness::Claude {
         return None;
     }
@@ -1943,7 +1947,32 @@ pub(crate) fn claude_status_changed_at(metadata: &AgentMetadata) -> Option<DateT
     else {
         return None;
     };
-    owned.status?.changed_at
+    owned.status
+}
+
+/// Whether Claude reports the agent's exact process waiting for the user's
+/// answer to a question, the only dialog it labels `input needed` that a
+/// model turn can open.
+pub(crate) fn claude_waiting_for_answer(metadata: &AgentMetadata) -> bool {
+    claude_reported_status(metadata).is_some_and(|status| {
+        status.status == "waiting" && status.waiting_for.as_deref() == Some("input needed")
+    })
+}
+
+/// Whether the user's Claude keybindings change the keys of the question
+/// dialog: its lists, question tabs, or confirmation.
+pub(crate) fn claude_dialog_keys_rebound() -> bool {
+    let Some(path) = claude_sessions_root()
+        .and_then(|projects| projects.parent().map(|root| root.join("keybindings.json")))
+    else {
+        return false;
+    };
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    ["\"Select\"", "\"Tabs\"", "\"Confirmation\""]
+        .iter()
+        .any(|context| text.contains(context))
 }
 
 /// Resume a Claude session in the pane with the pane's own launch flags.
@@ -7091,7 +7120,8 @@ mod test {
         );
         assert!(
             waited.contains("codex -c features.daemon_auto_start=false"),
-            "{waited}"
+            "{}",
+            waited
         );
     }
 

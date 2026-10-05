@@ -46,7 +46,7 @@ The durable event page provides:
 
 ## Interactive requests
 
-Wakterm publishes a structured `approval_requested` event for managed Codex command approvals and blocking single-choice questions, and for observer-backed Claude `AskUserQuestion` calls with one single-choice question. Its `approval` object carries the request kind, exact agent and incarnation, an opaque request ID, the provider turn and item IDs, the prompt or command context, and ordered choices. Consumers must present only the advertised choices and must treat the request ID as opaque.
+Wakterm publishes a structured `approval_requested` event for managed Codex command approvals and blocking single-choice questions, and for every observer-backed Claude `AskUserQuestion` call. Its `approval` object carries the request kind, exact agent and incarnation, an opaque request ID, the provider turn and item IDs, the prompt or command context, and ordered choices. Consumers must present only the advertised choices and must treat the request ID as opaque.
 
 Resolve a choice through the supported Agent API rather than writing terminal keys:
 
@@ -60,7 +60,44 @@ wakterm agent approval \
 
 Wakterm answers Codex through the original app-server request, causing the native TUI to dismiss the same modal. Claude has no equivalent control API, so Wakterm validates that the exact tool call is still pending in the exact live session and submits the selected label to that pane's native question UI. Resolution requires the exact live agent incarnation and a choice from that request. A repeated response, a provider-side response, a replaced agent, or a completed request is rejected as stale. Pending interactions are provider state, not a second durable authority; the durable event exists so a transport can notify the user and recover exact identity.
 
-`approval_control.v1` covers these single-choice requests. Multiple questions, multiselect questions, free-form questions, Codex file changes, and general permission methods remain owned by the native TUI until they receive an equally exact mapping.
+`approval_control.v1` covers these single-choice requests.
+
+### Claude question forms
+
+With `question_form_answers.v1`, every Claude `AskUserQuestion` can be answered through the same command, including several questions, multi-select questions and typed answers. Its `approval_requested` event has kind `user_question` for one single-choice question, which also advertises its options as `choices`, or `user_question_form` for any other form, which advertises no `choices`. Both carry `questions`, in the order Claude asks them:
+
+```json
+"questions": [
+  {
+    "index": 0,
+    "header": "Browser",
+    "question": "Which way should the tool get exact Aeroplan prices automatically?",
+    "multi_select": false,
+    "options": [
+      {"id": "option_1", "label": "Sign in as you", "description": "Headless Firefox signs in…"},
+      {"id": "option_2", "label": "seats.aero API key", "description": "…"}
+    ]
+  }
+]
+```
+
+Every question also accepts a typed answer in place of its options, and every form can instead be sent back to Claude to chat about or be cancelled. Resolve a form with one of three choices:
+
+- `submit`, with `--answers` holding a JSON list of answers. Each answer names its question `index` and gives either `choices`, a list of option IDs (exactly one for a single-choice question, one or more for a multi-select question), or `text`, a typed answer for a single-choice question. A question left out is submitted unanswered, which Claude allows except in a form of one single-choice question.
+- `chat`, which closes the form and tells Claude the user wants to discuss the questions.
+- `cancel`, which rejects the question like Escape.
+
+```sh
+wakterm agent approval --request-id REQUEST_ID --agent-id AGENT_ID \
+  --incarnation INCARNATION_ID --choice submit \
+  --answers '[{"question":0,"choices":["option_2"]},{"question":1,"text":"ten days"}]'
+```
+
+For one single-choice question, its option ID as `--choice` still works as before.
+
+Wakterm enters the answers with the question dialog's default keys and checks the pane's screen at every step: that the expected question is showing, that typed text appeared, that "Chat about this" is selected before choosing it, and, before submitting, that Claude's review lists exactly the intended answers and warns about unanswered questions exactly when some are left. At the first mismatch it stops without submitting and reports the reason, leaving the dialog for the user. It refuses before pressing any key when the request is no longer pending, when Claude does not report the dialog as waiting for input, or when `~/.claude/keybindings.json` rebinds the dialog's list, tab or confirmation keys. The command returns once Claude has recorded the outcome in its transcript. A typed answer for a multi-select question is not supported yet.
+
+Codex file changes, Claude plan approval, tool permission prompts and general permission methods remain owned by the native TUI until they receive an equally exact mapping.
 
 The public contract does not expose the event database, provider paths, parser
 cursors, or transport implementation. Wakterm's experimental Codex output page

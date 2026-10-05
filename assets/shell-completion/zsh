@@ -352,7 +352,8 @@ _arguments "${_arguments_options[@]}" : \
 '--request-id=[Opaque request id from an approval_requested Agent API event]:REQUEST_ID:_default' \
 '--agent-id=[Exact stable agent id from the approval event]:AGENT_ID:_default' \
 '--incarnation=[Exact process incarnation from the approval event]:INCARNATION:_default' \
-'--choice=[Choice id advertised by the approval event]:CHOICE:_default' \
+'--choice=[Choice id advertised by the approval event, or \`submit\`, \`chat\` or \`cancel\` for a Claude question]:CHOICE:_default' \
+'--answers=[With \`--choice submit\`, the answers as a JSON list such as \`\[{"question"\:0,"choices"\:\["option_2"\]},{"question"\:1,"text"\:"..."}\]\`]:ANSWERS:_default' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0
@@ -1253,7 +1254,8 @@ _arguments "${_arguments_options[@]}" : \
 '--request-id=[Opaque request id from an approval_requested Agent API event]:REQUEST_ID:_default' \
 '--agent-id=[Exact stable agent id from the approval event]:AGENT_ID:_default' \
 '--incarnation=[Exact process incarnation from the approval event]:INCARNATION:_default' \
-'--choice=[Choice id advertised by the approval event]:CHOICE:_default' \
+'--choice=[Choice id advertised by the approval event, or \`submit\`, \`chat\` or \`cancel\` for a Claude question]:CHOICE:_default' \
+'--answers=[With \`--choice submit\`, the answers as a JSON list such as \`\[{"question"\:0,"choices"\:\["option_2"\]},{"question"\:1,"text"\:"..."}\]\`]:ANSWERS:_default' \
 '-h[Print help]' \
 '--help[Print help]' \
 && ret=0

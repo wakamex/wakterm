@@ -822,17 +822,22 @@ impl SessionHandler {
             }
             Pdu::ResolveAgentApproval(ResolveAgentApproval { resolution }) => {
                 spawn_into_main_thread(async move {
-                    catch(
-                        move || {
-                            let mux = Mux::get();
-                            Ok(Pdu::ResolveAgentApprovalResponse(
-                                ResolveAgentApprovalResponse {
-                                    resolution: mux.resolve_agent_approval(resolution)?,
-                                },
-                            ))
-                        },
-                        send_response,
-                    )
+                    let respond = move |result: anyhow::Result<_>| {
+                        send_response(result.map(|resolution| {
+                            Pdu::ResolveAgentApprovalResponse(ResolveAgentApprovalResponse {
+                                resolution,
+                            })
+                        }))
+                    };
+                    match Mux::get().resolve_agent_approval(resolution) {
+                        // Pressing a Claude question's keys waits on its
+                        // screen, so it runs away from the main thread.
+                        Ok(work @ mux::agent_approval::AgentApprovalWork::ClaudeQuestion(_)) => {
+                            std::thread::spawn(move || respond(work.complete()));
+                        }
+                        Ok(work) => respond(work.complete()),
+                        Err(err) => respond(Err(err)),
+                    }
                 })
                 .detach();
             }
@@ -2796,6 +2801,7 @@ mod test {
                     agent_id: "secret-agent".to_string(),
                     incarnation_id: "secret-incarnation".to_string(),
                     choice_id: "allow_once".to_string(),
+                    answers: vec![],
                 },
             }),
             Pdu::SearchScrollbackRequest(SearchScrollbackRequest {

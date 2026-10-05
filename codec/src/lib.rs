@@ -1908,6 +1908,61 @@ mod test {
 
     #[test]
     fn agent_api_pdus_round_trip() {
+        use mux::agent_approval::{
+            AgentApprovalAnswer, AgentApprovalChoice, AgentApprovalQuestion, AgentApprovalRequest,
+        };
+        let approval = |questions: Vec<AgentApprovalQuestion>| AgentApprovalRequest {
+            schema: mux::agent_approval::AGENT_APPROVAL_SCHEMA.to_string(),
+            kind: "user_question_form".to_string(),
+            request_id: "approval-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            incarnation_id: "incarnation-1".to_string(),
+            turn_id: "turn-3".to_string(),
+            item_id: "toolu_1".to_string(),
+            observed_at: "2026-09-29T21:00:02Z".parse().unwrap(),
+            prompt: Some("1. Which?".to_string()),
+            reason: None,
+            command: None,
+            cwd: None,
+            choices: vec![],
+            questions,
+        };
+        let question = AgentApprovalQuestion {
+            index: 0,
+            header: Some("Browser".to_string()),
+            question: "Which?".to_string(),
+            multi_select: true,
+            options: vec![AgentApprovalChoice {
+                id: "option_1".to_string(),
+                label: "Firefox".to_string(),
+                description: Some("headless".to_string()),
+            }],
+        };
+        let approval_event = |sequence: u64, approval| mux::agent_event::AgentEvent {
+            sequence,
+            event_id: format!("event-{sequence}"),
+            kind: mux::agent_event::AgentEventKind::ApprovalRequested,
+            agent_id: "agent-1".to_string(),
+            incarnation_id: "incarnation-1".to_string(),
+            observed_at: "2026-09-29T21:00:02Z".parse().unwrap(),
+            turn_id: Some("turn-3".to_string()),
+            lifecycle: None,
+            reason: None,
+            turn_state: None,
+            text: None,
+            outcome: None,
+            recoverable: None,
+            detail: None,
+            approval: Some(approval),
+            input_sha256: None,
+        };
+        let resolution = |answers| AgentApprovalResolutionRequest {
+            request_id: "approval-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            incarnation_id: "incarnation-1".to_string(),
+            choice_id: "submit".to_string(),
+            answers,
+        };
         let request = mux::agent_admission::AgentPromptAdmissionRequest {
             request_id: "request-1".to_string(),
             agent_id: "agent-1".to_string(),
@@ -1983,9 +2038,28 @@ mod test {
                             approval: None,
                             input_sha256: Some("abc123".to_string()),
                         },
+                        approval_event(14, approval(vec![question.clone()])),
+                        approval_event(15, approval(vec![])),
                     ],
                     recovery: None,
                 },
+            }),
+            Pdu::ResolveAgentApproval(ResolveAgentApproval {
+                resolution: resolution(vec![]),
+            }),
+            Pdu::ResolveAgentApproval(ResolveAgentApproval {
+                resolution: resolution(vec![
+                    AgentApprovalAnswer {
+                        question: 0,
+                        choices: vec!["option_1".to_string()],
+                        text: None,
+                    },
+                    AgentApprovalAnswer {
+                        question: 1,
+                        choices: vec![],
+                        text: Some("ten days".to_string()),
+                    },
+                ]),
             }),
             Pdu::GetPaneStatus(GetPaneStatus {}),
             Pdu::GetPaneStatusResponse(GetPaneStatusResponse {

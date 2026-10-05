@@ -1,5 +1,7 @@
 use crate::agent::AgentMetadata;
 use crate::agent_admission::incarnation_id;
+use crate::claude_question_keys::{FormAction, Step};
+use crate::pane::{Pane, PaneId};
 use crate::Mux;
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -9,7 +11,9 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub const AGENT_APPROVAL_SCHEMA: &str = "wakterm.agent-approval.v1";
 
@@ -20,6 +24,36 @@ pub struct AgentApprovalChoice {
     #[serde(default)]
     pub description: Option<String>,
 }
+
+/// One question of a Claude question form, in the order the dialog asks it.
+/// Every question also takes a typed answer, and the whole form can be sent
+/// back to chat about it or cancelled.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentApprovalQuestion {
+    pub index: u32,
+    pub header: Option<String>,
+    pub question: String,
+    /// Whether several options can be picked.
+    pub multi_select: bool,
+    pub options: Vec<AgentApprovalChoice>,
+}
+
+/// The answer to one question of a form: option IDs, or typed text for a
+/// single-choice question.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentApprovalAnswer {
+    pub question: u32,
+    #[serde(default)]
+    pub choices: Vec<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
+/// Choice IDs that resolve a whole Claude question form: submit the
+/// answers, send the questions back to chat about them, or cancel.
+pub const FORM_SUBMIT: &str = "submit";
+pub const FORM_CHAT: &str = "chat";
+pub const FORM_CANCEL: &str = "cancel";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AgentApprovalRequest {
@@ -38,6 +72,9 @@ pub struct AgentApprovalRequest {
     pub command: Option<String>,
     pub cwd: Option<String>,
     pub choices: Vec<AgentApprovalChoice>,
+    /// The questions of a Claude question form, empty for other approvals.
+    #[serde(default)]
+    pub questions: Vec<AgentApprovalQuestion>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -46,6 +83,9 @@ pub struct AgentApprovalResolutionRequest {
     pub agent_id: String,
     pub incarnation_id: String,
     pub choice_id: String,
+    /// The answers that go with the `submit` choice of a question form.
+    #[serde(default)]
+    pub answers: Vec<AgentApprovalAnswer>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -64,6 +104,59 @@ pub(crate) struct PendingAgentApproval {
     pub(crate) app_server_request_id: Value,
     thread_id: String,
     responses: BTreeMap<String, Value>,
+}
+
+/// What remains of a resolution after its checks.
+pub enum AgentApprovalWork {
+    Resolved(AgentApprovalResolution),
+    /// Keys to press in a Claude pane, with screen checks between them. They
+    /// take seconds, so the caller runs them away from the main thread.
+    ClaudeQuestion(ClaudeQuestionKeys),
+}
+
+impl AgentApprovalWork {
+    /// Runs any remaining work on the current thread.
+    pub fn complete(self) -> anyhow::Result<AgentApprovalResolution> {
+        match self {
+            Self::Resolved(resolution) => Ok(resolution),
+            Self::ClaudeQuestion(keys) => keys.run(),
+        }
+    }
+}
+
+pub struct ClaudeQuestionKeys {
+    pane: Arc<dyn Pane>,
+    pane_id: PaneId,
+    session_path: PathBuf,
+    item_id: String,
+    questions: Vec<AgentApprovalQuestion>,
+    action: FormAction,
+    steps: Vec<Step>,
+    resolved: AgentApprovalResolution,
+}
+
+impl ClaudeQuestionKeys {
+    /// Presses the keys, then waits for Claude to record the outcome in its
+    /// transcript.
+    pub fn run(self) -> anyhow::Result<AgentApprovalResolution> {
+        let pane_id = self.pane_id;
+        promise::spawn::spawn_into_main_thread(async move {
+            if let Some(mux) = Mux::try_get() {
+                mux.record_agent_prompt_submission(pane_id);
+            }
+        })
+        .detach();
+        crate::claude_question_keys::run(&self.pane, &self.questions, &self.action, &self.steps)?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while claude_question_is_pending(&self.session_path, &self.item_id)? {
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "the keys were pressed, but Claude has not recorded an answer"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Ok(self.resolved)
+    }
 }
 
 impl Mux {
@@ -95,10 +188,13 @@ impl Mux {
         Some(request)
     }
 
+    /// Checks a resolution and applies it, or, for a Claude question that
+    /// needs keys pressed in its pane, returns that work for the caller to
+    /// run away from the main thread.
     pub fn resolve_agent_approval(
         &self,
         resolution: AgentApprovalResolutionRequest,
-    ) -> anyhow::Result<AgentApprovalResolution> {
+    ) -> anyhow::Result<AgentApprovalWork> {
         let Some(pending) = self
             .pending_agent_approvals
             .write()
@@ -144,32 +240,25 @@ impl Mux {
                 .write()
                 .insert(resolution.request_id, pending);
         }
-        result
+        result.map(AgentApprovalWork::Resolved)
     }
 
     fn resolve_claude_question(
         &self,
         resolution: AgentApprovalResolutionRequest,
-    ) -> anyhow::Result<AgentApprovalResolution> {
+    ) -> anyhow::Result<AgentApprovalWork> {
         let request = self
             .agent_event_store
             .find_approval(&resolution.request_id)?
             .context("approval request is no longer pending")?;
         anyhow::ensure!(
-            request.kind != "user_question_form",
-            "this question form has no choices and must be answered in the agent's pane"
-        );
-        anyhow::ensure!(
-            request.kind == "user_question"
-                && request.agent_id == resolution.agent_id
+            matches!(
+                request.kind.as_str(),
+                "user_question" | "user_question_form"
+            ) && request.agent_id == resolution.agent_id
                 && request.incarnation_id == resolution.incarnation_id,
             "approval target identity changed"
         );
-        let choice = request
-            .choices
-            .iter()
-            .find(|choice| choice.id == resolution.choice_id)
-            .context("approval choice is not available")?;
         let (pane_id, metadata) = self
             .agent_metadata_by_pane
             .read()
@@ -191,28 +280,82 @@ impl Mux {
             runtime.alive && runtime.harness == crate::agent::AgentHarness::Claude,
             "approval target is not a live Claude session"
         );
-        let session_path = runtime
-            .session_path
-            .as_deref()
-            .context("approval target has no exact Claude session")?;
+        let session_path = PathBuf::from(
+            runtime
+                .session_path
+                .as_deref()
+                .context("approval target has no exact Claude session")?,
+        );
         anyhow::ensure!(
-            claude_question_is_pending(Path::new(session_path), &request.item_id)?,
+            claude_question_is_pending(&session_path, &request.item_id)?,
             "approval request is no longer pending"
         );
         let pane = self
             .get_pane(pane_id)
             .context("approval target pane disappeared")?;
         anyhow::ensure!(!pane.is_dead(), "approval target pane exited");
-        pane.send_text_and_submit(&choice.label, true)?;
-        self.record_agent_prompt_submission(pane_id);
-        Ok(AgentApprovalResolution {
+        let resolved = AgentApprovalResolution {
             schema: AGENT_APPROVAL_SCHEMA.to_string(),
-            request_id: resolution.request_id,
-            agent_id: resolution.agent_id,
-            incarnation_id: resolution.incarnation_id,
-            choice_id: resolution.choice_id,
+            request_id: resolution.request_id.clone(),
+            agent_id: resolution.agent_id.clone(),
+            incarnation_id: resolution.incarnation_id.clone(),
+            choice_id: resolution.choice_id.clone(),
             resolved: true,
-        })
+        };
+
+        // A single question's option is typed as its label.
+        if let Some(choice) = request
+            .choices
+            .iter()
+            .find(|choice| choice.id == resolution.choice_id)
+        {
+            anyhow::ensure!(
+                resolution.answers.is_empty(),
+                "answers go with the `submit` choice"
+            );
+            pane.send_text_and_submit(&choice.label, true)?;
+            self.record_agent_prompt_submission(pane_id);
+            return Ok(AgentApprovalWork::Resolved(resolved));
+        }
+
+        let action = match resolution.choice_id.as_str() {
+            FORM_SUBMIT => FormAction::Submit(resolution.answers.clone()),
+            FORM_CHAT | FORM_CANCEL => {
+                anyhow::ensure!(
+                    resolution.answers.is_empty(),
+                    "answers go with the `submit` choice"
+                );
+                if resolution.choice_id == FORM_CHAT {
+                    FormAction::Chat
+                } else {
+                    FormAction::Cancel
+                }
+            }
+            _ => anyhow::bail!("approval choice is not available"),
+        };
+        anyhow::ensure!(
+            !request.questions.is_empty(),
+            "this question was recorded without its structure; answer it in the agent's pane"
+        );
+        anyhow::ensure!(
+            crate::agent::claude_waiting_for_answer(&metadata),
+            "Claude does not report the question dialog as open"
+        );
+        anyhow::ensure!(
+            !crate::agent::claude_dialog_keys_rebound(),
+            "Claude's keybindings.json changes the question dialog's keys; answer it in the agent's pane"
+        );
+        let steps = crate::claude_question_keys::plan(&request.questions, &action)?;
+        Ok(AgentApprovalWork::ClaudeQuestion(ClaudeQuestionKeys {
+            pane,
+            pane_id,
+            session_path,
+            item_id: request.item_id,
+            questions: request.questions,
+            action,
+            steps,
+            resolved,
+        }))
     }
 
     pub(crate) fn expire_agent_approval(&self, message: &Value) {
@@ -302,7 +445,8 @@ pub(crate) fn approval_from_event(
 /// single-choice question is a `user_question` whose choices answer it. Any
 /// other form, with several questions or multi-select answers, is a
 /// `user_question_form` that lists every question in its prompt and has no
-/// choices, because it can only be answered in the agent's pane.
+/// choices. Both carry the structured questions, which a resolution answers
+/// with the `submit`, `chat` or `cancel` choice.
 pub(crate) fn claude_question_from_block(
     block: &Value,
     metadata: &AgentMetadata,
@@ -320,6 +464,22 @@ pub(crate) fn claude_question_from_block(
         metadata.agent_id
     );
     let request_id = format!("{:x}", Sha256::digest(request_key.as_bytes()))[..24].to_string();
+    let structured = questions
+        .iter()
+        .enumerate()
+        .map(|(index, question)| {
+            Some(AgentApprovalQuestion {
+                index: index as u32,
+                header: question
+                    .get("header")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                question: question.get("question")?.as_str()?.to_string(),
+                multi_select: question.get("multiSelect").and_then(Value::as_bool) == Some(true),
+                options: claude_options(question)?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
     let request = |kind: &str, prompt, reason, choices| AgentApprovalRequest {
         schema: AGENT_APPROVAL_SCHEMA.to_string(),
         kind: kind.to_string(),
@@ -334,6 +494,7 @@ pub(crate) fn claude_question_from_block(
         command: None,
         cwd: None,
         choices,
+        questions: structured.clone(),
     };
     if let [question] = questions.as_slice() {
         if let Some(choices) = claude_single_choices(question) {
@@ -361,11 +522,14 @@ fn claude_single_choices(question: &Value) -> Option<Vec<AgentApprovalChoice>> {
     if question.get("multiSelect").and_then(Value::as_bool) == Some(true) {
         return None;
     }
-    let options = question.get("options")?.as_array()?;
-    if options.len() < 2 {
-        return None;
-    }
-    options
+    let options = claude_options(question)?;
+    (options.len() >= 2).then_some(options)
+}
+
+fn claude_options(question: &Value) -> Option<Vec<AgentApprovalChoice>> {
+    question
+        .get("options")?
+        .as_array()?
         .iter()
         .enumerate()
         .map(|(index, option)| {
@@ -487,6 +651,7 @@ fn parse_command_approval(
             .and_then(Value::as_str)
             .map(str::to_string),
         choices,
+        questions: vec![],
     };
     Some(PendingAgentApproval {
         request,
@@ -559,6 +724,7 @@ fn parse_codex_question(message: &Value, metadata: &AgentMetadata) -> Option<Pen
         command: None,
         cwd: None,
         choices,
+        questions: vec![],
     };
     Some(PendingAgentApproval {
         request,
@@ -807,7 +973,27 @@ mod tests {
             )
         );
         assert_eq!(several.request_id, single.request_id);
+        // Both kinds carry the questions in order, for a structured answer.
+        assert_eq!(single.questions.len(), 1);
+        assert_eq!(
+            several
+                .questions
+                .iter()
+                .map(|q| (
+                    q.index,
+                    q.header.as_deref(),
+                    q.question.as_str(),
+                    q.options.len()
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (0, Some("Browser"), "Which Browser?", 2),
+                (1, Some("Lifetime"), "Which Lifetime?", 2),
+            ]
+        );
+        assert_eq!(several.questions[1].options[0].id, "option_1");
         let multi = form(vec![question("Tools", true)]);
+        assert!(multi.questions[0].multi_select);
         assert_eq!(multi.kind, "user_question_form");
         assert_eq!(
             multi.prompt.as_deref(),
