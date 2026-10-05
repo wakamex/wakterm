@@ -3727,97 +3727,53 @@ pub(crate) fn claude_transcript_settled(path: &Path) -> bool {
         .is_some_and(|elapsed| elapsed >= CLAUDE_IDLE_SETTLE)
 }
 
+/// Reads the transcript backwards from its end and stops once the latest
+/// summary and the latest user and assistant records are known, so the cost
+/// follows the current turn rather than the transcript's length.
 fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservationDetails> {
-    let reader = BufReader::new(fs::File::open(path)?);
     let mut summary = None;
     let mut harness_mode = None;
     let mut last_user_at = None;
     let mut last_assistant_at = None;
     let mut last_queued_input_at = None;
-    for line in reader.lines() {
-        let line = line?;
-        let Ok(record) = serde_json::from_str::<Value>(&line) else {
-            continue;
+    visit_lines_reverse(path, |line| {
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            return Ok(false);
         };
         match record.get("type").and_then(Value::as_str) {
             Some("user") => {
-                last_user_at = parse_record_timestamp(&record).or(last_user_at);
+                last_user_at = last_user_at.or_else(|| parse_record_timestamp(&record));
             }
-            Some("assistant") => {}
+            Some("assistant") => {
+                observe_claude_assistant_record(
+                    &record,
+                    &mut summary,
+                    &mut harness_mode,
+                    &mut last_user_at,
+                    &mut last_assistant_at,
+                );
+            }
             // Input that arrives during a running turn is queued into it.
             // Background task notifications are queued the same way but are
-            // not input.
+            // not input. Only input queued after the latest user or assistant
+            // record is newer than the transcript's other progress.
             Some("queue-operation") => {
-                if record.get("operation").and_then(Value::as_str) == Some("enqueue")
+                if last_user_at.is_none()
+                    && last_assistant_at.is_none()
+                    && last_queued_input_at.is_none()
+                    && record.get("operation").and_then(Value::as_str) == Some("enqueue")
                     && !record
                         .get("content")
                         .and_then(Value::as_str)
                         .is_some_and(|content| content.starts_with("<task-notification>"))
                 {
-                    last_queued_input_at = parse_record_timestamp(&record).or(last_queued_input_at);
+                    last_queued_input_at = parse_record_timestamp(&record);
                 }
-                continue;
             }
-            _ => continue,
+            _ => {}
         }
-        if record.get("type").and_then(Value::as_str) != Some("assistant") {
-            continue;
-        }
-        let Some(content) = record
-            .get("message")
-            .and_then(|message| message.get("content"))
-            .and_then(Value::as_array)
-        else {
-            last_assistant_at = parse_record_timestamp(&record).or(last_assistant_at);
-            continue;
-        };
-        // A tool call keeps the turn running until Claude replies to its
-        // result, except for tools that wait on the user's answer.
-        if content.iter().any(|block| {
-            block.get("type").and_then(Value::as_str) == Some("tool_use")
-                && !matches!(
-                    block.get("name").and_then(Value::as_str),
-                    Some("ExitPlanMode" | "AskUserQuestion")
-                )
-        }) {
-            last_user_at = parse_record_timestamp(&record).or(last_user_at);
-        } else {
-            last_assistant_at = parse_record_timestamp(&record).or(last_assistant_at);
-        }
-
-        let mut parts = vec![];
-        for block in content {
-            match block.get("type").and_then(Value::as_str) {
-                Some("text") => {
-                    if let Some(text) = block.get("text").and_then(Value::as_str) {
-                        let text = text.trim();
-                        if !text.is_empty() {
-                            parts.push(text.to_string());
-                        }
-                    }
-                }
-                Some("tool_use")
-                    if block.get("name").and_then(Value::as_str) == Some("ExitPlanMode") =>
-                {
-                    if let Some(plan) = block
-                        .get("input")
-                        .and_then(|input| input.get("plan"))
-                        .and_then(Value::as_str)
-                    {
-                        let plan = plan.trim();
-                        if !plan.is_empty() {
-                            harness_mode = Some("plan".to_string());
-                            parts.push(format!("PLAN: {plan}"));
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        if !parts.is_empty() {
-            summary = Some(truncate_summary(&parts.join("\n")));
-        }
-    }
+        Ok(summary.is_some() && last_user_at.is_some() && last_assistant_at.is_some())
+    })?;
     let (turn_state, last_turn_completed_at) = derive_turn_state(last_user_at, last_assistant_at);
     Ok(HarnessObservationDetails {
         progress_summary: summary,
@@ -3828,6 +3784,78 @@ fn read_last_claude_observation(path: &Path) -> anyhow::Result<HarnessObservatio
         last_turn_completed_at,
         observed_turn: None,
     })
+}
+
+/// Records an assistant record visited newest-first, leaving each value at
+/// the first (latest) one found.
+fn observe_claude_assistant_record(
+    record: &Value,
+    summary: &mut Option<String>,
+    harness_mode: &mut Option<String>,
+    last_user_at: &mut Option<DateTime<Utc>>,
+    last_assistant_at: &mut Option<DateTime<Utc>>,
+) {
+    let Some(content) = record
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_array)
+    else {
+        *last_assistant_at = last_assistant_at.or_else(|| parse_record_timestamp(record));
+        return;
+    };
+    // A tool call keeps the turn running until Claude replies to its
+    // result, except for tools that wait on the user's answer.
+    if content.iter().any(|block| {
+        block.get("type").and_then(Value::as_str) == Some("tool_use")
+            && !matches!(
+                block.get("name").and_then(Value::as_str),
+                Some("ExitPlanMode" | "AskUserQuestion")
+            )
+    }) {
+        *last_user_at = last_user_at.or_else(|| parse_record_timestamp(record));
+    } else {
+        *last_assistant_at = last_assistant_at.or_else(|| parse_record_timestamp(record));
+    }
+    if summary.is_some() {
+        return;
+    }
+
+    let mut parts = vec![];
+    let mut proposes_plan = false;
+    for block in content {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(text) = block.get("text").and_then(Value::as_str) {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        parts.push(text.to_string());
+                    }
+                }
+            }
+            Some("tool_use")
+                if block.get("name").and_then(Value::as_str) == Some("ExitPlanMode") =>
+            {
+                if let Some(plan) = block
+                    .get("input")
+                    .and_then(|input| input.get("plan"))
+                    .and_then(Value::as_str)
+                {
+                    let plan = plan.trim();
+                    if !plan.is_empty() {
+                        proposes_plan = true;
+                        parts.push(format!("PLAN: {plan}"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if !parts.is_empty() {
+        *summary = Some(truncate_summary(&parts.join("\n")));
+        if proposes_plan {
+            *harness_mode = Some("plan".to_string());
+        }
+    }
 }
 
 fn visit_lines_reverse(
@@ -4458,6 +4486,56 @@ mod test {
         );
         // Queued input does not end the running turn.
         assert_eq!(observed.turn_state, AgentTurnState::WaitingOnAgent);
+    }
+
+    #[test]
+    fn claude_reader_reports_only_the_latest_turn_state() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("session.jsonl");
+        let at = |second: u32| format!("2026-10-04T19:00:{second:02}.000Z");
+        let user = |second: u32| {
+            serde_json::json!({"type":"user","timestamp": at(second),
+                "message":{"role":"user","content":"go"}})
+            .to_string()
+        };
+        let assistant = |second: u32, content: serde_json::Value| {
+            serde_json::json!({"type":"assistant","timestamp": at(second),
+                "message":{"role":"assistant","content": content}})
+            .to_string()
+        };
+        let lines = [
+            user(0),
+            assistant(
+                1,
+                serde_json::json!([{"type":"tool_use","name":"ExitPlanMode",
+                    "input":{"plan":"old plan"}}]),
+            ),
+            serde_json::json!({"type":"queue-operation","operation":"enqueue",
+                "timestamp": at(2), "content":"old queued input"})
+            .to_string(),
+            user(3),
+            assistant(4, serde_json::json!([{"type":"text","text":"done"}])),
+        ];
+        fs::write(&session, lines.join("\n") + "\n").unwrap();
+
+        let observed = read_last_claude_observation(&session).unwrap();
+        assert_eq!(observed.progress_summary.as_deref(), Some("done"));
+        // A plan proposed and answered earlier no longer describes the session.
+        assert_eq!(observed.harness_mode, None);
+        // Input queued before later records is older than the transcript's
+        // progress, so the caller falls back to the file's modification time.
+        assert_eq!(observed.updated_at, None);
+        assert_eq!(observed.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(
+            observed.last_turn_completed_at,
+            Some(Utc.with_ymd_and_hms(2026, 10, 4, 19, 0, 4).unwrap())
+        );
+
+        fs::write(&session, lines[..2].join("\n") + "\n").unwrap();
+        let observed = read_last_claude_observation(&session).unwrap();
+        assert_eq!(observed.progress_summary.as_deref(), Some("PLAN: old plan"));
+        assert_eq!(observed.harness_mode.as_deref(), Some("plan"));
+        assert_eq!(observed.turn_state, AgentTurnState::WaitingOnUser);
     }
 
     #[test]
