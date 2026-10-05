@@ -4434,6 +4434,14 @@ mod test {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    /// Serializes tests that change process environment variables. A test
+    /// that fails while holding the lock must not fail every later one.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// The view of a whole Claude transcript, checked to match the view
     /// built by applying every record from the start of the file.
     fn claude_view(session: &Path) -> TranscriptView {
@@ -4624,9 +4632,7 @@ mod test {
         use crate::agent_request::{AgentRequest, AgentRequestState};
         use std::os::unix::process::CommandExt;
 
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let cwd = "/tmp/claude-return";
         let projects = temp.path().join("projects");
@@ -4655,7 +4661,10 @@ mod test {
             .join("sessions")
             .join(format!("{}.json", process.pid));
         let namespace = fs::read_link(format!("/proc/{}/ns/pid", process.pid)).unwrap();
-        let machine_id = fs::read_to_string("/etc/machine-id").unwrap();
+        // Claude identifies a process by its machine; a build sandbox has none.
+        let Ok(machine_id) = std::fs::read_to_string("/etc/machine-id") else {
+            return;
+        };
         let set_status = |status: &str, changed: DateTime<Utc>| {
             fs::write(
                 &registry,
@@ -4842,9 +4851,7 @@ mod test {
     fn claude_registry_binds_a_session_declared_with_a_trailing_slash() {
         use std::os::unix::process::CommandExt;
 
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let cwd = "/tmp/claude.slash";
         let projects = temp.path().join("projects");
@@ -4885,7 +4892,10 @@ mod test {
         )
         .unwrap();
         let namespace = fs::read_link(format!("/proc/{}/ns/pid", process.pid)).unwrap();
-        let machine_id = fs::read_to_string("/etc/machine-id").unwrap();
+        // Claude identifies a process by its machine; a build sandbox has none.
+        let Ok(machine_id) = std::fs::read_to_string("/etc/machine-id") else {
+            return;
+        };
         // Claude records its working directory without a trailing slash.
         fs::write(
             temp.path()
@@ -5267,7 +5277,7 @@ mod test {
     #[cfg(target_os = "linux")]
     #[test]
     fn observes_agy_session_owned_by_exact_process_incarnation() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let conversation_id = "b572d5a0-c9e0-4770-933a-083af5c453b4";
         let transcript = write_agy_transcript(
@@ -5512,7 +5522,7 @@ mod test {
     #[ignore = "requires WAKTERM_TEST_CLAUDE, Python 3 and bubblewrap"]
     fn real_sandboxed_claude_process_and_session_are_observed() {
         use std::process::{Command, Stdio};
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = tempfile::Builder::new()
             .prefix("wakterm-sandbox-")
             .tempdir_in("/tmp")
@@ -6073,7 +6083,7 @@ mod test {
 
     #[test]
     fn pending_observer_detail_reports_gemini_project_without_chat_session() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let project_dir = temp.path().join("tmp").join("project-m");
         fs::create_dir_all(&project_dir).unwrap();
@@ -6133,7 +6143,7 @@ mod test {
 
     #[test]
     fn observes_latest_claude_session_summary() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = tempfile::tempdir().unwrap();
         let cwd = "/tmp/project-a";
         let project_dir = temp.path().join(cwd.replace('/', "-"));
@@ -6190,7 +6200,7 @@ mod test {
 
     #[test]
     fn restored_claude_observer_uses_the_exact_expected_session() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = tempfile::tempdir().unwrap();
         let cwd = "/tmp/claude-restore";
         let project_dir = temp.path().join(cwd.replace('/', "-"));
@@ -6229,7 +6239,7 @@ mod test {
 
     #[test]
     fn observes_latest_codex_session_summary() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
         let dir = temp
@@ -6432,7 +6442,7 @@ mod test {
     #[cfg(target_os = "linux")]
     #[test]
     fn observe_codex_prefers_session_open_by_matching_process() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let configured_root = temp.path().join("standard-sessions");
         let alternate_root = temp.path().join("alternate-home").join("sessions");
@@ -6496,9 +6506,7 @@ mod test {
     fn observe_codex_binds_remote_tui_to_its_resumed_thread() {
         use std::os::unix::fs::PermissionsExt;
 
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let root = temp.path().join("sessions");
         fs::create_dir_all(root.join("2026/09/03")).unwrap();
@@ -6621,7 +6629,7 @@ mod test {
     #[cfg(target_os = "linux")]
     #[test]
     fn observe_codex_prefers_expected_session_when_process_owns_multiple() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let expected = temp.path().join("rollout-expected.jsonl");
         let newer = temp.path().join("rollout-newer.jsonl");
@@ -6677,7 +6685,7 @@ mod test {
     #[cfg(target_os = "linux")]
     #[test]
     fn observe_codex_ignores_internal_auto_review_session_owned_by_process() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let primary = temp.path().join("rollout-primary.jsonl");
         let auto_review = temp.path().join("rollout-auto-review.jsonl");
@@ -6776,7 +6784,7 @@ mod test {
     #[cfg(target_os = "linux")]
     #[test]
     fn observe_codex_follows_new_continuation_after_restore_handshake() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let restored = temp.path().join("rollout-restored.jsonl");
         let continuation = temp.path().join("rollout-continuation.jsonl");
@@ -6832,7 +6840,7 @@ mod test {
     #[cfg(target_os = "linux")]
     #[test]
     fn observe_codex_settles_running_turn_left_behind_by_restart() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let session = temp.path().join("rollout-interrupted-by-restart.jsonl");
         fs::write(
@@ -7001,7 +7009,7 @@ mod test {
 
     #[test]
     fn observe_codex_finds_live_session_in_older_dated_directory() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let day = Utc::now() - Duration::days(7);
         let dir = temp
@@ -7035,7 +7043,7 @@ mod test {
 
     #[test]
     fn describe_pending_codex_observer_checks_older_dated_live_session() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let day = Utc::now() - Duration::days(7);
         let dir = temp
@@ -7065,7 +7073,7 @@ mod test {
 
     #[test]
     fn observe_codex_keeps_waiting_on_agent_during_commentary() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
         let dir = temp
@@ -7144,7 +7152,7 @@ mod test {
 
     #[test]
     fn observe_codex_marks_aborted_turn_as_waiting_on_user() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
         let dir = temp
@@ -7212,7 +7220,7 @@ mod test {
 
     #[test]
     fn observes_latest_gemini_session_summary() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let cwd = "/tmp/project-i";
         let chats_dir = temp.path().join("tmp").join("project-i").join("chats");
@@ -7256,7 +7264,7 @@ mod test {
 
     #[test]
     fn observes_current_gemini_jsonl_session_and_ignores_incomplete_tail() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let cwd = "/tmp/project-jsonl";
         let chats_dir = temp.path().join("tmp").join("project-jsonl").join("chats");
@@ -7336,7 +7344,7 @@ mod test {
 
     #[test]
     fn observes_gemini_session_via_project_root_file_without_projects_registry() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let project_dir = temp.path().join("tmp").join("fallback-project");
         let chats_dir = project_dir.join("chats");
@@ -7370,7 +7378,7 @@ mod test {
 
     #[test]
     fn observes_latest_opencode_session_summary() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let db_path = temp.path().join("opencode.db");
         let connection = create_opencode_test_db(&db_path);
@@ -7504,7 +7512,7 @@ mod test {
 
     #[test]
     fn zcode_observes_the_resumed_session_over_a_newer_one() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let db_path = temp.path().join("db.sqlite");
         let connection = create_opencode_test_db(&db_path);
@@ -7576,7 +7584,7 @@ mod test {
     #[test]
     #[ignore = "requires WAKTERM_TEST_ZCODE_DB pointing to a real ZCode database"]
     fn zcode_real_database_observation() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let source = PathBuf::from(std::env::var_os("WAKTERM_TEST_ZCODE_DB").unwrap());
         let temp = TempDir::new().unwrap();
         let db_path = temp.path().join("db.sqlite");
@@ -7617,7 +7625,7 @@ mod test {
 
     #[test]
     fn refresh_runtime_observes_gemini_and_opencode_sessions() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
 
         let gemini_temp = TempDir::new().unwrap();
         let gemini_cwd = "/tmp/project-k";
@@ -7742,7 +7750,7 @@ mod test {
 
     #[test]
     fn refresh_runtime_marks_waiting_on_agent_and_keeps_previous_turn_end() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = tempfile::tempdir().unwrap();
         let cwd = "/tmp/project-c";
         let project_dir = temp.path().join(cwd.replace('/', "-"));
@@ -7789,7 +7797,7 @@ mod test {
 
     #[test]
     fn refresh_runtime_does_not_bind_harness_session_before_process_matches() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
         let dir = temp
@@ -7900,7 +7908,7 @@ mod test {
 
     #[test]
     fn refresh_runtime_marks_aborted_codex_turn_as_attention() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
         let dir = temp
@@ -7952,7 +7960,7 @@ mod test {
 
     #[test]
     fn observe_codex_prefers_bound_session_over_newer_same_cwd_session() {
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
         let dir = temp

@@ -6478,6 +6478,14 @@ mod test {
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Serializes tests that change process environment variables. A test
+    /// that fails while holding the lock must not fail every later one.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     #[ignore]
     #[cfg(target_os = "linux")]
@@ -8617,7 +8625,7 @@ mod test {
     fn repeated_output_throttles_harness_refresh() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
         let dir = temp
@@ -8992,7 +9000,7 @@ mod test {
     fn restore_agent_metadata_queues_initial_harness_refresh() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
         let dir = temp
@@ -9093,7 +9101,7 @@ mod test {
     fn list_agents_does_not_refresh_adopted_observer_synchronously() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
         let dir = temp
@@ -9215,7 +9223,7 @@ mod test {
     fn list_agents_cached_does_not_refresh_adopted_observer() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
         let dir = temp
@@ -9331,7 +9339,7 @@ mod test {
     fn refresh_agent_runtime_for_tab_queues_observer_refresh() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
         let dir = temp
@@ -10178,7 +10186,7 @@ mod test {
     fn pending_codex_restore_observes_with_persisted_cwd() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let session = temp.path().join("rollout-pending-restore.jsonl");
         std::fs::write(
@@ -10384,7 +10392,7 @@ mod test {
     fn filesystem_artifact_event_triggers_detected_agent_adoption() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         unsafe {
             std::env::set_var("WAKTERM_AGENT_CODEX_DIR", temp.path());
@@ -10469,7 +10477,7 @@ mod test {
         use std::os::unix::process::CommandExt;
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let _config = TestConfigGuard::new_with_auto_adopt("identity", "", true);
         let temp = TempDir::new().unwrap();
         let root = temp.path().join("projects");
@@ -10507,7 +10515,10 @@ mod test {
         harness.process_group = 1;
         harness.controlling_tty = Some(1);
         let namespace = std::fs::read_link(format!("/proc/{}/ns/pid", harness.pid)).unwrap();
-        let machine_id = std::fs::read_to_string("/etc/machine-id").unwrap();
+        // Claude identifies a process by its machine; a build sandbox has none.
+        let Ok(machine_id) = std::fs::read_to_string("/etc/machine-id") else {
+            return;
+        };
         let session_a = "00000000-0000-4000-8000-0000000000a1";
         let session_b = "00000000-0000-4000-8000-0000000000b2";
         let path_a = project.join(format!("{session_a}.jsonl"));
@@ -10833,7 +10844,7 @@ mod test {
         use std::os::unix::process::CommandExt;
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let _config = TestConfigGuard::new_with_auto_adopt("identity", "", true);
         let temp = TempDir::new().unwrap();
         let root = temp.path().join("projects");
@@ -10864,7 +10875,10 @@ mod test {
         harness.process_group = 1;
         harness.controlling_tty = Some(1);
         let namespace = std::fs::read_link(format!("/proc/{}/ns/pid", harness.pid)).unwrap();
-        let machine_id = std::fs::read_to_string("/etc/machine-id").unwrap();
+        // Claude identifies a process by its machine; a build sandbox has none.
+        let Ok(machine_id) = std::fs::read_to_string("/etc/machine-id") else {
+            return;
+        };
         let sid = "00000000-0000-4000-8000-000000000091";
         let session = project.join(format!("{sid}.jsonl"));
         let registry_path = temp
@@ -11127,9 +11141,7 @@ mod test {
         let _test_lock = TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
         // An unrelated failing test must not fail this one through a poisoned lock.
-        let _env_lock = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env_lock = env_lock();
         let _config = TestConfigGuard::new_with_auto_adopt("attention", "", true);
         let domain = Arc::new(FakeDomain::new());
         let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
@@ -11200,7 +11212,7 @@ mod test {
     fn alternate_codex_home_session_is_auto_adopted_and_publishes_later_final() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let configured_root = temp.path().join("standard-sessions");
         std::fs::create_dir_all(&configured_root).unwrap();
@@ -11647,7 +11659,7 @@ mod test {
     fn filesystem_artifact_event_refreshes_adopted_agent() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         unsafe {
             std::env::set_var("WAKTERM_AGENT_CODEX_DIR", temp.path());
@@ -11752,7 +11764,7 @@ mod test {
     fn confirmed_detected_sessions_can_auto_adopt() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
         let dir = temp
@@ -11843,7 +11855,7 @@ mod test {
     fn auto_adopt_preserves_confirmed_runtime_until_async_refresh() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let day = Utc::now();
         let dir = temp
