@@ -1475,6 +1475,27 @@ struct HarnessObservation {
     observed_turn: Option<AgentObservedTurn>,
 }
 
+impl HarnessObservation {
+    /// Falls back to the session file's modification time when the reader
+    /// found no more specific progress time.
+    fn from_details(
+        session_path: &Path,
+        details: HarnessObservationDetails,
+        modified_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            session_path: Some(session_path.to_string_lossy().to_string()),
+            progress_summary: details.progress_summary,
+            harness_mode: details.harness_mode,
+            turn_phase: details.turn_phase,
+            updated_at: details.updated_at.or(Some(modified_at)),
+            turn_state: details.turn_state,
+            last_turn_completed_at: details.last_turn_completed_at,
+            observed_turn: details.observed_turn,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct HarnessObservationDetails {
     progress_summary: Option<String>,
@@ -1509,16 +1530,11 @@ fn observe_agy(
     };
     let modified_at = DateTime::<Utc>::from(fs::metadata(&transcript)?.modified()?);
     let details = read_last_agy_observation(&transcript)?;
-    Ok(Some(HarnessObservation {
-        session_path: Some(transcript.to_string_lossy().to_string()),
-        progress_summary: details.progress_summary,
-        harness_mode: details.harness_mode,
-        turn_phase: details.turn_phase,
-        updated_at: details.updated_at.or(Some(modified_at)),
-        turn_state: details.turn_state,
-        last_turn_completed_at: details.last_turn_completed_at,
-        observed_turn: details.observed_turn,
-    }))
+    Ok(Some(HarnessObservation::from_details(
+        &transcript,
+        details,
+        modified_at,
+    )))
 }
 
 #[cfg(target_os = "linux")]
@@ -2199,16 +2215,11 @@ fn observe_claude(
         }
         let modified_at = DateTime::<Utc>::from(fs::metadata(&expected_path)?.modified()?);
         let details = read_last_claude_observation(&expected_path)?;
-        return Ok(Some(HarnessObservation {
-            session_path: Some(expected_path.to_string_lossy().to_string()),
-            progress_summary: details.progress_summary,
-            harness_mode: details.harness_mode,
-            turn_phase: details.turn_phase,
-            updated_at: details.updated_at.or(Some(modified_at)),
-            turn_state: details.turn_state,
-            last_turn_completed_at: details.last_turn_completed_at,
-            observed_turn: details.observed_turn,
-        }));
+        return Ok(Some(HarnessObservation::from_details(
+            &expected_path,
+            details,
+            modified_at,
+        )));
     }
 
     if let Some(preferred_session) = preferred_session {
@@ -2220,16 +2231,11 @@ fn observe_claude(
                 .unwrap_or(true)
             {
                 let details = read_last_claude_observation(preferred_path)?;
-                return Ok(Some(HarnessObservation {
-                    session_path: Some(preferred_path.to_string_lossy().to_string()),
-                    progress_summary: details.progress_summary,
-                    harness_mode: details.harness_mode,
-                    turn_phase: details.turn_phase,
-                    updated_at: details.updated_at.or(Some(modified_at)),
-                    turn_state: details.turn_state,
-                    last_turn_completed_at: details.last_turn_completed_at,
-                    observed_turn: details.observed_turn,
-                }));
+                return Ok(Some(HarnessObservation::from_details(
+                    preferred_path,
+                    details,
+                    modified_at,
+                )));
             }
         }
     }
@@ -2264,16 +2270,11 @@ fn observe_claude(
         return Ok(None);
     };
     let details = read_last_claude_observation(&session)?;
-    Ok(Some(HarnessObservation {
-        session_path: Some(session.to_string_lossy().to_string()),
-        progress_summary: details.progress_summary,
-        harness_mode: details.harness_mode,
-        turn_phase: details.turn_phase,
-        updated_at: details.updated_at.or(Some(modified_at)),
-        turn_state: details.turn_state,
-        last_turn_completed_at: details.last_turn_completed_at,
-        observed_turn: details.observed_turn,
-    }))
+    Ok(Some(HarnessObservation::from_details(
+        &session,
+        details,
+        modified_at,
+    )))
 }
 
 fn observe_codex(
@@ -2308,16 +2309,11 @@ fn observe_codex(
                 linux_process_started_at(process_id, process_start_time),
             );
         }
-        return Ok(Some(HarnessObservation {
-            session_path: Some(process_session.to_string_lossy().to_string()),
-            progress_summary: details.progress_summary,
-            harness_mode: details.harness_mode,
-            turn_phase: details.turn_phase,
-            updated_at: details.updated_at.or(Some(modified_at)),
-            turn_state: details.turn_state,
-            last_turn_completed_at: details.last_turn_completed_at,
-            observed_turn: details.observed_turn,
-        }));
+        return Ok(Some(HarnessObservation::from_details(
+            &process_session,
+            details,
+            modified_at,
+        )));
     }
 
     let Some(root) = codex_sessions_root() else {
@@ -2343,16 +2339,11 @@ fn observe_codex(
                 .unwrap_or(true)
             {
                 let details = read_last_codex_observation(preferred_path)?;
-                return Ok(Some(HarnessObservation {
-                    session_path: Some(preferred_path.to_string_lossy().to_string()),
-                    progress_summary: details.progress_summary,
-                    harness_mode: details.harness_mode,
-                    turn_phase: details.turn_phase,
-                    updated_at: details.updated_at.or(Some(modified_at)),
-                    turn_state: details.turn_state,
-                    last_turn_completed_at: details.last_turn_completed_at,
-                    observed_turn: details.observed_turn,
-                }));
+                return Ok(Some(HarnessObservation::from_details(
+                    preferred_path,
+                    details,
+                    modified_at,
+                )));
             }
         }
     }
@@ -2384,16 +2375,11 @@ fn observe_codex(
         return Ok(None);
     };
     let details = read_last_codex_observation(&session)?;
-    Ok(Some(HarnessObservation {
-        session_path: Some(session.to_string_lossy().to_string()),
-        progress_summary: details.progress_summary,
-        harness_mode: details.harness_mode,
-        turn_phase: details.turn_phase,
-        updated_at: details.updated_at.or(Some(modified_at)),
-        turn_state: details.turn_state,
-        last_turn_completed_at: details.last_turn_completed_at,
-        observed_turn: details.observed_turn,
-    }))
+    Ok(Some(HarnessObservation::from_details(
+        &session,
+        details,
+        modified_at,
+    )))
 }
 
 fn observe_gemini(
@@ -2418,16 +2404,11 @@ fn observe_gemini(
                 .unwrap_or(true)
             {
                 let details = read_last_gemini_observation(&preferred_path)?;
-                return Ok(Some(HarnessObservation {
-                    session_path: Some(preferred_path.to_string_lossy().to_string()),
-                    progress_summary: details.progress_summary,
-                    harness_mode: details.harness_mode,
-                    turn_phase: details.turn_phase,
-                    updated_at: details.updated_at.or(Some(modified_at)),
-                    turn_state: details.turn_state,
-                    last_turn_completed_at: details.last_turn_completed_at,
-                    observed_turn: details.observed_turn,
-                }));
+                return Ok(Some(HarnessObservation::from_details(
+                    &preferred_path,
+                    details,
+                    modified_at,
+                )));
             }
         }
     }
@@ -2466,16 +2447,11 @@ fn observe_gemini(
         return Ok(None);
     };
     let details = read_last_gemini_observation(&session)?;
-    Ok(Some(HarnessObservation {
-        session_path: Some(session.to_string_lossy().to_string()),
-        progress_summary: details.progress_summary,
-        harness_mode: details.harness_mode,
-        turn_phase: details.turn_phase,
-        updated_at: details.updated_at.or(Some(modified_at)),
-        turn_state: details.turn_state,
-        last_turn_completed_at: details.last_turn_completed_at,
-        observed_turn: details.observed_turn,
-    }))
+    Ok(Some(HarnessObservation::from_details(
+        &session,
+        details,
+        modified_at,
+    )))
 }
 
 fn observe_opencode(
