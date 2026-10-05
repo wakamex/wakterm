@@ -568,6 +568,20 @@ impl AgentArtifactWatcherState {
                     if let Err(err) = watcher.unwatch(&root) {
                         log::debug!("unable to unwatch agent artifact root {:?}: {err}", root);
                     }
+                    // The OS keeps one watch per directory, so removing a
+                    // recursive root also removes the watches of every root
+                    // nested with it, such as a Claude project directory
+                    // inside the projects directory. Register those again.
+                    for other in self.panes_by_root.keys() {
+                        if other.starts_with(&root) || root.starts_with(other) {
+                            if let Err(err) = watcher.watch(other, RecursiveMode::Recursive) {
+                                log::debug!(
+                                    "unable to rewatch agent artifact root {:?}: {err}",
+                                    other
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -6802,6 +6816,53 @@ mod test {
             watcher.matching_panes(&[root.to_path_buf()]),
             vec![confirmed, unconfirmed],
         );
+    }
+
+    #[test]
+    fn removing_a_root_keeps_nested_roots_watched() {
+        let temp = TempDir::new().unwrap();
+        let outer = temp.path().canonicalize().unwrap();
+        let inner = outer.join("project");
+        std::fs::create_dir_all(&inner).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let mut watcher = AgentArtifactWatcherState::new();
+        let Ok(os_watcher) = notify::recommended_watcher(move |event| {
+            let _ = tx.send(event);
+        }) else {
+            return;
+        };
+        watcher.watcher = Some(os_watcher);
+        fn watch(watcher: &mut AgentArtifactWatcherState, pane_id: PaneId, root: &Path) {
+            if !watcher.panes_by_root.contains_key(root) {
+                let os_watcher = watcher.watcher.as_mut().unwrap();
+                os_watcher.watch(root, RecursiveMode::Recursive).unwrap();
+            }
+            watcher
+                .roots_by_pane
+                .insert(pane_id, vec![root.to_path_buf()]);
+            watcher
+                .panes_by_root
+                .entry(root.to_path_buf())
+                .or_default()
+                .insert(pane_id);
+        }
+        let (pane_inner, pane_outer) = (alloc_pane_id(), alloc_pane_id());
+        watch(&mut watcher, pane_inner, &inner);
+        watch(&mut watcher, pane_outer, &outer);
+        let sees_write = |dir: &Path| {
+            while rx.try_recv().is_ok() {}
+            std::fs::write(dir.join("session.jsonl"), "{}\n").unwrap();
+            rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok()
+        };
+
+        // Removing the outer root keeps the inner root's events.
+        watcher.unwatch_pane(pane_outer);
+        assert!(sees_write(&inner));
+
+        // Removing a nested root keeps the outer root's events inside it.
+        watch(&mut watcher, pane_outer, &outer);
+        watcher.unwatch_pane(pane_inner);
+        assert!(sees_write(&inner));
     }
 
     #[test]
