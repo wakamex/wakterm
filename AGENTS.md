@@ -12,6 +12,10 @@ documented contract correctly.
 
 After changing CLI arguments or help text, key assignments, or default key bindings, run `make update-derived` and commit the regenerated completions, CLI help, key tables, and `docs/guides/configuration/default-keys.md` with the change. CI runs `make check-derived` and fails on stale files, but only after a push.
 
+## Mux protocol types
+
+The mux protocol encodes structs field by field without field names, so the reader must see exactly the fields the writer wrote. Do not use `skip_serializing_if` or other conditional serialization on any type that crosses the protocol, including types from other crates embedded in a PDU, such as agent events and snapshots. After changing such a type, run `cargo test -p codec` as well as the owning crate's tests, and keep the codec round-trip tests covering the new field both empty and set.
+
 ## Default key bindings
 
 Declare a default shortcut's letter in lowercase, such as `(Modifiers::CTRL | Modifiers::SHIFT, "b".into())`. The input map registers the shifted variants (Ctrl+Shift+b, Ctrl+Shift+B, and Ctrl with an uppercase B) only when shifting the declared letter changes it, so an uppercase `"B"` registers a single form, and platforms that report the shifted letter differently, such as Windows, never trigger it. Add a test that every form is registered, as `tab_activity_order_toggle_has_the_default_window_binding` does.
