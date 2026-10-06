@@ -31,11 +31,27 @@ use url::Url;
 use wakterm_dynamic::Value;
 use wakterm_term::color::ColorPalette;
 use wakterm_term::{
-    Alert, AlertHandler, Clipboard, DownloadHandler, KeyCode, KeyModifiers, MouseEvent, Progress,
-    SemanticZone, StableRowIndex, Terminal, TerminalConfiguration, TerminalSize,
+    Alert, AlertHandler, Clipboard, DownloadHandler, KeyCode, KeyModifiers, MouseButton,
+    MouseEvent, Progress, SemanticZone, StableRowIndex, Terminal, TerminalConfiguration,
+    TerminalSize,
 };
 
 const PROC_INFO_CACHE_TTL: Duration = Duration::from_millis(300);
+
+/// Whether the program in the pane receives a mouse event: with mouse
+/// reporting on, or a wheel turned into arrow keys on the alternate screen.
+/// Moving the pointer over a shell is not input to it.
+fn mouse_event_reaches_program(terminal: &Terminal, event: &MouseEvent) -> bool {
+    terminal.is_mouse_grabbed()
+        || (terminal.is_alt_screen_active()
+            && matches!(
+                event.button,
+                MouseButton::WheelUp(_)
+                    | MouseButton::WheelDown(_)
+                    | MouseButton::WheelLeft(_)
+                    | MouseButton::WheelRight(_)
+            ))
+}
 
 fn title_uses_foreground_process(title: &str) -> bool {
     title.is_empty() || title == "wakterm"
@@ -397,13 +413,15 @@ impl Pane for LocalPane {
 
     fn mouse_event(&self, event: MouseEvent) -> Result<(), Error> {
         Mux::get().record_input_for_current_identity();
-        Mux::get().record_agent_input_generation(self.pane_id);
+        if mouse_event_reaches_program(&self.terminal.lock(), &event) {
+            Mux::get().record_agent_input_generation(self.pane_id, "mouse");
+        }
         self.terminal.lock().mouse_event(event)
     }
 
     fn key_down(&self, key: KeyCode, mods: KeyModifiers) -> Result<(), Error> {
         Mux::get().record_input_for_current_identity();
-        Mux::get().record_agent_input_generation(self.pane_id);
+        Mux::get().record_agent_input_generation(self.pane_id, "keyboard");
         if self.tmux_domain.lock().is_some() {
             log::trace!("key: {:?}", key);
             if key == KeyCode::Char('q') {
@@ -417,7 +435,7 @@ impl Pane for LocalPane {
 
     fn key_up(&self, key: KeyCode, mods: KeyModifiers) -> Result<(), Error> {
         Mux::get().record_input_for_current_identity();
-        Mux::get().record_agent_input_generation(self.pane_id);
+        Mux::get().record_agent_input_generation(self.pane_id, "keyboard");
         self.terminal.lock().key_up(key, mods)
     }
 
@@ -434,7 +452,7 @@ impl Pane for LocalPane {
 
     fn writer(&self) -> MappedMutexGuard<'_, dyn std::io::Write> {
         Mux::get().record_input_for_current_identity();
-        Mux::get().record_agent_input_generation(self.pane_id);
+        Mux::get().record_agent_input_generation(self.pane_id, "typed");
         MutexGuard::map(self.writer.lock(), |writer| {
             let w: &mut dyn std::io::Write = writer;
             w
@@ -447,7 +465,7 @@ impl Pane for LocalPane {
 
     fn send_paste(&self, text: &str) -> Result<(), Error> {
         Mux::get().record_input_for_current_identity();
-        Mux::get().record_agent_input_generation(self.pane_id);
+        Mux::get().record_agent_input_generation(self.pane_id, "pasted");
         if self.tmux_domain.lock().is_some() {
             Ok(())
         } else {
@@ -457,7 +475,7 @@ impl Pane for LocalPane {
 
     fn send_text_and_submit(&self, text: &str, paste: bool) -> Result<(), Error> {
         Mux::get().record_input_for_current_identity();
-        Mux::get().record_agent_input_generation(self.pane_id);
+        Mux::get().record_agent_input_generation(self.pane_id, "prompt");
         if self.tmux_domain.lock().is_some() {
             return Ok(());
         }
@@ -1207,5 +1225,46 @@ mod test {
         assert!(title_uses_foreground_process(""));
         assert!(title_uses_foreground_process("wakterm"));
         assert!(!title_uses_foreground_process("editor"));
+    }
+}
+
+#[cfg(test)]
+mod mouse_input_test {
+    use super::*;
+    use wakterm_term::{MouseEventKind, TerminalSize};
+
+    #[test]
+    fn only_mouse_events_the_program_receives_count_as_input() {
+        let mut terminal = Terminal::new(
+            TerminalSize::default(),
+            Arc::new(config::TermConfig::new()),
+            "wakterm",
+            "test",
+            Box::new(Vec::new()),
+        );
+        let event = |kind, button| MouseEvent {
+            kind,
+            button,
+            x: 1,
+            y: 1,
+            x_pixel_offset: 0,
+            y_pixel_offset: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        let moved = event(MouseEventKind::Move, MouseButton::None);
+        let wheel = event(MouseEventKind::Press, MouseButton::WheelUp(1));
+
+        // A shell with no mouse reporting receives neither.
+        assert!(!mouse_event_reaches_program(&terminal, &moved));
+        assert!(!mouse_event_reaches_program(&terminal, &wheel));
+
+        // On the alternate screen the wheel becomes arrow keys.
+        terminal.advance_bytes(b"\x1b[?1049h");
+        assert!(mouse_event_reaches_program(&terminal, &wheel));
+        assert!(!mouse_event_reaches_program(&terminal, &moved));
+
+        // With mouse reporting on, every event reaches the program.
+        terminal.advance_bytes(b"\x1b[?1049l\x1b[?1003h");
+        assert!(mouse_event_reaches_program(&terminal, &moved));
     }
 }

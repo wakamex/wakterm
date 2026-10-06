@@ -434,7 +434,10 @@ impl Mux {
             return Some(AgentAdmissionReceipt::rejected(
                 request,
                 AgentAdmissionStatus::Busy,
-                "the target received input while admission was being observed",
+                format!(
+                    "the target received {} input while admission was being observed",
+                    self.agent_last_input_kind(candidate.pane_id)
+                ),
             ));
         }
         if let Some(receipt) = classify_runtime(request, &candidate.runtime) {

@@ -218,7 +218,7 @@ pub struct Mux {
     agent_event_store: AgentEventStore,
     pending_agent_approvals: RwLock<HashMap<String, agent_approval::PendingAgentApproval>>,
     agent_output_reader: agent_service::AgentOutputReader,
-    agent_input_generation_by_pane: RwLock<HashMap<PaneId, u64>>,
+    agent_input_by_pane: RwLock<HashMap<PaneId, AgentPaneInput>>,
     agent_attention_seen_at: RwLock<HashMap<PaneId, DateTime<Utc>>>,
     windows: RwLock<HashMap<WindowId, Window>>,
     default_domain: RwLock<Option<Arc<dyn Domain>>>,
@@ -625,6 +625,12 @@ impl AgentArtifactWatcherState {
         panes.dedup();
         panes
     }
+}
+
+#[derive(Default)]
+struct AgentPaneInput {
+    generation: u64,
+    last_kind: &'static str,
 }
 
 #[derive(Clone)]
@@ -1332,7 +1338,7 @@ impl Mux {
             agent_event_store,
             pending_agent_approvals: RwLock::new(HashMap::new()),
             agent_output_reader,
-            agent_input_generation_by_pane: RwLock::new(HashMap::new()),
+            agent_input_by_pane: RwLock::new(HashMap::new()),
             agent_attention_seen_at: RwLock::new(HashMap::new()),
             windows: RwLock::new(HashMap::new()),
             default_domain: RwLock::new(default_domain),
@@ -2292,7 +2298,7 @@ impl Mux {
         self.agent_adoption_candidates.write().remove(&pane_id);
         self.agent_artifact_watcher.lock().unwatch_pane(pane_id);
         self.agent_observer_state_by_pane.write().remove(&pane_id);
-        self.agent_input_generation_by_pane.write().remove(&pane_id);
+        self.agent_input_by_pane.write().remove(&pane_id);
         self.agent_attention_seen_at.write().remove(&pane_id);
         crate::session_persistence::request_session_save();
         self.notify(MuxNotification::AgentMetadataChanged {
@@ -3502,7 +3508,7 @@ impl Mux {
     /// Raw PTY input is not sufficient evidence: Enter can launch a provider,
     /// choose a resume target, or navigate the TUI without starting a turn.
     pub fn record_agent_prompt_submission(&self, pane_id: PaneId) {
-        self.record_agent_input_generation(pane_id);
+        self.record_agent_input_generation(pane_id, "prompt");
         self.refresh_agent_runtime_for_pane_with_update(
             pane_id,
             true,
@@ -3515,23 +3521,33 @@ impl Mux {
         );
     }
 
-    pub(crate) fn record_agent_input_generation(&self, pane_id: PaneId) {
+    /// Counts input that reached an agent pane's program, naming its kind,
+    /// such as "keyboard" or "mouse", for diagnostics.
+    pub(crate) fn record_agent_input_generation(&self, pane_id: PaneId, kind: &'static str) {
         if self.get_agent_metadata_for_pane(pane_id).is_none() {
             return;
         }
-        *self
-            .agent_input_generation_by_pane
-            .write()
-            .entry(pane_id)
-            .or_default() += 1;
+        let mut inputs = self.agent_input_by_pane.write();
+        let input = inputs.entry(pane_id).or_default();
+        input.generation += 1;
+        input.last_kind = kind;
     }
 
     pub(crate) fn agent_input_generation(&self, pane_id: PaneId) -> u64 {
-        self.agent_input_generation_by_pane
+        self.agent_input_by_pane
             .read()
             .get(&pane_id)
-            .copied()
+            .map(|input| input.generation)
             .unwrap_or(0)
+    }
+
+    /// The kind of the latest input counted for an agent pane.
+    pub(crate) fn agent_last_input_kind(&self, pane_id: PaneId) -> &'static str {
+        self.agent_input_by_pane
+            .read()
+            .get(&pane_id)
+            .map(|input| input.last_kind)
+            .unwrap_or("unknown")
     }
 
     fn reconcile_agent_requests(&self) -> anyhow::Result<()> {
