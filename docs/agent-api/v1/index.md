@@ -116,6 +116,12 @@ baseline. Provider session replacement, truncation, or rewrite emits an
 `observer_failure` and arms a new tail baseline instead of guessing across the
 gap.
 
+When an agent's process is replaced, for example by a resume after a mux
+restart, the new incarnation continues the same provider session from where
+the previous incarnation's projection stopped. Input that the provider records
+before Wakterm observes the new process still gets its `input_accepted` and
+`turn_started` events, attributed to the new incarnation.
+
 Codex, Claude, Gemini, and OpenCode projections are live. Turn IDs come from
 provider records: Codex turn IDs, Claude human-user UUIDs, Gemini user-message
 IDs, and OpenCode assistant `parentID` values. Finals require provider completion

@@ -441,7 +441,14 @@ impl AgentEventStore {
             event.lifecycle = Some("unavailable".to_string());
             event.reason = Some("incarnation_replaced".to_string());
             pending.push((state.incarnation_id.clone(), event));
-            state = ProjectionState::default();
+            // A resumed process continues the same provider session, so keep
+            // reading where the previous incarnation stopped. Input written
+            // before this observation would otherwise fall behind the new
+            // tail baseline. The projector rebaselines a different session.
+            state = ProjectionState {
+                cursor: state.cursor.take(),
+                ..ProjectionState::default()
+            };
         }
         state.incarnation_id = current_incarnation.clone();
 
@@ -3886,6 +3893,62 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn resumed_claude_process_reports_input_written_before_it_was_observed() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"mode\",\"sessionId\":\"session-claude\"}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let mut metadata = metadata("claude");
+        let runtime_for = |metadata: &AgentMetadata| {
+            runtime(
+                metadata,
+                AgentHarness::Claude,
+                session.to_string_lossy().into(),
+            )
+        };
+        store
+            .observe_agent(&metadata, &runtime_for(&metadata))
+            .unwrap();
+        let after = store.latest_sequence();
+
+        // The process is replaced, and the resumed one records input before
+        // the observer sees it.
+        metadata.adopted_pid = Some(43);
+        append(
+            &session,
+            &(serde_json::json!({"type":"user","uuid":"turn-1","sessionId":"session-claude",
+                "timestamp":"2026-10-07T17:22:54Z","message":{"content":"still there?"}})
+            .to_string()
+                + "\n"),
+        );
+        store
+            .observe_agent(&metadata, &runtime_for(&metadata))
+            .unwrap();
+
+        let page = store.read_page(after, 100).unwrap();
+        assert!(page
+            .events
+            .iter()
+            .any(|event| event.kind == AgentEventKind::AgentLifecycle
+                && event.reason.as_deref() == Some("incarnation_replaced")));
+        let accepted = page
+            .events
+            .iter()
+            .filter(|event| event.kind == AgentEventKind::InputAccepted)
+            .map(|event| event.input_sha256.clone().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(accepted, vec![crate::agent::message_sha256("still there?")]);
+        assert!(page
+            .events
+            .iter()
+            .any(|event| event.kind == AgentEventKind::TurnStarted));
     }
 
     #[test]
