@@ -87,6 +87,34 @@ fn pane_navigation_keys(platform: KeyBindingPlatform, key: &str) -> Vec<(Modifie
     keys
 }
 
+/// Keys for a tab shortcut: Cmd on macOS, with Ctrl+Shift fallbacks
+/// synthesized; Alt elsewhere, where the Windows and Super keys belong to the
+/// desktop, with the same Ctrl+Shift fallbacks declared.
+fn tab_shortcut_keys(platform: KeyBindingPlatform, key: &str) -> Vec<(Modifiers, String)> {
+    if platform == KeyBindingPlatform::MacOs {
+        vec![(Modifiers::SUPER, key.into())]
+    } else {
+        vec![
+            (Modifiers::ALT, key.into()),
+            (Modifiers::CTRL | Modifiers::SHIFT, key.into()),
+        ]
+    }
+}
+
+/// Describes a built-in action, leaving out the Alt tab shortcuts when
+/// `alt_tab_shortcuts` is off.
+fn derive_default_command(
+    action: &KeyAssignment,
+    platform: KeyBindingPlatform,
+    alt_tab_shortcuts: bool,
+) -> Option<CommandDef> {
+    let mut def = derive_command_from_key_assignment_for_platform(action, platform)?;
+    if !alt_tab_shortcuts && matches!(action, ActivateTab(_) | ShowTabNavigator) {
+        def.keys.retain(|(mods, _)| *mods != Modifiers::ALT);
+    }
+    Some(def)
+}
+
 /// `CommandDef` defines a command in the UI.
 pub struct CommandDef {
     /// Brief description
@@ -195,7 +223,7 @@ impl CommandDef {
         // before synthesized SUPER-to-CTRL-SHIFT fallbacks. This prevents a
         // fallback for SUPER-M from displacing an explicit CTRL-SHIFT-M.
         for cmd in &commands {
-            let Some(def) = derive_command_from_key_assignment_for_platform(&cmd.action, platform)
+            let Some(def) = derive_default_command(&cmd.action, platform, config.alt_tab_shortcuts)
             else {
                 continue;
             };
@@ -218,7 +246,7 @@ impl CommandDef {
         is_built_in: bool,
         platform: KeyBindingPlatform,
     ) -> Option<ExpandedCommand> {
-        match derive_command_from_key_assignment_for_platform(&action, platform) {
+        match derive_default_command(&action, platform, config.alt_tab_shortcuts) {
             None => {
                 if is_built_in {
                     log::warn!(
@@ -1084,7 +1112,7 @@ fn derive_command_from_key_assignment_for_platform(
         ActivateTab(-1) => CommandDef {
             brief: "Activate right-most tab".into(),
             doc: "Activates the tab on the far right".into(),
-            keys: vec![(Modifiers::SUPER, "9".into())],
+            keys: tab_shortcut_keys(platform, "9"),
             args: &[ArgType::ActiveWindow],
             menubar: &["Window", "Select Tab"],
             icon: None,
@@ -1093,7 +1121,7 @@ fn derive_command_from_key_assignment_for_platform(
             let n = *n;
             let ordinal = english_ordinal(n + 1);
             let keys = if n >= 0 && n <= 7 {
-                vec![(Modifiers::SUPER, (n + 1).to_string())]
+                tab_shortcut_keys(platform, &(n + 1).to_string())
             } else {
                 vec![]
             };
@@ -1742,7 +1770,7 @@ fn derive_command_from_key_assignment_for_platform(
         ShowTabNavigator => CommandDef {
             brief: "Navigate tabs".into(),
             doc: "Shows the tab navigator".into(),
-            keys: vec![(Modifiers::SUPER, "e".into())],
+            keys: tab_shortcut_keys(platform, "e"),
             args: &[ArgType::ActiveWindow],
             menubar: &["Window", "Select Tab"],
             icon: Some("cod_list_flat"),
@@ -2295,7 +2323,8 @@ fn compute_default_actions(platform: KeyBindingPlatform) -> Vec<KeyAssignment> {
 #[cfg(test)]
 mod test {
     use super::{
-        compute_default_actions, derive_command_from_key_assignment, ArgType, KeyBindingPlatform,
+        compute_default_actions, derive_command_from_key_assignment, derive_default_command,
+        ArgType, KeyBindingPlatform,
     };
     use config::keyassignment::KeyAssignment;
     use window::Modifiers;
@@ -2363,5 +2392,53 @@ mod test {
             assert!(registered.contains(&(mods, key)), "{mods:?} {key:?}");
         }
         assert!(compute_default_actions(KeyBindingPlatform::current()).contains(&action));
+    }
+
+    #[test]
+    fn tab_shortcuts_use_alt_outside_macos_and_can_be_turned_off() {
+        let config = config::configuration();
+        let key = |label: &str| {
+            <config::DeferredKeyCode as std::convert::TryFrom<&str>>::try_from(label)
+                .unwrap()
+                .resolve(config.key_map_preference)
+                .clone()
+        };
+        let ctrl_shift = Modifiers::CTRL | Modifiers::SHIFT;
+        for (action, label, shifted) in [
+            (KeyAssignment::ActivateTab(0), "1", "!"),
+            (KeyAssignment::ActivateTab(-1), "9", "("),
+            (KeyAssignment::ShowTabNavigator, "e", "E"),
+        ] {
+            for platform in [KeyBindingPlatform::Linux, KeyBindingPlatform::Windows] {
+                let command = derive_default_command(&action, platform, true).unwrap();
+                assert_eq!(
+                    command.keys,
+                    vec![(Modifiers::ALT, label.into()), (ctrl_shift, label.into())]
+                );
+                // Every form a keyboard may report for the shortcut is registered.
+                let registered = command.permute_keys(&config, false);
+                for (mods, form) in [
+                    (Modifiers::ALT, label),
+                    (ctrl_shift, label),
+                    (ctrl_shift, shifted),
+                    (Modifiers::CTRL, shifted),
+                ] {
+                    assert!(
+                        registered.contains(&(mods, key(form))),
+                        "{:?} {:?} {:?}",
+                        action,
+                        mods,
+                        form
+                    );
+                }
+
+                let command = derive_default_command(&action, platform, false).unwrap();
+                assert_eq!(command.keys, vec![(ctrl_shift, label.into())]);
+            }
+
+            let command =
+                derive_default_command(&action, KeyBindingPlatform::MacOs, false).unwrap();
+            assert_eq!(command.keys, vec![(Modifiers::SUPER, label.into())]);
+        }
     }
 }

@@ -455,6 +455,11 @@ pub struct Config {
 
     #[dynamic(default)]
     pub disable_default_key_bindings: bool,
+
+    /// Bind Alt+1 to Alt+9 to the tabs and Alt+E to the tab navigator on
+    /// Linux and Windows.
+    #[dynamic(default = "default_true")]
+    pub alt_tab_shortcuts: bool,
     pub leader: Option<LeaderKey>,
 
     #[dynamic(default = "default_num_alphabet")]

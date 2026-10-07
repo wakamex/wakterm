@@ -2,7 +2,7 @@
 
 Opens the dedicated tab navigator overlay to search, review, hide, show, and switch tabs.
 
-The default shortcut is `Ctrl-Shift-E` (or `Cmd-E` on macOS).
+The default shortcut is `Alt-E` on Linux and Windows, with `Ctrl-Shift-E` as a fallback, and `Cmd-E` on macOS. [`alt_tab_shortcuts`](../../config/alt_tab_shortcuts.md) turns off `Alt-E`.
 
 The choice corresponding to the current tab is initially selected.
 
