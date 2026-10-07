@@ -1497,7 +1497,6 @@ mod tests {
             "indeterminate",
             "cursor_too_old",
             "incompatible_major",
-            "unknown_event_kind",
         ] {
             assert!(
                 error_codes.contains(required),

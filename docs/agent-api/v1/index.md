@@ -42,7 +42,7 @@ The durable event page provides:
 - distinct assistant, plan, turn, observer, and agent-lifecycle events
 - catalog ordering through `as_of_event_sequence`
 - explicit bounded-retention metadata and `cursor_too_old` recovery
-- classified incompatible-version and unknown-event failures
+- a classified incompatible-version failure, and event kinds that older consumers skip
 
 ## Interactive requests
 
@@ -224,9 +224,7 @@ catalog-snapshot recovery.
 clamped to 30 seconds by the server. Existing events and retention gaps return
 immediately.
 
-Unknown additive fields must be tolerated. An incompatible major schema or an
-unknown event kind must fail explicitly. Provider paths and parser cursors are
-not public identities.
+Unknown additive fields must be tolerated. A consumer must skip an event of a kind it does not know, after the same sequence and identity checks as any other event, and continue past it, so that Wakterm can add event kinds without a coordinated consumer deploy. A kind that consumers must act on is announced by a capability, as `input_accepted_events.v1` announces `input_accepted`; a consumer that relies on such a kind checks for the capability. An incompatible major schema must fail explicitly. Provider paths and parser cursors are not public identities.
 
 Wakterm tests validate the current DTO examples, receipt invariants, sequence
 ordering, lifecycle relationship, retention gap, and required error classes.

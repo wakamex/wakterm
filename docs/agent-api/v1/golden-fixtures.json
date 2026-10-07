@@ -285,7 +285,6 @@
     {"operation": "admit_prompt", "code": "internal_failure", "definitive": true, "prompt_written": false},
     {"operation": "admit_prompt", "code": "indeterminate", "definitive": false, "prompt_written": null},
     {"operation": "read_events", "code": "cursor_too_old", "definitive": true},
-    {"operation": "negotiate", "code": "incompatible_major", "definitive": true},
-    {"operation": "read_events", "code": "unknown_event_kind", "definitive": true}
+    {"operation": "negotiate", "code": "incompatible_major", "definitive": true}
   ]
 }
