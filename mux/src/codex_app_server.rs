@@ -1592,14 +1592,18 @@ pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
         }
         let runtime = runtime.clone();
         drop(runtimes);
-        if matches!(
-            method,
-            "turn/started"
-                | "item/completed"
-                | "turn/completed"
-                | "item/commandExecution/requestApproval"
-                | "item/tool/requestUserInput"
-        ) {
+        let user_message_started = method == "item/started"
+            && message.pointer("/params/item/type").and_then(Value::as_str) == Some("userMessage");
+        if user_message_started
+            || matches!(
+                method,
+                "turn/started"
+                    | "item/completed"
+                    | "turn/completed"
+                    | "item/commandExecution/requestApproval"
+                    | "item/tool/requestUserInput"
+            )
+        {
             if let Some(metadata) = mux.agent_metadata_by_pane.read().get(&pane_id).cloned() {
                 mux.persist_codex_app_server_notification(
                     (*metadata).clone(),

@@ -4132,7 +4132,9 @@ pub(crate) fn read_codex_output_messages_from_file(
     Ok((messages, next_offset, next_offset < complete_tail))
 }
 
-pub(crate) fn message_sha256(message: &str) -> String {
+/// The hash that identifies input in Agent API events, such as
+/// `input_accepted` and `turn_started`: the SHA-256 of the trimmed text.
+pub fn message_sha256(message: &str) -> String {
     format!("{:x}", Sha256::digest(message.trim().as_bytes()))
 }
 

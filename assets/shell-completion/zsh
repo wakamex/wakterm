@@ -361,7 +361,7 @@ _arguments "${_arguments_options[@]}" : \
 (send)
 _arguments "${_arguments_options[@]}" : \
 '--request-id=[Stable idempotency and correlation id. Generated when omitted]:REQUEST_ID:_default' \
-'--ack-timeout-ms=[Maximum time to wait for observer-backed acknowledgement]:ACK_TIMEOUT_MS:_default' \
+'--ack-timeout-ms=[Maximum time to wait for the agent to record the input. The command returns as soon as it does]:ACK_TIMEOUT_MS:_default' \
 '--ack-poll-ms=[Poll interval while waiting for acknowledgement]:ACK_POLL_MS:_default' \
 '--final-timeout-ms=[Asynchronous final-response deadline. Zero disables the deadline]:FINAL_TIMEOUT_MS:_default' \
 '--no-paste[Send the text directly, rather than as a bracketed paste]' \
@@ -1263,7 +1263,7 @@ _arguments "${_arguments_options[@]}" : \
 (send)
 _arguments "${_arguments_options[@]}" : \
 '--request-id=[Stable idempotency and correlation id. Generated when omitted]:REQUEST_ID:_default' \
-'--ack-timeout-ms=[Maximum time to wait for observer-backed acknowledgement]:ACK_TIMEOUT_MS:_default' \
+'--ack-timeout-ms=[Maximum time to wait for the agent to record the input. The command returns as soon as it does]:ACK_TIMEOUT_MS:_default' \
 '--ack-poll-ms=[Poll interval while waiting for acknowledgement]:ACK_POLL_MS:_default' \
 '--final-timeout-ms=[Asynchronous final-response deadline. Zero disables the deadline]:FINAL_TIMEOUT_MS:_default' \
 '--no-paste[Send the text directly, rather than as a bracketed paste]' \

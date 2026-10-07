@@ -42,6 +42,9 @@ pub enum AgentEventKind {
     ObserverFailure,
     TurnFinal,
     ApprovalRequested,
+    /// The provider recorded input: the input that started a turn, or input
+    /// queued into or steering the running one. `input_sha256` identifies it.
+    InputAccepted,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -949,6 +952,37 @@ impl AgentEventStore {
                 state.turn_state = Some("waiting_on_agent".to_string());
                 pending.push(state);
             }
+            "item/started" => {
+                let item = params.get("item").unwrap_or(&Value::Null);
+                if item.get("type").and_then(Value::as_str) != Some("userMessage") {
+                    return Ok(());
+                }
+                let (Some(item_id), Some(content)) = (
+                    item.get("id").and_then(Value::as_str),
+                    item.get("content").and_then(Value::as_array),
+                ) else {
+                    return Ok(());
+                };
+                let text = content
+                    .iter()
+                    .filter(|input| input.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|input| input.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if text.trim().is_empty() {
+                    return Ok(());
+                }
+                pending.push(input_accepted(
+                    format!("codex-app-server:{}:{item_id}:input", session.thread_id),
+                    observed_at,
+                    params
+                        .get("turnId")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    crate::agent::message_sha256(&text),
+                    false,
+                ));
+            }
             "item/completed" => {
                 let Some(turn_id) = params.get("turnId").and_then(Value::as_str) else {
                     return Ok(());
@@ -1230,6 +1264,22 @@ fn codex_terminal_failure(error: Option<&Value>) -> (&'static str, &'static str)
             "Codex could not complete this turn because of a provider error.",
         ),
     }
+}
+
+/// An `input_accepted` event for input the provider recorded. `queued`
+/// marks input waiting in the provider's queue for the running turn.
+fn input_accepted(
+    source_key: String,
+    observed_at: DateTime<Utc>,
+    turn_id: Option<String>,
+    input_sha256: String,
+    queued: bool,
+) -> PendingEvent {
+    let mut event = PendingEvent::new(source_key, AgentEventKind::InputAccepted, observed_at);
+    event.turn_id = turn_id;
+    event.input_sha256 = Some(input_sha256);
+    event.reason = queued.then(|| "queued".to_string());
+    event
 }
 
 fn observer_failure(
@@ -1631,11 +1681,23 @@ fn project_codex(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<
                     && !crate::agent::codex_response_message_is_synthetic_context(payload)
                 {
                     if let Some(message) = crate::agent::codex_response_message_text(payload) {
-                        if let Some(pending) = cursor.pending_turn_start.take() {
-                            events.extend(
-                                pending.events(Some(crate::agent::message_sha256(&message))),
-                            );
-                        }
+                        let sha256 = crate::agent::message_sha256(&message);
+                        // The turn's first input starts it; later input steers it.
+                        let input_turn = match cursor.pending_turn_start.take() {
+                            Some(pending) => {
+                                let turn_id = pending.turn_id.clone();
+                                events.extend(pending.events(Some(sha256.clone())));
+                                Some(turn_id)
+                            }
+                            None => turn_id.clone().or_else(|| cursor.current_turn_id.clone()),
+                        };
+                        events.push(input_accepted(
+                            format!("{record_key}:input"),
+                            timestamp,
+                            input_turn,
+                            sha256,
+                            false,
+                        ));
                     }
                 }
                 if payload.get("type").and_then(Value::as_str) == Some("message")
@@ -1753,6 +1815,15 @@ fn project_claude(
             started.turn_id = Some(turn_id.clone());
             started.input_sha256 = crate::agent::claude_user_text(record)
                 .map(|text| crate::agent::message_sha256(crate::agent::unwrap_claude_paste(&text)));
+            let accepted = started.input_sha256.clone().map(|sha256| {
+                input_accepted(
+                    format!("{record_key}:input"),
+                    timestamp,
+                    Some(turn_id.clone()),
+                    sha256,
+                    false,
+                )
+            });
             let mut state = PendingEvent::new(
                 format!("{record_key}:state"),
                 AgentEventKind::TurnStateChanged,
@@ -1760,7 +1831,31 @@ fn project_claude(
             );
             state.turn_id = Some(turn_id);
             state.turn_state = Some("waiting_on_agent".to_string());
-            return Ok(vec![started, state]);
+            return Ok(vec![Some(started), accepted, Some(state)]
+                .into_iter()
+                .flatten()
+                .collect());
+        }
+        // Input typed while a turn runs is queued into it, and recorded the
+        // moment Claude shows it queued. Background task notifications are
+        // queued the same way but are not input.
+        if record.get("type").and_then(Value::as_str) == Some("queue-operation")
+            && record.get("operation").and_then(Value::as_str) == Some("enqueue")
+        {
+            let Some(content) = record
+                .get("content")
+                .and_then(Value::as_str)
+                .filter(|content| !content.starts_with("<task-notification>"))
+            else {
+                return Ok(Vec::new());
+            };
+            return Ok(vec![input_accepted(
+                format!("{record_key}:input"),
+                timestamp,
+                cursor.current_turn_id.clone().filter(|_| cursor.turn_open),
+                crate::agent::message_sha256(crate::agent::unwrap_claude_paste(content)),
+                true,
+            )]);
         }
         if record.get("type").and_then(Value::as_str) == Some("system")
             && record.get("subtype").and_then(Value::as_str) == Some("api_error")
@@ -2002,6 +2097,15 @@ fn project_agy(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<Pr
                     .and_then(Value::as_str)
                     .and_then(agy_user_request)
                     .map(crate::agent::message_sha256);
+                let accepted = started.input_sha256.clone().map(|sha256| {
+                    input_accepted(
+                        format!("{record_key}:input"),
+                        timestamp,
+                        Some(turn_id.clone()),
+                        sha256,
+                        false,
+                    )
+                });
                 let mut state = PendingEvent::new(
                     format!("{record_key}:state"),
                     AgentEventKind::TurnStateChanged,
@@ -2009,7 +2113,10 @@ fn project_agy(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<Pr
                 );
                 state.turn_id = Some(turn_id);
                 state.turn_state = Some("waiting_on_agent".to_string());
-                Ok(vec![started, state])
+                Ok(vec![Some(started), accepted, Some(state)]
+                    .into_iter()
+                    .flatten()
+                    .collect())
             }
             Some("PLANNER_RESPONSE")
                 if record.get("status").and_then(Value::as_str) == Some("DONE") =>
@@ -3024,6 +3131,60 @@ mod tests {
     }
 
     #[test]
+    fn codex_records_input_that_starts_or_steers_a_turn() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("codex.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-codex\"}}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("codex");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Codex,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        append(
+            &session,
+            concat!(
+                "{\"ordinal\":1,\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}\n",
+                "{\"ordinal\":2,\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<environment_context>cwd</environment_context>\"}]}}\n",
+                "{\"ordinal\":3,\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"fix the build\"}]}}\n",
+                "{\"ordinal\":4,\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"also run the tests\"}]}}\n"
+            ),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+
+        let accepted = store
+            .read_page(after, 100)
+            .unwrap()
+            .events
+            .into_iter()
+            .filter(|event| event.kind == AgentEventKind::InputAccepted)
+            .map(|event| (event.input_sha256.unwrap(), event.turn_id))
+            .collect::<Vec<_>>();
+        // Injected context is not input; the first message starts the turn
+        // and the second steers it.
+        assert_eq!(
+            accepted,
+            vec![
+                (
+                    crate::agent::message_sha256("fix the build"),
+                    Some("turn-1".to_string())
+                ),
+                (
+                    crate::agent::message_sha256("also run the tests"),
+                    Some("turn-1".to_string())
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn turn_confirmation_requires_a_new_turn_of_the_exact_incarnation() {
         let temp = TempDir::new().unwrap();
         let session = temp.path().join("codex.jsonl");
@@ -3648,6 +3809,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 AgentEventKind::TurnStarted,
+                AgentEventKind::InputAccepted,
                 AgentEventKind::TurnStateChanged,
                 AgentEventKind::AssistantMessage,
                 AgentEventKind::AssistantMessage,
@@ -3658,12 +3820,72 @@ mod tests {
         assert!(events
             .iter()
             .all(|event| event.turn_id.as_deref() == Some("conversation-1:10")));
-        assert_eq!(
-            events[0].input_sha256.as_deref(),
-            Some(crate::agent::message_sha256("summarize the logs").as_str())
+        let sha256 = crate::agent::message_sha256("summarize the logs");
+        assert_eq!(events[0].input_sha256.as_deref(), Some(sha256.as_str()));
+        assert_eq!(events[1].input_sha256.as_deref(), Some(sha256.as_str()));
+        assert_eq!(events[5].outcome.as_deref(), Some("completed"));
+        assert_eq!(events[5].text.as_deref(), Some(reply));
+    }
+
+    #[test]
+    fn claude_records_input_that_starts_a_turn_or_is_queued_into_one() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"mode\",\"sessionId\":\"session-claude\"}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("claude");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
         );
-        assert_eq!(events[4].outcome.as_deref(), Some("completed"));
-        assert_eq!(events[4].text.as_deref(), Some(reply));
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        let line = |value: serde_json::Value| value.to_string() + "\n";
+        append(
+            &session,
+            &[
+                line(serde_json::json!({"type":"user","uuid":"turn-1","sessionId":"session-claude",
+                    "timestamp":"2026-10-07T10:00:00Z","message":{"content":"<pasted_content id=\"1\">\nwork\n</pasted_content id=\"1\">"}})),
+                line(serde_json::json!({"type":"queue-operation","operation":"enqueue",
+                    "timestamp":"2026-10-07T10:00:02Z","sessionId":"session-claude",
+                    "content":"<task-notification>done</task-notification>"})),
+                line(serde_json::json!({"type":"queue-operation","operation":"enqueue",
+                    "timestamp":"2026-10-07T10:00:03Z","sessionId":"session-claude",
+                    "content":"<pasted_content id=\"2\">\nalso check stderr\n</pasted_content id=\"2\">"})),
+            ]
+            .concat(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+
+        let accepted = store
+            .read_page(after, 100)
+            .unwrap()
+            .events
+            .into_iter()
+            .filter(|event| event.kind == AgentEventKind::InputAccepted)
+            .map(|event| (event.input_sha256.unwrap(), event.turn_id, event.reason))
+            .collect::<Vec<_>>();
+        // The notification is not input; the steer joins the running turn.
+        assert_eq!(
+            accepted,
+            vec![
+                (
+                    crate::agent::message_sha256("work"),
+                    Some("turn-1".to_string()),
+                    None
+                ),
+                (
+                    crate::agent::message_sha256("also check stderr"),
+                    Some("turn-1".to_string()),
+                    Some("queued".to_string())
+                ),
+            ]
+        );
     }
 
     #[test]
@@ -4314,6 +4536,66 @@ mod tests {
         assert_eq!(page.events[0].kind, AgentEventKind::AgentLifecycle);
         assert_eq!(page.events[0].lifecycle.as_deref(), Some("unavailable"));
         assert_eq!(page.events[0].reason.as_deref(), Some("metadata_cleared"));
+    }
+
+    #[test]
+    fn managed_codex_records_each_user_message_as_input() {
+        let temp = TempDir::new().unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        store.start_runtime_epoch().unwrap();
+        let mut metadata = metadata("codex");
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "thread-input".to_string(),
+            session_id: "session-input".to_string(),
+            executable: "codex".to_string(),
+            version: "test".to_string(),
+            tui_args: vec![],
+        });
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.alive = true;
+        runtime.harness = AgentHarness::Codex;
+        runtime.transport = AgentTransport::CodexAppServerTui;
+        let user_message = |id: &str, text: &str| {
+            serde_json::json!({"method": "item/started", "params": {
+                "threadId": "thread-input", "turnId": "turn-1",
+                "item": {"type": "userMessage", "id": id,
+                    "content": [{"type": "text", "text": text, "text_elements": []}]}}})
+        };
+        let mut writer = store.writer().unwrap();
+        for message in [
+            user_message("item-1", "fix the build"),
+            user_message("item-2", "also run the tests"),
+            // Duplicate delivery records one event.
+            user_message("item-2", "also run the tests"),
+            serde_json::json!({"method": "item/started", "params": {
+                "threadId": "thread-input", "turnId": "turn-1",
+                "item": {"type": "agentMessage", "id": "item-3", "text": ""}}}),
+        ] {
+            writer
+                .observe_codex_app_server_notification(&metadata, &runtime, &message)
+                .unwrap();
+        }
+        let accepted = store
+            .read_page(0, 100)
+            .unwrap()
+            .events
+            .into_iter()
+            .filter(|event| event.kind == AgentEventKind::InputAccepted)
+            .map(|event| (event.input_sha256.unwrap(), event.turn_id))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            accepted,
+            vec![
+                (
+                    crate::agent::message_sha256("fix the build"),
+                    Some("turn-1".to_string())
+                ),
+                (
+                    crate::agent::message_sha256("also run the tests"),
+                    Some("turn-1".to_string())
+                ),
+            ]
+        );
     }
 
     #[test]

@@ -1,8 +1,8 @@
 # Agent prompt submission and final responses
 
-`wakterm agent send TARGET MESSAGE` keeps its existing behavior. It writes
-the prompt to the native harness pane, submits it, waits briefly for observer
-acknowledgement, and prints structured JSON.
+`wakterm agent send TARGET MESSAGE` writes the prompt to the native harness pane, submits it, waits for acknowledgement, and prints structured JSON.
+
+For a Claude, Codex or agy agent, acknowledgement is exact: the command waits for the `input_accepted` Agent API event whose `input_sha256` matches the sent text, and returns as soon as the agent records it, whether the input starts a turn or joins a running one. Its JSON then reports `acknowledgement.kind: "input_accepted"`. If the agent does not record the input within `--ack-timeout-ms` (10 seconds by default), the kind is `timed_out` and `acknowledged` is `false`. For other harnesses, or when the event stream is unavailable, the command falls back to watching the agent's observed progress.
 
 When the text would not reach the agent's prompt, because a dialog, question or startup prompt has the keyboard, the command writes nothing and still exits successfully. Its JSON then has `submitted: false` and `refusal: {"reason": "input_blocked", "detail": "..."}`; `refusal` is `null` otherwise. `reason` is a stable code that callers can match to retry once the agent is idle, and `detail` is human-readable text that may change.
 

@@ -16,7 +16,7 @@ Options:
       --request-id <REQUEST_ID>
           Stable idempotency and correlation id. Generated when omitted
       --ack-timeout-ms <ACK_TIMEOUT_MS>
-          Maximum time to wait for observer-backed acknowledgement [default: 2000]
+          Maximum time to wait for the agent to record the input. The command returns as soon as it does [default: 10000]
       --ack-poll-ms <ACK_POLL_MS>
           Poll interval while waiting for acknowledgement [default: 50]
       --final-timeout-ms <FINAL_TIMEOUT_MS>

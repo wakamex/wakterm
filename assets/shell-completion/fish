@@ -335,7 +335,7 @@ complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_s
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from approval" -l answers -d 'With `--choice submit`, the answers as a JSON list such as `[{"question":0,"choices":["option_2"]},{"question":1,"text":"..."}]`' -r
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from approval" -s h -l help -d 'Print help'
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from send" -l request-id -d 'Stable idempotency and correlation id. Generated when omitted' -r
-complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from send" -l ack-timeout-ms -d 'Maximum time to wait for observer-backed acknowledgement' -r
+complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from send" -l ack-timeout-ms -d 'Maximum time to wait for the agent to record the input. The command returns as soon as it does' -r
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from send" -l ack-poll-ms -d 'Poll interval while waiting for acknowledgement' -r
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from send" -l final-timeout-ms -d 'Asynchronous final-response deadline. Zero disables the deadline' -r
 complete -c wakterm -n "__fish_wakterm_using_subcommand agent; and __fish_seen_subcommand_from send" -l no-paste -d 'Send the text directly, rather than as a bracketed paste'

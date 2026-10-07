@@ -11,6 +11,7 @@
       "event_stream.v1",
       "approval_control.v1",
       "question_form_answers.v1",
+      "input_accepted_events.v1",
       "codex_output_shadow.experimental.v1"
     ]
   },
@@ -25,6 +26,7 @@
       "event_stream.v1",
       "approval_control.v1",
       "question_form_answers.v1",
+      "input_accepted_events.v1",
       "codex_output_shadow.experimental.v1"
     ]
   },

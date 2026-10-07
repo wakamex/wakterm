@@ -1766,8 +1766,9 @@ pub struct SendAgentCommand {
     #[arg(long, requires = "return_final")]
     request_id: Option<String>,
 
-    /// Maximum time to wait for observer-backed acknowledgement
-    #[arg(long, default_value_t = 2000)]
+    /// Maximum time to wait for the agent to record the input. The command
+    /// returns as soon as it does.
+    #[arg(long, default_value_t = 10000)]
     ack_timeout_ms: u64,
 
     /// Poll interval while waiting for acknowledgement
@@ -1807,11 +1808,53 @@ impl SendAgentCommand {
                 request: response.request,
             });
         }
+        // The event stream position before anything is written, so the
+        // input's own event is the first one that can match.
+        let events_from = client
+            .read_agent_events(codec::ReadAgentEvents {
+                after_sequence: 0,
+                limit: 0,
+                wait_ms: 0,
+            })
+            .await
+            .ok()
+            .filter(|response| response.page.status == mux::agent_event::AgentEventStatus::Ok)
+            .map(|response| response.page.latest_sequence);
+        let timeout = Duration::from_millis(self.ack_timeout_ms);
         let result = self
             .run_with(
                 || client.list_agents(),
                 |request| client.write_to_pane(request),
                 |request| client.send_paste(request),
+                |agent_id, sha256| {
+                    let client = client.clone();
+                    async move {
+                        let Some(after) = events_from else {
+                            return Ok(None);
+                        };
+                        wait_for_input_accepted(
+                            |after_sequence, wait_ms| {
+                                let client = client.clone();
+                                async move {
+                                    client
+                                        .read_agent_events(codec::ReadAgentEvents {
+                                            after_sequence,
+                                            limit: 256,
+                                            wait_ms,
+                                        })
+                                        .await
+                                        .map(|response| response.page)
+                                }
+                            },
+                            after,
+                            &agent_id,
+                            &sha256,
+                            timeout,
+                        )
+                        .await
+                        .map(Some)
+                    }
+                },
             )
             .await?;
         write_json(&result)
@@ -1824,11 +1867,14 @@ impl SendAgentCommand {
         WriteToPaneFut,
         SendPasteFn,
         SendPasteFut,
+        ConfirmInputFn,
+        ConfirmInputFut,
     >(
         &self,
         mut list_agents: ListAgents,
         write_to_pane: WriteToPaneFn,
         send_paste: SendPasteFn,
+        confirm_input: ConfirmInputFn,
     ) -> anyhow::Result<AgentSendResult>
     where
         ListAgents: FnMut() -> ListAgentsFut,
@@ -1837,6 +1883,10 @@ impl SendAgentCommand {
         WriteToPaneFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
         SendPasteFn: Fn(codec::SendPaste) -> SendPasteFut,
         SendPasteFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
+        // Waits for the provider to record the input with this hash; None
+        // when the event stream cannot confirm input.
+        ConfirmInputFn: FnOnce(String, String) -> ConfirmInputFut,
+        ConfirmInputFut: Future<Output = anyhow::Result<Option<AgentSendAcknowledgement>>>,
     {
         let agents = list_agents().await?.agents;
         let agent = find_agent(&agents, &self.target)
@@ -1863,6 +1913,7 @@ impl SendAgentCommand {
             });
         }
         let text = self.read_text()?;
+        let input_sha256 = mux::agent::message_sha256(&text);
         let baseline = AgentAckBaseline::from_agent(&agent);
         let use_raw_write = self.no_paste || prefers_raw_input(&agent.runtime.harness);
 
@@ -1883,6 +1934,24 @@ impl SendAgentCommand {
         let submitted = !self.no_submit;
         if submitted {
             submit_native_harness_prompt(agent.pane_id, &write_to_pane).await?;
+        }
+
+        // A provider that records input confirms this exact input as soon as
+        // it records it, whether it starts a turn or is queued into one.
+        if submitted && records_input_events(&agent.runtime.harness) {
+            if let Some(acknowledgement) =
+                confirm_input(agent.metadata.agent_id.clone(), input_sha256).await?
+            {
+                return Ok(AgentSendResult {
+                    agent_id: agent.metadata.agent_id.clone(),
+                    agent_name: agent.metadata.name.clone(),
+                    pane_id: agent.pane_id,
+                    transport: agent.runtime.transport,
+                    submitted,
+                    acknowledgement,
+                    refusal: None,
+                });
+            }
         }
 
         let mut acknowledgement = self
@@ -2591,6 +2660,8 @@ struct ClearAgentResult {
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum AgentAckKind {
+    /// The provider recorded the exact input that was sent.
+    InputAccepted,
     SessionObserver,
     TimedOut,
     Unavailable,
@@ -2680,6 +2751,61 @@ impl AgentAckBaseline {
 
 fn supports_observer_ack(harness: &AgentHarness) -> bool {
     !matches!(harness, AgentHarness::Unknown)
+}
+
+/// Harnesses whose event projection emits `input_accepted`.
+fn records_input_events(harness: &AgentHarness) -> bool {
+    matches!(
+        harness,
+        AgentHarness::Claude | AgentHarness::Codex | AgentHarness::Agy
+    )
+}
+
+/// Waits for the agent to record input with this hash, reading the event
+/// stream from `after`, and returns as soon as it does.
+async fn wait_for_input_accepted<ReadPage, ReadPageFut>(
+    mut read_page: ReadPage,
+    mut after: u64,
+    agent_id: &str,
+    input_sha256: &str,
+    timeout: Duration,
+) -> anyhow::Result<AgentSendAcknowledgement>
+where
+    ReadPage: FnMut(u64, u32) -> ReadPageFut,
+    ReadPageFut: Future<Output = anyhow::Result<mux::agent_event::AgentEventPage>>,
+{
+    let started = Instant::now();
+    loop {
+        let remaining = timeout.saturating_sub(started.elapsed());
+        let page = read_page(after, remaining.as_millis().min(1000) as u32).await?;
+        let accepted = page.events.iter().any(|event| {
+            event.agent_id == agent_id
+                && event.kind == mux::agent_event::AgentEventKind::InputAccepted
+                && event.input_sha256.as_deref() == Some(input_sha256)
+        });
+        if accepted {
+            return Ok(AgentSendAcknowledgement {
+                kind: AgentAckKind::InputAccepted,
+                acknowledged: true,
+                latency_ms: Some(started.elapsed().as_millis() as u64),
+                session_path: None,
+                detail: None,
+            });
+        }
+        after = page
+            .next_after_sequence
+            .unwrap_or(page.latest_sequence)
+            .max(after);
+        if started.elapsed() >= timeout {
+            return Ok(AgentSendAcknowledgement {
+                kind: AgentAckKind::TimedOut,
+                acknowledged: false,
+                latency_ms: Some(started.elapsed().as_millis() as u64),
+                session_path: None,
+                detail: Some("the agent did not record the input before the deadline".to_string()),
+            });
+        }
+    }
 }
 
 fn should_retry_submit(
@@ -3315,6 +3441,82 @@ fn ensure_spawned_agent_is_running(agent: &AgentSnapshot, agent_name: &str) -> a
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn send_confirms_only_the_exact_input_of_the_exact_agent() {
+        use mux::agent_event::{AgentEvent, AgentEventKind, AgentEventPage, AgentEventStatus};
+        let event = |sequence: u64, agent: &str, kind: AgentEventKind, sha256: &str| AgentEvent {
+            sequence,
+            event_id: format!("event-{sequence}"),
+            kind,
+            agent_id: agent.to_string(),
+            incarnation_id: "incarnation".to_string(),
+            observed_at: Utc::now(),
+            turn_id: Some("turn".to_string()),
+            lifecycle: None,
+            reason: None,
+            turn_state: None,
+            text: None,
+            outcome: None,
+            recoverable: None,
+            detail: None,
+            approval: None,
+            input_sha256: Some(sha256.to_string()),
+        };
+        let page = |events: Vec<AgentEvent>| AgentEventPage {
+            schema: mux::agent_event::AGENT_EVENT_SCHEMA.to_string(),
+            status: AgentEventStatus::Ok,
+            requested_after_sequence: 0,
+            oldest_available_sequence: 1,
+            latest_sequence: events.last().map(|event| event.sequence).unwrap_or(10),
+            next_after_sequence: events.last().map(|event| event.sequence),
+            events,
+            recovery: None,
+        };
+        let sha256 = mux::agent::message_sha256("steer");
+        let pages = RefCell::new(vec![
+            page(vec![
+                event(11, "other", AgentEventKind::InputAccepted, &sha256),
+                event(12, "agent", AgentEventKind::InputAccepted, "different"),
+                event(13, "agent", AgentEventKind::TurnStarted, &sha256),
+            ]),
+            page(vec![event(
+                14,
+                "agent",
+                AgentEventKind::InputAccepted,
+                &sha256,
+            )]),
+        ]);
+        let reads = RefCell::new(vec![]);
+        let read = |after: u64, _wait_ms: u32| {
+            reads.borrow_mut().push(after);
+            let next = pages.borrow_mut().remove(0);
+            async move { Ok(next) }
+        };
+        let ack = promise::spawn::block_on(wait_for_input_accepted(
+            read,
+            10,
+            "agent",
+            &sha256,
+            Duration::from_secs(5),
+        ))
+        .unwrap();
+        assert_eq!(ack.kind, AgentAckKind::InputAccepted);
+        assert!(ack.acknowledged);
+        // Each read continues after the events already seen.
+        assert_eq!(*reads.borrow(), vec![10, 13]);
+
+        let ack = promise::spawn::block_on(wait_for_input_accepted(
+            |_, _| async { Ok(page(vec![])) },
+            10,
+            "agent",
+            &sha256,
+            Duration::from_millis(0),
+        ))
+        .unwrap();
+        assert_eq!(ack.kind, AgentAckKind::TimedOut);
+        assert!(!ack.acknowledged);
+    }
     use chrono::TimeZone;
     use codec::{
         ListAgentsResponse, ListPanesResponse, SendKeyDown, SendPaste, SpawnResponse, UnitResponse,
@@ -3677,6 +3879,7 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
+            |_, _| async { Ok(None) },
         ))
         .unwrap();
 
@@ -3737,6 +3940,7 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
+            |_, _| async { Ok(None) },
         ))
         .unwrap();
 
@@ -3786,6 +3990,7 @@ mod test {
                 }
             },
             |_| async { panic!("send_paste should not be used for gemini") },
+            |_, _| async { Ok(None) },
         ))
         .unwrap();
 
@@ -4405,6 +4610,7 @@ mod test {
                 }
             },
             |_| async { panic!("send_paste should not be used") },
+            |_, _| async { Ok(None) },
         ))
         .unwrap();
 
@@ -4453,6 +4659,7 @@ mod test {
                 }
             },
             |_| async { panic!("send_paste should not be used") },
+            |_, _| async { Ok(None) },
         ))
         .unwrap();
 
@@ -4506,6 +4713,7 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
+            |_, _| async { Ok(None) },
         ))
         .unwrap();
 
