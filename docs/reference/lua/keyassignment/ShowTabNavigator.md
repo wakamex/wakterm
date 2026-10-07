@@ -12,7 +12,7 @@ The choice corresponding to the current tab is initially selected.
 - Up / Down: move selection
 - Enter: activate the selected tab and show it if hidden
 - Left / Right or Tab / Shift-Tab: switch between All, Visible, and Hidden views
-- Ctrl-Shift-S: toggle hide or show for the selected tab
+- Ctrl-H: toggle hide or show for the selected tab
 - Ctrl-X: prompt to permanently close the selected tab
 - Ctrl-R: toggle sort between Tab order and Response time
 - Ctrl-O: toggle row density between dense single-line and comfortable multi-line pane details

@@ -990,7 +990,7 @@ impl NavigatorState {
         changes.push(Change::Text("\r\n".to_string()));
         changes.push(Change::Text(truncate_right(
             &format!(
-                "enter activate   ctrl+shift+s hide/show   ctrl+x close   left/right view   ctrl+r sort   ctrl+o {}   esc clear/exit",
+                "enter activate   ctrl+h hide/show   ctrl+x close   left/right view   ctrl+r sort   ctrl+o {}   esc clear/exit",
                 if self.dense { "comfortable" } else { "dense" }
             ),
             width,
@@ -1060,7 +1060,7 @@ impl NavigatorState {
                             self.rebuild(None);
                         }
                         InputEvent::Key(KeyEvent {
-                            key: KeyCode::Char('S'),
+                            key: KeyCode::Char('H'),
                             modifiers: Modifiers::CTRL,
                         }) => should_exit = self.mutate_parked(),
                         InputEvent::Key(KeyEvent {
