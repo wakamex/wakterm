@@ -14,7 +14,8 @@ usage() {
     echo "  --restart   Also kill the mux server (Mac reconnect triggers new binary)"
     echo "              Saves the agent list and catalog first, to compare after restart"
     echo "  --notify    With --restart, ask the agents that were busy to continue once"
-    echo "              they are back; logs to resume-busy-agents.log in the snapshot"
+    echo "              they are back, then ask the agent working in this repository"
+    echo "              to check the deploy; logs to resume-busy-agents.log in the snapshot"
     echo "  --no-save   Skip wakterm cli save-layout (use when layout/session state is known bad)"
     echo "  --wipe-session  Remove saved session state after restart for a clean session"
     echo "  --clean     Run cargo clean for deployed crates before building"
@@ -218,7 +219,7 @@ if $NOTIFY; then
         --unit="wakterm-resume-busy-agents-$(date +%s)" \
         --setenv=WAKTERM="$DEST/wakterm" \
         "$REPO_ROOT/resume-busy-agents.sh" "$SNAPSHOT_DIR" \
-        "$(pgrep -f wakterm-mux-server | head -1 || true)"
+        "$(pgrep -f wakterm-mux-server | head -1 || true)" "$REPO_ROOT"
     echo "  Log: $SNAPSHOT_DIR/resume-busy-agents.log"
     echo ""
 fi
