@@ -517,6 +517,33 @@ impl Mux {
         Ok(())
     }
 
+    /// Presses Enter again for an admitted prompt that Claude left in its
+    /// input box. Claude can drop the Enter that follows typed input, for
+    /// example while it is still starting. Returns whether Enter was sent:
+    /// only while the admitted process is still the target and Claude reports
+    /// it idle with no status change since the prompt was written.
+    pub(crate) fn resubmit_admitted_prompt(
+        &self,
+        candidate: &AgentAdmissionCandidate,
+        written_at: std::time::SystemTime,
+    ) -> anyhow::Result<bool> {
+        let Some(metadata) = self.get_agent_metadata_for_pane(candidate.pane_id) else {
+            return Ok(false);
+        };
+        if metadata.agent_id != candidate.request.agent_id
+            || incarnation_id(&metadata).as_deref()
+                != Some(candidate.request.incarnation_id.as_str())
+            || !crate::agent::claude_idle_since(&metadata, written_at)
+        {
+            return Ok(false);
+        }
+        let pane = self
+            .get_pane(candidate.pane_id)
+            .with_context(|| format!("target pane {} disappeared", candidate.pane_id))?;
+        pane.writer().write_all(b"\r")?;
+        Ok(true)
+    }
+
     pub(crate) fn agent_request_store(&self) -> AgentRequestStore {
         self.agent_request_store.clone()
     }

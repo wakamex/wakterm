@@ -293,6 +293,14 @@ impl<'a> AgentService<'a> {
         self.mux.write_admitted_prompt(candidate)
     }
 
+    pub fn resubmit_admitted_prompt(
+        &self,
+        candidate: &AgentAdmissionCandidate,
+        written_at: std::time::SystemTime,
+    ) -> anyhow::Result<bool> {
+        self.mux.resubmit_admitted_prompt(candidate, written_at)
+    }
+
     pub fn request_store(&self) -> AgentRequestStore {
         self.mux.agent_request_store()
     }

@@ -1820,13 +1820,12 @@ impl SendAgentCommand {
             .ok()
             .filter(|response| response.page.status == mux::agent_event::AgentEventStatus::Ok)
             .map(|response| response.page.latest_sequence);
-        let timeout = Duration::from_millis(self.ack_timeout_ms);
         let result = self
             .run_with(
                 || client.list_agents(),
                 |request| client.write_to_pane(request),
                 |request| client.send_paste(request),
-                |agent_id, sha256| {
+                |agent_id, sha256, timeout| {
                     let client = client.clone();
                     async move {
                         let Some(after) = events_from else {
@@ -1883,9 +1882,9 @@ impl SendAgentCommand {
         WriteToPaneFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
         SendPasteFn: Fn(codec::SendPaste) -> SendPasteFut,
         SendPasteFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
-        // Waits for the provider to record the input with this hash; None
-        // when the event stream cannot confirm input.
-        ConfirmInputFn: FnOnce(String, String) -> ConfirmInputFut,
+        // Waits up to the given time for the provider to record the input
+        // with this hash; None when the event stream cannot confirm input.
+        ConfirmInputFn: Fn(String, String, Duration) -> ConfirmInputFut,
         ConfirmInputFut: Future<Output = anyhow::Result<Option<AgentSendAcknowledgement>>>,
     {
         let agents = list_agents().await?.agents;
@@ -1938,10 +1937,44 @@ impl SendAgentCommand {
 
         // A provider that records input confirms this exact input as soon as
         // it records it, whether it starts a turn or is queued into one.
-        if submitted && records_input_events(&agent.runtime.harness) {
-            if let Some(acknowledgement) =
-                confirm_input(agent.metadata.agent_id.clone(), input_sha256).await?
-            {
+        // Claude can leave input in its box, dropping the Enter that followed
+        // it, so while Claude has not taken the input and is idle with no
+        // dialog open, Enter is pressed again.
+        if submitted && mux::agent::records_input_events(&agent.runtime.harness) {
+            let claude = matches!(agent.runtime.harness, AgentHarness::Claude);
+            let started = Instant::now();
+            let deadline = started + Duration::from_millis(self.ack_timeout_ms);
+            let mut resubmits = 0;
+            while let Some(mut acknowledgement) = {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let window = if claude && resubmits < CLAUDE_RESUBMIT_ATTEMPTS {
+                    remaining.min(CLAUDE_RESUBMIT_AFTER)
+                } else {
+                    remaining
+                };
+                confirm_input(
+                    agent.metadata.agent_id.clone(),
+                    input_sha256.clone(),
+                    window,
+                )
+                .await?
+            } {
+                if !acknowledgement.acknowledged
+                    && claude
+                    && resubmits < CLAUDE_RESUBMIT_ATTEMPTS
+                    && Instant::now() < deadline
+                {
+                    resubmits += 1;
+                    let current = list_agents().await?.agents;
+                    if find_agent(&current, &agent.metadata.agent_id).is_some_and(|current| {
+                        current.runtime.status == AgentStatus::Idle
+                            && mux::agent::input_blocked_reason(&current.runtime).is_none()
+                    }) {
+                        submit_native_harness_prompt(agent.pane_id, &write_to_pane).await?;
+                    }
+                    continue;
+                }
+                acknowledgement.latency_ms = Some(started.elapsed().as_millis() as u64);
                 return Ok(AgentSendResult {
                     agent_id: agent.metadata.agent_id.clone(),
                     agent_name: agent.metadata.name.clone(),
@@ -2134,6 +2167,11 @@ impl WatchAgentRequestsCommand {
         }
     }
 }
+
+/// How long `agent send` waits for Claude to take its input before pressing
+/// Enter again, and how many times it does.
+const CLAUDE_RESUBMIT_AFTER: Duration = Duration::from_secs(2);
+const CLAUDE_RESUBMIT_ATTEMPTS: u32 = 3;
 
 fn prefers_raw_input(harness: &AgentHarness) -> bool {
     matches!(harness, AgentHarness::Gemini)
@@ -2754,13 +2792,6 @@ fn supports_observer_ack(harness: &AgentHarness) -> bool {
 }
 
 /// Harnesses whose event projection emits `input_accepted`.
-fn records_input_events(harness: &AgentHarness) -> bool {
-    matches!(
-        harness,
-        AgentHarness::Claude | AgentHarness::Codex | AgentHarness::Agy
-    )
-}
-
 /// Waits for the agent to record input with this hash, reading the event
 /// stream from `after`, and returns as soon as it does.
 async fn wait_for_input_accepted<ReadPage, ReadPageFut>(
@@ -3879,7 +3910,7 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
-            |_, _| async { Ok(None) },
+            |_, _, _| async { Ok(None) },
         ))
         .unwrap();
 
@@ -3898,6 +3929,95 @@ mod test {
         assert_eq!(write_calls.len(), 1);
         assert_eq!(write_calls[0].pane_id, 30);
         assert_eq!(write_calls[0].data, b"\r");
+    }
+
+    #[test]
+    fn send_presses_enter_again_while_idle_claude_has_not_taken_the_input() {
+        // (Claude's status while the input is unconfirmed, Enters expected)
+        for (status, enters) in [
+            (mux::agent::AgentStatus::Idle, 3),
+            (mux::agent::AgentStatus::Busy, 1),
+        ] {
+            let writes = Rc::new(RefCell::new(0usize));
+            let confirms = Rc::new(RefCell::new(0usize));
+            let command = SendAgentCommand {
+                target: "reviewer".to_string(),
+                no_paste: false,
+                no_submit: false,
+                return_final: false,
+                request_id: None,
+                ack_timeout_ms: 10_000,
+                ack_poll_ms: 0,
+                final_timeout_ms: 0,
+                text: Some("fix this".to_string()),
+            };
+            let mut agent = sample_agent(30, "reviewer");
+            agent.metadata.launch_cmd = "claude".to_string();
+            agent.runtime.harness = mux::agent::AgentHarness::Claude;
+            agent.runtime.transport = mux::agent::AgentTransport::ObservedPty;
+            let mut current = agent.clone();
+            current.runtime.status = status.clone();
+
+            let result = promise::spawn::block_on(command.run_with(
+                {
+                    let calls = Rc::new(RefCell::new(0usize));
+                    move || {
+                        let first = {
+                            let mut calls = calls.borrow_mut();
+                            *calls += 1;
+                            *calls == 1
+                        };
+                        let agent = if first {
+                            agent.clone()
+                        } else {
+                            current.clone()
+                        };
+                        async move {
+                            Ok(ListAgentsResponse {
+                                agents: vec![agent],
+                            })
+                        }
+                    }
+                },
+                {
+                    let writes = Rc::clone(&writes);
+                    move |request: WriteToPane| {
+                        assert_eq!(request.data, b"\r");
+                        *writes.borrow_mut() += 1;
+                        async { Ok(UnitResponse {}) }
+                    }
+                },
+                |_: SendPaste| async { Ok(UnitResponse {}) },
+                {
+                    let confirms = Rc::clone(&confirms);
+                    move |_, _, _| {
+                        // Claude takes the input on the third look.
+                        let recorded = {
+                            let mut confirms = confirms.borrow_mut();
+                            *confirms += 1;
+                            *confirms == 3
+                        };
+                        async move {
+                            Ok(Some(AgentSendAcknowledgement {
+                                kind: if recorded {
+                                    AgentAckKind::InputAccepted
+                                } else {
+                                    AgentAckKind::TimedOut
+                                },
+                                acknowledged: recorded,
+                                latency_ms: None,
+                                session_path: None,
+                                detail: None,
+                            }))
+                        }
+                    }
+                },
+            ))
+            .unwrap();
+
+            assert_eq!(*writes.borrow(), enters, "{status:?}");
+            assert!(result.acknowledgement.acknowledged, "{status:?}");
+        }
     }
 
     #[test]
@@ -3940,7 +4060,7 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
-            |_, _| async { Ok(None) },
+            |_, _, _| async { Ok(None) },
         ))
         .unwrap();
 
@@ -3990,7 +4110,7 @@ mod test {
                 }
             },
             |_| async { panic!("send_paste should not be used for gemini") },
-            |_, _| async { Ok(None) },
+            |_, _, _| async { Ok(None) },
         ))
         .unwrap();
 
@@ -4610,7 +4730,7 @@ mod test {
                 }
             },
             |_| async { panic!("send_paste should not be used") },
-            |_, _| async { Ok(None) },
+            |_, _, _| async { Ok(None) },
         ))
         .unwrap();
 
@@ -4659,7 +4779,7 @@ mod test {
                 }
             },
             |_| async { panic!("send_paste should not be used") },
-            |_, _| async { Ok(None) },
+            |_, _, _| async { Ok(None) },
         ))
         .unwrap();
 
@@ -4713,7 +4833,7 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
-            |_, _| async { Ok(None) },
+            |_, _, _| async { Ok(None) },
         ))
         .unwrap();
 

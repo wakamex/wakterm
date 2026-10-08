@@ -714,35 +714,73 @@ impl AgentEventStore {
 impl AgentEventStore {
     /// Waits up to `wait` for a turn of exactly this agent incarnation to start
     /// after `after_sequence`.
-    pub async fn wait_for_turn_started(
+    /// Waits up to `wait` after `after_sequence` for the agent incarnation to
+    /// record input. With `input_sha256`, only input with that hash counts,
+    /// from `input_accepted` or `turn_started`; without it, any turn start
+    /// counts.
+    pub async fn wait_for_input(
         &self,
         agent_id: &str,
         incarnation_id: &str,
+        input_sha256: Option<&str>,
         mut after_sequence: u64,
         wait: Duration,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<InputWait> {
         let deadline = Instant::now() + wait;
+        let mut other_input = false;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let page = self
                 .read_page_wait_async(after_sequence, 256, remaining)
                 .await?;
             if page.status != AgentEventStatus::Ok {
-                return Ok(false);
+                return Ok(InputWait::Unobservable);
             }
-            if page.events.iter().any(|event| {
-                event.kind == AgentEventKind::TurnStarted
-                    && event.agent_id == agent_id
-                    && event.incarnation_id == incarnation_id
-            }) {
-                return Ok(true);
+            for event in &page.events {
+                if event.agent_id != agent_id
+                    || event.incarnation_id != incarnation_id
+                    || !matches!(
+                        event.kind,
+                        AgentEventKind::TurnStarted | AgentEventKind::InputAccepted
+                    )
+                {
+                    continue;
+                }
+                match input_sha256 {
+                    None if event.kind == AgentEventKind::TurnStarted => {
+                        return Ok(InputWait::Recorded)
+                    }
+                    None => {}
+                    Some(sha256) if event.input_sha256.as_deref() == Some(sha256) => {
+                        return Ok(InputWait::Recorded)
+                    }
+                    Some(_) => other_input = true,
+                }
             }
             after_sequence = page.next_after_sequence.unwrap_or(page.latest_sequence);
             if remaining.is_zero() {
-                return Ok(false);
+                return Ok(InputWait::Pending {
+                    after_sequence,
+                    other_input,
+                });
             }
         }
     }
+}
+
+/// The outcome of waiting for an agent to record input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputWait {
+    Recorded,
+    /// Not recorded yet. `other_input` says whether the agent recorded
+    /// different input meanwhile, and the wait can continue after
+    /// `after_sequence`.
+    Pending {
+        after_sequence: u64,
+        other_input: bool,
+    },
+    /// The event stream cannot confirm input.
+    Unobservable,
 }
 
 fn connect_reader(path: &Path) -> anyhow::Result<Connection> {
@@ -3269,14 +3307,19 @@ mod tests {
         let incarnation = crate::agent_admission::incarnation_id(&metadata).unwrap();
         let mut writer = store.writer().unwrap();
         writer.observe_agent(&metadata, &runtime).unwrap();
-        let wait = |after: u64, agent_id: &str, incarnation_id: &str, wait: Duration| {
-            promise::spawn::block_on(store.wait_for_turn_started(
+        let work = crate::agent::message_sha256("work");
+        let wait_for = |after: u64, agent_id: &str, incarnation_id: &str, sha256: &str| {
+            promise::spawn::block_on(store.wait_for_input(
                 agent_id,
                 incarnation_id,
+                Some(sha256),
                 after,
-                wait,
+                Duration::from_millis(50),
             ))
             .unwrap()
+        };
+        let wait = |after: u64, agent_id: &str, incarnation_id: &str, _: Duration| {
+            wait_for(after, agent_id, incarnation_id, &work) == InputWait::Recorded
         };
         let short = Duration::from_millis(50);
 
@@ -3300,6 +3343,20 @@ mod tests {
             short
         ));
         assert!(!wait(before_write, "other-agent", &incarnation, short));
+        // Recorded input with another hash, such as earlier text left in the
+        // input box submitted together with this input, does not confirm it.
+        assert!(matches!(
+            wait_for(
+                before_write,
+                &metadata.agent_id,
+                &incarnation,
+                &crate::agent::message_sha256("other")
+            ),
+            InputWait::Pending {
+                other_input: true,
+                ..
+            }
+        ));
         // A turn that started before the write does not confirm it.
         assert!(!wait(
             store.latest_sequence(),
@@ -3315,13 +3372,15 @@ mod tests {
             let agent_id = metadata.agent_id.clone();
             let incarnation = incarnation.clone();
             thread::spawn(move || {
-                promise::spawn::block_on(store.wait_for_turn_started(
+                promise::spawn::block_on(store.wait_for_input(
                     &agent_id,
                     &incarnation,
+                    Some(&crate::agent::message_sha256("more")),
                     before_second_write,
                     Duration::from_secs(5),
                 ))
                 .unwrap()
+                    == InputWait::Recorded
             })
         };
         thread::sleep(Duration::from_millis(50));

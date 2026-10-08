@@ -1923,8 +1923,14 @@ fn schedule_agent_prompt_admission<SND>(
     .detach();
 }
 
-/// How long a one-way admission waits for the written prompt to start a turn.
+/// How long a one-way admission waits for the agent to record the written
+/// prompt.
 const ADMISSION_TURN_CONFIRMATION: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How long a Claude admission waits for Claude to take the prompt before
+/// pressing Enter again, and how many times it does.
+const CLAUDE_RESUBMIT_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
+const CLAUDE_RESUBMIT_ATTEMPTS: u32 = 3;
 
 /// How long a Claude admission waits after its turn starts for Claude's own
 /// status to record the change.
@@ -2144,16 +2150,15 @@ async fn admit_agent_prompt(
             } else {
                 // Written bytes are not delivery: a harness can drop input, for
                 // example while one of its own dialogs holds keyboard focus.
-                let receipt = match event_store
-                    .wait_for_turn_started(
-                        &request.agent_id,
-                        &request.incarnation_id,
-                        events_before_write,
-                        ADMISSION_TURN_CONFIRMATION,
-                    )
-                    .await
+                let receipt = match confirm_admitted_input(
+                    &candidate,
+                    &event_store,
+                    events_before_write,
+                    written_at,
+                )
+                .await
                 {
-                    Ok(true) => {
+                    Ok(AdmittedInput::Recorded) => {
                         // Claude can record a prompt without working on it.
                         // Its own status must have changed since the write.
                         let metadata = candidate.metadata.clone();
@@ -2185,15 +2190,19 @@ async fn admit_agent_prompt(
                             AgentAdmissionReceipt::accepted(&request, None)
                         }
                     }
-                    Ok(false) => {
-                        let mut receipt = AgentAdmissionReceipt::indeterminate(
-                            &request,
-                            None,
+                    Ok(AdmittedInput::NotRecorded { other_input }) => {
+                        let detail = if other_input {
+                            "prompt was written, but the agent recorded different input instead, \
+                             which may combine this prompt with text already in its input box"
+                                .to_string()
+                        } else {
                             format!(
-                                "prompt was written, but the agent did not start a turn within {} s",
+                                "prompt was written, but the agent did not record it within {} s",
                                 ADMISSION_TURN_CONFIRMATION.as_secs()
-                            ),
-                        );
+                            )
+                        };
+                        let mut receipt =
+                            AgentAdmissionReceipt::indeterminate(&request, None, detail);
                         receipt.prompt_written = Some(true);
                         receipt
                     }
@@ -2248,6 +2257,70 @@ async fn admit_agent_prompt(
                         .await;
                 Ok(receipt)
             }
+        }
+    }
+}
+
+enum AdmittedInput {
+    Recorded,
+    NotRecorded { other_input: bool },
+}
+
+/// Waits for the agent to record an admitted prompt. Harnesses that record
+/// input hashes must record this exact prompt; for the others, a new turn
+/// confirms it. Claude can leave a prompt in its input box, dropping the
+/// Enter that followed it, so while Claude reports itself idle and unchanged
+/// since the write, Enter is pressed again.
+async fn confirm_admitted_input(
+    candidate: &mux::agent_admission::AgentAdmissionCandidate,
+    event_store: &mux::agent_event::AgentEventStore,
+    mut after_sequence: u64,
+    written_at: std::time::SystemTime,
+) -> anyhow::Result<AdmittedInput> {
+    use mux::agent_event::InputWait;
+    let request = &candidate.request;
+    let harness = &candidate.runtime.harness;
+    let input_sha256 = mux::agent::records_input_events(harness)
+        .then(|| mux::agent::message_sha256(&request.prompt));
+    let claude = matches!(harness, mux::agent::AgentHarness::Claude);
+    let deadline = std::time::Instant::now() + ADMISSION_TURN_CONFIRMATION;
+    let mut other_input = false;
+    let mut resubmits = 0;
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let window = if claude && resubmits < CLAUDE_RESUBMIT_ATTEMPTS {
+            remaining.min(CLAUDE_RESUBMIT_AFTER)
+        } else {
+            remaining
+        };
+        match event_store
+            .wait_for_input(
+                &request.agent_id,
+                &request.incarnation_id,
+                input_sha256.as_deref(),
+                after_sequence,
+                window,
+            )
+            .await?
+        {
+            InputWait::Recorded => return Ok(AdmittedInput::Recorded),
+            InputWait::Unobservable => return Ok(AdmittedInput::NotRecorded { other_input }),
+            InputWait::Pending {
+                after_sequence: next,
+                other_input: other,
+            } => {
+                after_sequence = next;
+                other_input |= other;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(AdmittedInput::NotRecorded { other_input });
+        }
+        if claude && resubmits < CLAUDE_RESUBMIT_ATTEMPTS && !other_input {
+            resubmits += 1;
+            Mux::get()
+                .agent_service()
+                .resubmit_admitted_prompt(candidate, written_at)?;
         }
     }
 }

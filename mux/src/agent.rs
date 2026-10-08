@@ -1950,6 +1950,28 @@ fn claude_reported_status(metadata: &AgentMetadata) -> Option<ClaudeReportedStat
     owned.status
 }
 
+/// Whether the harness records each input with its hash in the event stream,
+/// as `input_accepted`.
+pub fn records_input_events(harness: &AgentHarness) -> bool {
+    matches!(
+        harness,
+        AgentHarness::Claude | AgentHarness::Codex | AgentHarness::Agy
+    )
+}
+
+/// Whether Claude still reports the agent's exact process idle, with no
+/// status change since `since`. After a submitted prompt, this means Claude
+/// neither started on it nor opened a dialog, so the prompt is still in its
+/// input box and pressing Enter again submits it.
+pub fn claude_idle_since(metadata: &AgentMetadata, since: std::time::SystemTime) -> bool {
+    claude_reported_status(metadata).is_some_and(|status| {
+        matches!(status.status.as_str(), "idle" | "shell")
+            && status
+                .changed_at
+                .is_some_and(|changed_at| changed_at <= DateTime::<Utc>::from(since))
+    })
+}
+
 /// Whether Claude reports the agent's exact process waiting for the user's
 /// answer to a question, the only dialog it labels `input needed` that a
 /// model turn can open.
@@ -4766,6 +4788,18 @@ mod test {
             launch_supervisor: None,
             codex_app_server: None,
         };
+        // Another Enter is pressed for a written prompt only while Claude
+        // reports the process idle with no status change since the write.
+        let written = std::time::SystemTime::from(at(2));
+        assert!(claude_idle_since(&metadata, written));
+        for (status, second) in [("idle", 3), ("busy", 1), ("waiting", 1)] {
+            set_status(status, at(second));
+            assert!(
+                !claude_idle_since(&metadata, written),
+                "{status} at {second}"
+            );
+        }
+        set_status("idle", at(1));
         let refreshed = |runtime: &mut AgentRuntimeSnapshot| {
             runtime.foreground_process_name = Some("claude".to_string());
             refresh_runtime_from_harness(runtime, &metadata);
