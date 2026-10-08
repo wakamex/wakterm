@@ -1534,8 +1534,24 @@ fn read_new_jsonl(
             break;
         }
         cursor.offset += read as u64;
-        let record: Value = serde_json::from_slice(&line)
-            .with_context(|| format!("parsing provider record at byte {start}"))?;
+        let record: Value = match serde_json::from_slice(&line) {
+            Ok(record) => record,
+            Err(err) => {
+                // A complete line never becomes valid later, for example when
+                // a write cut short by a full disk ran into the next record.
+                // Skip it like an oversized record rather than retrying it on
+                // every observation.
+                cursor.current_turn_id = None;
+                cursor.last_assistant_text = None;
+                events.push(observer_failure(
+                    format!("{}:{start}:invalid-record", cursor.source_id),
+                    Utc::now(),
+                    None,
+                    &format!("provider record at byte {start} is not valid JSON ({err}); skipped {read} bytes and resumed at the next record; turn attribution was cleared"),
+                ));
+                continue;
+            }
+        };
         events.extend(visit(start, &record, cursor)?);
     }
     cursor.checkpoint_sha256 = checkpoint_sha256(path, cursor.offset)?;
@@ -3893,6 +3909,60 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn invalid_complete_provider_line_is_reported_once_and_skipped() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"mode\",\"sessionId\":\"session-claude\"}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("claude");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        // A write cut short by a full disk, with the next record appended to
+        // the same line.
+        append(
+            &session,
+            concat!(
+                "{\"parentUuid\":\"a\",\"command\":\"cat runs-{\"parentUuid\":\"b\",\"type\":\"system\"}\n",
+                "{\"type\":\"user\",\"uuid\":\"turn-after\",\"sessionId\":\"session-claude\",",
+                "\"timestamp\":\"2026-10-08T02:51:00Z\",\"message\":{\"content\":\"after the gap\"}}\n"
+            ),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+
+        let page = store.read_page(after, 100).unwrap();
+        let failures = page
+            .events
+            .iter()
+            .filter(|event| event.kind == AgentEventKind::ObserverFailure)
+            .collect::<Vec<_>>();
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0]
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("not valid JSON")
+                && detail.contains("resumed at the next record")));
+        assert!(page
+            .events
+            .iter()
+            .any(|event| event.kind == AgentEventKind::InputAccepted
+                && event.input_sha256.as_deref()
+                    == Some(crate::agent::message_sha256("after the gap").as_str())));
+
+        let last = page.latest_sequence;
+        store.observe_agent(&metadata, &runtime).unwrap();
+        assert!(store.read_page(last, 100).unwrap().events.is_empty());
     }
 
     #[test]
