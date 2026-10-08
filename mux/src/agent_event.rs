@@ -124,6 +124,24 @@ struct JsonlCursor {
     /// `turn_started` can carry the input's hash.
     #[serde(default)]
     pending_turn_start: Option<PendingTurnStart>,
+    /// Claude's `promptId` for the current turn, which Claude repeats on the
+    /// turn's tool results.
+    #[serde(default)]
+    current_prompt_id: Option<String>,
+    /// The turn that was current when a record was skipped. A Claude tool
+    /// result with that turn's `promptId` shows the turn continued past the
+    /// skipped record and restores it.
+    #[serde(default)]
+    turn_before_gap: Option<String>,
+}
+
+impl JsonlCursor {
+    fn suspend_turn_at_gap(&mut self) {
+        if let Some(turn_id) = self.current_turn_id.take() {
+            self.turn_before_gap = Some(turn_id);
+        }
+        self.last_assistant_text = None;
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1403,7 +1421,7 @@ fn initial_jsonl_cursor(
     source_id: String,
 ) -> anyhow::Result<JsonlCursor> {
     let offset = complete_jsonl_tail(path)?;
-    let current_turn_id = latest_jsonl_turn_id(path, provider, &source_id)?;
+    let (current_turn_id, current_prompt_id) = latest_jsonl_turn(path, provider, &source_id)?;
     Ok(JsonlCursor {
         source_id,
         offset,
@@ -1412,6 +1430,8 @@ fn initial_jsonl_cursor(
         last_assistant_text: None,
         turn_open: false,
         pending_turn_start: None,
+        current_prompt_id,
+        turn_before_gap: None,
     })
 }
 
@@ -1441,13 +1461,15 @@ fn complete_jsonl_tail(path: &Path) -> anyhow::Result<u64> {
     }
 }
 
-fn latest_jsonl_turn_id(
+/// The latest turn ID in a provider session, with Claude's `promptId` for it.
+fn latest_jsonl_turn(
     path: &Path,
     provider: &str,
     source_id: &str,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<(Option<String>, Option<String>)> {
     let reader = BufReader::new(fs::File::open(path)?);
     let mut current = None;
+    let mut prompt_id = None;
     for line in reader.lines() {
         let record: Value = match serde_json::from_str(&line?) {
             Ok(record) => record,
@@ -1464,6 +1486,10 @@ fn latest_jsonl_turn_id(
                     .get("uuid")
                     .and_then(Value::as_str)
                     .map(str::to_string);
+                prompt_id = record
+                    .get("promptId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
             }
             "agy" if record.get("type").and_then(Value::as_str) == Some("USER_INPUT") => {
                 current = agy_turn_id(source_id, &record);
@@ -1471,7 +1497,7 @@ fn latest_jsonl_turn_id(
             _ => {}
         }
     }
-    Ok(current)
+    Ok((current, prompt_id))
 }
 
 fn read_new_jsonl(
@@ -1520,8 +1546,7 @@ fn read_new_jsonl(
             cursor.offset += consumed;
             // The skipped record might contain a new turn or an assistant
             // message. Require fresh identity instead of reusing stale context.
-            cursor.current_turn_id = None;
-            cursor.last_assistant_text = None;
+            cursor.suspend_turn_at_gap();
             events.push(observer_failure(
                 format!("{}:{start}:oversized-record", cursor.source_id),
                 Utc::now(),
@@ -1541,8 +1566,7 @@ fn read_new_jsonl(
                 // a write cut short by a full disk ran into the next record.
                 // Skip it like an oversized record rather than retrying it on
                 // every observation.
-                cursor.current_turn_id = None;
-                cursor.last_assistant_text = None;
+                cursor.suspend_turn_at_gap();
                 events.push(observer_failure(
                     format!("{}:{start}:invalid-record", cursor.source_id),
                     Utc::now(),
@@ -1828,6 +1852,11 @@ fn project_claude(
                 )]);
             };
             cursor.current_turn_id = Some(turn_id.clone());
+            cursor.current_prompt_id = record
+                .get("promptId")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            cursor.turn_before_gap = None;
             cursor.last_assistant_text = None;
             cursor.turn_open = true;
             let mut started = PendingEvent::new(
@@ -1858,6 +1887,19 @@ fn project_claude(
                 .into_iter()
                 .flatten()
                 .collect());
+        }
+        // After a skipped record, the first tool result that names a prompt
+        // shows whether the earlier turn continued or a new one started.
+        if let Some(prompt_id) = record
+            .get("promptId")
+            .and_then(Value::as_str)
+            .filter(|_| record.get("type").and_then(Value::as_str) == Some("user"))
+        {
+            if let Some(turn_id) = cursor.turn_before_gap.take() {
+                if cursor.current_prompt_id.as_deref() == Some(prompt_id) {
+                    cursor.current_turn_id = Some(turn_id);
+                }
+            }
         }
         // Input typed while a turn runs is queued into it, and recorded the
         // moment Claude shows it queued. Background task notifications are
@@ -3963,6 +4005,73 @@ mod tests {
         let last = page.latest_sequence;
         store.observe_agent(&metadata, &runtime).unwrap();
         assert!(store.read_page(last, 100).unwrap().events.is_empty());
+    }
+
+    #[test]
+    fn claude_turn_resumes_after_a_skipped_line_when_its_prompt_continues() {
+        // (prompt of the tool result after the gap, turn expected for the final)
+        for (tool_prompt, expected_turn) in [("prompt-1", Some("turn-1")), ("prompt-2", None)] {
+            let temp = TempDir::new().unwrap();
+            let session = temp.path().join("claude.jsonl");
+            fs::write(
+                &session,
+                "{\"type\":\"mode\",\"sessionId\":\"session-claude\"}\n",
+            )
+            .unwrap();
+            let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+            let metadata = metadata("claude");
+            let runtime = runtime(
+                &metadata,
+                AgentHarness::Claude,
+                session.to_string_lossy().into(),
+            );
+            store.observe_agent(&metadata, &runtime).unwrap();
+            let after = store.latest_sequence();
+            let line = |value: serde_json::Value| value.to_string() + "\n";
+            let assistant = |uuid: &str, stop: &str, text: &str| {
+                line(
+                    serde_json::json!({"type":"assistant","uuid":uuid,"sessionId":"session-claude",
+                    "timestamp":"2026-10-07T21:30:00Z","message":{"id":uuid,"model":"claude",
+                    "stop_reason":stop,"content":[{"type":"text","text":text}]}}),
+                )
+            };
+            append(
+                &session,
+                &[
+                    line(serde_json::json!({"type":"user","uuid":"turn-1","promptId":"prompt-1",
+                        "sessionId":"session-claude","timestamp":"2026-10-07T21:29:00Z",
+                        "message":{"content":"work"}})),
+                    assistant("before-gap", "tool_use", "checking"),
+                    "{\"parentUuid\":\"a\",\"command\":\"cat runs-{\"parentUuid\":\"b\"}\n".to_string(),
+                    assistant("after-gap", "tool_use", "still checking"),
+                    line(serde_json::json!({"type":"user","uuid":"tool-result","promptId":tool_prompt,
+                        "sessionId":"session-claude","timestamp":"2026-10-07T21:31:00Z",
+                        "message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}})),
+                    assistant("final", "end_turn", "done"),
+                ]
+                .concat(),
+            );
+            store.observe_agent(&metadata, &runtime).unwrap();
+
+            let events = store.read_page(after, 100).unwrap().events;
+            let missing_turn = |event: &AgentEvent| {
+                event.kind == AgentEventKind::ObserverFailure
+                    && event
+                        .detail
+                        .as_deref()
+                        .is_some_and(|detail| detail.contains("lacks an exact provider turn id"))
+            };
+            // The reply between the gap and the tool result has no known turn.
+            assert!(events.iter().any(missing_turn), "{tool_prompt}");
+            let final_turn = events
+                .iter()
+                .find(|event| event.kind == AgentEventKind::TurnFinal)
+                .and_then(|event| event.turn_id.as_deref());
+            assert_eq!(final_turn, expected_turn, "{tool_prompt}");
+            if expected_turn.is_none() {
+                assert_eq!(events.iter().filter(|event| missing_turn(event)).count(), 2);
+            }
+        }
     }
 
     #[test]
