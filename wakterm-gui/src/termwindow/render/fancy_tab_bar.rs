@@ -51,50 +51,18 @@ const ATTENTION_DOT: &[Poly] = &[Poly {
     style: PolyStyle::Fill,
 }];
 
-/// How much of a cut title, in cells, fades into the tab's background, and
-/// how many cells of a cut title remain at least.
-const TITLE_FADE_CELLS: f32 = 1.5;
+/// How far toward the tab's background each of a cut title's last
+/// characters is drawn, and how many cells of a cut title remain at least.
+const TITLE_FADE_STEPS: [f32; 2] = [0.45, 0.75];
 const MIN_SHRUNK_TITLE_CELLS: f32 = 3.;
 
-/// Bands of the tab background, from transparent to opaque, drawn over the
-/// end of a cut title.
-const TITLE_FADE: &[Poly] = &[
-    fade_band(0, BlockAlpha::Light),
-    fade_band(1, BlockAlpha::Medium),
-    fade_band(2, BlockAlpha::Dark),
-    fade_band(3, BlockAlpha::Full),
-];
-
-const fn fade_band(index: i8, intensity: BlockAlpha) -> Poly {
-    Poly {
-        path: match index {
-            0 => &FADE_BAND_PATHS[0],
-            1 => &FADE_BAND_PATHS[1],
-            2 => &FADE_BAND_PATHS[2],
-            _ => &FADE_BAND_PATHS[3],
-        },
-        intensity,
-        style: PolyStyle::Fill,
-    }
-}
-
-const FADE_BAND_PATHS: [[PolyCommand; 5]; 4] = [
-    fade_band_path(0),
-    fade_band_path(1),
-    fade_band_path(2),
-    fade_band_path(3),
-];
-
-const fn fade_band_path(index: i8) -> [PolyCommand; 5] {
-    let left = BlockCoord::Frac(index, 4);
-    let right = BlockCoord::Frac(index + 1, 4);
-    [
-        PolyCommand::MoveTo(left, BlockCoord::Zero),
-        PolyCommand::LineTo(right, BlockCoord::Zero),
-        PolyCommand::LineTo(right, BlockCoord::One),
-        PolyCommand::LineTo(left, BlockCoord::One),
-        PolyCommand::Close,
-    ]
+fn mix(from: LinearRgba, to: LinearRgba, k: f32) -> LinearRgba {
+    LinearRgba(
+        from.0 + k * (to.0 - from.0),
+        from.1 + k * (to.1 - from.1),
+        from.2 + k * (to.2 - from.2),
+        from.3 + k * (to.3 - from.3),
+    )
 }
 
 static ATTENTION_PULSE_START: LazyLock<Instant> = LazyLock::new(Instant::now);
@@ -125,17 +93,56 @@ impl crate::TermWindow {
 
     pub fn build_fancy_tab_bar(&self, palette: &ColorPalette) -> anyhow::Result<ComputedElement> {
         let items = self.tab_bar.items();
-        let computed = self.layout_fancy_tab_bar(palette, items, &[])?;
+        let full = self.layout_fancy_tab_bar(palette, items, &[])?;
         if !self.config.tab_titles_shrink_to_fit {
-            return Ok(computed);
+            return Ok(full);
         }
-        match self.shrink_tab_titles(items, &computed.ui_items())? {
-            Some((shrunk, faded)) => self.layout_fancy_tab_bar(palette, &shrunk, &faded),
-            None => Ok(computed),
+        let full_ui_items = full.ui_items();
+        // The shared width comes from an estimate of the space the tabs
+        // take; whatever still overflows after layout is measured and taken
+        // off the space before the next pass.
+        let mut computed = full;
+        let mut slack = 0.;
+        for _ in 0..3 {
+            let Some((shrunk, faded)) = self.shrink_tab_titles(items, &full_ui_items, slack)?
+            else {
+                break;
+            };
+            computed = self.layout_fancy_tab_bar(palette, &shrunk, &faded)?;
+            let overflow = self.tab_overflow(&computed.ui_items());
+            if overflow <= 0. {
+                break;
+            }
+            slack += overflow;
         }
+        Ok(computed)
     }
 
-    /// Shortens tab titles when the tabs overflow the tab bar. Every title
+    /// How far, in pixels, the tabs and the new tab button reach past the
+    /// space the tab bar leaves them: its right edge, or the leftmost item
+    /// placed at the right, such as the window buttons.
+    fn tab_overflow(&self, ui_items: &[UIItem]) -> f32 {
+        let border = self.get_os_border();
+        let bar_right = (self.dimensions.pixel_width - border.right.get()) as f32;
+        let mut tabs_right = 0f32;
+        let mut limit = bar_right;
+        for item in ui_items {
+            let right = (item.x + item.width) as f32;
+            match &item.item_type {
+                UIItemType::TabBar(TabBarItem::Tab { .. } | TabBarItem::NewTabButton) => {
+                    tabs_right = tabs_right.max(right)
+                }
+                UIItemType::TabBar(TabBarItem::RightStatus | TabBarItem::WindowButton(_)) => {
+                    limit = limit.min(item.x as f32)
+                }
+                _ => {}
+            }
+        }
+        tabs_right - limit
+    }
+
+    /// Shortens tab titles when the tabs overflow the tab bar, with `slack`
+    /// pixels fewer than the tabs appear to have. Every title
     /// longer than a shared width is cut to that width, and shorter titles
     /// stay whole, using the largest width at which the tabs fit. Each cut
     /// title keeps at least a few characters; tabs that still do not fit
@@ -145,6 +152,7 @@ impl crate::TermWindow {
         &self,
         items: &[TabEntry],
         ui_items: &[UIItem],
+        slack: f32,
     ) -> anyhow::Result<Option<(Vec<TabEntry>, Vec<usize>)>> {
         let font = self.fonts.title_font()?;
         let metrics = RenderMetrics::with_font_metrics(&font.metrics());
@@ -171,7 +179,8 @@ impl crate::TermWindow {
             return Ok(None);
         };
         // A cell of slack absorbs margins that no item reports.
-        let available = border.left.get() as f32 + bar_width - first_x - other_width - cell_width;
+        let available =
+            border.left.get() as f32 + bar_width - first_x - other_width - cell_width - slack;
         if tabs.iter().map(|(_, _, width)| width).sum::<f32>() <= available {
             return Ok(None);
         }
@@ -327,41 +336,42 @@ impl crate::TermWindow {
                         .unwrap_or(InheritableColor::Inherited),
                 })
             };
-            // A cut title fades into the tab's background at its end.
-            let fade_title = |title: Element, tab_idx: usize, bg: LinearRgba| {
+            // A cut title fades into the tab's background over its last
+            // characters, which are drawn in colors between the two.
+            let fade_title = |title: Element, tab_idx: usize, text: LinearRgba, bg: LinearRgba| {
                 if !faded.contains(&tab_idx) {
                     return title;
                 }
-                let width = metrics.cell_size.width as f32 * TITLE_FADE_CELLS;
-                Element::new(
+                let content = item.title.as_str().into_owned();
+                let tail_start = content
+                    .char_indices()
+                    .rev()
+                    .nth(TITLE_FADE_STEPS.len() - 1)
+                    .map(|(index, _)| index)
+                    .unwrap_or(0);
+                let mut parts = vec![Element::new(
                     &font,
-                    ElementContent::Children(vec![
-                        title,
-                        Element::new(
-                            &font,
-                            ElementContent::Poly {
-                                line_width: 1,
-                                poly: SizedPoly {
-                                    poly: TITLE_FADE,
-                                    width: Dimension::Pixels(width),
-                                    height: Dimension::Pixels(metrics.cell_size.height as f32),
-                                },
-                            },
-                        )
-                        .vertical_align(VerticalAlign::Middle)
-                        .margin(BoxDimension {
-                            left: Dimension::Pixels(-width),
-                            right: Dimension::Cells(0.),
-                            top: Dimension::Cells(0.),
-                            bottom: Dimension::Cells(0.),
-                        })
-                        .colors(ElementColors {
-                            border: BorderColor::default(),
-                            bg: InheritableColor::Inherited,
-                            text: bg.into(),
-                        }),
-                    ]),
+                    ElementContent::Text(content[..tail_start].to_string()),
                 )
+                .colors(ElementColors {
+                    border: BorderColor::default(),
+                    bg: InheritableColor::Inherited,
+                    text: text.into(),
+                })];
+                let tail = content[tail_start..].chars();
+                let steps = &TITLE_FADE_STEPS[TITLE_FADE_STEPS.len() - tail.clone().count()..];
+                for (c, step) in tail.zip(steps) {
+                    parts.push(
+                        Element::new(&font, ElementContent::Text(c.to_string())).colors(
+                            ElementColors {
+                                border: BorderColor::default(),
+                                bg: InheritableColor::Inherited,
+                                text: mix(text, bg, *step).into(),
+                            },
+                        ),
+                    );
+                }
+                Element::new(&font, ElementContent::Children(parts))
             };
             let wrap_icon_title = |title: Element, icon_count: usize| {
                 Element::new(
@@ -461,7 +471,7 @@ impl crate::TermWindow {
                     } else {
                         Some(resolved_text)
                     });
-                    let title = fade_title(title, tab_idx, resolved_bg);
+                    let title = fade_title(title, tab_idx, resolved_text, resolved_bg);
                     let element = if !item.icons.is_empty() {
                         wrap_icon_title(title, item.icons.len())
                     } else {
@@ -539,7 +549,7 @@ impl crate::TermWindow {
                     } else {
                         Some(text)
                     });
-                    let title = fade_title(title, tab_idx, bg);
+                    let title = fade_title(title, tab_idx, text, bg);
                     let element = if !item.icons.is_empty() {
                         wrap_icon_title(title, item.icons.len())
                     } else {
