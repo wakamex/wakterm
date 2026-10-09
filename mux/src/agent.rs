@@ -1959,6 +1959,67 @@ pub fn records_input_events(harness: &AgentHarness) -> bool {
     )
 }
 
+/// Why the agent's exact Claude process must keep running while idle, or
+/// None when it can be frozen. Freezing is safe only when every wakeup
+/// reaches Claude as input through Wakterm: Claude reports itself idle with
+/// no background task, no Remote Control session, no socket for messages
+/// from other Claude sessions, and its own timers turned off in its
+/// settings.
+pub fn claude_freeze_blocker(metadata: &AgentMetadata) -> Option<&'static str> {
+    let Some(status) = claude_reported_status(metadata) else {
+        return Some("Claude reports no status for the process");
+    };
+    if status.status != "idle" {
+        return Some("Claude is not idle");
+    }
+    if status.remote_control {
+        return Some("a Remote Control session is connected");
+    }
+    if status.peer_messaging {
+        return Some("Claude accepts messages from other Claude sessions");
+    }
+    if !claude_timers_disabled(Path::new(&normalize_declared_cwd(&metadata.declared_cwd))) {
+        return Some("Claude's own timers are not turned off in its settings");
+    }
+    None
+}
+
+/// Whether Claude's settings turn off its scheduled tasks, with
+/// CLAUDE_CODE_DISABLE_CRON=1 in their env, and deny ScheduleWakeup, for a
+/// session in `cwd`. Project settings override user settings for the env
+/// variable; a deny rule in any of them applies.
+fn claude_timers_disabled(cwd: &Path) -> bool {
+    let Some(config_dir) =
+        claude_sessions_root().and_then(|root| root.parent().map(Path::to_path_buf))
+    else {
+        return false;
+    };
+    let settings = [
+        config_dir.join("settings.json"),
+        cwd.join(".claude").join("settings.json"),
+        cwd.join(".claude").join("settings.local.json"),
+    ]
+    .into_iter()
+    .filter_map(|path| serde_json::from_slice::<Value>(&fs::read(path).ok()?).ok())
+    .collect::<Vec<_>>();
+    let cron_disabled = settings
+        .iter()
+        .filter_map(|settings| settings.pointer("/env/CLAUDE_CODE_DISABLE_CRON"))
+        .last()
+        .is_some_and(|value| matches!(value.as_str(), Some("1" | "true")));
+    let wakeup_denied = settings.iter().any(|settings| {
+        settings
+            .pointer("/permissions/deny")
+            .and_then(Value::as_array)
+            .is_some_and(|rules| {
+                rules
+                    .iter()
+                    .any(|rule| rule.as_str() == Some("ScheduleWakeup"))
+            })
+    });
+    cron_disabled && wakeup_denied
+}
+
 /// Whether Claude still reports the agent's exact process idle, with no
 /// status change since `since`. After a submitted prompt, this means Claude
 /// neither started on it nor opened a dialog, so the prompt is still in its
@@ -2079,6 +2140,11 @@ struct ClaudeReportedStatus {
     waiting_for: Option<String>,
     /// When the status last changed.
     changed_at: Option<DateTime<Utc>>,
+    /// Whether a Remote Control session is connected.
+    remote_control: bool,
+    /// Whether the process accepts messages from other Claude sessions on
+    /// its own socket.
+    peer_messaging: bool,
 }
 
 /// The session a stopped or dead background job was running.
@@ -2223,6 +2289,12 @@ fn claude_session_owned_by_process(
                             .get("statusUpdatedAt")
                             .and_then(Value::as_i64)
                             .and_then(DateTime::<Utc>::from_timestamp_millis),
+                        remote_control: record
+                            .get("bridgeSessionId")
+                            .is_some_and(|id| !id.is_null()),
+                        peer_messaging: record
+                            .get("messagingSocketPath")
+                            .is_some_and(|path| !path.is_null()),
                     }
                 });
                 (Some(session_id.to_string()), parked, status)
@@ -5141,6 +5213,46 @@ mod test {
             serde_json::to_string(&AgentOrigin::Managed).unwrap(),
             r#""managed""#
         );
+    }
+
+    #[test]
+    fn claude_timers_count_as_off_only_with_cron_disabled_and_wakeups_denied() {
+        let _env = env_lock();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        set_env_path("WAKTERM_AGENT_CLAUDE_DIR", &home.path().join("projects"));
+        let write = |path: PathBuf, value: serde_json::Value| {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, value.to_string()).unwrap();
+        };
+        let user = home.path().join("settings.json");
+        let local = project.path().join(".claude").join("settings.local.json");
+        let disabled = || claude_timers_disabled(project.path());
+
+        assert!(!disabled());
+        write(
+            user.clone(),
+            serde_json::json!({"env": {"CLAUDE_CODE_DISABLE_CRON": "1"}}),
+        );
+        assert!(!disabled(), "ScheduleWakeup is still allowed");
+        write(
+            user.clone(),
+            serde_json::json!({"env": {"CLAUDE_CODE_DISABLE_CRON": "1"},
+                "permissions": {"deny": ["Bash(rm:*)", "ScheduleWakeup"]}}),
+        );
+        assert!(disabled());
+        // Project settings override the user's env variable.
+        write(
+            local.clone(),
+            serde_json::json!({"env": {"CLAUDE_CODE_DISABLE_CRON": "0"}}),
+        );
+        assert!(!disabled());
+        write(
+            local,
+            serde_json::json!({"permissions": {"allow": ["ScheduleWakeup"]}}),
+        );
+        assert!(disabled(), "a deny rule wins over an allow rule");
+        remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
     }
 
     fn set_env_path(key: &str, path: &Path) {

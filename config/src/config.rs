@@ -555,6 +555,12 @@ pub struct Config {
     #[dynamic(default = "default_tab_max_width")]
     pub tab_max_width: usize,
 
+    /// Freeze idle Claude agents that are safe to freeze after 30 seconds
+    /// without input, so the operating system can page out their memory,
+    /// and thaw them before input reaches them. Linux only.
+    #[dynamic(default)]
+    pub agent_idle_freeze: bool,
+
     /// When the fancy tab bar's tabs do not fit, cut the longest titles to a
     /// shared width, fading them out at the end, so that every tab fits.
     #[dynamic(default = "default_true")]

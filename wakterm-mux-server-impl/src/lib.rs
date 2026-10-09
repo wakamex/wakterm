@@ -5,6 +5,7 @@ use mux::Mux;
 use std::sync::Arc;
 use wakterm_client::domain::{ClientDomain, ClientDomainConfig};
 
+pub mod agent_freezing;
 pub mod agent_reminders;
 pub mod dispatch;
 pub mod local;

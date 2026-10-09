@@ -440,6 +440,8 @@ impl Pane for LocalPane {
     }
 
     fn resize(&self, size: TerminalSize) -> Result<(), Error> {
+        // A frozen agent would keep showing its old layout.
+        Mux::get().thaw_agent_pane(self.pane_id);
         self.pty.lock().resize(PtySize {
             rows: size.rows.try_into()?,
             cols: size.cols.try_into()?,
@@ -547,6 +549,11 @@ impl Pane for LocalPane {
     }
 
     fn focus_changed(&self, focused: bool) {
+        // Thaw on focus, so that a frozen agent is running again before the
+        // user types.
+        if focused {
+            Mux::get().thaw_agent_pane(self.pane_id);
+        }
         self.terminal.lock().focus_changed(focused);
     }
 

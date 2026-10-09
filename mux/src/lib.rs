@@ -54,6 +54,7 @@ pub mod agent;
 pub mod agent_admission;
 pub mod agent_approval;
 pub mod agent_event;
+pub mod agent_freeze;
 pub mod agent_reminder;
 pub mod agent_request;
 pub mod agent_service;
@@ -221,6 +222,11 @@ pub struct Mux {
     pending_agent_approvals: RwLock<HashMap<String, agent_approval::PendingAgentApproval>>,
     agent_output_reader: agent_service::AgentOutputReader,
     agent_input_by_pane: RwLock<HashMap<PaneId, AgentPaneInput>>,
+    /// The process of each frozen agent pane.
+    frozen_agents: Mutex<HashMap<PaneId, u32>>,
+    /// When the mux started freezing idle agents, which counts as their
+    /// latest input until they get some.
+    agent_freeze_started: Mutex<Option<Instant>>,
     agent_attention_seen_at: RwLock<HashMap<PaneId, DateTime<Utc>>>,
     windows: RwLock<HashMap<WindowId, Window>>,
     default_domain: RwLock<Option<Arc<dyn Domain>>>,
@@ -633,7 +639,12 @@ impl AgentArtifactWatcherState {
 struct AgentPaneInput {
     generation: u64,
     last_kind: &'static str,
+    /// When the latest input was counted.
+    at: Option<Instant>,
 }
+
+/// How long an idle agent must go without input before it is frozen.
+const AGENT_FREEZE_AFTER: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 struct AgentObserverRequest {
@@ -1344,6 +1355,8 @@ impl Mux {
             pending_agent_approvals: RwLock::new(HashMap::new()),
             agent_output_reader,
             agent_input_by_pane: RwLock::new(HashMap::new()),
+            frozen_agents: Mutex::new(HashMap::new()),
+            agent_freeze_started: Mutex::new(None),
             agent_attention_seen_at: RwLock::new(HashMap::new()),
             windows: RwLock::new(HashMap::new()),
             default_domain: RwLock::new(default_domain),
@@ -3532,10 +3545,76 @@ impl Mux {
         if self.get_agent_metadata_for_pane(pane_id).is_none() {
             return;
         }
+        // Input reaches the program right after this, so a frozen agent
+        // must be running again first.
+        self.thaw_agent_pane(pane_id);
         let mut inputs = self.agent_input_by_pane.write();
         let input = inputs.entry(pane_id).or_default();
         input.generation += 1;
         input.last_kind = kind;
+        input.at = Some(Instant::now());
+    }
+
+    /// Thaws the agent in the pane if it is frozen.
+    pub fn thaw_agent_pane(&self, pane_id: PaneId) {
+        let Some(pid) = self.frozen_agents.lock().remove(&pane_id) else {
+            return;
+        };
+        match agent_freeze::thaw(pid) {
+            Ok(()) => log::debug!("thawed agent process {pid} in pane {pane_id}"),
+            Err(err) => log::warn!("thawing agent process {pid} in pane {pane_id}: {err:#}"),
+        }
+    }
+
+    /// Freezes the idle Claude agents that are safe to freeze and had no
+    /// input for `AGENT_FREEZE_AFTER`, when `agent_idle_freeze` is on.
+    pub fn freeze_idle_agents(&self) {
+        if !config::configuration().agent_idle_freeze || !agent_freeze::supported() {
+            return;
+        }
+        let started = *self.agent_freeze_started.lock().get_or_insert_with(|| {
+            if let Err(err) = agent_freeze::thaw_leftovers() {
+                log::warn!("thawing agents frozen by an earlier mux: {err:#}");
+            }
+            Instant::now()
+        });
+        let claude_panes: Vec<PaneId> = self
+            .agent_runtime_by_pane
+            .read()
+            .iter()
+            .filter(|(_, runtime)| runtime.alive && runtime.harness == AgentHarness::Claude)
+            .map(|(pane_id, _)| *pane_id)
+            .collect();
+        for pane_id in claude_panes {
+            if self.frozen_agents.lock().contains_key(&pane_id) {
+                continue;
+            }
+            let last_input = self
+                .agent_input_by_pane
+                .read()
+                .get(&pane_id)
+                .and_then(|input| input.at)
+                .unwrap_or(started);
+            if last_input.elapsed() < AGENT_FREEZE_AFTER {
+                continue;
+            }
+            let Some(metadata) = self.get_agent_metadata_for_pane(pane_id) else {
+                continue;
+            };
+            let Some(pid) = metadata.adopted_pid else {
+                continue;
+            };
+            if crate::agent::claude_freeze_blocker(&metadata).is_some() {
+                continue;
+            }
+            match agent_freeze::freeze(pid) {
+                Ok(()) => {
+                    self.frozen_agents.lock().insert(pane_id, pid);
+                    log::debug!("froze idle agent process {pid} in pane {pane_id}");
+                }
+                Err(err) => log::warn!("freezing agent process {pid} in pane {pane_id}: {err:#}"),
+            }
+        }
     }
 
     pub(crate) fn agent_input_generation(&self, pane_id: PaneId) -> u64 {

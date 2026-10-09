@@ -721,6 +721,7 @@ fn setup_mux(
     crate::update::load_last_release_info_and_set_banner();
     update_mux_domains(config)?;
     wakterm_mux_server_impl::agent_reminders::start();
+    wakterm_mux_server_impl::agent_freezing::start();
 
     let default_name =
         default_domain_name.unwrap_or(config.default_domain.as_deref().unwrap_or("local"));
