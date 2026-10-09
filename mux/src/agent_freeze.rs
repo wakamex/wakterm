@@ -5,6 +5,11 @@
 //! moves into a child of the mux's own cgroup, which is frozen. Unlike
 //! SIGSTOP, this sends no signal, so the job-control shell the agent runs
 //! under does not see it stop and keeps the terminal with it.
+//!
+//! On Windows the process is suspended with NtSuspendProcess, which shells
+//! do not observe, and its working set is trimmed so its memory goes to the
+//! page file at once. The suspended processes are listed in a file, so that
+//! a mux that starts after a crash resumes them.
 
 /// Freezes the process.
 pub fn freeze(pid: u32) -> anyhow::Result<()> {
@@ -97,7 +102,108 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+mod imp {
+    use anyhow::Context;
+    use ntapi::ntpsapi::{NtResumeProcess, NtSuspendProcess};
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+    use winapi::um::handleapi::CloseHandle;
+    use winapi::um::processthreadsapi::OpenProcess;
+    use winapi::um::psapi::EmptyWorkingSet;
+    use winapi::um::winnt::{
+        HANDLE, PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA, PROCESS_SUSPEND_RESUME,
+    };
+
+    struct Process(HANDLE);
+
+    impl Drop for Process {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+
+    fn open(pid: u32) -> std::io::Result<Process> {
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_SUSPEND_RESUME | PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA,
+                0,
+                pid,
+            )
+        };
+        if handle.is_null() {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(Process(handle))
+        }
+    }
+
+    /// The file listing the processes this mux suspended.
+    fn list_path() -> PathBuf {
+        config::DATA_DIR.join("frozen-agents.txt")
+    }
+
+    fn listed() -> BTreeSet<u32> {
+        std::fs::read_to_string(list_path())
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.trim().parse().ok())
+            .collect()
+    }
+
+    fn set_listed(pid: u32, frozen: bool) -> anyhow::Result<()> {
+        let mut pids = listed();
+        if frozen {
+            pids.insert(pid);
+        } else {
+            pids.remove(&pid);
+        }
+        let text: String = pids.iter().map(|pid| format!("{pid}\n")).collect();
+        std::fs::write(list_path(), text).context("recording frozen agent processes")
+    }
+
+    pub fn supported() -> bool {
+        true
+    }
+
+    pub fn freeze(pid: u32) -> anyhow::Result<()> {
+        let process = open(pid).with_context(|| format!("opening process {pid}"))?;
+        // Listed first, so that a crash right after suspending still
+        // leaves a record to resume it from.
+        set_listed(pid, true)?;
+        let status = unsafe { NtSuspendProcess(process.0) };
+        if status < 0 {
+            set_listed(pid, false)?;
+            anyhow::bail!("suspending process {pid} failed with status {status:#x}");
+        }
+        unsafe {
+            EmptyWorkingSet(process.0);
+        }
+        Ok(())
+    }
+
+    pub fn thaw(pid: u32) -> anyhow::Result<()> {
+        // A process that exited cannot be opened, and needs no resuming.
+        if let Ok(process) = open(pid) {
+            let status = unsafe { NtResumeProcess(process.0) };
+            if status < 0 {
+                anyhow::bail!("resuming process {pid} failed with status {status:#x}");
+            }
+        }
+        set_listed(pid, false)
+    }
+
+    pub fn thaw_leftovers() -> anyhow::Result<()> {
+        for pid in listed() {
+            thaw(pid)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 mod imp {
     pub fn supported() -> bool {
         false
