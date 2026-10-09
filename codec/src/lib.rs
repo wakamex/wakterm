@@ -578,6 +578,12 @@ pdu! {
     ResolveAgentApproval: 101,
     ResolveAgentApprovalResponse: 102,
     SubmitTypedInput: 103,
+    CreateAgentReminder: 104,
+    AgentReminderResponse: 105,
+    ListAgentReminders: 106,
+    ListAgentRemindersResponse: 107,
+    CancelAgentReminder: 108,
+    CancelAgentReminderResponse: 109,
 }
 
 impl Pdu {
@@ -1033,6 +1039,34 @@ pub struct SpawnResponse {
 pub struct WriteToPane {
     pub pane_id: PaneId,
     pub data: Vec<u8>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct CreateAgentReminder {
+    pub reminder: mux::agent_reminder::AgentReminder,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct AgentReminderResponse {
+    pub reminder: mux::agent_reminder::AgentReminder,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ListAgentReminders {}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct ListAgentRemindersResponse {
+    pub reminders: Vec<mux::agent_reminder::AgentReminder>,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct CancelAgentReminder {
+    pub id: String,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct CancelAgentReminderResponse {
+    pub cancelled: bool,
 }
 
 /// Presses Enter in a pane once it has redrawn what was just typed into it,
@@ -1867,6 +1901,44 @@ mod test {
                 pane_id: 9,
                 metadata: None,
             }),
+        ] {
+            let mut encoded = Vec::new();
+            pdu.encode(&mut encoded, 42).unwrap();
+            assert_eq!(
+                Pdu::decode(encoded.as_slice()).unwrap(),
+                DecodedPdu { serial: 42, pdu }
+            );
+        }
+    }
+
+    #[test]
+    fn agent_reminder_pdus_round_trip() {
+        let reminder =
+            |every_seconds, last_error: Option<&str>| mux::agent_reminder::AgentReminder {
+                id: "reminder-1".to_string(),
+                agent_id: "agent-1".to_string(),
+                message: "check the build".to_string(),
+                due_at: chrono::DateTime::from_timestamp(1_791_000_000, 0).unwrap(),
+                every_seconds,
+                created_at: chrono::DateTime::from_timestamp(1_790_999_000, 0).unwrap(),
+                last_error: last_error.map(str::to_string),
+            };
+        for pdu in [
+            Pdu::CreateAgentReminder(CreateAgentReminder {
+                reminder: reminder(None, None),
+            }),
+            Pdu::AgentReminderResponse(AgentReminderResponse {
+                reminder: reminder(Some(600), Some("the agent is not running")),
+            }),
+            Pdu::ListAgentReminders(ListAgentReminders {}),
+            Pdu::ListAgentRemindersResponse(ListAgentRemindersResponse {
+                reminders: vec![reminder(None, None), reminder(Some(60), None)],
+            }),
+            Pdu::ListAgentRemindersResponse(ListAgentRemindersResponse { reminders: vec![] }),
+            Pdu::CancelAgentReminder(CancelAgentReminder {
+                id: "reminder-1".to_string(),
+            }),
+            Pdu::CancelAgentReminderResponse(CancelAgentReminderResponse { cancelled: true }),
         ] {
             let mut encoded = Vec::new();
             pdu.encode(&mut encoded, 42).unwrap();

@@ -1,0 +1,13 @@
+schedule a message to an agent at a time, after a delay, or on a repeat
+
+Usage: wakterm agent remind add [OPTIONS] <TARGET> <MESSAGE>
+
+Arguments:
+  <TARGET>   Agent name, stable id, or pane id
+  <MESSAGE>  The message to send, as `wakterm agent send` would
+
+Options:
+      --at <AT>        When to send it, as an RFC 3339 time such as 2026-10-09T14:30:00-04:00
+      --in <AFTER>     How long from now to send it, such as 10m or 2h
+      --every <EVERY>  Send it again at this interval, such as 30m, until cancelled
+  -h, --help           Print help

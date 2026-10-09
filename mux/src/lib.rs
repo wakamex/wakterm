@@ -54,6 +54,7 @@ pub mod agent;
 pub mod agent_admission;
 pub mod agent_approval;
 pub mod agent_event;
+pub mod agent_reminder;
 pub mod agent_request;
 pub mod agent_service;
 pub mod claude_question_keys;
@@ -215,6 +216,7 @@ pub struct Mux {
     agent_observer_generation_by_pane: RwLock<HashMap<PaneId, u64>>,
     agent_request_store: AgentRequestStore,
     agent_admission_store: agent_admission::AgentAdmissionStore,
+    agent_reminder_store: agent_reminder::AgentReminderStore,
     agent_event_store: AgentEventStore,
     pending_agent_approvals: RwLock<HashMap<String, agent_approval::PendingAgentApproval>>,
     agent_output_reader: agent_service::AgentOutputReader,
@@ -1334,7 +1336,10 @@ impl Mux {
             agent_observer_state_by_pane: RwLock::new(HashMap::new()),
             agent_observer_generation_by_pane: RwLock::new(HashMap::new()),
             agent_request_store: AgentRequestStore::new(agent_state_path.clone()),
-            agent_admission_store: agent_admission::AgentAdmissionStore::new(agent_state_path),
+            agent_admission_store: agent_admission::AgentAdmissionStore::new(
+                agent_state_path.clone(),
+            ),
+            agent_reminder_store: agent_reminder::AgentReminderStore::new(agent_state_path),
             agent_event_store,
             pending_agent_approvals: RwLock::new(HashMap::new()),
             agent_output_reader,

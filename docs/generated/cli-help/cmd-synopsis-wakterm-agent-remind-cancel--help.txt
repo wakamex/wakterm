@@ -1,0 +1,9 @@
+cancel a scheduled reminder
+
+Usage: wakterm agent remind cancel <ID>
+
+Arguments:
+  <ID>
+
+Options:
+  -h, --help  Print help

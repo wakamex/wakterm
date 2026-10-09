@@ -305,6 +305,7 @@ async fn async_run(cmd: Option<CommandBuilder>) -> anyhow::Result<()> {
     let config = config::configuration();
 
     update_mux_domains_for_server(&config)?;
+    wakterm_mux_server_impl::agent_reminders::start();
     let _config_subscription = config::subscribe_to_config_reload(move || {
         promise::spawn::spawn_into_main_thread(async move {
             if let Err(err) = update_mux_domains_for_server(&config::configuration()) {

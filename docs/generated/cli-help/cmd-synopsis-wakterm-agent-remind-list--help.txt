@@ -1,0 +1,6 @@
+list scheduled reminders, soonest first
+
+Usage: wakterm agent remind list
+
+Options:
+  -h, --help  Print help

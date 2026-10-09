@@ -316,6 +316,10 @@ impl<'a> AgentService<'a> {
         self.mux.agent_admission_store()
     }
 
+    pub fn reminder_store(&self) -> crate::agent_reminder::AgentReminderStore {
+        self.mux.agent_reminder_store.clone()
+    }
+
     pub fn event_store(&self) -> AgentEventStore {
         self.mux.agent_event_store.clone()
     }

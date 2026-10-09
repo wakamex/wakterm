@@ -813,6 +813,50 @@ impl SessionHandler {
                 })
                 .detach();
             }
+            Pdu::CreateAgentReminder(CreateAgentReminder { reminder }) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let mux = Mux::get();
+                            mux.agent_service().reminder_store().save(&reminder)?;
+                            Ok(Pdu::AgentReminderResponse(AgentReminderResponse {
+                                reminder,
+                            }))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
+            Pdu::ListAgentReminders(ListAgentReminders {}) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let reminders = Mux::get().agent_service().reminder_store().list()?;
+                            Ok(Pdu::ListAgentRemindersResponse(
+                                ListAgentRemindersResponse { reminders },
+                            ))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
+            Pdu::CancelAgentReminder(CancelAgentReminder { id }) => {
+                spawn_into_main_thread(async move {
+                    catch(
+                        move || {
+                            let cancelled =
+                                Mux::get().agent_service().reminder_store().cancel(&id)?;
+                            Ok(Pdu::CancelAgentReminderResponse(
+                                CancelAgentReminderResponse { cancelled },
+                            ))
+                        },
+                        send_response,
+                    )
+                })
+                .detach();
+            }
             Pdu::SubmitTypedInput(SubmitTypedInput { pane_id }) => {
                 spawn_into_main_thread(async move {
                     let result = async {
@@ -1891,6 +1935,9 @@ impl SessionHandler {
             | Pdu::ListAgentApiCatalogResponse { .. }
             | Pdu::AdmitAgentPromptResponse { .. }
             | Pdu::ResolveAgentApprovalResponse { .. }
+            | Pdu::AgentReminderResponse { .. }
+            | Pdu::ListAgentRemindersResponse { .. }
+            | Pdu::CancelAgentReminderResponse { .. }
             | Pdu::PreparedCodexLaunch { .. }
             | Pdu::SetClipboard { .. }
             | Pdu::NotifyAlert { .. }
@@ -2295,7 +2342,7 @@ const REDRAW_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// Waits until the pane has drawn what was just typed into it: its output
 /// changed and then stayed unchanged for `REDRAW_SETTLE`, or `REDRAW_LIMIT`
 /// passed.
-async fn wait_for_redraw(pane_id: mux::pane::PaneId) {
+pub(crate) async fn wait_for_redraw(pane_id: mux::pane::PaneId) {
     wait_until_output_settles(
         || {
             Mux::get()

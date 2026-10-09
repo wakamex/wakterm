@@ -126,6 +126,12 @@ enum AgentSubCommand {
     )]
     Request(AgentRequestCommand),
 
+    #[command(
+        name = "remind",
+        about = "schedule messages that the mux sends to an agent later or on a repeat"
+    )]
+    Remind(AgentRemindCommand),
+
     #[command(name = "interrupt", about = "interrupt a native harness turn")]
     Interrupt(InterruptAgentCommand),
 
@@ -158,6 +164,7 @@ impl AgentCommand {
             AgentSubCommand::Approval(cmd) => cmd.run(client).await,
             AgentSubCommand::Send(cmd) => cmd.run(client).await,
             AgentSubCommand::Request(cmd) => cmd.run(client).await,
+            AgentSubCommand::Remind(cmd) => cmd.run(client).await,
             AgentSubCommand::Interrupt(cmd) => cmd.run(client).await,
             AgentSubCommand::Set(cmd) => cmd.run(client).await,
             AgentSubCommand::Clear(cmd) => cmd.run(client).await,
@@ -2097,6 +2104,114 @@ impl AgentRequestCommand {
 }
 
 #[derive(Debug, Parser, Clone)]
+pub struct AgentRemindCommand {
+    #[command(subcommand)]
+    sub: AgentRemindSubCommand,
+}
+
+#[derive(Debug, Subcommand, Clone)]
+enum AgentRemindSubCommand {
+    #[command(
+        name = "add",
+        about = "schedule a message to an agent at a time, after a delay, or on a repeat"
+    )]
+    Add(AddAgentReminderCommand),
+    #[command(name = "list", about = "list scheduled reminders, soonest first")]
+    List,
+    #[command(name = "cancel", about = "cancel a scheduled reminder")]
+    Cancel { id: String },
+}
+
+impl AgentRemindCommand {
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        match &self.sub {
+            AgentRemindSubCommand::Add(command) => command.run(client).await,
+            AgentRemindSubCommand::List => write_json(
+                &client
+                    .list_agent_reminders(codec::ListAgentReminders {})
+                    .await?
+                    .reminders,
+            ),
+            AgentRemindSubCommand::Cancel { id } => {
+                let response = client
+                    .cancel_agent_reminder(codec::CancelAgentReminder { id: id.clone() })
+                    .await?;
+                if !response.cancelled {
+                    bail!("no reminder with id {id}");
+                }
+                write_json(&response)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
+struct AddAgentReminderCommand {
+    /// Agent name, stable id, or pane id
+    target: String,
+
+    /// The message to send, as `wakterm agent send` would
+    message: String,
+
+    /// When to send it, as an RFC 3339 time such as 2026-10-09T14:30:00-04:00
+    #[arg(long, value_parser = parse_reminder_time, conflicts_with = "after")]
+    at: Option<chrono::DateTime<Utc>>,
+
+    /// How long from now to send it, such as 10m or 2h
+    #[arg(long = "in", value_parser = humantime::parse_duration)]
+    after: Option<Duration>,
+
+    /// Send it again at this interval, such as 30m, until cancelled
+    #[arg(long, value_parser = humantime::parse_duration)]
+    every: Option<Duration>,
+}
+
+fn parse_reminder_time(value: &str) -> anyhow::Result<chrono::DateTime<Utc>> {
+    Ok(chrono::DateTime::parse_from_rfc3339(value)
+        .with_context(|| format!("{value} is not an RFC 3339 time"))?
+        .with_timezone(&Utc))
+}
+
+impl AddAgentReminderCommand {
+    /// The reminder this command schedules, for an agent with this id, at
+    /// `now`. The first delivery is at `--at`, after `--in`, or one
+    /// `--every` interval from now.
+    fn reminder(
+        &self,
+        agent_id: String,
+        now: chrono::DateTime<Utc>,
+    ) -> anyhow::Result<mux::agent_reminder::AgentReminder> {
+        let every_seconds = self.every.map(|every| every.as_secs().max(1));
+        let due_at = match (self.at, self.after, every_seconds) {
+            (Some(at), _, _) => at,
+            (None, Some(after), _) => now + chrono::Duration::from_std(after)?,
+            (None, None, Some(every)) => now + chrono::Duration::seconds(every as i64),
+            (None, None, None) => bail!("say when with --at, --in or --every"),
+        };
+        Ok(mux::agent_reminder::AgentReminder {
+            id: Uuid::new_v4().to_string(),
+            agent_id,
+            message: self.message.clone(),
+            due_at,
+            every_seconds,
+            created_at: now,
+            last_error: None,
+        })
+    }
+
+    async fn run(&self, client: Client) -> anyhow::Result<()> {
+        let agents = client.list_agents().await?.agents;
+        let agent = find_agent(&agents, &self.target)
+            .with_context(|| format!("no agent named or identified by {}", self.target))?;
+        let reminder = self.reminder(agent.metadata.agent_id.clone(), Utc::now())?;
+        let response = client
+            .create_agent_reminder(codec::CreateAgentReminder { reminder })
+            .await?;
+        write_json(&response.reminder)
+    }
+}
+
+#[derive(Debug, Parser, Clone)]
 struct GetAgentRequestCommand {
     request_id: String,
 }
@@ -3942,6 +4057,57 @@ mod test {
         assert_eq!(write_calls.len(), 1);
         assert_eq!(write_calls[0].pane_id, 30);
         assert_eq!(write_calls[0].data, b"\r");
+    }
+
+    #[test]
+    fn remind_add_schedules_the_first_delivery_from_at_in_or_every() {
+        let parse = |args: &[&str]| {
+            let cli = AgentCommand::try_parse_from(
+                ["agent", "remind", "add", "reviewer", "check the build"]
+                    .iter()
+                    .chain(args),
+            )
+            .unwrap();
+            let AgentSubCommand::Remind(AgentRemindCommand {
+                sub: AgentRemindSubCommand::Add(command),
+            }) = cli.sub
+            else {
+                panic!("expected remind add");
+            };
+            command
+        };
+        let now = Utc.with_ymd_and_hms(2026, 10, 9, 12, 0, 0).unwrap();
+        let reminder = |args: &[&str]| parse(args).reminder("id-reviewer".to_string(), now);
+
+        let at = reminder(&["--at", "2026-10-09T10:30:00-04:00"]).unwrap();
+        assert_eq!(
+            at.due_at,
+            Utc.with_ymd_and_hms(2026, 10, 9, 14, 30, 0).unwrap()
+        );
+        assert_eq!(at.every_seconds, None);
+        assert_eq!(at.agent_id, "id-reviewer");
+        assert_eq!(at.message, "check the build");
+
+        let after = reminder(&["--in", "10m", "--every", "1h"]).unwrap();
+        assert_eq!(after.due_at, now + chrono::Duration::minutes(10));
+        assert_eq!(after.every_seconds, Some(3600));
+
+        let every = reminder(&["--every", "30m"]).unwrap();
+        assert_eq!(every.due_at, now + chrono::Duration::minutes(30));
+
+        assert!(reminder(&[]).is_err());
+        assert!(AgentCommand::try_parse_from([
+            "agent",
+            "remind",
+            "add",
+            "r",
+            "m",
+            "--at",
+            "2026-10-09T10:30:00Z",
+            "--in",
+            "5m"
+        ])
+        .is_err());
     }
 
     #[test]

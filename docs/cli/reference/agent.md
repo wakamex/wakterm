@@ -21,6 +21,7 @@ Supported harnesses include Agy, Claude, Codex, Gemini, OpenCode, and ZCode.
 - `wakterm agent admit`: atomically admit and submit an agent prompt
 - `wakterm agent send`: send a prompt to an agent pane with optional return correlation
 - `wakterm agent request`: inspect, stream, or cancel durable agent return requests
+- `wakterm agent remind`: schedule messages that the mux sends to an agent later or on a repeat
 - `wakterm agent interrupt`: interrupt a native harness turn
 - `wakterm agent set`: attach agent metadata to a pane
 - `wakterm agent clear`: remove agent metadata from a pane
@@ -225,6 +226,48 @@ Cancels an in-flight return request.
 
 ```console
 {% include "../../generated/cli-help/cmd-synopsis-wakterm-agent-request-cancel--help.txt" %}
+```
+
+## `wakterm agent remind`
+
+Schedules messages that the mux sends to an agent at a time, after a delay, or on a repeat. Agents use reminders for their timed wakeups instead of timers inside the harness, such as Claude's `/loop` or ScheduleWakeup. A reminder arrives as input through Wakterm, like `wakterm agent send`, so it reaches an agent even while the agent is idle and frozen.
+
+Reminders are stored by the mux and survive mux restarts. A reminder that came due while the mux was not running is sent once when it starts, and a repeating reminder then continues one interval later instead of sending every missed repeat. A reminder waits while its agent is not running or has a dialog open, and its `last_error` says why.
+
+```console
+{% include "../../generated/cli-help/cmd-synopsis-wakterm-agent-remind--help.txt" %}
+```
+
+### `wakterm agent remind add`
+
+Schedules a message. Give the first time with `--at`, as an RFC 3339 time, or with `--in`, as a delay such as `10m`. `--every` repeats the message at that interval until it is cancelled, and alone it starts one interval from now.
+
+```console
+{% include "../../generated/cli-help/cmd-synopsis-wakterm-agent-remind-add--help.txt" %}
+```
+
+```sh
+# Check the build in 20 minutes
+wakterm agent remind add reviewer "Check whether the CI run finished." --in 20m
+
+# Every hour, starting now plus one hour
+wakterm agent remind add monitor "Check the queue and report anything stuck." --every 1h
+```
+
+### `wakterm agent remind list`
+
+Prints the scheduled reminders as JSON, soonest first.
+
+```console
+{% include "../../generated/cli-help/cmd-synopsis-wakterm-agent-remind-list--help.txt" %}
+```
+
+### `wakterm agent remind cancel`
+
+Cancels a reminder by the `id` that `add` and `list` print.
+
+```console
+{% include "../../generated/cli-help/cmd-synopsis-wakterm-agent-remind-cancel--help.txt" %}
 ```
 
 ## `wakterm agent events`

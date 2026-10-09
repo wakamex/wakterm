@@ -25,4 +25,5 @@ wakterm-term = { workspace=true, features=["use_serde"] }
 zstd.workspace = true
 
 [dev-dependencies]
+chrono.workspace = true
 base91.workspace = true

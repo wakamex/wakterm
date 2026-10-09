@@ -446,6 +446,80 @@ esac
     ;;
 esac
 ;;
+(remind)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_wakterm__cli__agent__remind_commands" \
+"*::: :->remind" \
+&& ret=0
+
+    case $state in
+    (remind)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-cli-agent-remind-command-$line[1]:"
+        case $line[1] in
+            (add)
+_arguments "${_arguments_options[@]}" : \
+'(--in)--at=[When to send it, as an RFC 3339 time such as 2026-10-09T14\:30\:00-04\:00]:AT:_default' \
+'--in=[How long from now to send it, such as 10m or 2h]:AFTER:_default' \
+'--every=[Send it again at this interval, such as 30m, until cancelled]:EVERY:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Agent name, stable id, or pane id:_default' \
+':message -- The message to send, as `wakterm agent send` would:_default' \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':id:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__cli__agent__remind__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-cli-agent-remind-help-command-$line[1]:"
+        case $line[1] in
+            (add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
 (interrupt)
 _arguments "${_arguments_options[@]}" : \
 '--ack-timeout-ms=[Maximum time to wait for observer-backed acknowledgement]:ACK_TIMEOUT_MS:_default' \
@@ -586,6 +660,34 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(remind)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__cli__agent__help__remind_commands" \
+"*::: :->remind" \
+&& ret=0
+
+    case $state in
+    (remind)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-cli-agent-help-remind-command-$line[1]:"
+        case $line[1] in
+            (add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -928,6 +1030,34 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(remind)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__cli__help__agent__remind_commands" \
+"*::: :->remind" \
+&& ret=0
+
+    case $state in
+    (remind)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-cli-help-agent-remind-command-$line[1]:"
+        case $line[1] in
+            (add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -1348,6 +1478,80 @@ esac
     ;;
 esac
 ;;
+(remind)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_wakterm__agent__remind_commands" \
+"*::: :->remind" \
+&& ret=0
+
+    case $state in
+    (remind)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-agent-remind-command-$line[1]:"
+        case $line[1] in
+            (add)
+_arguments "${_arguments_options[@]}" : \
+'(--in)--at=[When to send it, as an RFC 3339 time such as 2026-10-09T14\:30\:00-04\:00]:AT:_default' \
+'--in=[How long from now to send it, such as 10m or 2h]:AFTER:_default' \
+'--every=[Send it again at this interval, such as 30m, until cancelled]:EVERY:_default' \
+'-h[Print help]' \
+'--help[Print help]' \
+':target -- Agent name, stable id, or pane id:_default' \
+':message -- The message to send, as `wakterm agent send` would:_default' \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':id:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__agent__remind__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-agent-remind-help-command-$line[1]:"
+        case $line[1] in
+            (add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
 (interrupt)
 _arguments "${_arguments_options[@]}" : \
 '--ack-timeout-ms=[Maximum time to wait for observer-backed acknowledgement]:ACK_TIMEOUT_MS:_default' \
@@ -1488,6 +1692,34 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(remind)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__agent__help__remind_commands" \
+"*::: :->remind" \
+&& ret=0
+
+    case $state in
+    (remind)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-agent-help-remind-command-$line[1]:"
+        case $line[1] in
+            (add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -1754,6 +1986,34 @@ _arguments "${_arguments_options[@]}" : \
     ;;
 esac
 ;;
+(remind)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__help__cli__agent__remind_commands" \
+"*::: :->remind" \
+&& ret=0
+
+    case $state in
+    (remind)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-help-cli-agent-remind-command-$line[1]:"
+        case $line[1] in
+            (add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
 (interrupt)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -1974,6 +2234,34 @@ _arguments "${_arguments_options[@]}" : \
     ;;
 esac
 ;;
+(remind)
+_arguments "${_arguments_options[@]}" : \
+":: :_wakterm__help__agent__remind_commands" \
+"*::: :->remind" \
+&& ret=0
+
+    case $state in
+    (remind)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:wakterm-help-agent-remind-command-$line[1]:"
+        case $line[1] in
+            (add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
 (interrupt)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -2064,6 +2352,7 @@ _wakterm__agent_commands() {
 'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
 'request:inspect and stream durable agent return requests' \
+'remind:schedule messages that the mux sends to an agent later or on a repeat' \
 'interrupt:interrupt a native harness turn' \
 'set:attach agent metadata to a pane' \
 'clear:remove agent metadata from a pane' \
@@ -2136,6 +2425,7 @@ _wakterm__agent__help_commands() {
 'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
 'request:inspect and stream durable agent return requests' \
+'remind:schedule messages that the mux sends to an agent later or on a repeat' \
 'interrupt:interrupt a native harness turn' \
 'set:attach agent metadata to a pane' \
 'clear:remove agent metadata from a pane' \
@@ -2229,6 +2519,30 @@ _wakterm__agent__help__output_commands() {
 _wakterm__agent__help__promote-codex_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm agent help promote-codex commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__remind_commands] )) ||
+_wakterm__agent__help__remind_commands() {
+    local commands; commands=(
+'add:schedule a message to an agent at a time, after a delay, or on a repeat' \
+'list:list scheduled reminders, soonest first' \
+'cancel:cancel a scheduled reminder' \
+    )
+    _describe -t commands 'wakterm agent help remind commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__remind__add_commands] )) ||
+_wakterm__agent__help__remind__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help remind add commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__remind__cancel_commands] )) ||
+_wakterm__agent__help__remind__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help remind cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__remind__list_commands] )) ||
+_wakterm__agent__help__remind__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help remind list commands' commands "$@"
 }
 (( $+functions[_wakterm__agent__help__request_commands] )) ||
 _wakterm__agent__help__request_commands() {
@@ -2329,6 +2643,61 @@ _wakterm__agent__output_commands() {
 _wakterm__agent__promote-codex_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm agent promote-codex commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__remind_commands] )) ||
+_wakterm__agent__remind_commands() {
+    local commands; commands=(
+'add:schedule a message to an agent at a time, after a delay, or on a repeat' \
+'list:list scheduled reminders, soonest first' \
+'cancel:cancel a scheduled reminder' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'wakterm agent remind commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__remind__add_commands] )) ||
+_wakterm__agent__remind__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent remind add commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__remind__cancel_commands] )) ||
+_wakterm__agent__remind__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent remind cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__remind__help_commands] )) ||
+_wakterm__agent__remind__help_commands() {
+    local commands; commands=(
+'add:schedule a message to an agent at a time, after a delay, or on a repeat' \
+'list:list scheduled reminders, soonest first' \
+'cancel:cancel a scheduled reminder' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'wakterm agent remind help commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__remind__help__add_commands] )) ||
+_wakterm__agent__remind__help__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent remind help add commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__remind__help__cancel_commands] )) ||
+_wakterm__agent__remind__help__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent remind help cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__remind__help__help_commands] )) ||
+_wakterm__agent__remind__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent remind help help commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__remind__help__list_commands] )) ||
+_wakterm__agent__remind__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent remind help list commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__remind__list_commands] )) ||
+_wakterm__agent__remind__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent remind list commands' commands "$@"
 }
 (( $+functions[_wakterm__agent__request_commands] )) ||
 _wakterm__agent__request_commands() {
@@ -2479,6 +2848,7 @@ _wakterm__cli__agent_commands() {
 'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
 'request:inspect and stream durable agent return requests' \
+'remind:schedule messages that the mux sends to an agent later or on a repeat' \
 'interrupt:interrupt a native harness turn' \
 'set:attach agent metadata to a pane' \
 'clear:remove agent metadata from a pane' \
@@ -2551,6 +2921,7 @@ _wakterm__cli__agent__help_commands() {
 'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
 'request:inspect and stream durable agent return requests' \
+'remind:schedule messages that the mux sends to an agent later or on a repeat' \
 'interrupt:interrupt a native harness turn' \
 'set:attach agent metadata to a pane' \
 'clear:remove agent metadata from a pane' \
@@ -2644,6 +3015,30 @@ _wakterm__cli__agent__help__output_commands() {
 _wakterm__cli__agent__help__promote-codex_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli agent help promote-codex commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__remind_commands] )) ||
+_wakterm__cli__agent__help__remind_commands() {
+    local commands; commands=(
+'add:schedule a message to an agent at a time, after a delay, or on a repeat' \
+'list:list scheduled reminders, soonest first' \
+'cancel:cancel a scheduled reminder' \
+    )
+    _describe -t commands 'wakterm cli agent help remind commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__remind__add_commands] )) ||
+_wakterm__cli__agent__help__remind__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help remind add commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__remind__cancel_commands] )) ||
+_wakterm__cli__agent__help__remind__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help remind cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__remind__list_commands] )) ||
+_wakterm__cli__agent__help__remind__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help remind list commands' commands "$@"
 }
 (( $+functions[_wakterm__cli__agent__help__request_commands] )) ||
 _wakterm__cli__agent__help__request_commands() {
@@ -2744,6 +3139,61 @@ _wakterm__cli__agent__output_commands() {
 _wakterm__cli__agent__promote-codex_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli agent promote-codex commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__remind_commands] )) ||
+_wakterm__cli__agent__remind_commands() {
+    local commands; commands=(
+'add:schedule a message to an agent at a time, after a delay, or on a repeat' \
+'list:list scheduled reminders, soonest first' \
+'cancel:cancel a scheduled reminder' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'wakterm cli agent remind commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__remind__add_commands] )) ||
+_wakterm__cli__agent__remind__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent remind add commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__remind__cancel_commands] )) ||
+_wakterm__cli__agent__remind__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent remind cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__remind__help_commands] )) ||
+_wakterm__cli__agent__remind__help_commands() {
+    local commands; commands=(
+'add:schedule a message to an agent at a time, after a delay, or on a repeat' \
+'list:list scheduled reminders, soonest first' \
+'cancel:cancel a scheduled reminder' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'wakterm cli agent remind help commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__remind__help__add_commands] )) ||
+_wakterm__cli__agent__remind__help__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent remind help add commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__remind__help__cancel_commands] )) ||
+_wakterm__cli__agent__remind__help__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent remind help cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__remind__help__help_commands] )) ||
+_wakterm__cli__agent__remind__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent remind help help commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__remind__help__list_commands] )) ||
+_wakterm__cli__agent__remind__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent remind help list commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__remind__list_commands] )) ||
+_wakterm__cli__agent__remind__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent remind list commands' commands "$@"
 }
 (( $+functions[_wakterm__cli__agent__request_commands] )) ||
 _wakterm__cli__agent__request_commands() {
@@ -2899,6 +3349,7 @@ _wakterm__cli__help__agent_commands() {
 'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
 'request:inspect and stream durable agent return requests' \
+'remind:schedule messages that the mux sends to an agent later or on a repeat' \
 'interrupt:interrupt a native harness turn' \
 'set:attach agent metadata to a pane' \
 'clear:remove agent metadata from a pane' \
@@ -2986,6 +3437,30 @@ _wakterm__cli__help__agent__output_commands() {
 _wakterm__cli__help__agent__promote-codex_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli help agent promote-codex commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__remind_commands] )) ||
+_wakterm__cli__help__agent__remind_commands() {
+    local commands; commands=(
+'add:schedule a message to an agent at a time, after a delay, or on a repeat' \
+'list:list scheduled reminders, soonest first' \
+'cancel:cancel a scheduled reminder' \
+    )
+    _describe -t commands 'wakterm cli help agent remind commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__remind__add_commands] )) ||
+_wakterm__cli__help__agent__remind__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent remind add commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__remind__cancel_commands] )) ||
+_wakterm__cli__help__agent__remind__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent remind cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__remind__list_commands] )) ||
+_wakterm__cli__help__agent__remind__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent remind list commands' commands "$@"
 }
 (( $+functions[_wakterm__cli__help__agent__request_commands] )) ||
 _wakterm__cli__help__agent__request_commands() {
@@ -3242,6 +3717,7 @@ _wakterm__help__agent_commands() {
 'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
 'request:inspect and stream durable agent return requests' \
+'remind:schedule messages that the mux sends to an agent later or on a repeat' \
 'interrupt:interrupt a native harness turn' \
 'set:attach agent metadata to a pane' \
 'clear:remove agent metadata from a pane' \
@@ -3329,6 +3805,30 @@ _wakterm__help__agent__output_commands() {
 _wakterm__help__agent__promote-codex_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help agent promote-codex commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__remind_commands] )) ||
+_wakterm__help__agent__remind_commands() {
+    local commands; commands=(
+'add:schedule a message to an agent at a time, after a delay, or on a repeat' \
+'list:list scheduled reminders, soonest first' \
+'cancel:cancel a scheduled reminder' \
+    )
+    _describe -t commands 'wakterm help agent remind commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__remind__add_commands] )) ||
+_wakterm__help__agent__remind__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent remind add commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__remind__cancel_commands] )) ||
+_wakterm__help__agent__remind__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent remind cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__help__agent__remind__list_commands] )) ||
+_wakterm__help__agent__remind__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent remind list commands' commands "$@"
 }
 (( $+functions[_wakterm__help__agent__request_commands] )) ||
 _wakterm__help__agent__request_commands() {
@@ -3447,6 +3947,7 @@ _wakterm__help__cli__agent_commands() {
 'approval:resolve an exact pending agent approval' \
 'send:send a message to an agent pane' \
 'request:inspect and stream durable agent return requests' \
+'remind:schedule messages that the mux sends to an agent later or on a repeat' \
 'interrupt:interrupt a native harness turn' \
 'set:attach agent metadata to a pane' \
 'clear:remove agent metadata from a pane' \
@@ -3534,6 +4035,30 @@ _wakterm__help__cli__agent__output_commands() {
 _wakterm__help__cli__agent__promote-codex_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help cli agent promote-codex commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__remind_commands] )) ||
+_wakterm__help__cli__agent__remind_commands() {
+    local commands; commands=(
+'add:schedule a message to an agent at a time, after a delay, or on a repeat' \
+'list:list scheduled reminders, soonest first' \
+'cancel:cancel a scheduled reminder' \
+    )
+    _describe -t commands 'wakterm help cli agent remind commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__remind__add_commands] )) ||
+_wakterm__help__cli__agent__remind__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent remind add commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__remind__cancel_commands] )) ||
+_wakterm__help__cli__agent__remind__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent remind cancel commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__remind__list_commands] )) ||
+_wakterm__help__cli__agent__remind__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent remind list commands' commands "$@"
 }
 (( $+functions[_wakterm__help__cli__agent__request_commands] )) ||
 _wakterm__help__cli__agent__request_commands() {

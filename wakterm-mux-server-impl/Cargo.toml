@@ -11,6 +11,7 @@ publish = false
 anyhow.workspace = true
 async-io.workspace = true
 async_ossl.workspace = true
+chrono.workspace = true
 codec.workspace = true
 config.workspace = true
 dns-lookup.workspace = true
@@ -36,6 +37,5 @@ wakterm-uds.workspace = true
 winapi = { workspace=true, features = [ "winuser" ]}
 
 [dev-dependencies]
-chrono.workspace = true
 parking_lot.workspace = true
 tempfile.workspace = true
