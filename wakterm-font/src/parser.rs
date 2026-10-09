@@ -833,43 +833,54 @@ pub(crate) fn load_built_in_fonts(font_info: &mut Vec<ParsedFont>) -> anyhow::Re
     let built_ins: &[&[(&[u8], &str)]] = &[
         #[cfg(any(test, feature = "vendor-jetbrains"))]
         &[
-            font!("../../assets/fonts/JetBrainsMono-BoldItalic.ttf"),
-            font!("../../assets/fonts/JetBrainsMono-Bold.ttf"),
-            font!("../../assets/fonts/JetBrainsMono-ExtraBoldItalic.ttf"),
-            font!("../../assets/fonts/JetBrainsMono-ExtraBold.ttf"),
-            font!("../../assets/fonts/JetBrainsMono-ExtraLightItalic.ttf"),
-            font!("../../assets/fonts/JetBrainsMono-ExtraLight.ttf"),
-            font!("../../assets/fonts/JetBrainsMono-Italic.ttf"),
-            font!("../../assets/fonts/JetBrainsMono-LightItalic.ttf"),
-            font!("../../assets/fonts/JetBrainsMono-Light.ttf"),
-            font!("../../assets/fonts/JetBrainsMono-MediumItalic.ttf"),
-            font!("../../assets/fonts/JetBrainsMono-Medium.ttf"),
-            font!("../../assets/fonts/JetBrainsMono-Regular.ttf"),
-            font!("../../assets/fonts/JetBrainsMono-SemiBoldItalic.ttf"),
-            font!("../../assets/fonts/JetBrainsMono-SemiBold.ttf"),
-            font!("../../assets/fonts/JetBrainsMono-ThinItalic.ttf"),
-            font!("../../assets/fonts/JetBrainsMono-Thin.ttf"),
+            font!("../../assets/fonts/JetBrainsMono-BoldItalic.woff2"),
+            font!("../../assets/fonts/JetBrainsMono-Bold.woff2"),
+            font!("../../assets/fonts/JetBrainsMono-ExtraBoldItalic.woff2"),
+            font!("../../assets/fonts/JetBrainsMono-ExtraBold.woff2"),
+            font!("../../assets/fonts/JetBrainsMono-ExtraLightItalic.woff2"),
+            font!("../../assets/fonts/JetBrainsMono-ExtraLight.woff2"),
+            font!("../../assets/fonts/JetBrainsMono-Italic.woff2"),
+            font!("../../assets/fonts/JetBrainsMono-LightItalic.woff2"),
+            font!("../../assets/fonts/JetBrainsMono-Light.woff2"),
+            font!("../../assets/fonts/JetBrainsMono-MediumItalic.woff2"),
+            font!("../../assets/fonts/JetBrainsMono-Medium.woff2"),
+            font!("../../assets/fonts/JetBrainsMono-Regular.woff2"),
+            font!("../../assets/fonts/JetBrainsMono-SemiBoldItalic.woff2"),
+            font!("../../assets/fonts/JetBrainsMono-SemiBold.woff2"),
+            font!("../../assets/fonts/JetBrainsMono-ThinItalic.woff2"),
+            font!("../../assets/fonts/JetBrainsMono-Thin.woff2"),
         ],
         #[cfg(any(test, feature = "vendor-roboto"))]
         &[
-            font!("../../assets/fonts/Roboto-Black.ttf"),
-            font!("../../assets/fonts/Roboto-BlackItalic.ttf"),
-            font!("../../assets/fonts/Roboto-Bold.ttf"),
-            font!("../../assets/fonts/Roboto-BoldItalic.ttf"),
-            font!("../../assets/fonts/Roboto-Italic.ttf"),
-            font!("../../assets/fonts/Roboto-Light.ttf"),
-            font!("../../assets/fonts/Roboto-LightItalic.ttf"),
-            font!("../../assets/fonts/Roboto-Medium.ttf"),
-            font!("../../assets/fonts/Roboto-MediumItalic.ttf"),
-            font!("../../assets/fonts/Roboto-Regular.ttf"),
-            font!("../../assets/fonts/Roboto-Thin.ttf"),
-            font!("../../assets/fonts/Roboto-ThinItalic.ttf"),
+            font!("../../assets/fonts/Roboto-Black.woff2"),
+            font!("../../assets/fonts/Roboto-BlackItalic.woff2"),
+            font!("../../assets/fonts/Roboto-Bold.woff2"),
+            font!("../../assets/fonts/Roboto-BoldItalic.woff2"),
+            font!("../../assets/fonts/Roboto-Italic.woff2"),
+            font!("../../assets/fonts/Roboto-Light.woff2"),
+            font!("../../assets/fonts/Roboto-LightItalic.woff2"),
+            font!("../../assets/fonts/Roboto-Medium.woff2"),
+            font!("../../assets/fonts/Roboto-MediumItalic.woff2"),
+            font!("../../assets/fonts/Roboto-Regular.woff2"),
+            font!("../../assets/fonts/Roboto-Thin.woff2"),
+            font!("../../assets/fonts/Roboto-ThinItalic.woff2"),
         ],
         #[cfg(any(test, feature = "vendor-noto-emoji"))]
-        &[font!("../../assets/fonts/NotoColorEmoji.ttf")],
+        &[font!("../../assets/fonts/NotoColorEmoji.woff2")],
         #[cfg(any(test, feature = "vendor-nerd-font-symbols"))]
-        &[font!("../../assets/fonts/SymbolsNerdFontMono-Regular.ttf")],
+        &[font!(
+            "../../assets/fonts/SymbolsNerdFontMono-Regular.woff2"
+        )],
     ];
+    // Decode the built-in fonts in parallel the first time; decoding them
+    // in turn would take as long as all of them together.
+    std::thread::scope(|scope| {
+        for bundle in built_ins {
+            for (data, name) in bundle.iter() {
+                scope.spawn(move || FontDataSource::BuiltIn { data, name }.decode_web_font());
+            }
+        }
+    });
     for bundle in built_ins {
         for (data, name) in bundle.iter() {
             let locator = FontDataHandle {

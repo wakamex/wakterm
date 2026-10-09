@@ -477,7 +477,7 @@ def copy_assets() -> int:
     shutil.copy2(PROJECT / "assets/icon/wakterm-icon.png", STATIC / "favicon.png")
     fonts = STATIC / "fonts"
     fonts.mkdir()
-    shutil.copy2(PROJECT / "assets/fonts/SymbolsNerdFontMono-Regular.ttf", fonts)
+    shutil.copy2(PROJECT / "assets/fonts/SymbolsNerdFontMono-Regular.woff2", fonts)
     shutil.copy2(SOURCE / "style.css", STATIC / "wakterm.css")
     redirects = []
     with (SITE / "legacy-redirects.tsv").open() as source:

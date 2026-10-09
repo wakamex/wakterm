@@ -81,12 +81,14 @@ impl FontDataSource {
             Self::BuiltIn { name, data } => {
                 static DECODED: LazyLock<Mutex<HashMap<&'static str, Arc<Box<[u8]>>>>> =
                     LazyLock::new(Mutex::default);
-                let mut cache = DECODED.lock().unwrap();
-                match cache.get(name) {
-                    Some(data) => Arc::clone(data),
+                let cached = DECODED.lock().unwrap().get(name).cloned();
+                match cached {
+                    Some(data) => data,
                     None => {
+                        // Decode without the lock, so that fonts can be
+                        // decoded in parallel.
                         let data = decoded(data)?;
-                        cache.insert(name, Arc::clone(&data));
+                        DECODED.lock().unwrap().insert(name, Arc::clone(&data));
                         data
                     }
                 }

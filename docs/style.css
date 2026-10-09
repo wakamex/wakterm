@@ -1,6 +1,6 @@
 @font-face {
   font-family: "Symbols Nerd Font Mono";
-  src: url(fonts/SymbolsNerdFontMono-Regular.ttf) format("truetype");
+  src: url(fonts/SymbolsNerdFontMono-Regular.woff2) format("woff2");
   font-weight: normal;
   font-style: normal;
   font-display: swap;
