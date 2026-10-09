@@ -5,15 +5,19 @@ use crate::tab_colors::{tab_render_colors, TabColorVisualState};
 use crate::tabbar::{TabBarItem, TabEntry};
 use crate::termwindow::box_model::*;
 use crate::termwindow::render::window_buttons::window_button_element;
+use crate::termwindow::TermWindowNotif;
 use crate::termwindow::{TabHarnessIcon, UIItem, UIItemType};
 use crate::utilsprites::RenderMetrics;
 use config::{Dimension, DimensionContext, TabBarColors};
 use std::rc::Rc;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
+use termwiz::cell::unicode_column_width;
+use termwiz::surface::SEQ_ZERO;
 use wakterm_font::LoadedFont;
 use wakterm_term::color::{ColorAttribute, ColorPalette};
 use wakterm_term::{Line, TerminalConfiguration};
+use window::WindowOps;
 use window::{IntegratedTitleButtonAlignment, IntegratedTitleButtonStyle};
 
 const X_BUTTON: &[Poly] = &[
@@ -47,6 +51,52 @@ const ATTENTION_DOT: &[Poly] = &[Poly {
     style: PolyStyle::Fill,
 }];
 
+/// How much of a cut title, in cells, fades into the tab's background, and
+/// how many cells of a cut title remain at least.
+const TITLE_FADE_CELLS: f32 = 1.5;
+const MIN_SHRUNK_TITLE_CELLS: f32 = 3.;
+
+/// Bands of the tab background, from transparent to opaque, drawn over the
+/// end of a cut title.
+const TITLE_FADE: &[Poly] = &[
+    fade_band(0, BlockAlpha::Light),
+    fade_band(1, BlockAlpha::Medium),
+    fade_band(2, BlockAlpha::Dark),
+    fade_band(3, BlockAlpha::Full),
+];
+
+const fn fade_band(index: i8, intensity: BlockAlpha) -> Poly {
+    Poly {
+        path: match index {
+            0 => &FADE_BAND_PATHS[0],
+            1 => &FADE_BAND_PATHS[1],
+            2 => &FADE_BAND_PATHS[2],
+            _ => &FADE_BAND_PATHS[3],
+        },
+        intensity,
+        style: PolyStyle::Fill,
+    }
+}
+
+const FADE_BAND_PATHS: [[PolyCommand; 5]; 4] = [
+    fade_band_path(0),
+    fade_band_path(1),
+    fade_band_path(2),
+    fade_band_path(3),
+];
+
+const fn fade_band_path(index: i8) -> [PolyCommand; 5] {
+    let left = BlockCoord::Frac(index, 4);
+    let right = BlockCoord::Frac(index + 1, 4);
+    [
+        PolyCommand::MoveTo(left, BlockCoord::Zero),
+        PolyCommand::LineTo(right, BlockCoord::Zero),
+        PolyCommand::LineTo(right, BlockCoord::One),
+        PolyCommand::LineTo(left, BlockCoord::One),
+        PolyCommand::Close,
+    ]
+}
+
 static ATTENTION_PULSE_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 const PLUS_BUTTON: &[Poly] = &[
@@ -74,10 +124,154 @@ impl crate::TermWindow {
     }
 
     pub fn build_fancy_tab_bar(&self, palette: &ColorPalette) -> anyhow::Result<ComputedElement> {
+        let items = self.tab_bar.items();
+        let computed = self.layout_fancy_tab_bar(palette, items, &[])?;
+        if !self.config.tab_titles_shrink_to_fit {
+            return Ok(computed);
+        }
+        match self.shrink_tab_titles(items, &computed.ui_items())? {
+            Some((shrunk, faded)) => self.layout_fancy_tab_bar(palette, &shrunk, &faded),
+            None => Ok(computed),
+        }
+    }
+
+    /// Shortens tab titles when the tabs overflow the tab bar. Every title
+    /// longer than a shared width is cut to that width, and shorter titles
+    /// stay whole, using the largest width at which the tabs fit. Each cut
+    /// title keeps at least a few characters; tabs that still do not fit
+    /// overflow as before. Returns the entries with cut titles and the
+    /// indices of the tabs that were cut, or None when every title fits.
+    fn shrink_tab_titles(
+        &self,
+        items: &[TabEntry],
+        ui_items: &[UIItem],
+    ) -> anyhow::Result<Option<(Vec<TabEntry>, Vec<usize>)>> {
+        let font = self.fonts.title_font()?;
+        let metrics = RenderMetrics::with_font_metrics(&font.metrics());
+        let cell_width = metrics.cell_size.width as f32;
+        let border = self.get_os_border();
+        let bar_width =
+            self.dimensions.pixel_width as f32 - (border.left + border.right).get() as f32;
+
+        let mut tabs = vec![];
+        let mut other_width = 0.;
+        for ui_item in ui_items {
+            match &ui_item.item_type {
+                UIItemType::TabBar(TabBarItem::Tab { tab_idx, .. }) => {
+                    tabs.push((*tab_idx, ui_item.x as f32, ui_item.width as f32))
+                }
+                UIItemType::TabBar(TabBarItem::LeftStatus) => {}
+                // The bar itself spans the whole width.
+                UIItemType::TabBar(TabBarItem::None) if ui_item.width as f32 >= bar_width => {}
+                UIItemType::TabBar(_) => other_width += ui_item.width as f32,
+                _ => {}
+            }
+        }
+        let Some(first_x) = tabs.iter().map(|(_, x, _)| *x).reduce(f32::min) else {
+            return Ok(None);
+        };
+        // A cell of slack absorbs margins that no item reports.
+        let available = border.left.get() as f32 + bar_width - first_x - other_width - cell_width;
+        if tabs.iter().map(|(_, _, width)| width).sum::<f32>() <= available {
+            return Ok(None);
+        }
+
+        // Each tab's title as cumulative widths at each character boundary,
+        // and the tab's width beyond its title.
+        let mut titles = vec![];
+        for (tab_idx, _, width) in &tabs {
+            let Some(entry) = items.iter().find(
+                |entry| matches!(entry.item, TabBarItem::Tab { tab_idx: idx, .. } if idx == *tab_idx),
+            ) else {
+                return Ok(None);
+            };
+            let text = entry.title.as_str().into_owned();
+            let prefixes = self.title_prefix_widths(&font, &text)?;
+            let text_width = prefixes.last().map(|(_, width)| *width).unwrap_or(0.);
+            titles.push((
+                entry,
+                text,
+                prefixes,
+                text_width,
+                (width - text_width).max(0.),
+            ));
+        }
+
+        let widths: Vec<(f32, f32)> = titles
+            .iter()
+            .map(|(_, _, _, text_width, overhead)| (*text_width, *overhead))
+            .collect();
+        let cap = shared_title_width(&widths, available, MIN_SHRUNK_TITLE_CELLS * cell_width);
+
+        let mut shrunk = items.to_vec();
+        let mut faded = vec![];
+        for (entry, text, prefixes, text_width, _) in &titles {
+            if *text_width <= cap {
+                continue;
+            }
+            let keep = prefixes
+                .iter()
+                .take_while(|(_, width)| *width <= cap)
+                .last()
+                .map(|(end, _)| *end)
+                .unwrap_or(0);
+            let cells = unicode_column_width(&text[..keep], None);
+            let TabBarItem::Tab { tab_idx, .. } = entry.item else {
+                continue;
+            };
+            if let Some(target) = shrunk.iter_mut().find(
+                |target| matches!(target.item, TabBarItem::Tab { tab_idx: idx, .. } if idx == tab_idx),
+            ) {
+                target.title.resize(cells, SEQ_ZERO);
+                faded.push(tab_idx);
+            }
+        }
+        Ok(Some((shrunk, faded)))
+    }
+
+    /// The width of each prefix of a title in the title font, as the byte
+    /// offset where the prefix ends and its width in pixels.
+    fn title_prefix_widths(
+        &self,
+        font: &Rc<LoadedFont>,
+        text: &str,
+    ) -> anyhow::Result<Vec<(usize, f32)>> {
+        let window = self.window.as_ref().unwrap().clone();
+        let infos = font.shape(
+            text,
+            move || window.notify(TermWindowNotif::InvalidateShapeCache),
+            BlockKey::filter_out_synthetic,
+            None,
+            wakterm_bidi::Direction::LeftToRight,
+            None,
+            None,
+        )?;
+        let mut prefixes: Vec<(usize, f32)> = vec![];
+        let mut width = 0.;
+        for (i, info) in infos.iter().enumerate() {
+            width += info.x_advance.get() as f32;
+            let end = infos
+                .get(i + 1)
+                .map(|next| next.cluster as usize)
+                .unwrap_or(text.len());
+            match prefixes.last_mut() {
+                // Glyphs of one cluster end at the same character boundary.
+                Some(last) if last.0 == end => last.1 = width,
+                _ => prefixes.push((end, width)),
+            }
+        }
+        Ok(prefixes)
+    }
+
+    fn layout_fancy_tab_bar(
+        &self,
+        palette: &ColorPalette,
+        items: &[TabEntry],
+        faded: &[usize],
+    ) -> anyhow::Result<ComputedElement> {
         let tab_bar_height = self.tab_bar_pixel_height()?;
         let font = self.fonts.title_font()?;
         let metrics = RenderMetrics::with_font_metrics(&font.metrics());
-        let items = self.tab_bar.items();
         let colors = self
             .config
             .colors
@@ -132,6 +326,42 @@ impl crate::TermWindow {
                         .or_else(|| explicit_fg_color.map(|c| c.to_linear().into()))
                         .unwrap_or(InheritableColor::Inherited),
                 })
+            };
+            // A cut title fades into the tab's background at its end.
+            let fade_title = |title: Element, tab_idx: usize, bg: LinearRgba| {
+                if !faded.contains(&tab_idx) {
+                    return title;
+                }
+                let width = metrics.cell_size.width as f32 * TITLE_FADE_CELLS;
+                Element::new(
+                    &font,
+                    ElementContent::Children(vec![
+                        title,
+                        Element::new(
+                            &font,
+                            ElementContent::Poly {
+                                line_width: 1,
+                                poly: SizedPoly {
+                                    poly: TITLE_FADE,
+                                    width: Dimension::Pixels(width),
+                                    height: Dimension::Pixels(metrics.cell_size.height as f32),
+                                },
+                            },
+                        )
+                        .vertical_align(VerticalAlign::Middle)
+                        .margin(BoxDimension {
+                            left: Dimension::Pixels(-width),
+                            right: Dimension::Cells(0.),
+                            top: Dimension::Cells(0.),
+                            bottom: Dimension::Cells(0.),
+                        })
+                        .colors(ElementColors {
+                            border: BorderColor::default(),
+                            bg: InheritableColor::Inherited,
+                            text: bg.into(),
+                        }),
+                    ]),
+                )
             };
             let wrap_icon_title = |title: Element, icon_count: usize| {
                 Element::new(
@@ -207,7 +437,7 @@ impl crate::TermWindow {
                     bg: new_tab_hover.bg_color.to_linear().into(),
                     text: new_tab_hover.fg_color.to_linear().into(),
                 })),
-                TabBarItem::Tab { active, .. } if active => {
+                TabBarItem::Tab { tab_idx, active } if active => {
                     let resolved_bg = explicit_bg_color
                         .or_else(|| {
                             item.assigned_color.map(|color| {
@@ -231,6 +461,7 @@ impl crate::TermWindow {
                     } else {
                         Some(resolved_text)
                     });
+                    let title = fade_title(title, tab_idx, resolved_bg);
                     let element = if !item.icons.is_empty() {
                         wrap_icon_title(title, item.icons.len())
                     } else {
@@ -308,6 +539,7 @@ impl crate::TermWindow {
                     } else {
                         Some(text)
                     });
+                    let title = fade_title(title, tab_idx, bg);
                     let element = if !item.icons.is_empty() {
                         wrap_icon_title(title, item.icons.len())
                     } else {
@@ -618,6 +850,33 @@ impl crate::TermWindow {
     }
 }
 
+/// The largest width that every title longer than it can be cut to so that
+/// the tabs fit in `available` pixels, given each tab's title width and its
+/// width beyond the title. Never less than `min_width`.
+fn shared_title_width(widths: &[(f32, f32)], available: f32, min_width: f32) -> f32 {
+    let fits = |cap: f32| {
+        widths
+            .iter()
+            .map(|(title, overhead)| overhead + title.min(cap))
+            .sum::<f32>()
+            <= available
+    };
+    let longest = widths.iter().map(|(title, _)| *title).fold(0., f32::max);
+    let (mut low, mut high) = (min_width, longest.max(min_width));
+    if fits(high) {
+        return high;
+    }
+    while high - low > 0.5 {
+        let mid = (low + high) / 2.;
+        if fits(mid) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    low
+}
+
 fn make_x_button(
     font: &Rc<LoadedFont>,
     metrics: &RenderMetrics,
@@ -808,5 +1067,26 @@ mod tests {
             first_non_default_foreground(&line),
             Some(AnsiColor::Green.into())
         );
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::shared_title_width;
+
+    #[test]
+    fn shared_title_width_cuts_only_the_longest_titles() {
+        // Titles of 10, 40 and 100 pixels, each tab 6 pixels wider.
+        let widths = [(10., 6.), (40., 6.), (100., 6.)];
+        // Everything fits: no title is cut.
+        assert_eq!(shared_title_width(&widths, 200., 5.), 100.);
+        // 6 * 3 + 10 + 40 + cap = 120 at a cap of 52: only the longest is cut.
+        let cap = shared_title_width(&widths, 120., 5.);
+        assert!((cap - 52.).abs() <= 0.5, "{}", cap);
+        // 6 * 3 + 10 + 2 * cap = 60 at a cap of 16: the short title stays whole.
+        let cap = shared_title_width(&widths, 60., 5.);
+        assert!((cap - 16.).abs() <= 0.5, "{}", cap);
+        // Too narrow even at the minimum: the minimum is kept.
+        assert_eq!(shared_title_width(&widths, 10., 5.), 5.);
     }
 }
