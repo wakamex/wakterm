@@ -237,6 +237,7 @@ uuid = "1.13"
 varbincode = "0.1"
 vtparse = { version="0.7", path="vtparse", default-features=false }
 walkdir = "2"
+wuff = "0.2.9"
 wayland-backend = "0.3.5"
 wayland-client = "0.31"
 wayland-egl = "0.32"

@@ -2,10 +2,11 @@ use crate::parser::ParsedFont;
 use config::FontAttributes;
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
+use std::io::Read;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 pub mod core_text;
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -59,6 +60,62 @@ impl FontDataSource {
             Self::BuiltIn { .. } => None,
             Self::Memory { .. } => None,
         }
+    }
+
+    /// This source as a plain OpenType or TrueType font. FreeType and
+    /// HarfBuzz read only those, so a WOFF or WOFF2 font is decoded and held
+    /// in memory. A built-in one is decoded once per process.
+    pub fn decode_web_font(self) -> anyhow::Result<Self> {
+        let decode: fn(&[u8]) -> Result<Vec<u8>, wuff::WuffErr> = match &self.signature()? {
+            b"wOF2" => wuff::decompress_woff2,
+            b"wOFF" => wuff::decompress_woff1,
+            _ => return Ok(self),
+        };
+        let name = self.name_or_path_str().into_owned();
+        let decoded = |data: &[u8]| -> anyhow::Result<Arc<Box<[u8]>>> {
+            let data =
+                decode(data).map_err(|err| anyhow::anyhow!("decoding web font {name}: {err:?}"))?;
+            Ok(Arc::new(data.into_boxed_slice()))
+        };
+        let data = match &self {
+            Self::BuiltIn { name, data } => {
+                static DECODED: LazyLock<Mutex<HashMap<&'static str, Arc<Box<[u8]>>>>> =
+                    LazyLock::new(Mutex::default);
+                let mut cache = DECODED.lock().unwrap();
+                match cache.get(name) {
+                    Some(data) => Arc::clone(data),
+                    None => {
+                        let data = decoded(data)?;
+                        cache.insert(name, Arc::clone(&data));
+                        data
+                    }
+                }
+            }
+            _ => decoded(&self.load_data()?)?,
+        };
+        Ok(Self::Memory { name, data })
+    }
+
+    /// The first four bytes of the font, which identify its format.
+    fn signature(&self) -> anyhow::Result<[u8; 4]> {
+        let mut signature = [0; 4];
+        match self {
+            Self::OnDisk(path) => {
+                // A shorter file is not a font of any format checked here.
+                let _ = std::fs::File::open(path)?.read_exact(&mut signature);
+            }
+            Self::BuiltIn { data, .. } => {
+                if let Some(head) = data.get(..4) {
+                    signature.copy_from_slice(head);
+                }
+            }
+            Self::Memory { data, .. } => {
+                if let Some(head) = data.get(..4) {
+                    signature.copy_from_slice(head);
+                }
+            }
+        }
+        Ok(signature)
     }
 
     pub fn load_data<'a>(&'a self) -> anyhow::Result<Cow<'a, [u8]>> {

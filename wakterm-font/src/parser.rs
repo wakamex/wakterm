@@ -269,9 +269,13 @@ impl Names {
 
 impl ParsedFont {
     pub fn from_locator(handle: &FontDataHandle) -> anyhow::Result<Self> {
+        let handle = FontDataHandle {
+            source: handle.source.clone().decode_web_font()?,
+            ..handle.clone()
+        };
         let lib = crate::ftwrap::Library::new()?;
-        let face = lib.face_from_locator(handle)?;
-        Self::from_face(&face, handle.clone())
+        let face = lib.face_from_locator(&handle)?;
+        Self::from_face(&face, handle)
     }
 
     pub fn aka(&self) -> String {
@@ -869,7 +873,7 @@ pub(crate) fn load_built_in_fonts(font_info: &mut Vec<ParsedFont>) -> anyhow::Re
     for bundle in built_ins {
         for (data, name) in bundle.iter() {
             let locator = FontDataHandle {
-                source: FontDataSource::BuiltIn { data, name },
+                source: FontDataSource::BuiltIn { data, name }.decode_web_font()?,
                 index: 0,
                 variation: 0,
                 origin: FontOrigin::BuiltIn,
@@ -902,6 +906,7 @@ pub(crate) fn parse_and_collect_font_info(
     font_info: &mut Vec<ParsedFont>,
     origin: FontOrigin,
 ) -> anyhow::Result<()> {
+    let source = &source.clone().decode_web_font()?;
     let lib = crate::ftwrap::Library::new()?;
     let num_faces = lib.query_num_faces(&source)?;
 

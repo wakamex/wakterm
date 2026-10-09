@@ -840,6 +840,55 @@ mod test {
     use config::FontAttributes;
 
     #[test]
+    fn woff2_font_is_parsed_shaped_and_rasterized() {
+        let data: &[u8] = include_bytes!("../../test-data/JetBrainsMono-Regular-ascii.woff2");
+        assert_eq!(&data[..4], b"wOF2");
+        let source = crate::locator::FontDataSource::Memory {
+            name: "JetBrainsMono-Regular-ascii.woff2".to_string(),
+            data: std::sync::Arc::new(data.to_vec().into_boxed_slice()),
+        };
+        let mut fonts = vec![];
+        crate::parser::parse_and_collect_font_info(
+            &source,
+            &mut fonts,
+            crate::locator::FontOrigin::FontDirs,
+        )
+        .unwrap();
+        assert_eq!(fonts.len(), 1);
+        let font = &fonts[0];
+        assert_eq!(font.names().family, "JetBrains Mono");
+
+        let config = config::configuration();
+        let shaper = HarfbuzzShaper::new(&config, &[font.clone()]).unwrap();
+        let mut no_glyphs = vec![];
+        let info = shaper
+            .shape(
+                "abc",
+                10.,
+                72,
+                &mut no_glyphs,
+                None,
+                Direction::LeftToRight,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(no_glyphs.is_empty(), "{:?}", no_glyphs);
+        assert_eq!(info.len(), 3);
+
+        let rasterizer = crate::rasterizer::new_rasterizer(
+            config::FontRasterizerSelection::FreeType,
+            font,
+            config::DisplayPixelGeometry::RGB,
+        )
+        .unwrap();
+        let glyph = rasterizer
+            .rasterize_glyph(info[0].glyph_pos, 12., 96)
+            .unwrap();
+        assert!(glyph.width > 0 && glyph.height > 0);
+    }
+
+    #[test]
     fn ligatures() {
         let _ = env_logger::Builder::new()
             .is_test(true)

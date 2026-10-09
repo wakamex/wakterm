@@ -34,6 +34,7 @@ rangeset.workspace = true
 termwiz.workspace = true
 thiserror.workspace = true
 walkdir.workspace = true
+wuff.workspace = true
 wakterm-bidi.workspace = true
 wakterm-color-types.workspace = true
 wakterm-input-types.workspace = true

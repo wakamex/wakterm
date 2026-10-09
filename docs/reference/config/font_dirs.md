@@ -23,6 +23,8 @@ resolving a font, wakterm will first use the configured
 resolver.  If the system doesn't resolve the requested font, the fonts from
 `font_dirs` are searched for a match.
 
+Font files in `font_dirs` may be TrueType or OpenType fonts or collections, or [Web Open Font Format (WOFF)](https://www.w3.org/TR/WOFF2/) fonts in either version, WOFF or WOFF2. A WOFF font is decompressed into memory when wakterm loads it.
+
 If you want to only find fonts from your `font_dirs`, perhaps because you have
 a self-contained wakterm config that you carry around with you between multiple
 systems and don't want to install those fonts on every system that you use,
