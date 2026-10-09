@@ -18,7 +18,7 @@ fn main() {
 }
 
 fn generate_nerdfonts_data() {
-    let url = "https://raw.githubusercontent.com/ryanoasis/nerd-fonts/master/glyphnames.json";
+    let url = "https://raw.githubusercontent.com/ryanoasis/nerd-fonts/v3.5.1/glyphnames.json";
     let body = reqwest::blocking::get(url).unwrap().text().unwrap();
 
     #[derive(Deserialize)]

@@ -5,6 +5,8 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_account", '\u{eb99}'),                                    // 
     ("cod_activate_breakpoints", '\u{ea97}'),                       // 
     ("cod_add", '\u{ea60}'),                                        // 
+    ("cod_add_small", '\u{ec7b}'),                                  // 
+    ("cod_agent", '\u{ec67}'),                                      // 
     ("cod_archive", '\u{ea98}'),                                    // 
     ("cod_arrow_both", '\u{ea99}'),                                 // 
     ("cod_arrow_circle_down", '\u{ebfc}'),                          // 
@@ -20,6 +22,8 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_arrow_small_up", '\u{eaa0}'),                             // 
     ("cod_arrow_swap", '\u{ebcb}'),                                 // 
     ("cod_arrow_up", '\u{eaa1}'),                                   // 
+    ("cod_ask", '\u{ec80}'),                                        // 
+    ("cod_attach", '\u{ec34}'),                                     // 
     ("cod_azure", '\u{ebd8}'),                                      // 
     ("cod_azure_devops", '\u{ebe8}'),                               // 
     ("cod_beaker", '\u{ea79}'),                                     // 
@@ -38,10 +42,14 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_broadcast", '\u{eaad}'),                                  // 
     ("cod_browser", '\u{eaae}'),                                    // 
     ("cod_bug", '\u{eaaf}'),                                        // 
+    ("cod_build", '\u{ec5a}'),                                      // 
     ("cod_calendar", '\u{eab0}'),                                   // 
     ("cod_call_incoming", '\u{eb92}'),                              // 
     ("cod_call_outgoing", '\u{eb93}'),                              // 
     ("cod_case_sensitive", '\u{eab1}'),                             // 
+    ("cod_chat_sparkle", '\u{ec4f}'),                               // 
+    ("cod_chat_sparkle_error", '\u{ec56}'),                         // 
+    ("cod_chat_sparkle_warning", '\u{ec55}'),                       // 
     ("cod_check", '\u{eab2}'),                                      // 
     ("cod_check_all", '\u{ebb1}'),                                  // 
     ("cod_checklist", '\u{eab3}'),                                  // 
@@ -62,28 +70,49 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_circle_small", '\u{ec07}'),                               // 
     ("cod_circle_small_filled", '\u{eb8a}'),                        // 
     ("cod_circuit_board", '\u{eabe}'),                              // 
+    ("cod_claude", '\u{ec82}'),                                     // 
     ("cod_clear_all", '\u{eabf}'),                                  // 
     ("cod_clippy", '\u{eac0}'),                                     // 
+    ("cod_clockface", '\u{ec75}'),                                  // 
     ("cod_close", '\u{ea76}'),                                      // 
     ("cod_close_all", '\u{eac1}'),                                  // 
     ("cod_cloud", '\u{ebaa}'),                                      // 
     ("cod_cloud_download", '\u{eac2}'),                             // 
+    ("cod_cloud_small", '\u{ec7a}'),                                // 
     ("cod_cloud_upload", '\u{eac3}'),                               // 
     ("cod_code", '\u{eac4}'),                                       // 
+    ("cod_code_oss", '\u{ec2b}'),                                   // 
+    ("cod_code_review", '\u{ec37}'),                                // 
     ("cod_coffee", '\u{ec15}'),                                     // 
     ("cod_collapse_all", '\u{eac5}'),                               // 
+    ("cod_collection", '\u{ec57}'),                                 // 
+    ("cod_collection_small", '\u{ec78}'),                           // 
     ("cod_color_mode", '\u{eac6}'),                                 // 
     ("cod_combine", '\u{ebb6}'),                                    // 
     ("cod_comment", '\u{ea6b}'),                                    // 
     ("cod_comment_discussion", '\u{eac7}'),                         // 
+    ("cod_comment_discussion_quote", '\u{ec5b}'),                   // 
+    ("cod_comment_discussion_sparkle", '\u{ec54}'),                 // 
     ("cod_comment_draft", '\u{ec0e}'),                              // 
     ("cod_comment_unresolved", '\u{ec0a}'),                         // 
     ("cod_compass", '\u{ebd5}'),                                    // 
     ("cod_compass_active", '\u{ebd7}'),                             // 
     ("cod_compass_dot", '\u{ebd6}'),                                // 
     ("cod_copilot", '\u{ec1e}'),                                    // 
+    ("cod_copilot_blocked", '\u{ec3d}'),                            // 
+    ("cod_copilot_error", '\u{ec4d}'),                              // 
+    ("cod_copilot_in_progress", '\u{ec4c}'),                        // 
+    ("cod_copilot_large", '\u{ec3a}'),                              // 
+    ("cod_copilot_not_connected", '\u{ec3e}'),                      // 
+    ("cod_copilot_snooze", '\u{ec52}'),                             // 
+    ("cod_copilot_success", '\u{ec4e}'),                            // 
+    ("cod_copilot_unavailable", '\u{ec42}'),                        // 
+    ("cod_copilot_warning", '\u{ec38}'),                            // 
+    ("cod_copilot_warning_large", '\u{ec3b}'),                      // 
     ("cod_copy", '\u{ebcc}'),                                       // 
+    ("cod_coverage", '\u{ec2e}'),                                   // 
     ("cod_credit_card", '\u{eac9}'),                                // 
+    ("cod_cursor", '\u{ec5c}'),                                     // 
     ("cod_dash", '\u{eacc}'),                                       // 
     ("cod_dashboard", '\u{eacd}'),                                  // 
     ("cod_database", '\u{eace}'),                                   // 
@@ -100,6 +129,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_debug_breakpoint_log", '\u{eaab}'),                       // 
     ("cod_debug_breakpoint_log_unverified", '\u{eaaa}'),            // 
     ("cod_debug_breakpoint_unsupported", '\u{eb8c}'),               // 
+    ("cod_debug_connected", '\u{ec63}'),                            // 
     ("cod_debug_console", '\u{eb9b}'),                              // 
     ("cod_debug_continue", '\u{eacf}'),                             // 
     ("cod_debug_continue_small", '\u{ebe0}'),                       // 
@@ -127,19 +157,27 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_diff_added", '\u{eadc}'),                                 // 
     ("cod_diff_ignored", '\u{eadd}'),                               // 
     ("cod_diff_modified", '\u{eade}'),                              // 
+    ("cod_diff_multiple", '\u{ec23}'),                              // 
     ("cod_diff_removed", '\u{eadf}'),                               // 
     ("cod_diff_renamed", '\u{eae0}'),                               // 
+    ("cod_diff_single", '\u{ec22}'),                                // 
     ("cod_discard", '\u{eae2}'),                                    // 
+    ("cod_download", '\u{ec74}'),                                   // 
     ("cod_edit", '\u{ea73}'),                                       // 
+    ("cod_edit_code", '\u{ec68}'),                                  // 
+    ("cod_edit_session", '\u{ec36}'),                               // 
+    ("cod_edit_sparkle", '\u{ec51}'),                               // 
     ("cod_editor_layout", '\u{eae3}'),                              // 
     ("cod_ellipsis", '\u{ea7c}'),                                   // 
     ("cod_empty_window", '\u{eae4}'),                               // 
+    ("cod_eraser", '\u{ec5d}'),                                     // 
     ("cod_error", '\u{ea87}'),                                      // 
     ("cod_error_small", '\u{ebfb}'),                                // 
     ("cod_exclude", '\u{eae5}'),                                    // 
     ("cod_expand_all", '\u{eb95}'),                                 // 
     ("cod_export", '\u{ebac}'),                                     // 
     ("cod_extensions", '\u{eae6}'),                                 // 
+    ("cod_extensions_large", '\u{ec48}'),                           // 
     ("cod_eye", '\u{ea70}'),                                        // 
     ("cod_eye_closed", '\u{eae7}'),                                 // 
     ("cod_feedback", '\u{eb96}'),                                   // 
@@ -151,10 +189,12 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_file_submodule", '\u{eaec}'),                             // 
     ("cod_file_symlink_directory", '\u{eaed}'),                     // 
     ("cod_file_symlink_file", '\u{eaee}'),                          // 
+    ("cod_file_text", '\u{ec5e}'),                                  // 
     ("cod_file_zip", '\u{eaef}'),                                   // 
     ("cod_files", '\u{eaf0}'),                                      // 
     ("cod_filter", '\u{eaf1}'),                                     // 
     ("cod_filter_filled", '\u{ebce}'),                              // 
+    ("cod_flag", '\u{ec3f}'),                                       // 
     ("cod_flame", '\u{eaf2}'),                                      // 
     ("cod_fold", '\u{eaf5}'),                                       // 
     ("cod_fold_down", '\u{eaf3}'),                                  // 
@@ -163,10 +203,16 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_folder_active", '\u{eaf6}'),                              // 
     ("cod_folder_library", '\u{ebdf}'),                             // 
     ("cod_folder_opened", '\u{eaf7}'),                              // 
+    ("cod_forward", '\u{ec73}'),                                    // 
     ("cod_game", '\u{ec17}'),                                       // 
     ("cod_gear", '\u{eaf8}'),                                       // 
     ("cod_gift", '\u{eaf9}'),                                       // 
+    ("cod_gist", '\u{eafb}'),                                       // 
     ("cod_gist_secret", '\u{eafa}'),                                // 
+    ("cod_git_branch", '\u{ec6f}'),                                 // 
+    ("cod_git_branch_changes", '\u{ec6c}'),                         // 
+    ("cod_git_branch_conflicts", '\u{ec6e}'),                       // 
+    ("cod_git_branch_staged_changes", '\u{ec6d}'),                  // 
     ("cod_git_commit", '\u{eafc}'),                                 // 
     ("cod_git_compare", '\u{eafd}'),                                // 
     ("cod_git_fetch", '\u{ec1d}'),                                  // 
@@ -174,15 +220,22 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_git_pull_request", '\u{ea64}'),                           // 
     ("cod_git_pull_request_closed", '\u{ebda}'),                    // 
     ("cod_git_pull_request_create", '\u{ebbc}'),                    // 
+    ("cod_git_pull_request_done", '\u{ec46}'),                      // 
     ("cod_git_pull_request_draft", '\u{ebdb}'),                     // 
     ("cod_git_pull_request_go_to_changes", '\u{ec0b}'),             // 
     ("cod_git_pull_request_new_changes", '\u{ec0c}'),               // 
+    ("cod_git_stash", '\u{ec26}'),                                  // 
+    ("cod_git_stash_apply", '\u{ec27}'),                            // 
+    ("cod_git_stash_pop", '\u{ec28}'),                              // 
     ("cod_github", '\u{ea84}'),                                     // 
     ("cod_github_action", '\u{eaff}'),                              // 
     ("cod_github_alt", '\u{eb00}'),                                 // 
     ("cod_github_inverted", '\u{eba1}'),                            // 
+    ("cod_github_project", '\u{ec2f}'),                             // 
     ("cod_globe", '\u{eb01}'),                                      // 
+    ("cod_go_to_editing_session", '\u{ec35}'),                      // 
     ("cod_go_to_file", '\u{ea94}'),                                 // 
+    ("cod_go_to_search", '\u{ec32}'),                               // 
     ("cod_grabber", '\u{eb02}'),                                    // 
     ("cod_graph", '\u{eb03}'),                                      // 
     ("cod_graph_left", '\u{ebad}'),                                 // 
@@ -198,6 +251,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_hubot", '\u{eb08}'),                                      // 
     ("cod_inbox", '\u{eb09}'),                                      // 
     ("cod_indent", '\u{ebf9}'),                                     // 
+    ("cod_index_zero", '\u{ec66}'),                                 // 
     ("cod_info", '\u{ea74}'),                                       // 
     ("cod_insert", '\u{ec11}'),                                     // 
     ("cod_inspect", '\u{ebd1}'),                                    // 
@@ -209,6 +263,9 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_json", '\u{eb0f}'),                                       // 
     ("cod_kebab_vertical", '\u{eb10}'),                             // 
     ("cod_key", '\u{eb11}'),                                        // 
+    ("cod_keyboard_tab", '\u{ec3c}'),                               // 
+    ("cod_keyboard_tab_above", '\u{ec44}'),                         // 
+    ("cod_keyboard_tab_below", '\u{ec45}'),                         // 
     ("cod_law", '\u{eb12}'),                                        // 
     ("cod_layers", '\u{ebd2}'),                                     // 
     ("cod_layers_active", '\u{ebd4}'),                              // 
@@ -220,18 +277,23 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_layout_menubar", '\u{ebf6}'),                             // 
     ("cod_layout_panel", '\u{ebf2}'),                               // 
     ("cod_layout_panel_center", '\u{ebef}'),                        // 
+    ("cod_layout_panel_dock", '\u{ec49}'),                          // 
     ("cod_layout_panel_justify", '\u{ebf0}'),                       // 
     ("cod_layout_panel_left", '\u{ebee}'),                          // 
     ("cod_layout_panel_off", '\u{ec01}'),                           // 
     ("cod_layout_panel_right", '\u{ebf1}'),                         // 
     ("cod_layout_sidebar_left", '\u{ebf3}'),                        // 
+    ("cod_layout_sidebar_left_dock", '\u{ec4a}'),                   // 
     ("cod_layout_sidebar_left_off", '\u{ec02}'),                    // 
     ("cod_layout_sidebar_right", '\u{ebf4}'),                       // 
+    ("cod_layout_sidebar_right_dock", '\u{ec4b}'),                  // 
     ("cod_layout_sidebar_right_off", '\u{ec00}'),                   // 
     ("cod_layout_statusbar", '\u{ebf5}'),                           // 
     ("cod_library", '\u{eb9c}'),                                    // 
     ("cod_lightbulb", '\u{ea61}'),                                  // 
     ("cod_lightbulb_autofix", '\u{eb13}'),                          // 
+    ("cod_lightbulb_empty", '\u{ec40}'),                            // 
+    ("cod_lightbulb_sparkle", '\u{ec1f}'),                          // 
     ("cod_link", '\u{eb15}'),                                       // 
     ("cod_link_external", '\u{eb14}'),                              // 
     ("cod_list_filter", '\u{eb83}'),                                // 
@@ -250,11 +312,15 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_mail_read", '\u{eb1b}'),                                  // 
     ("cod_map", '\u{ec05}'),                                        // 
     ("cod_map_filled", '\u{ec06}'),                                 // 
+    ("cod_map_vertical", '\u{ec30}'),                               // 
+    ("cod_map_vertical_filled", '\u{ec31}'),                        // 
     ("cod_markdown", '\u{eb1d}'),                                   // 
+    ("cod_mcp", '\u{ec47}'),                                        // 
     ("cod_megaphone", '\u{eb1e}'),                                  // 
     ("cod_mention", '\u{eb1f}'),                                    // 
     ("cod_menu", '\u{eb94}'),                                       // 
     ("cod_merge", '\u{ebab}'),                                      // 
+    ("cod_merge_into", '\u{ec6b}'),                                 // 
     ("cod_mic", '\u{ec12}'),                                        // 
     ("cod_mic_filled", '\u{ec1c}'),                                 // 
     ("cod_milestone", '\u{eb20}'),                                  // 
@@ -264,21 +330,27 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_multiple_windows", '\u{eb23}'),                           // 
     ("cod_music", '\u{ec1b}'),                                      // 
     ("cod_mute", '\u{eb24}'),                                       // 
+    ("cod_new_collection", '\u{ec58}'),                             // 
     ("cod_new_file", '\u{ea7f}'),                                   // 
     ("cod_new_folder", '\u{ea80}'),                                 // 
+    ("cod_new_session", '\u{ec84}'),                                // 
     ("cod_newline", '\u{ebea}'),                                    // 
     ("cod_no_newline", '\u{eb25}'),                                 // 
     ("cod_note", '\u{eb26}'),                                       // 
     ("cod_notebook", '\u{ebaf}'),                                   // 
     ("cod_notebook_template", '\u{ebbf}'),                          // 
     ("cod_octoface", '\u{eb27}'),                                   // 
+    ("cod_open_in_product", '\u{ec65}'),                            // 
+    ("cod_open_in_window", '\u{ec83}'),                             // 
     ("cod_open_preview", '\u{eb28}'),                               // 
+    ("cod_openai", '\u{ec81}'),                                     // 
     ("cod_organization", '\u{ea7e}'),                               // 
     ("cod_output", '\u{eb9d}'),                                     // 
     ("cod_package", '\u{eb29}'),                                    // 
     ("cod_paintcan", '\u{eb2a}'),                                   // 
     ("cod_pass", '\u{eba4}'),                                       // 
     ("cod_pass_filled", '\u{ebb3}'),                                // 
+    ("cod_percentage", '\u{ec33}'),                                 // 
     ("cod_person", '\u{ea67}'),                                     // 
     ("cod_person_add", '\u{ebcd}'),                                 // 
     ("cod_piano", '\u{ec1a}'),                                      // 
@@ -294,8 +366,10 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_primitive_square", '\u{ea72}'),                           // 
     ("cod_project", '\u{eb30}'),                                    // 
     ("cod_pulse", '\u{eb31}'),                                      // 
+    ("cod_python", '\u{ec39}'),                                     // 
     ("cod_question", '\u{eb32}'),                                   // 
     ("cod_quote", '\u{eb33}'),                                      // 
+    ("cod_quotes", '\u{ec60}'),                                     // 
     ("cod_radio_tower", '\u{eb34}'),                                // 
     ("cod_reactions", '\u{eb35}'),                                  // 
     ("cod_record", '\u{eba7}'),                                     // 
@@ -308,6 +382,8 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_remote", '\u{eb3a}'),                                     // 
     ("cod_remote_explorer", '\u{eb39}'),                            // 
     ("cod_remove", '\u{eb3b}'),                                     // 
+    ("cod_remove_small", '\u{ec7c}'),                               // 
+    ("cod_rename", '\u{ec61}'),                                     // 
     ("cod_replace", '\u{eb3d}'),                                    // 
     ("cod_replace_all", '\u{eb3c}'),                                // 
     ("cod_reply", '\u{ea7d}'),                                      // 
@@ -315,10 +391,13 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_repo_clone", '\u{eb3e}'),                                 // 
     ("cod_repo_force_push", '\u{eb3f}'),                            // 
     ("cod_repo_forked", '\u{ea63}'),                                // 
+    ("cod_repo_pinned", '\u{ec43}'),                                // 
     ("cod_repo_pull", '\u{eb40}'),                                  // 
     ("cod_repo_push", '\u{eb41}'),                                  // 
+    ("cod_repo_selected", '\u{ec69}'),                              // 
     ("cod_report", '\u{eb42}'),                                     // 
     ("cod_request_changes", '\u{eb43}'),                            // 
+    ("cod_robot", '\u{ec20}'),                                      // 
     ("cod_rocket", '\u{eb44}'),                                     // 
     ("cod_root_folder", '\u{eb46}'),                                // 
     ("cod_root_folder_opened", '\u{eb45}'),                         // 
@@ -326,30 +405,41 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_ruby", '\u{eb48}'),                                       // 
     ("cod_run_above", '\u{ebbd}'),                                  // 
     ("cod_run_all", '\u{eb9e}'),                                    // 
+    ("cod_run_all_coverage", '\u{ec2d}'),                           // 
     ("cod_run_below", '\u{ebbe}'),                                  // 
+    ("cod_run_coverage", '\u{ec2c}'),                               // 
     ("cod_run_errors", '\u{ebde}'),                                 // 
+    ("cod_run_with_deps", '\u{ec62}'),                              // 
     ("cod_save", '\u{eb4b}'),                                       // 
     ("cod_save_all", '\u{eb49}'),                                   // 
     ("cod_save_as", '\u{eb4a}'),                                    // 
+    ("cod_screen_cut", '\u{ec7f}'),                                 // 
     ("cod_screen_full", '\u{eb4c}'),                                // 
     ("cod_screen_normal", '\u{eb4d}'),                              // 
     ("cod_search", '\u{ea6d}'),                                     // 
     ("cod_search_fuzzy", '\u{ec0d}'),                               // 
+    ("cod_search_large", '\u{ec70}'),                               // 
+    ("cod_search_sparkle", '\u{ec50}'),                             // 
     ("cod_search_stop", '\u{eb4e}'),                                // 
     ("cod_send", '\u{ec0f}'),                                       // 
+    ("cod_send_to_remote_agent", '\u{ec53}'),                       // 
     ("cod_server", '\u{eb50}'),                                     // 
     ("cod_server_environment", '\u{eba3}'),                         // 
     ("cod_server_process", '\u{eba2}'),                             // 
+    ("cod_session_in_progress", '\u{ec77}'),                        // 
     ("cod_settings", '\u{eb52}'),                                   // 
     ("cod_settings_gear", '\u{eb51}'),                              // 
+    ("cod_share", '\u{ec25}'),                                      // 
     ("cod_shield", '\u{eb53}'),                                     // 
     ("cod_sign_in", '\u{ea6f}'),                                    // 
     ("cod_sign_out", '\u{ea6e}'),                                   // 
+    ("cod_skip", '\u{ec6a}'),                                       // 
     ("cod_smiley", '\u{eb54}'),                                     // 
     ("cod_snake", '\u{ec16}'),                                      // 
     ("cod_sort_precedence", '\u{eb55}'),                            // 
     ("cod_source_control", '\u{ea68}'),                             // 
     ("cod_sparkle", '\u{ec10}'),                                    // 
+    ("cod_sparkle_filled", '\u{ec21}'),                             // 
     ("cod_split_horizontal", '\u{eb56}'),                           // 
     ("cod_split_vertical", '\u{eb57}'),                             // 
     ("cod_squirrel", '\u{eb58}'),                                   // 
@@ -357,6 +447,8 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_star_full", '\u{eb59}'),                                  // 
     ("cod_star_half", '\u{eb5a}'),                                  // 
     ("cod_stop_circle", '\u{eba5}'),                                // 
+    ("cod_strikethrough", '\u{ec64}'),                              // 
+    ("cod_surround_with", '\u{ec24}'),                              // 
     ("cod_symbol_array", '\u{ea8a}'),                               // 
     ("cod_symbol_boolean", '\u{ea8f}'),                             // 
     ("cod_symbol_class", '\u{eb5b}'),                               // 
@@ -371,6 +463,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_symbol_key", '\u{ea93}'),                                 // 
     ("cod_symbol_keyword", '\u{eb62}'),                             // 
     ("cod_symbol_method", '\u{ea8c}'),                              // 
+    ("cod_symbol_method_arrow", '\u{ec41}'),                        // 
     ("cod_symbol_misc", '\u{eb63}'),                                // 
     ("cod_symbol_namespace", '\u{ea8b}'),                           // 
     ("cod_symbol_numeric", '\u{ea90}'),                             // 
@@ -393,11 +486,13 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_terminal_bash", '\u{ebca}'),                              // 
     ("cod_terminal_cmd", '\u{ebc4}'),                               // 
     ("cod_terminal_debian", '\u{ebc5}'),                            // 
+    ("cod_terminal_git_bash", '\u{ec71}'),                          // 
     ("cod_terminal_linux", '\u{ebc6}'),                             // 
     ("cod_terminal_powershell", '\u{ebc7}'),                        // 
     ("cod_terminal_tmux", '\u{ebc8}'),                              // 
     ("cod_terminal_ubuntu", '\u{ebc9}'),                            // 
     ("cod_text_size", '\u{eb69}'),                                  // 
+    ("cod_thinking", '\u{ec59}'),                                   // 
     ("cod_three_bars", '\u{eb6a}'),                                 // 
     ("cod_thumbsdown", '\u{eb6b}'),                                 // 
     ("cod_thumbsdown_filled", '\u{ec13}'),                          // 
@@ -413,6 +508,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_type_hierarchy", '\u{ebb9}'),                             // 
     ("cod_type_hierarchy_sub", '\u{ebba}'),                         // 
     ("cod_type_hierarchy_super", '\u{ebbb}'),                       // 
+    ("cod_unarchive", '\u{ec76}'),                                  // 
     ("cod_unfold", '\u{eb73}'),                                     // 
     ("cod_ungroup_by_ref_type", '\u{eb98}'),                        // 
     ("cod_unlock", '\u{eb74}'),                                     // 
@@ -427,17 +523,23 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("cod_vm_connect", '\u{eba9}'),                                 // 
     ("cod_vm_outline", '\u{eb7a}'),                                 // 
     ("cod_vm_running", '\u{eb7b}'),                                 // 
+    ("cod_vm_small", '\u{ec79}'),                                   // 
     ("cod_vr", '\u{ec18}'),                                         // 
+    ("cod_vscode", '\u{ec29}'),                                     // 
+    ("cod_vscode_insiders", '\u{ec2a}'),                            // 
     ("cod_wand", '\u{ebcf}'),                                       // 
     ("cod_warning", '\u{ea6c}'),                                    // 
     ("cod_watch", '\u{eb7c}'),                                      // 
     ("cod_whitespace", '\u{eb7d}'),                                 // 
     ("cod_whole_word", '\u{eb7e}'),                                 // 
     ("cod_window", '\u{eb7f}'),                                     // 
+    ("cod_window_active", '\u{ec72}'),                              // 
     ("cod_word_wrap", '\u{eb80}'),                                  // 
     ("cod_workspace_trusted", '\u{ebc1}'),                          // 
     ("cod_workspace_unknown", '\u{ebc3}'),                          // 
     ("cod_workspace_untrusted", '\u{ebc2}'),                        // 
+    ("cod_worktree", '\u{ec7e}'),                                   // 
+    ("cod_worktree_small", '\u{ec7d}'),                             // 
     ("cod_zoom_in", '\u{eb81}'),                                    // 
     ("cod_zoom_out", '\u{eb82}'),                                   // 
     ("custom_ada", '\u{e6b5}'),                                     // 
@@ -449,6 +551,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("custom_common_lisp", '\u{e6b0}'),                             // 
     ("custom_cpp", '\u{e61d}'),                                     // 
     ("custom_crystal", '\u{e62f}'),                                 // 
+    ("custom_css", '\u{e6b8}'),                                     // 
     ("custom_default", '\u{e612}'),                                 // 
     ("custom_electron", '\u{e62e}'),                                // 
     ("custom_elixir", '\u{e62d}'),                                  // 
@@ -469,6 +572,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("custom_kotlin", '\u{e634}'),                                  // 
     ("custom_msdos", '\u{e629}'),                                   // 
     ("custom_neovim", '\u{e6ae}'),                                  // 
+    ("custom_obsidian", '\u{e6bb}'),                                // 
     ("custom_orgmode", '\u{e633}'),                                 // 
     ("custom_play_arrow", '\u{e602}'),                              // 
     ("custom_prettier", '\u{e6b4}'),                                // 
@@ -481,11 +585,16 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("custom_vim", '\u{e62b}'),                                     // 
     ("custom_vitruvian", '\u{e6b7}'),                               // 
     ("custom_windows", '\u{e62a}'),                                 // 
+    ("custom_wireshark", '\u{e6ba}'),                               // 
+    ("custom_zsh", '\u{e6b9}'),                                     // 
     ("dev_aarch64", '\u{e700}'),                                    // 
     ("dev_adonisjs", '\u{e701}'),                                   // 
+    ("dev_aerospike", '\u{e8f1}'),                                  // 
+    ("dev_aframe", '\u{e8f2}'),                                     // 
     ("dev_aftereffects", '\u{e705}'),                               // 
     ("dev_akka", '\u{e708}'),                                       // 
     ("dev_algolia", '\u{e70a}'),                                    // 
+    ("dev_almalinux", '\u{e8f3}'),                                  // 
     ("dev_alpinejs", '\u{e713}'),                                   // 
     ("dev_amazonwebservices", '\u{e7ad}'),                          // 
     ("dev_anaconda", '\u{e715}'),                                   // 
@@ -495,18 +604,22 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_angularjs", '\u{e71c}'),                                  // 
     ("dev_angularmaterial", '\u{e720}'),                            // 
     ("dev_ansible", '\u{e723}'),                                    // 
+    ("dev_ansys", '\u{e8f4}'),                                      // 
     ("dev_antdesign", '\u{e72a}'),                                  // 
     ("dev_apache", '\u{e72b}'),                                     // 
     ("dev_apacheairflow", '\u{e72c}'),                              // 
     ("dev_apachekafka", '\u{e72e}'),                                // 
     ("dev_apachespark", '\u{e72f}'),                                // 
+    ("dev_apex", '\u{e8f5}'),                                       // 
     ("dev_apl", '\u{e730}'),                                        // 
+    ("dev_apollographql", '\u{e8f6}'),                              // 
     ("dev_appcelerator", '\u{e7ab}'),                               // 
     ("dev_apple", '\u{e711}'),                                      // 
     ("dev_appwrite", '\u{e731}'),                                   // 
     ("dev_archlinux", '\u{e732}'),                                  // 
     ("dev_arduino", '\u{e733}'),                                    // 
     ("dev_argocd", '\u{e734}'),                                     // 
+    ("dev_artixlinux", '\u{e8f7}'),                                 // 
     ("dev_astro", '\u{e735}'),                                      // 
     ("dev_atom", '\u{e764}'),                                       // 
     ("dev_awk", '\u{e741}'),                                        // 
@@ -516,13 +629,17 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_azuredevops", '\u{e756}'),                                // 
     ("dev_azuresqldatabase", '\u{e75b}'),                           // 
     ("dev_babel", '\u{e75d}'),                                      // 
+    ("dev_babylonjs", '\u{e8f8}'),                                  // 
     ("dev_backbone", '\u{e752}'),                                   // 
     ("dev_backbonejs", '\u{e752}'),                                 // 
     ("dev_ballerina", '\u{e75e}'),                                  // 
     ("dev_bamboo", '\u{e75f}'),                                     // 
     ("dev_bash", '\u{e760}'),                                       // 
+    ("dev_bazel", '\u{e8f9}'),                                      // 
     ("dev_beats", '\u{e761}'),                                      // 
     ("dev_behance", '\u{e762}'),                                    // 
+    ("dev_bevyengine", '\u{e8fa}'),                                 // 
+    ("dev_biome", '\u{e8fb}'),                                      // 
     ("dev_bitbucket", '\u{e703}'),                                  // 
     ("dev_blazor", '\u{e765}'),                                     // 
     ("dev_blender", '\u{e766}'),                                    // 
@@ -541,16 +658,21 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_cassandra", '\u{e789}'),                                  // 
     ("dev_centos", '\u{e78a}'),                                     // 
     ("dev_ceylon", '\u{e78b}'),                                     // 
+    ("dev_chakraui", '\u{e8fc}'),                                   // 
+    ("dev_chartjs", '\u{e8fd}'),                                    // 
     ("dev_chrome", '\u{e743}'),                                     // 
     ("dev_circleci", '\u{e78c}'),                                   // 
     ("dev_clarity", '\u{e78d}'),                                    // 
+    ("dev_clickhouse", '\u{e8fe}'),                                 // 
     ("dev_clion", '\u{e78e}'),                                      // 
     ("dev_clojure", '\u{e768}'),                                    // 
     ("dev_clojure_alt", '\u{e76a}'),                                // 
     ("dev_clojurescript", '\u{e790}'),                              // 
     ("dev_cloudflare", '\u{e792}'),                                 // 
     ("dev_cloudflareworkers", '\u{e793}'),                          // 
+    ("dev_cloudrun", '\u{e8ff}'),                                   // 
     ("dev_cmake", '\u{e794}'),                                      // 
+    ("dev_cobol", '\u{e900}'),                                      // 
     ("dev_codeac", '\u{e796}'),                                     // 
     ("dev_codecov", '\u{e797}'),                                    // 
     ("dev_codeigniter", '\u{e780}'),                                // 
@@ -564,6 +686,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_cosmosdb", '\u{e79f}'),                                   // 
     ("dev_couchbase", '\u{e7a0}'),                                  // 
     ("dev_couchdb", '\u{e7a2}'),                                    // 
+    ("dev_cpanel", '\u{e901}'),                                     // 
     ("dev_cplusplus", '\u{e7a3}'),                                  // 
     ("dev_crystal", '\u{e7ac}'),                                    // 
     ("dev_csharp", '\u{e7b2}'),                                     // 
@@ -574,14 +697,19 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_d3js", '\u{e7bc}'),                                       // 
     ("dev_dart", '\u{e798}'),                                       // 
     ("dev_database", '\u{e706}'),                                   // 
+    ("dev_datadog", '\u{e902}'),                                    // 
     ("dev_datagrip", '\u{e7bd}'),                                   // 
     ("dev_dataspell", '\u{e7be}'),                                  // 
+    ("dev_datatables", '\u{e903}'),                                 // 
     ("dev_dbeaver", '\u{e7bf}'),                                    // 
     ("dev_debian", '\u{e77d}'),                                     // 
+    ("dev_delphi", '\u{e904}'),                                     // 
     ("dev_denojs", '\u{e7c0}'),                                     // 
+    ("dev_detaspace", '\u{e905}'),                                  // 
     ("dev_devicon", '\u{e7c1}'),                                    // 
     ("dev_digital_ocean", '\u{e7ae}'),                              // 
     ("dev_digitalocean", '\u{e7ae}'),                               // 
+    ("dev_discloud", '\u{e906}'),                                   // 
     ("dev_discordjs", '\u{e7c2}'),                                  // 
     ("dev_django", '\u{e71d}'),                                     // 
     ("dev_djangorest", '\u{e7c3}'),                                 // 
@@ -590,11 +718,15 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_doctrine", '\u{e774}'),                                   // 
     ("dev_dotnet", '\u{e77f}'),                                     // 
     ("dev_dotnetcore", '\u{e7c6}'),                                 // 
+    ("dev_dovecot", '\u{e907}'),                                    // 
     ("dev_dreamweaver", '\u{e79c}'),                                // 
     ("dev_dropbox", '\u{e707}'),                                    // 
     ("dev_dropwizard", '\u{e7c7}'),                                 // 
     ("dev_drupal", '\u{e742}'),                                     // 
+    ("dev_duckdb", '\u{e908}'),                                     // 
+    ("dev_dyalog", '\u{e909}'),                                     // 
     ("dev_dynamodb", '\u{e7c8}'),                                   // 
+    ("dev_dynatrace", '\u{e90a}'),                                  // 
     ("dev_eclipse", '\u{e79e}'),                                    // 
     ("dev_ecto", '\u{e7c9}'),                                       // 
     ("dev_elasticsearch", '\u{e7ca}'),                              // 
@@ -605,9 +737,11 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_emacs", '\u{e7cf}'),                                      // 
     ("dev_embeddedc", '\u{e7d0}'),                                  // 
     ("dev_ember", '\u{e71b}'),                                      // 
+    ("dev_entityframeworkcore", '\u{e90b}'),                        // 
     ("dev_envoy", '\u{e7d1}'),                                      // 
     ("dev_erlang", '\u{e7b1}'),                                     // 
     ("dev_eslint", '\u{e7d2}'),                                     // 
+    ("dev_expo", '\u{e90c}'),                                       // 
     ("dev_express", '\u{e7d3}'),                                    // 
     ("dev_facebook", '\u{e7d4}'),                                   // 
     ("dev_fastapi", '\u{e7d5}'),                                    // 
@@ -615,17 +749,23 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_faunadb", '\u{e7d7}'),                                    // 
     ("dev_feathersjs", '\u{e7d8}'),                                 // 
     ("dev_fedora", '\u{e7d9}'),                                     // 
+    ("dev_fiber", '\u{e90d}'),                                      // 
     ("dev_figma", '\u{e7da}'),                                      // 
+    ("dev_filamentphp", '\u{e90e}'),                                // 
     ("dev_filezilla", '\u{e7db}'),                                  // 
     ("dev_firebase", '\u{e787}'),                                   // 
+    ("dev_firebird", '\u{e90f}'),                                   // 
     ("dev_firefox", '\u{e745}'),                                    // 
     ("dev_flask", '\u{e7dc}'),                                      // 
     ("dev_flutter", '\u{e7dd}'),                                    // 
+    ("dev_forgejo", '\u{e910}'),                                    // 
     ("dev_fortran", '\u{e7de}'),                                    // 
     ("dev_foundation", '\u{e7df}'),                                 // 
     ("dev_framermotion", '\u{e7e0}'),                               // 
     ("dev_framework7", '\u{e7e1}'),                                 // 
     ("dev_fsharp", '\u{e7a7}'),                                     // 
+    ("dev_fusion", '\u{e911}'),                                     // 
+    ("dev_gardener", '\u{e912}'),                                   // 
     ("dev_gatling", '\u{e7e2}'),                                    // 
     ("dev_gatsby", '\u{e7e3}'),                                     // 
     ("dev_gazebo", '\u{e7e4}'),                                     // 
@@ -646,15 +786,19 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_github_full", '\u{e717}'),                                // 
     ("dev_githubactions", '\u{e7e9}'),                              // 
     ("dev_githubcodespaces", '\u{e7ea}'),                           // 
+    ("dev_gitkraken", '\u{e913}'),                                  // 
     ("dev_gitlab", '\u{e7eb}'),                                     // 
     ("dev_gitpod", '\u{e7ec}'),                                     // 
     ("dev_gitter", '\u{e7ed}'),                                     // 
+    ("dev_gleam", '\u{e914}'),                                      // 
+    ("dev_glitch", '\u{e915}'),                                     // 
     ("dev_gnu", '\u{e779}'),                                        // 
     ("dev_go", '\u{e724}'),                                         // 
     ("dev_godot", '\u{e7ee}'),                                      // 
     ("dev_goland", '\u{e7ef}'),                                     // 
     ("dev_google", '\u{e7f0}'),                                     // 
     ("dev_googlecloud", '\u{e7f1}'),                                // 
+    ("dev_googlecolab", '\u{e916}'),                                // 
     ("dev_gradle", '\u{e7f2}'),                                     // 
     ("dev_grafana", '\u{e7f3}'),                                    // 
     ("dev_grails", '\u{e7b3}'),                                     // 
@@ -665,6 +809,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_gulp", '\u{e763}'),                                       // 
     ("dev_hadoop", '\u{e7f6}'),                                     // 
     ("dev_handlebars", '\u{e7f7}'),                                 // 
+    ("dev_harbor", '\u{e917}'),                                     // 
     ("dev_hardhat", '\u{e7f8}'),                                    // 
     ("dev_harvester", '\u{e7f9}'),                                  // 
     ("dev_haskell", '\u{e777}'),                                    // 
@@ -673,11 +818,15 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_heroku", '\u{e77b}'),                                     // 
     ("dev_hibernate", '\u{e7fc}'),                                  // 
     ("dev_homebrew", '\u{e7fd}'),                                   // 
+    ("dev_hoppscotch", '\u{e918}'),                                 // 
     ("dev_html5", '\u{e736}'),                                      // 
+    ("dev_htmx", '\u{e919}'),                                       // 
     ("dev_hugo", '\u{e7fe}'),                                       // 
+    ("dev_hyperv", '\u{e91a}'),                                     // 
     ("dev_ie", '\u{e744}'),                                         // 
     ("dev_ifttt", '\u{e7ff}'),                                      // 
     ("dev_illustrator", '\u{e7b4}'),                                // 
+    ("dev_inertiajs", '\u{e91b}'),                                  // 
     ("dev_influxdb", '\u{e800}'),                                   // 
     ("dev_inkscape", '\u{e801}'),                                   // 
     ("dev_insomnia", '\u{e802}'),                                   // 
@@ -697,6 +846,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_jest", '\u{e807}'),                                       // 
     ("dev_jetbrains", '\u{e808}'),                                  // 
     ("dev_jetpackcompose", '\u{e809}'),                             // 
+    ("dev_jhipster", '\u{e91c}'),                                   // 
     ("dev_jira", '\u{e75c}'),                                       // 
     ("dev_jiraalign", '\u{e80a}'),                                  // 
     ("dev_jquery", '\u{e750}'),                                     // 
@@ -709,6 +859,8 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_k3s", '\u{e811}'),                                        // 
     ("dev_k6", '\u{e812}'),                                         // 
     ("dev_kaggle", '\u{e813}'),                                     // 
+    ("dev_kaldi", '\u{e91d}'),                                      // 
+    ("dev_kalilinux", '\u{e91e}'),                                  // 
     ("dev_karatelabs", '\u{e814}'),                                 // 
     ("dev_karma", '\u{e815}'),                                      // 
     ("dev_kdeneon", '\u{e816}'),                                    // 
@@ -720,29 +872,40 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_krakenjs", '\u{e784}'),                                   // 
     ("dev_krakenjs_badge", '\u{e784}'),                             // 
     ("dev_ktor", '\u{e81c}'),                                       // 
+    ("dev_kubeflow", '\u{e91f}'),                                   // 
     ("dev_kubernetes", '\u{e81d}'),                                 // 
     ("dev_labview", '\u{e81e}'),                                    // 
+    ("dev_laminas", '\u{e920}'),                                    // 
     ("dev_laravel", '\u{e73f}'),                                    // 
+    ("dev_laraveljetstream", '\u{e921}'),                           // 
     ("dev_latex", '\u{e81f}'),                                      // 
+    ("dev_leetcode", '\u{e922}'),                                   // 
     ("dev_less", '\u{e758}'),                                       // 
+    ("dev_libgdx", '\u{e923}'),                                     // 
     ("dev_linkedin", '\u{e820}'),                                   // 
     ("dev_linux", '\u{e712}'),                                      // 
+    ("dev_linuxmint", '\u{e924}'),                                  // 
     ("dev_liquibase", '\u{e821}'),                                  // 
     ("dev_livewire", '\u{e822}'),                                   // 
     ("dev_llvm", '\u{e823}'),                                       // 
     ("dev_lodash", '\u{e824}'),                                     // 
     ("dev_logstash", '\u{e825}'),                                   // 
+    ("dev_love2d", '\u{e925}'),                                     // 
     ("dev_lua", '\u{e826}'),                                        // 
     ("dev_lumen", '\u{e827}'),                                      // 
     ("dev_magento", '\u{e740}'),                                    // 
+    ("dev_mapbox", '\u{e926}'),                                     // 
     ("dev_mariadb", '\u{e828}'),                                    // 
     ("dev_markdown", '\u{e73e}'),                                   // 
     ("dev_materializecss", '\u{e7b6}'),                             // 
     ("dev_materialui", '\u{e829}'),                                 // 
     ("dev_matlab", '\u{e82a}'),                                     // 
     ("dev_matplotlib", '\u{e82b}'),                                 // 
+    ("dev_mattermost", '\u{e927}'),                                 // 
     ("dev_maven", '\u{e82c}'),                                      // 
     ("dev_maya", '\u{e82d}'),                                       // 
+    ("dev_memcached", '\u{e928}'),                                  // 
+    ("dev_mercurial", '\u{e929}'),                                  // 
     ("dev_meteor", '\u{e7a5}'),                                     // 
     ("dev_meteorfull", '\u{e7a6}'),                                 // 
     ("dev_microsoftsqlserver", '\u{e82e}'),                         // 
@@ -754,19 +917,25 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_moleculer", '\u{e834}'),                                  // 
     ("dev_mongodb", '\u{e7a4}'),                                    // 
     ("dev_mongoose", '\u{e835}'),                                   // 
+    ("dev_monogame", '\u{e92a}'),                                   // 
     ("dev_moodle", '\u{e836}'),                                     // 
     ("dev_mootools_badge", '\u{e78f}'),                             // 
     ("dev_mozilla", '\u{e786}'),                                    // 
     ("dev_msdos", '\u{e837}'),                                      // 
     ("dev_mysql", '\u{e704}'),                                      // 
     ("dev_nano", '\u{e838}'),                                       // 
+    ("dev_nats", '\u{e8f0}'),                                       // 
     ("dev_neo4j", '\u{e839}'),                                      // 
     ("dev_neovim", '\u{e83a}'),                                     // 
     ("dev_nestjs", '\u{e83b}'),                                     // 
+    ("dev_netbeans", '\u{e92b}'),                                   // 
+    ("dev_netbox", '\u{e92c}'),                                     // 
     ("dev_netlify", '\u{e83c}'),                                    // 
     ("dev_networkx", '\u{e83d}'),                                   // 
+    ("dev_newrelic", '\u{e92d}'),                                   // 
     ("dev_nextjs", '\u{e83e}'),                                     // 
     ("dev_nginx", '\u{e776}'),                                      // 
+    ("dev_ngrok", '\u{e92e}'),                                      // 
     ("dev_ngrx", '\u{e83f}'),                                       // 
     ("dev_nhibernate", '\u{e840}'),                                 // 
     ("dev_nim", '\u{e841}'),                                        // 
@@ -775,13 +944,16 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_nodejs", '\u{e719}'),                                     // 
     ("dev_nodejs_small", '\u{e718}'),                               // 
     ("dev_nodemon", '\u{e844}'),                                    // 
+    ("dev_nodered", '\u{e92f}'),                                    // 
     ("dev_nodewebkit", '\u{e845}'),                                 // 
     ("dev_nomad", '\u{e846}'),                                      // 
     ("dev_norg", '\u{e847}'),                                       // 
     ("dev_notion", '\u{e848}'),                                     // 
     ("dev_npm", '\u{e71e}'),                                        // 
+    ("dev_npss", '\u{e930}'),                                       // 
     ("dev_nuget", '\u{e849}'),                                      // 
     ("dev_numpy", '\u{e84a}'),                                      // 
+    ("dev_nuxt", '\u{e931}'),                                       // 
     ("dev_nuxtjs", '\u{e84b}'),                                     // 
     ("dev_oauth", '\u{e84c}'),                                      // 
     ("dev_objectivec", '\u{e84d}'),                                 // 
@@ -802,6 +974,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_p5js", '\u{e85b}'),                                       // 
     ("dev_packer", '\u{e85c}'),                                     // 
     ("dev_pandas", '\u{e85d}'),                                     // 
+    ("dev_passport", '\u{e932}'),                                   // 
     ("dev_perl", '\u{e769}'),                                       // 
     ("dev_pfsense", '\u{e85e}'),                                    // 
     ("dev_phalcon", '\u{e85f}'),                                    // 
@@ -810,8 +983,10 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_photoshop", '\u{e7b8}'),                                  // 
     ("dev_php", '\u{e73d}'),                                        // 
     ("dev_phpstorm", '\u{e862}'),                                   // 
+    ("dev_pixijs", '\u{e933}'),                                     // 
     ("dev_playwright", '\u{e863}'),                                 // 
     ("dev_plotly", '\u{e864}'),                                     // 
+    ("dev_pm2", '\u{e934}'),                                        // 
     ("dev_pnpm", '\u{e865}'),                                       // 
     ("dev_podman", '\u{e866}'),                                     // 
     ("dev_poetry", '\u{e867}'),                                     // 
@@ -822,11 +997,15 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_postman", '\u{e86b}'),                                    // 
     ("dev_powershell", '\u{e86c}'),                                 // 
     ("dev_premierepro", '\u{e86d}'),                                // 
+    ("dev_primeng", '\u{e935}'),                                    // 
     ("dev_prisma", '\u{e86e}'),                                     // 
     ("dev_processing", '\u{e86f}'),                                 // 
+    ("dev_processwire", '\u{e936}'),                                // 
     ("dev_prolog", '\u{e7a1}'),                                     // 
     ("dev_prometheus", '\u{e870}'),                                 // 
     ("dev_protractor", '\u{e871}'),                                 // 
+    ("dev_proxmox", '\u{e937}'),                                    // 
+    ("dev_pug", '\u{e938}'),                                        // 
     ("dev_pulsar", '\u{e872}'),                                     // 
     ("dev_pulumi", '\u{e873}'),                                     // 
     ("dev_puppeteer", '\u{e874}'),                                  // 
@@ -840,11 +1019,14 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_pytorch", '\u{e87b}'),                                    // 
     ("dev_qodana", '\u{e87c}'),                                     // 
     ("dev_qt", '\u{e87d}'),                                         // 
+    ("dev_qtest", '\u{e939}'),                                      // 
     ("dev_quarkus", '\u{e87e}'),                                    // 
     ("dev_quasar", '\u{e87f}'),                                     // 
     ("dev_qwik", '\u{e880}'),                                       // 
     ("dev_r", '\u{e881}'),                                          // 
     ("dev_rabbitmq", '\u{e882}'),                                   // 
+    ("dev_racket", '\u{e93a}'),                                     // 
+    ("dev_radstudio", '\u{e93b}'),                                  // 
     ("dev_rails", '\u{e73b}'),                                      // 
     ("dev_railway", '\u{e883}'),                                    // 
     ("dev_rancher", '\u{e884}'),                                    // 
@@ -852,6 +1034,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_reach", '\u{e885}'),                                      // 
     ("dev_react", '\u{e7ba}'),                                      // 
     ("dev_reactbootstrap", '\u{e886}'),                             // 
+    ("dev_reactnative", '\u{e93c}'),                                // 
     ("dev_reactnavigation", '\u{e887}'),                            // 
     ("dev_reactrouter", '\u{e888}'),                                // 
     ("dev_readthedocs", '\u{e889}'),                                // 
@@ -860,9 +1043,12 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_redhat", '\u{e7bb}'),                                     // 
     ("dev_redis", '\u{e76d}'),                                      // 
     ("dev_redux", '\u{e88c}'),                                      // 
+    ("dev_reflex", '\u{e93d}'),                                     // 
+    ("dev_remix", '\u{e93e}'),                                      // 
     ("dev_renpy", '\u{e88d}'),                                      // 
     ("dev_replit", '\u{e88e}'),                                     // 
     ("dev_requirejs", '\u{e770}'),                                  // 
+    ("dev_rexx", '\u{e93f}'),                                       // 
     ("dev_rider", '\u{e88f}'),                                      // 
     ("dev_rocksdb", '\u{e890}'),                                    // 
     ("dev_rockylinux", '\u{e891}'),                                 // 
@@ -897,8 +1083,10 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_solidity", '\u{e8a6}'),                                   // 
     ("dev_solidjs", '\u{e8a7}'),                                    // 
     ("dev_sonarqube", '\u{e8a8}'),                                  // 
+    ("dev_sourceengine", '\u{e940}'),                               // 
     ("dev_sourcetree", '\u{e8a9}'),                                 // 
     ("dev_spack", '\u{e8aa}'),                                      // 
+    ("dev_spicedb", '\u{e941}'),                                    // 
     ("dev_splunk", '\u{e8ab}'),                                     // 
     ("dev_spring", '\u{e8ac}'),                                     // 
     ("dev_spss", '\u{e8ad}'),                                       // 
@@ -907,30 +1095,41 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_sqldeveloper", '\u{e8b0}'),                               // 
     ("dev_sqlite", '\u{e7c4}'),                                     // 
     ("dev_ssh", '\u{e8b1}'),                                        // 
+    ("dev_stackblitz", '\u{e942}'),                                 // 
     ("dev_stackoverflow", '\u{e710}'),                              // 
     ("dev_stata", '\u{e8b2}'),                                      // 
+    ("dev_stenciljs", '\u{e943}'),                                  // 
     ("dev_storybook", '\u{e8b3}'),                                  // 
     ("dev_streamlit", '\u{e8b4}'),                                  // 
+    ("dev_styledcomponents", '\u{e944}'),                           // 
     ("dev_stylus", '\u{e759}'),                                     // 
     ("dev_sublime", '\u{e7aa}'),                                    // 
     ("dev_subversion", '\u{e8b5}'),                                 // 
+    ("dev_sulu", '\u{e945}'),                                       // 
     ("dev_supabase", '\u{e8b6}'),                                   // 
+    ("dev_surrealdb", '\u{e946}'),                                  // 
     ("dev_svelte", '\u{e8b7}'),                                     // 
+    ("dev_svgo", '\u{e947}'),                                       // 
     ("dev_swagger", '\u{e8b8}'),                                    // 
     ("dev_swift", '\u{e755}'),                                      // 
     ("dev_swiper", '\u{e8b9}'),                                     // 
     ("dev_symfony", '\u{e757}'),                                    // 
     ("dev_symfony_badge", '\u{e757}'),                              // 
     ("dev_tailwindcss", '\u{e8ba}'),                                // 
+    ("dev_talos", '\u{e948}'),                                      // 
     ("dev_tauri", '\u{e8bb}'),                                      // 
+    ("dev_teleport", '\u{e949}'),                                   // 
     ("dev_tensorflow", '\u{e8bc}'),                                 // 
     ("dev_terminal", '\u{e795}'),                                   // 
     ("dev_terraform", '\u{e8bd}'),                                  // 
+    ("dev_terramate", '\u{e94a}'),                                  // 
     ("dev_tex", '\u{e8be}'),                                        // 
     ("dev_thealgorithms", '\u{e8bf}'),                              // 
     ("dev_threedsmax", '\u{e8c0}'),                                 // 
     ("dev_threejs", '\u{e8c1}'),                                    // 
+    ("dev_thymeleaf", '\u{e94b}'),                                  // 
     ("dev_titaniumsdk", '\u{e8c2}'),                                // 
+    ("dev_tmux", '\u{e94c}'),                                       // 
     ("dev_tomcat", '\u{e8c3}'),                                     // 
     ("dev_tortoisegit", '\u{e8c4}'),                                // 
     ("dev_towergit", '\u{e8c5}'),                                   // 
@@ -939,6 +1138,8 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_travis", '\u{e77e}'),                                     // 
     ("dev_trello", '\u{e75a}'),                                     // 
     ("dev_trpc", '\u{e8c8}'),                                       // 
+    ("dev_turbo", '\u{e94d}'),                                      // 
+    ("dev_twilio", '\u{e94e}'),                                     // 
     ("dev_twitter", '\u{e8c9}'),                                    // 
     ("dev_typescript", '\u{e8ca}'),                                 // 
     ("dev_typo3", '\u{e772}'),                                      // 
@@ -951,9 +1152,11 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_unrealengine", '\u{e8cd}'),                               // 
     ("dev_uwsgi", '\u{e8ce}'),                                      // 
     ("dev_v8", '\u{e8cf}'),                                         // 
+    ("dev_vaadin", '\u{e94f}'),                                     // 
     ("dev_vagrant", '\u{e8d0}'),                                    // 
     ("dev_vala", '\u{e8d1}'),                                       // 
     ("dev_vault", '\u{e8d2}'),                                      // 
+    ("dev_veevalidate", '\u{e950}'),                                // 
     ("dev_vercel", '\u{e8d3}'),                                     // 
     ("dev_vertx", '\u{e8d4}'),                                      // 
     ("dev_vim", '\u{e7c5}'),                                        // 
@@ -964,18 +1167,24 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_vitess", '\u{e8d8}'),                                     // 
     ("dev_vitest", '\u{e8d9}'),                                     // 
     ("dev_vscode", '\u{e8da}'),                                     // 
+    ("dev_vscodium", '\u{e951}'),                                   // 
     ("dev_vsphere", '\u{e8db}'),                                    // 
     ("dev_vuejs", '\u{e8dc}'),                                      // 
     ("dev_vuestorefront", '\u{e8dd}'),                              // 
     ("dev_vuetify", '\u{e8de}'),                                    // 
+    ("dev_vulkan", '\u{e952}'),                                     // 
     ("dev_vyper", '\u{e8df}'),                                      // 
+    ("dev_waku", '\u{e953}'),                                       // 
     ("dev_wasm", '\u{e8e0}'),                                       // 
+    ("dev_web3js", '\u{e954}'),                                     // 
     ("dev_webflow", '\u{e8e1}'),                                    // 
+    ("dev_webgpu", '\u{e955}'),                                     // 
     ("dev_weblate", '\u{e8e2}'),                                    // 
     ("dev_webpack", '\u{e8e3}'),                                    // 
     ("dev_webstorm", '\u{e8e4}'),                                   // 
     ("dev_windows", '\u{e70f}'),                                    // 
     ("dev_windows11", '\u{e8e5}'),                                  // 
+    ("dev_wolfram", '\u{e956}'),                                    // 
     ("dev_woocommerce", '\u{e8e6}'),                                // 
     ("dev_wordpress", '\u{e70b}'),                                  // 
     ("dev_xamarin", '\u{e8e7}'),                                    // 
@@ -989,6 +1198,20 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("dev_yunohost", '\u{e8ee}'),                                   // 
     ("dev_zend", '\u{e778}'),                                       // 
     ("dev_zig", '\u{e8ef}'),                                        // 
+    ("dev_zsh", '\u{e957}'),                                        // 
+    ("dev_zustand", '\u{e958}'),                                    // 
+    ("extra_progress_empty_left", '\u{ee00}'),                      // 
+    ("extra_progress_empty_mid", '\u{ee01}'),                       // 
+    ("extra_progress_empty_right", '\u{ee02}'),                     // 
+    ("extra_progress_full_left", '\u{ee03}'),                       // 
+    ("extra_progress_full_mid", '\u{ee04}'),                        // 
+    ("extra_progress_full_right", '\u{ee05}'),                      // 
+    ("extra_progress_spinner_1", '\u{ee06}'),                       // 
+    ("extra_progress_spinner_2", '\u{ee07}'),                       // 
+    ("extra_progress_spinner_3", '\u{ee08}'),                       // 
+    ("extra_progress_spinner_4", '\u{ee09}'),                       // 
+    ("extra_progress_spinner_5", '\u{ee0a}'),                       // 
+    ("extra_progress_spinner_6", '\u{ee0b}'),                       // 
     ("fa_500px", '\u{f26e}'),                                       // 
     ("fa_accessible_icon", '\u{f29b}'),                             // 
     ("fa_accusoft", '\u{f0b7}'),                                    // 
@@ -2729,6 +2952,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("fa_voicemail", '\u{efb4}'),                                   // 
     ("fa_volcano", '\u{ef2e}'),                                     // 
     ("fa_volleyball", '\u{ed72}'),                                  // 
+    ("fa_volume", '\u{efcf}'),                                      // 
     ("fa_volume_control_phone", '\u{f2a0}'),                        // 
     ("fa_volume_down", '\u{f027}'),                                 // 
     ("fa_volume_high", '\u{f028}'),                                 // 
@@ -2998,6 +3222,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("linux_biglinux", '\u{f347}'),                                 // 
     ("linux_bspwm", '\u{f355}'),                                    // 
     ("linux_budgie", '\u{f320}'),                                   // 
+    ("linux_cachyos", '\u{f385}'),                                  // 
     ("linux_centos", '\u{f304}'),                                   // 
     ("linux_cinnamon", '\u{f35f}'),                                 // 
     ("linux_codeberg", '\u{f330}'),                                 // 
@@ -3015,6 +3240,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("linux_fedora", '\u{f30a}'),                                   // 
     ("linux_fedora_inverse", '\u{f30b}'),                           // 
     ("linux_ferris", '\u{f323}'),                                   // 
+    ("linux_ffmpeg", '\u{f384}'),                                   // 
     ("linux_flathub", '\u{f324}'),                                  // 
     ("linux_fluxbox", '\u{f358}'),                                  // 
     ("linux_forgejo", '\u{f335}'),                                  // 
@@ -3071,6 +3297,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("linux_openbsd", '\u{f328}'),                                  // 
     ("linux_openscad", '\u{f34e}'),                                 // 
     ("linux_opensuse", '\u{f314}'),                                 // 
+    ("linux_openwrt", '\u{f382}'),                                  // 
     ("linux_osh", '\u{f34f}'),                                      // 
     ("linux_oshwa", '\u{f350}'),                                    // 
     ("linux_osi", '\u{f36c}'),                                      // 
@@ -3109,6 +3336,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("linux_vscodium", '\u{f372}'),                                 // 
     ("linux_wayland", '\u{f367}'),                                  // 
     ("linux_wikimedia", '\u{f36d}'),                                // 
+    ("linux_wireguard", '\u{f383}'),                                // 
     ("linux_xerolinux", '\u{f34a}'),                                // 
     ("linux_xfce", '\u{f368}'),                                     // 
     ("linux_xmonad", '\u{f35e}'),                                   // 
@@ -4526,6 +4754,8 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("md_cards_club_outline", '\u{f189f}'),                         // 󱢟
     ("md_cards_diamond", '\u{f08cf}'),                              // 󰣏
     ("md_cards_diamond_outline", '\u{f101d}'),                      // 󱀝
+    ("md_cards_heart", '\u{f08d0}'),                                // 󰣐
+    ("md_cards_heart_outline", '\u{f18a0}'),                        // 󱢠
     ("md_cards_outline", '\u{f0639}'),                              // 󰘹
     ("md_cards_playing", '\u{f18a1}'),                              // 󱢡
     ("md_cards_playing_club", '\u{f18a2}'),                         // 󱢢
@@ -4769,6 +4999,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("md_church", '\u{f0144}'),                                     // 󰅄
     ("md_cigar", '\u{f1189}'),                                      // 󱆉
     ("md_cigar_off", '\u{f141b}'),                                  // 󱐛
+    ("md_circle", '\u{f0765}'),                                     // 󰝥
     ("md_circle_box", '\u{f15dc}'),                                 // 󱗜
     ("md_circle_box_outline", '\u{f15dd}'),                         // 󱗝
     ("md_circle_double", '\u{f0e95}'),                              // 󰺕
@@ -4781,6 +5012,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("md_circle_multiple_outline", '\u{f0695}'),                    // 󰚕
     ("md_circle_off_outline", '\u{f10d3}'),                         // 󱃓
     ("md_circle_opacity", '\u{f1853}'),                             // 󱡓
+    ("md_circle_outline", '\u{f0766}'),                             // 󰝦
     ("md_circle_slice_1", '\u{f0a9e}'),                             // 󰪞
     ("md_circle_slice_2", '\u{f0a9f}'),                             // 󰪟
     ("md_circle_slice_3", '\u{f0aa0}'),                             // 󰪠
@@ -7169,6 +7401,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("md_login", '\u{f0342}'),                                      // 󰍂
     ("md_logout", '\u{f0343}'),                                     // 󰍃
     ("md_logout_variant", '\u{f05fd}'),                             // 󰗽
+    ("md_logout_variant_2", '\u{f05fc}'),                           // 󰗼
     ("md_longitude", '\u{f0f5a}'),                                  // 󰽚
     ("md_looks", '\u{f0344}'),                                      // 󰍄
     ("md_lotion", '\u{f1582}'),                                     // 󱖂
@@ -7473,6 +7706,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("md_motion_sensor_off", '\u{f1435}'),                          // 󱐵
     ("md_motorbike", '\u{f037c}'),                                  // 󰍼
     ("md_motorbike_electric", '\u{f15ba}'),                         // 󱖺
+    ("md_mountains", '\u{f0509}'),                                  // 󰔉
     ("md_mouse", '\u{f037d}'),                                      // 󰍽
     ("md_mouse_bluetooth", '\u{f098b}'),                            // 󰦋
     ("md_mouse_move_down", '\u{f1550}'),                            // 󱕐
@@ -7558,6 +7792,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("md_music_clef_bass", '\u{f0f6f}'),                            // 󰽯
     ("md_music_clef_treble", '\u{f0f70}'),                          // 󰽰
     ("md_music_note", '\u{f0387}'),                                 // 󰎇
+    ("md_music_note_2", '\u{f0388}'),                               // 󰎈
     ("md_music_note_bluetooth", '\u{f05fe}'),                       // 󰗾
     ("md_music_note_bluetooth_off", '\u{f05ff}'),                   // 󰗿
     ("md_music_note_eighth_dotted", '\u{f0f71}'),                   // 󰽱
@@ -7587,6 +7822,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("md_nature_people", '\u{f038f}'),                              // 󰎏
     ("md_navigation", '\u{f0390}'),                                 // 󰎐
     ("md_navigation_outline", '\u{f1607}'),                         // 󱘇
+    ("md_navigation_variant", '\u{f18f0}'),                         // 󱣰
     ("md_navigation_variant_outline", '\u{f18f1}'),                 // 󱣱
     ("md_near_me", '\u{f05cd}'),                                    // 󰗍
     ("md_necklace", '\u{f0f0b}'),                                   // 󰼋
@@ -7677,10 +7913,13 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("md_nuke", '\u{f06a4}'),                                       // 󰚤
     ("md_null", '\u{f07e2}'),                                       // 󰟢
     ("md_numeric", '\u{f03a0}'),                                    // 󰎠
+    ("md_numeric_0", '\u{f0b39}'),                                  // 󰬹
     ("md_numeric_0_box", '\u{f03a1}'),                              // 󰎡
     ("md_numeric_0_box_multiple", '\u{f0f0e}'),                     // 󰼎
     ("md_numeric_0_box_multiple_outline", '\u{f03a2}'),             // 󰎢
     ("md_numeric_0_box_outline", '\u{f03a3}'),                      // 󰎣
+    ("md_numeric_0_circle", '\u{f0c9e}'),                           // 󰲞
+    ("md_numeric_0_circle_outline", '\u{f0c9f}'),                   // 󰲟
     ("md_numeric_1", '\u{f0b3a}'),                                  // 󰬺
     ("md_numeric_1_box", '\u{f03a4}'),                              // 󰎤
     ("md_numeric_1_box_multiple", '\u{f0f0f}'),                     // 󰼏
@@ -8253,6 +8492,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("md_radioactive_circle", '\u{f185d}'),                         // 󱡝
     ("md_radioactive_circle_outline", '\u{f185e}'),                 // 󱡞
     ("md_radioactive_off", '\u{f0ec1}'),                            // 󰻁
+    ("md_radiobox_blank", '\u{f043d}'),                             // 󰐽
     ("md_radiobox_marked", '\u{f043e}'),                            // 󰐾
     ("md_radiology_box", '\u{f14c5}'),                              // 󱓅
     ("md_radiology_box_outline", '\u{f14c6}'),                      // 󱓆
@@ -8432,13 +8672,16 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("md_rollupjs", '\u{f0bc0}'),                                   // 󰯀
     ("md_rolodex", '\u{f1ab9}'),                                    // 󱪹
     ("md_rolodex_outline", '\u{f1aba}'),                            // 󱪺
+    ("md_roman_numeral_1", '\u{f1088}'),                            // 󱂈
     ("md_roman_numeral_2", '\u{f1089}'),                            // 󱂉
     ("md_roman_numeral_3", '\u{f108a}'),                            // 󱂊
     ("md_roman_numeral_4", '\u{f108b}'),                            // 󱂋
+    ("md_roman_numeral_5", '\u{f108c}'),                            // 󱂌
     ("md_roman_numeral_6", '\u{f108d}'),                            // 󱂍
     ("md_roman_numeral_7", '\u{f108e}'),                            // 󱂎
     ("md_roman_numeral_8", '\u{f108f}'),                            // 󱂏
     ("md_roman_numeral_9", '\u{f1090}'),                            // 󱂐
+    ("md_roman_numeral_10", '\u{f1091}'),                           // 󱂑
     ("md_room_service", '\u{f088d}'),                               // 󰢍
     ("md_room_service_outline", '\u{f0d97}'),                       // 󰶗
     ("md_rotate_360", '\u{f1999}'),                                 // 󱦙
@@ -8756,6 +8999,7 @@ pub const NERD_FONT_GLYPHS: &[(&str, char)] = &[
     ("md_sine_wave", '\u{f095b}'),                                  // 󰥛
     ("md_sitemap", '\u{f04aa}'),                                    // 󰒪
     ("md_sitemap_outline", '\u{f199c}'),                            // 󱦜
+    ("md_size_l", '\u{f13a6}'),                                     // 󱎦
     ("md_size_m", '\u{f13a5}'),                                     // 󱎥
     ("md_size_s", '\u{f13a4}'),                                     // 󱎤
     ("md_size_xl", '\u{f13a7}'),                                    // 󱎧
