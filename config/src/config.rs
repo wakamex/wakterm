@@ -557,7 +557,7 @@ pub struct Config {
 
     /// Freeze idle Claude agents that are safe to freeze after 30 seconds
     /// without input, so the operating system can page out their memory,
-    /// and thaw them before input reaches them. Linux only.
+    /// and thaw them before input reaches them. Linux and Windows.
     #[dynamic(default)]
     pub agent_idle_freeze: bool,
 

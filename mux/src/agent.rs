@@ -2213,57 +2213,25 @@ fn claude_background_session(
     Ok(None)
 }
 
-#[cfg(target_os = "linux")]
-fn claude_session_owned_by_process(
+#[cfg(any(target_os = "linux", windows))]
+/// Reads the Claude session record at `registry` for a session in `cwd`,
+/// when `identifies_process` confirms that the record names the exact
+/// process, and resolves the session it is running.
+fn claude_ownership_from_registry(
+    root: &Path,
+    sessions_dir: &Path,
+    registry: &Path,
     cwd: &str,
-    pid: Option<u32>,
-    start_time: Option<u64>,
     launch_cmd: &str,
+    identifies_process: impl Fn(&Value) -> anyhow::Result<bool>,
 ) -> anyhow::Result<ClaudeOwnership> {
-    let (Some(pid), Some(start_time)) = (pid, start_time) else {
-        return Ok(ClaudeOwnership::Unknown);
-    };
-    if linux_process_started_at(Some(pid), Some(start_time)).is_none() {
-        return Ok(ClaudeOwnership::Unknown);
-    }
-    let Some(root) = claude_sessions_root() else {
-        return Ok(ClaudeOwnership::Unknown);
-    };
-    let status = match fs::read_to_string(format!("/proc/{pid}/status")) {
-        Ok(status) => status,
-        Err(_) => return Ok(ClaudeOwnership::Unknown),
-    };
-    let Some(namespace_pid) = status
-        .lines()
-        .find_map(|line| line.strip_prefix("NSpid:"))
-        .and_then(|ids| ids.split_whitespace().last())
-        .and_then(|pid| pid.parse::<u32>().ok())
-    else {
-        return Ok(ClaudeOwnership::Unknown);
-    };
-    let sessions_dir = root
-        .parent()
-        .context("Claude projects root has no parent")?
-        .join("sessions");
-    let registry = sessions_dir.join(format!("{namespace_pid}.json"));
     let (launched_id, job_id, status) =
-        match fs::read(&registry) {
+        match fs::read(registry) {
             Ok(bytes) => {
                 let record: Value = serde_json::from_slice(&bytes)?;
-                let machine_id = fs::read_to_string(format!("/proc/{pid}/root/etc/machine-id"))?;
-                let namespace = fs::read_link(format!("/proc/{pid}/ns/pid"))?;
-                let domain = format!(
-                    "linux:{}:{}",
-                    machine_id.trim(),
-                    namespace.to_string_lossy()
-                );
-                let start = start_time.to_string();
-                if record.get("pid").and_then(Value::as_u64) != Some(u64::from(namespace_pid))
-                    || record.get("procStart").and_then(Value::as_str) != Some(start.as_str())
-                    || record.get("pidDomain").and_then(Value::as_str) != Some(domain.as_str())
+                if !identifies_process(&record)?
                     || record.get("kind").and_then(Value::as_str) != Some("interactive")
                     || record.get("cwd").and_then(Value::as_str) != Some(cwd)
-                    || linux_process_started_at(Some(pid), Some(start_time)).is_none()
                 {
                     return Ok(ClaudeOwnership::Unknown);
                 }
@@ -2308,7 +2276,7 @@ fn claude_session_owned_by_process(
             Err(error) => return Err(error.into()),
         };
     let current_id = match job_id.as_deref() {
-        Some(job_id) => match claude_background_session(&sessions_dir, job_id, cwd)? {
+        Some(job_id) => match claude_background_session(sessions_dir, job_id, cwd)? {
             Some(session_id) => session_id,
             None => {
                 let jobs_dir = sessions_dir.with_file_name("jobs");
@@ -2337,7 +2305,108 @@ fn claude_session_owned_by_process(
     }))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "linux")]
+fn claude_session_owned_by_process(
+    cwd: &str,
+    pid: Option<u32>,
+    start_time: Option<u64>,
+    launch_cmd: &str,
+) -> anyhow::Result<ClaudeOwnership> {
+    let (Some(pid), Some(start_time)) = (pid, start_time) else {
+        return Ok(ClaudeOwnership::Unknown);
+    };
+    if linux_process_started_at(Some(pid), Some(start_time)).is_none() {
+        return Ok(ClaudeOwnership::Unknown);
+    }
+    let Some(root) = claude_sessions_root() else {
+        return Ok(ClaudeOwnership::Unknown);
+    };
+    let status = match fs::read_to_string(format!("/proc/{pid}/status")) {
+        Ok(status) => status,
+        Err(_) => return Ok(ClaudeOwnership::Unknown),
+    };
+    let Some(namespace_pid) = status
+        .lines()
+        .find_map(|line| line.strip_prefix("NSpid:"))
+        .and_then(|ids| ids.split_whitespace().last())
+        .and_then(|pid| pid.parse::<u32>().ok())
+    else {
+        return Ok(ClaudeOwnership::Unknown);
+    };
+    let sessions_dir = root
+        .parent()
+        .context("Claude projects root has no parent")?
+        .join("sessions");
+    let registry = sessions_dir.join(format!("{namespace_pid}.json"));
+    claude_ownership_from_registry(&root, &sessions_dir, &registry, cwd, launch_cmd, |record| {
+        let machine_id = fs::read_to_string(format!("/proc/{pid}/root/etc/machine-id"))?;
+        let namespace = fs::read_link(format!("/proc/{pid}/ns/pid"))?;
+        let domain = format!(
+            "linux:{}:{}",
+            machine_id.trim(),
+            namespace.to_string_lossy()
+        );
+        let start = start_time.to_string();
+        Ok(
+            record.get("pid").and_then(Value::as_u64) == Some(u64::from(namespace_pid))
+                && record.get("procStart").and_then(Value::as_str) == Some(start.as_str())
+                && record.get("pidDomain").and_then(Value::as_str) == Some(domain.as_str())
+                && linux_process_started_at(Some(pid), Some(start_time)).is_some(),
+        )
+    })
+}
+
+/// Wakterm resolves the session of a Claude background job only on Linux.
+#[cfg(windows)]
+fn claude_background_session(
+    _sessions_dir: &Path,
+    _job_id: &str,
+    _cwd: &str,
+) -> anyhow::Result<Option<String>> {
+    Ok(None)
+}
+
+/// On Windows Claude records its process creation time as a FILETIME, in
+/// `procStartFt`, and its domain as `win32:` with the lowercased host name.
+/// A record that has only `procStart`, from Claude's PowerShell fallback,
+/// cannot be matched exactly and is not trusted.
+#[cfg(windows)]
+fn claude_session_owned_by_process(
+    cwd: &str,
+    pid: Option<u32>,
+    start_time: Option<u64>,
+    launch_cmd: &str,
+) -> anyhow::Result<ClaudeOwnership> {
+    let (Some(pid), Some(start_time)) = (pid, start_time) else {
+        return Ok(ClaudeOwnership::Unknown);
+    };
+    let Some(root) = claude_sessions_root() else {
+        return Ok(ClaudeOwnership::Unknown);
+    };
+    let sessions_dir = root
+        .parent()
+        .context("Claude projects root has no parent")?
+        .join("sessions");
+    let registry = sessions_dir.join(format!("{pid}.json"));
+    claude_ownership_from_registry(&root, &sessions_dir, &registry, cwd, launch_cmd, |record| {
+        let domain = format!(
+            "win32:{}",
+            hostname::get()?.to_string_lossy().to_lowercase()
+        );
+        let start = start_time.to_string();
+        let still_running = procinfo::LocalProcessInfo::with_root_pid(pid)
+            .map(|process| process.start_time)
+            == Some(start_time);
+        Ok(
+            record.get("pid").and_then(Value::as_u64) == Some(u64::from(pid))
+                && record.get("procStartFt").and_then(Value::as_str) == Some(start.as_str())
+                && record.get("pidDomain").and_then(Value::as_str) == Some(domain.as_str())
+                && still_running,
+        )
+    })
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 fn claude_session_owned_by_process(
     _cwd: &str,
     _pid: Option<u32>,
