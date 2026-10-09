@@ -293,6 +293,13 @@ impl<'a> AgentService<'a> {
         self.mux.write_admitted_prompt(candidate)
     }
 
+    pub fn submit_admitted_prompt(
+        &self,
+        candidate: &AgentAdmissionCandidate,
+    ) -> anyhow::Result<()> {
+        self.mux.submit_admitted_prompt(candidate)
+    }
+
     pub fn resubmit_admitted_prompt(
         &self,
         candidate: &AgentAdmissionCandidate,

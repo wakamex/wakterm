@@ -512,8 +512,30 @@ impl Mux {
         let pane = self
             .get_pane(candidate.pane_id)
             .with_context(|| format!("target pane {} disappeared", candidate.pane_id))?;
-        pane.send_text_and_submit(&candidate.request.prompt, candidate.request.paste)?;
+        pane.send_prompt(&candidate.request.prompt, candidate.request.paste)?;
         self.record_agent_prompt_submission(candidate.pane_id);
+        Ok(())
+    }
+
+    /// Presses Enter for an admitted prompt that was typed, while the
+    /// admitted process is still the target.
+    pub(crate) fn submit_admitted_prompt(
+        &self,
+        candidate: &AgentAdmissionCandidate,
+    ) -> anyhow::Result<()> {
+        let metadata = self
+            .get_agent_metadata_for_pane(candidate.pane_id)
+            .context("the target agent is no longer available")?;
+        if metadata.agent_id != candidate.request.agent_id
+            || incarnation_id(&metadata).as_deref()
+                != Some(candidate.request.incarnation_id.as_str())
+        {
+            anyhow::bail!("the target incarnation changed before the prompt was submitted");
+        }
+        let pane = self
+            .get_pane(candidate.pane_id)
+            .with_context(|| format!("target pane {} disappeared", candidate.pane_id))?;
+        pane.writer().write_all(b"\r")?;
         Ok(())
     }
 

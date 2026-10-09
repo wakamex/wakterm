@@ -1825,6 +1825,7 @@ impl SendAgentCommand {
                 || client.list_agents(),
                 |request| client.write_to_pane(request),
                 |request| client.send_paste(request),
+                |request| client.submit_typed_input(request),
                 |agent_id, sha256, timeout| {
                     let client = client.clone();
                     async move {
@@ -1866,6 +1867,8 @@ impl SendAgentCommand {
         WriteToPaneFut,
         SendPasteFn,
         SendPasteFut,
+        SubmitInputFn,
+        SubmitInputFut,
         ConfirmInputFn,
         ConfirmInputFut,
     >(
@@ -1873,6 +1876,7 @@ impl SendAgentCommand {
         mut list_agents: ListAgents,
         write_to_pane: WriteToPaneFn,
         send_paste: SendPasteFn,
+        submit_input: SubmitInputFn,
         confirm_input: ConfirmInputFn,
     ) -> anyhow::Result<AgentSendResult>
     where
@@ -1882,6 +1886,8 @@ impl SendAgentCommand {
         WriteToPaneFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
         SendPasteFn: Fn(codec::SendPaste) -> SendPasteFut,
         SendPasteFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
+        SubmitInputFn: Fn(codec::SubmitTypedInput) -> SubmitInputFut,
+        SubmitInputFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
         // Waits up to the given time for the provider to record the input
         // with this hash; None when the event stream cannot confirm input.
         ConfirmInputFn: Fn(String, String, Duration) -> ConfirmInputFut,
@@ -1932,7 +1938,7 @@ impl SendAgentCommand {
 
         let submitted = !self.no_submit;
         if submitted {
-            submit_native_harness_prompt(agent.pane_id, &write_to_pane).await?;
+            submit_native_harness_prompt(agent.pane_id, &submit_input).await?;
         }
 
         // A provider that records input confirms this exact input as soon as
@@ -1970,7 +1976,7 @@ impl SendAgentCommand {
                         current.runtime.status == AgentStatus::Idle
                             && mux::agent::input_blocked_reason(&current.runtime).is_none()
                     }) {
-                        submit_native_harness_prompt(agent.pane_id, &write_to_pane).await?;
+                        submit_native_harness_prompt(agent.pane_id, &submit_input).await?;
                     }
                     continue;
                 }
@@ -1991,7 +1997,7 @@ impl SendAgentCommand {
             .wait_for_acknowledgement(&mut list_agents, &agent, &baseline)
             .await?;
         if submitted && should_retry_submit(&agent, &baseline, &acknowledgement) {
-            submit_native_harness_prompt(agent.pane_id, &write_to_pane).await?;
+            submit_native_harness_prompt(agent.pane_id, &submit_input).await?;
             acknowledgement = self
                 .wait_for_acknowledgement(&mut list_agents, &agent, &baseline)
                 .await?;
@@ -2177,23 +2183,20 @@ fn prefers_raw_input(harness: &AgentHarness) -> bool {
     matches!(harness, AgentHarness::Gemini)
 }
 
-async fn submit_native_harness_prompt<WriteToPaneFn, WriteToPaneFut>(
+/// Presses Enter once the pane has drawn the typed prompt. Native harnesses
+/// reliably accept a raw carriage return, where synthetic Enter key events
+/// left Claude and Gemini prompts unsubmitted. An Enter that arrives while
+/// the harness is still taking a paste can be dropped: Claude discards it
+/// when a pasted line ends like an image path.
+async fn submit_native_harness_prompt<SubmitInputFn, SubmitInputFut>(
     pane_id: PaneId,
-    write_to_pane: &WriteToPaneFn,
+    submit_input: &SubmitInputFn,
 ) -> anyhow::Result<()>
 where
-    WriteToPaneFn: Fn(codec::WriteToPane) -> WriteToPaneFut,
-    WriteToPaneFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
+    SubmitInputFn: Fn(codec::SubmitTypedInput) -> SubmitInputFut,
+    SubmitInputFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
 {
-    // Native harnesses reliably accept a raw carriage return after the prompt
-    // text; synthetic Enter key events were leaving Claude and Gemini prompts
-    // unsubmitted.
-    std::thread::sleep(Duration::from_millis(200));
-    write_to_pane(codec::WriteToPane {
-        pane_id,
-        data: b"\r".to_vec(),
-    })
-    .await?;
+    submit_input(codec::SubmitTypedInput { pane_id }).await?;
     Ok(())
 }
 
@@ -3550,8 +3553,8 @@ mod test {
     }
     use chrono::TimeZone;
     use codec::{
-        ListAgentsResponse, ListPanesResponse, SendKeyDown, SendPaste, SpawnResponse, UnitResponse,
-        WriteToPane,
+        ListAgentsResponse, ListPanesResponse, SendKeyDown, SendPaste, SpawnResponse,
+        SubmitTypedInput, UnitResponse, WriteToPane,
     };
     use mux::agent::AgentMetadata;
     use mux::client::ClientWindowViewState;
@@ -3910,6 +3913,16 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
+            {
+                let write_calls = Rc::clone(&write_calls);
+                move |request: SubmitTypedInput| {
+                    write_calls.borrow_mut().push(WriteToPane {
+                        pane_id: request.pane_id,
+                        data: b"\r".to_vec(),
+                    });
+                    async { Ok(UnitResponse {}) }
+                }
+            },
             |_, _, _| async { Ok(None) },
         ))
         .unwrap();
@@ -3989,6 +4002,13 @@ mod test {
                 },
                 |_: SendPaste| async { Ok(UnitResponse {}) },
                 {
+                    let writes = Rc::clone(&writes);
+                    move |_: SubmitTypedInput| {
+                        *writes.borrow_mut() += 1;
+                        async { Ok(UnitResponse {}) }
+                    }
+                },
+                {
                     let confirms = Rc::clone(&confirms);
                     move |_, _, _| {
                         // Claude takes the input on the third look.
@@ -4060,6 +4080,13 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
+            {
+                let writes = Rc::clone(&writes);
+                move |_: SubmitTypedInput| {
+                    *writes.borrow_mut() += 1;
+                    async { Ok(UnitResponse {}) }
+                }
+            },
             |_, _, _| async { Ok(None) },
         ))
         .unwrap();
@@ -4110,6 +4137,16 @@ mod test {
                 }
             },
             |_| async { panic!("send_paste should not be used for gemini") },
+            {
+                let write_calls = Rc::clone(&write_calls);
+                move |request: SubmitTypedInput| {
+                    write_calls.borrow_mut().push(WriteToPane {
+                        pane_id: request.pane_id,
+                        data: b"\r".to_vec(),
+                    });
+                    async { Ok(UnitResponse {}) }
+                }
+            },
             |_, _, _| async { Ok(None) },
         ))
         .unwrap();
@@ -4730,6 +4767,16 @@ mod test {
                 }
             },
             |_| async { panic!("send_paste should not be used") },
+            {
+                let write_calls = Rc::clone(&write_calls);
+                move |request: SubmitTypedInput| {
+                    write_calls.borrow_mut().push(WriteToPane {
+                        pane_id: request.pane_id,
+                        data: b"\r".to_vec(),
+                    });
+                    async { Ok(UnitResponse {}) }
+                }
+            },
             |_, _, _| async { Ok(None) },
         ))
         .unwrap();
@@ -4779,6 +4826,16 @@ mod test {
                 }
             },
             |_| async { panic!("send_paste should not be used") },
+            {
+                let write_calls = Rc::clone(&write_calls);
+                move |request: SubmitTypedInput| {
+                    write_calls.borrow_mut().push(WriteToPane {
+                        pane_id: request.pane_id,
+                        data: b"\r".to_vec(),
+                    });
+                    async { Ok(UnitResponse {}) }
+                }
+            },
             |_, _, _| async { Ok(None) },
         ))
         .unwrap();
@@ -4833,6 +4890,7 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
+            |_: SubmitTypedInput| async { panic!("submit_typed_input should not be used") },
             |_, _, _| async { Ok(None) },
         ))
         .unwrap();

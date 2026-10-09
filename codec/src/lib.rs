@@ -577,6 +577,7 @@ pdu! {
     PromoteCodexAppServer: 100,
     ResolveAgentApproval: 101,
     ResolveAgentApprovalResponse: 102,
+    SubmitTypedInput: 103,
 }
 
 impl Pdu {
@@ -1032,6 +1033,13 @@ pub struct SpawnResponse {
 pub struct WriteToPane {
     pub pane_id: PaneId,
     pub data: Vec<u8>,
+}
+
+/// Presses Enter in a pane once it has redrawn what was just typed into it,
+/// so that the program has finished taking the typed input.
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct SubmitTypedInput {
+    pub pane_id: PaneId,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
@@ -1867,6 +1875,17 @@ mod test {
                 DecodedPdu { serial: 42, pdu }
             );
         }
+    }
+
+    #[test]
+    fn submit_typed_input_round_trips() {
+        let pdu = Pdu::SubmitTypedInput(SubmitTypedInput { pane_id: 7 });
+        let mut encoded = Vec::new();
+        pdu.encode(&mut encoded, 42).unwrap();
+        assert_eq!(
+            Pdu::decode(encoded.as_slice()).unwrap(),
+            DecodedPdu { serial: 42, pdu }
+        );
     }
 
     #[test]

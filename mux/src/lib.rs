@@ -7287,6 +7287,10 @@ mod test {
         }
 
         fn send_text_and_submit(&self, text: &str, paste: bool) -> anyhow::Result<()> {
+            self.send_prompt(text, paste)
+        }
+
+        fn send_prompt(&self, text: &str, paste: bool) -> anyhow::Result<()> {
             self.submitted_prompts
                 .as_ref()
                 .context("test pane does not support atomic submission")?

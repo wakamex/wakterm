@@ -813,6 +813,21 @@ impl SessionHandler {
                 })
                 .detach();
             }
+            Pdu::SubmitTypedInput(SubmitTypedInput { pane_id }) => {
+                spawn_into_main_thread(async move {
+                    let result = async {
+                        wait_for_redraw(pane_id).await;
+                        let pane = Mux::get()
+                            .get_pane(pane_id)
+                            .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
+                        pane.writer().write_all(b"\r")?;
+                        Ok(Pdu::UnitResponse(UnitResponse {}))
+                    }
+                    .await;
+                    send_response(result);
+                })
+                .detach();
+            }
             Pdu::AdmitAgentPrompt(AdmitAgentPrompt { request }) => {
                 schedule_agent_prompt_admission(request, move |result| {
                     send_response(result.map(|receipt| {
@@ -2126,7 +2141,18 @@ async fn admit_agent_prompt(
     let event_store = Mux::get().agent_service().event_store();
     let events_before_write = event_store.latest_sequence();
     let written_at = std::time::SystemTime::now();
-    let delivery = Mux::get().agent_service().write_admitted_prompt(&candidate);
+    // Enter goes in its own write once the agent has drawn the prompt. An
+    // Enter that arrives while a program is still taking a paste can be
+    // dropped: Claude discards it when a pasted line ends like an image path.
+    let delivery = match Mux::get().agent_service().write_admitted_prompt(&candidate) {
+        Ok(()) => {
+            wait_for_redraw(candidate.pane_id).await;
+            Mux::get()
+                .agent_service()
+                .submit_admitted_prompt(&candidate)
+        }
+        Err(err) => Err(err),
+    };
     match delivery {
         Ok(()) => {
             if let Some(mut nested) = return_request {
@@ -2257,6 +2283,53 @@ async fn admit_agent_prompt(
                         .await;
                 Ok(receipt)
             }
+        }
+    }
+}
+
+/// How long a pane's output must stay unchanged after typed input before
+/// Enter is pressed, and how long to wait at most.
+const REDRAW_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
+const REDRAW_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Waits until the pane has drawn what was just typed into it: its output
+/// changed and then stayed unchanged for `REDRAW_SETTLE`, or `REDRAW_LIMIT`
+/// passed.
+async fn wait_for_redraw(pane_id: mux::pane::PaneId) {
+    wait_until_output_settles(
+        || {
+            Mux::get()
+                .get_pane(pane_id)
+                .map(|pane| pane.get_current_seqno())
+        },
+        REDRAW_SETTLE,
+        REDRAW_LIMIT,
+    )
+    .await;
+}
+
+/// Waits until `seqno`, a pane's output sequence number, has changed and
+/// then stayed unchanged for `settle`, for at most `limit`. Returns at once
+/// when the pane is gone.
+async fn wait_until_output_settles(
+    seqno: impl Fn() -> Option<usize>,
+    settle: std::time::Duration,
+    limit: std::time::Duration,
+) {
+    let started = std::time::Instant::now();
+    let mut last = seqno();
+    let mut changed_at = None;
+    while started.elapsed() < limit {
+        smol::Timer::after(std::time::Duration::from_millis(10)).await;
+        let current = seqno();
+        if current.is_none() {
+            return;
+        }
+        if current != last {
+            last = current;
+            changed_at = Some(std::time::Instant::now());
+        } else if changed_at.is_some_and(|at| at.elapsed() >= settle) {
+            return;
         }
     }
 }
@@ -2465,6 +2538,40 @@ async fn move_pane(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn output_settles_after_the_last_change_or_at_the_limit() {
+        use std::cell::Cell;
+        use std::time::{Duration, Instant};
+        let settle = Duration::from_millis(60);
+        let limit = Duration::from_millis(600);
+
+        // Output changes for about 100 ms, then stays still.
+        let started = Instant::now();
+        let seqno = || Some((started.elapsed().as_millis().min(100) / 25) as usize);
+        smol::block_on(wait_until_output_settles(seqno, settle, limit));
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(160), "{waited:?}");
+        assert!(waited < limit, "{waited:?}");
+
+        // Output that never changes waits until the limit.
+        let started = Instant::now();
+        smol::block_on(wait_until_output_settles(|| Some(1), settle, limit));
+        assert!(started.elapsed() >= limit);
+
+        // A pane that is gone returns at once.
+        let calls = Cell::new(0);
+        let started = Instant::now();
+        smol::block_on(wait_until_output_settles(
+            || {
+                calls.set(calls.get() + 1);
+                (calls.get() == 1).then_some(1)
+            },
+            settle,
+            limit,
+        ));
+        assert!(started.elapsed() < settle);
+    }
     use chrono::{TimeZone, Utc};
     use mux::agent::AgentMetadata;
     use mux::client::{ClientTabViewState, ClientViewId};

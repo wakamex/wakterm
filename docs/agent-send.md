@@ -1,6 +1,6 @@
 # Agent prompt submission and final responses
 
-`wakterm agent send TARGET MESSAGE` writes the prompt to the native harness pane, submits it, waits for acknowledgement, and prints structured JSON.
+`wakterm agent send TARGET MESSAGE` writes the prompt to the native harness pane, submits it, waits for acknowledgement, and prints structured JSON. Enter is pressed in its own write once the pane has redrawn the typed prompt, because a harness can drop an Enter that arrives while it is still taking a paste: Claude discards it when a pasted line ends like an image path, such as a link to a `.png` file.
 
 For a Claude, Codex or agy agent, acknowledgement is exact: the command waits for the `input_accepted` Agent API event whose `input_sha256` matches the sent text, and returns as soon as the agent records it, whether the input starts a turn or joins a running one. Its JSON then reports `acknowledgement.kind: "input_accepted"`. If the agent does not record the input within `--ack-timeout-ms` (10 seconds by default), the kind is `timed_out` and `acknowledged` is `false`. Claude can leave typed input in its prompt without submitting it, for example while it is still starting, so while Claude has not recorded the input and reports itself idle with nothing else holding the keyboard, the command presses Enter again every 2 seconds, up to 3 times. For other harnesses, or when the event stream is unavailable, the command falls back to watching the agent's observed progress.
 

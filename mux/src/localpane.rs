@@ -489,6 +489,20 @@ impl Pane for LocalPane {
         }
     }
 
+    fn send_prompt(&self, text: &str, paste: bool) -> Result<(), Error> {
+        Mux::get().record_input_for_current_identity();
+        Mux::get().record_agent_input_generation(self.pane_id, "prompt");
+        if self.tmux_domain.lock().is_some() {
+            return Ok(());
+        }
+        if paste {
+            self.terminal.lock().send_paste(text)
+        } else {
+            self.writer.lock().write_all(text.as_bytes())?;
+            Ok(())
+        }
+    }
+
     fn supports_atomic_prompt_submission(&self) -> bool {
         self.tmux_domain.lock().is_none()
     }

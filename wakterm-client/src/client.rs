@@ -1824,6 +1824,7 @@ impl Client {
         MovePaneToNewTabResponse
     );
     rpc!(write_to_pane, WriteToPane, UnitResponse);
+    rpc!(submit_typed_input, SubmitTypedInput, UnitResponse);
     rpc!(send_paste, SendPaste, UnitResponse);
     rpc!(key_down, SendKeyDown, UnitResponse);
     rpc!(mouse_event, SendMouseEvent, UnitResponse);
