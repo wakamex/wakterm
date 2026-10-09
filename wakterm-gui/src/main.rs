@@ -421,6 +421,10 @@ async fn async_run_terminal_gui(
     if let Err(err) = spawn_mux_server(unix_socket_path, should_publish) {
         log::warn!("{:#}", err);
     }
+    // These spawn onto the GUI's main thread, which has a scheduler only
+    // once the GUI front end is running.
+    wakterm_mux_server_impl::agent_reminders::start();
+    wakterm_mux_server_impl::agent_freezing::start();
 
     if !opts.no_auto_connect {
         connect_to_auto_connect_domains().await?;
@@ -720,8 +724,6 @@ fn setup_mux(
     mux.set_active_workspace(&default_workspace_name);
     crate::update::load_last_release_info_and_set_banner();
     update_mux_domains(config)?;
-    wakterm_mux_server_impl::agent_reminders::start();
-    wakterm_mux_server_impl::agent_freezing::start();
 
     let default_name =
         default_domain_name.unwrap_or(config.default_domain.as_deref().unwrap_or("local"));
