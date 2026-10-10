@@ -7022,6 +7022,22 @@ mod test {
             .unwrap();
         let pid = child.id();
         let start_time = LocalProcessInfo::with_root_pid(pid).unwrap().start_time;
+        // What the observer sees of the process, for a failure message.
+        let seen_process = || {
+            LocalProcessInfo::with_root_pid(pid).map(|process| {
+                (
+                    process.name.clone(),
+                    process.argv.clone(),
+                    process.start_time,
+                    process
+                        .children
+                        .values()
+                        .map(|child| (child.name.clone(), child.argv.clone()))
+                        .collect::<Vec<_>>(),
+                    remote_codex_tui(&process).map(|remote| remote.thread_id),
+                )
+            })
+        };
 
         set_env_path("WAKTERM_AGENT_CODEX_DIR", &root);
         // Adoption primes the observer with the creation time as its cutoff,
@@ -7047,6 +7063,7 @@ mod test {
         prime_runtime_for_new_agent(&mut runtime, &metadata, Some("codex"));
         runtime.foreground_process_name = Some("codex".to_string());
         refresh_runtime_from_harness(&mut runtime, &metadata);
+        let process_after_refresh = seen_process();
         let cutoff = runtime.observer_started_at.or(Some(metadata.created_at));
         let observed = observe_codex(
             "/tmp/remote-tui",
@@ -7079,7 +7096,11 @@ mod test {
         // Admission reports a running turn as busy rather than unavailable.
         assert_eq!(
             runtime.session_path.as_deref(),
-            Some(resumed.to_string_lossy().as_ref())
+            Some(resumed.to_string_lossy().as_ref()),
+            "adopted start time {}; the process after the refresh: {:?}; observer error: {:?}",
+            start_time,
+            process_after_refresh,
+            runtime.observer_error,
         );
         assert_eq!(runtime.transport, AgentTransport::ObservedPty);
         assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnAgent);
