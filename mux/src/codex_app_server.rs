@@ -1665,6 +1665,14 @@ fn apply_thread_status(runtime: &mut crate::agent::AgentRuntimeSnapshot, status:
 
 #[cfg(test)]
 mod test {
+
+    /// Keeps a wait for events going for up to ten seconds. Events are
+    /// written in the background, which a slow CI runner can take over a
+    /// second to finish.
+    fn event_wait_deadline() -> impl FnMut(&()) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        move |_| std::time::Instant::now() < deadline
+    }
     use super::*;
     use crate::agent::{AgentHarness, AgentMetadata, AgentRuntimeSnapshot, AgentStatus};
     use crate::agent_event::AgentEventKind;
@@ -2147,7 +2155,8 @@ mod test {
             );
             let terminal = mux.agent_runtime_by_pane.read()[&1].clone();
             assert_eq!(terminal.turn_state, AgentTurnState::WaitingOnUser);
-            let terminal_page = (0..100)
+            let terminal_page = std::iter::repeat(())
+                .take_while(event_wait_deadline())
                 .find_map(|_| {
                     let page = mux.agent_event_store.read_page(0, 100).unwrap();
                     if page.events.iter().any(|event| {
@@ -2440,7 +2449,8 @@ mod test {
             }),
         );
 
-        let page = (0..100)
+        let page = std::iter::repeat(())
+            .take_while(event_wait_deadline())
             .find_map(|_| {
                 let page = mux.agent_event_store.read_page(0, 100).unwrap();
                 if page
@@ -2771,7 +2781,8 @@ mod test {
             apply_tui_proxy_dispatch(&mux, proxy.record_server_message(&message));
         }
 
-        let page = (0..100)
+        let page = std::iter::repeat(())
+            .take_while(event_wait_deadline())
             .find_map(|_| {
                 let page = mux.agent_event_store.read_page(0, 100).unwrap();
                 let messages = page
