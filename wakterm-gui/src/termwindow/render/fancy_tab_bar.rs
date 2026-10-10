@@ -5,8 +5,7 @@ use crate::tab_colors::{tab_render_colors, TabColorVisualState};
 use crate::tabbar::{TabBarItem, TabEntry};
 use crate::termwindow::box_model::*;
 use crate::termwindow::render::window_buttons::window_button_element;
-use crate::termwindow::TermWindowNotif;
-use crate::termwindow::{TabHarnessIcon, UIItem, UIItemType};
+use crate::termwindow::{TabHarnessIcon, TermWindowNotif, UIItem, UIItemType};
 use crate::utilsprites::RenderMetrics;
 use config::{Dimension, DimensionContext, TabBarColors};
 use std::rc::Rc;
@@ -17,8 +16,7 @@ use termwiz::surface::SEQ_ZERO;
 use wakterm_font::LoadedFont;
 use wakterm_term::color::{ColorAttribute, ColorPalette};
 use wakterm_term::{Line, TerminalConfiguration};
-use window::WindowOps;
-use window::{IntegratedTitleButtonAlignment, IntegratedTitleButtonStyle};
+use window::{IntegratedTitleButtonAlignment, IntegratedTitleButtonStyle, WindowOps};
 
 const X_BUTTON: &[Poly] = &[
     Poly {
