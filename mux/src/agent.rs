@@ -1387,6 +1387,22 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
         }
     }
 
+    // Claude writes its session record only once startup prompts, such as
+    // folder trust, are answered. Until then a prompt may have the keyboard,
+    // and typed input could answer it: Enter on the trust prompt quits.
+    // Only platforms where Wakterm reads the record can tell.
+    if cfg!(any(target_os = "linux", windows))
+        && runtime.alive
+        && matches!(observing_harness, AgentHarness::Claude)
+        && metadata.adopted_pid.is_some()
+        && claude_session_record_missing(metadata)
+    {
+        runtime.turn_state = AgentTurnState::WaitingOnUser;
+        runtime.turn_phase = Some(format!(
+            "{CLAUDE_WAITING_PHASE_PREFIX}Claude to finish starting; a startup prompt may have the keyboard"
+        ));
+    }
+
     if matches!(runtime.harness, AgentHarness::Unknown) {
         runtime.harness_mode = None;
         runtime.turn_phase = None;
@@ -4827,6 +4843,89 @@ mod test {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn starting_claude_blocks_input_until_its_session_record_exists() {
+        use std::os::unix::process::CommandExt;
+        let _env_lock = env_lock();
+        let Ok(machine_id) = std::fs::read_to_string("/etc/machine-id") else {
+            return;
+        };
+        let temp = TempDir::new().unwrap();
+        let cwd = "/tmp/claude-starting";
+        let projects = temp.path().join("projects");
+        let project = projects.join("-tmp-claude-starting");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(temp.path().join("sessions")).unwrap();
+        set_env_path("WAKTERM_AGENT_CLAUDE_DIR", &projects);
+        let mut child = std::process::Command::new("sleep")
+            .arg0("claude")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let process = LocalProcessInfo::with_root_pid(child.id()).unwrap();
+        let metadata = AgentMetadata {
+            agent_id: "claude-starting".to_string(),
+            name: "claude".to_string(),
+            launch_cmd: "claude".to_string(),
+            declared_cwd: cwd.to_string(),
+            adopted_pid: Some(process.pid),
+            adopted_start_time: Some(process.start_time),
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+            launch_supervisor: None,
+            codex_app_server: None,
+        };
+        let observe = || {
+            let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+            runtime.alive = true;
+            runtime.foreground_process_name = Some("claude".to_string());
+            refresh_runtime_from_harness(&mut runtime, &metadata);
+            runtime
+        };
+
+        // A trust prompt is up: no session record yet.
+        let starting = observe();
+        assert!(
+            input_blocked_reason(&starting)
+                .is_some_and(|reason| reason.contains("finish starting")),
+            "{:?}",
+            starting.turn_phase
+        );
+
+        // The prompt was answered and Claude recorded its session.
+        let sid = "4c0a7e4e-8a6b-4a39-9d55-0f7c2f7ad0aa";
+        fs::write(
+            project.join(format!("{sid}.jsonl")),
+            serde_json::json!({"type":"user","uuid":"u","sessionId":sid,"cwd":cwd,
+                "timestamp": Utc::now(),"message":{"role":"user","content":"hi"}})
+            .to_string()
+                + "\n",
+        )
+        .unwrap();
+        let namespace = fs::read_link(format!("/proc/{}/ns/pid", process.pid)).unwrap();
+        fs::write(
+            temp.path()
+                .join("sessions")
+                .join(format!("{}.json", process.pid)),
+            serde_json::json!({"pid": process.pid, "procStart": process.start_time.to_string(),
+                "pidDomain": format!("linux:{}:{}", machine_id.trim(), namespace.to_string_lossy()),
+                "sessionId": sid, "cwd": cwd, "kind": "interactive", "status": "idle",
+                "statusUpdatedAt": Utc::now().timestamp_millis()})
+            .to_string(),
+        )
+        .unwrap();
+        let ready = observe();
+        assert_eq!(input_blocked_reason(&ready), None, "{:?}", ready.turn_phase);
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
     }
 
     #[cfg(target_os = "linux")]
