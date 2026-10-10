@@ -1975,6 +1975,65 @@ pub fn records_input_events(harness: &AgentHarness) -> bool {
     )
 }
 
+/// Records in Claude's config that the folder of a Claude agent is trusted,
+/// so that Claude resumes there without its folder trust prompt. Claude
+/// keys trust by the folder's git root, or the folder outside a repository,
+/// and a trusted parent does not cover a folder that is its own git root.
+/// Running with permissions bypassed never records trust, so an agent that
+/// ran in a folder for days can stop at the prompt when it is resumed.
+///
+/// The config file is shared with running Claude processes, so the change
+/// follows Claude's own protocol: hold the `.claude.json.lock` directory,
+/// read the file again, change only this flag, and replace the file.
+/// Returns whether trust had to be recorded.
+pub fn trust_claude_folder(cwd: &str) -> anyhow::Result<bool> {
+    let config = claude_sessions_root()
+        .and_then(|root| Some(root.parent()?.parent()?.join(".claude.json")))
+        .context("Claude's config file has no known location")?;
+    let folder = PathBuf::from(normalize_declared_cwd(cwd));
+    let key = folder
+        .ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .unwrap_or(&folder)
+        .to_string_lossy()
+        .into_owned();
+
+    let lock = config.with_file_name(".claude.json.lock");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while let Err(err) = fs::create_dir(&lock) {
+        if err.kind() != std::io::ErrorKind::AlreadyExists || std::time::Instant::now() > deadline {
+            return Err(err).with_context(|| format!("locking {}", config.display()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let result = (|| {
+        let mut settings: Value = serde_json::from_slice(&fs::read(&config)?)
+            .with_context(|| format!("parsing {}", config.display()))?;
+        let project = settings
+            .as_object_mut()
+            .context("Claude's config is not a JSON object")?
+            .entry("projects")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .context("Claude's projects are not a JSON object")?
+            .entry(key.clone())
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .with_context(|| format!("Claude's project {key} is not a JSON object"))?;
+        if project.get("hasTrustDialogAccepted") == Some(&Value::Bool(true)) {
+            return Ok(false);
+        }
+        project.insert("hasTrustDialogAccepted".to_string(), Value::Bool(true));
+        let staged = config.with_file_name(format!(".claude.json.wakterm-{}", std::process::id()));
+        fs::write(&staged, serde_json::to_vec_pretty(&settings)?)?;
+        fs::set_permissions(&staged, fs::metadata(&config)?.permissions())?;
+        fs::rename(&staged, &config)?;
+        Ok(true)
+    })();
+    let _ = fs::remove_dir(&lock);
+    result
+}
+
 /// Why the agent's exact Claude process must keep running while idle, or
 /// None when it can be frozen. Freezing is safe only when every wakeup
 /// reaches Claude as input through Wakterm: Claude reports itself idle with
@@ -5381,6 +5440,59 @@ mod test {
             serde_json::to_string(&AgentOrigin::Managed).unwrap(),
             r#""managed""#
         );
+    }
+
+    #[test]
+    fn claude_folder_trust_is_recorded_for_the_git_root_under_claudes_lock() {
+        let _env = env_lock();
+        let home = tempfile::tempdir().unwrap();
+        let repo = home.path().join("code").join("endchat");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::create_dir_all(repo.join("src")).unwrap();
+        let config = home.path().join(".claude.json");
+        fs::write(
+            &config,
+            serde_json::json!({"numStartups": 7, "projects": {
+                repo.to_str().unwrap(): {"hasTrustDialogAccepted": false, "allowedTools": ["x"]},
+                "/elsewhere": {"hasTrustDialogAccepted": true}}})
+            .to_string(),
+        )
+        .unwrap();
+        set_env_path(
+            "WAKTERM_AGENT_CLAUDE_DIR",
+            &home.path().join(".claude").join("projects"),
+        );
+
+        // Another writer holds Claude's lock briefly.
+        let lock = home.path().join(".claude.json.lock");
+        fs::create_dir(&lock).unwrap();
+        let release = {
+            let lock = lock.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                fs::remove_dir(lock).unwrap();
+            })
+        };
+        // A folder inside the repository is trusted through its git root.
+        assert!(trust_claude_folder(repo.join("src").to_str().unwrap()).unwrap());
+        release.join().unwrap();
+        assert!(!lock.exists());
+
+        let saved: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+        let project = &saved["projects"][repo.to_str().unwrap()];
+        assert_eq!(project["hasTrustDialogAccepted"], true);
+        assert_eq!(project["allowedTools"], serde_json::json!(["x"]));
+        assert_eq!(saved["numStartups"], 7);
+        assert_eq!(
+            saved["projects"]["/elsewhere"]["hasTrustDialogAccepted"],
+            true
+        );
+
+        // Already trusted: nothing to write.
+        let written = fs::metadata(&config).unwrap().modified().unwrap();
+        assert!(!trust_claude_folder(repo.to_str().unwrap()).unwrap());
+        assert_eq!(fs::metadata(&config).unwrap().modified().unwrap(), written);
+        remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
     }
 
     #[test]

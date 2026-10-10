@@ -871,6 +871,22 @@ fn prepare_restore_for_entry(
     let Some(intent) = restore_intents.get(&entry.pane_id) else {
         return Ok(None);
     };
+    // The agent was running in its folder, so Claude must not stop at its
+    // folder trust prompt when it resumes there.
+    if intent.harness() == AgentHarness::Claude {
+        match crate::agent::trust_claude_folder(&intent.metadata.declared_cwd) {
+            Ok(true) => log::info!(
+                "recorded Claude folder trust for {} before resuming {}",
+                intent.metadata.declared_cwd,
+                intent.metadata.name
+            ),
+            Ok(false) => {}
+            Err(err) => log::warn!(
+                "could not record Claude folder trust for {}: {err:#}",
+                intent.metadata.declared_cwd
+            ),
+        }
+    }
     let mut prepared = prepare_agent_restore(intent, |request| {
         Mux::get().prepare_codex_app_server_launch(request)
     })?;
