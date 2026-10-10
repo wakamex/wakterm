@@ -1,4 +1,4 @@
-.PHONY: all fmt build check test docs servedocs update-derived check-derived
+.PHONY: all fmt build check test smoke docs servedocs update-derived check-derived
 
 DERIVED_PROFILE ?= debug
 ifeq ($(DERIVED_PROFILE),release)
@@ -17,6 +17,11 @@ all: build
 test:
 	cargo nextest run
 	cargo nextest run -p wakterm-escape-parser # no_std by default
+
+# Starts the release GUI on a virtual display; needs xvfb-run.
+smoke:
+	cargo build --release -p wakterm-gui
+	ci/gui-smoke.sh target/release
 
 check:
 	cargo check

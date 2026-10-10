@@ -116,6 +116,7 @@ jobs:
         run: |
           sudo apt-get update
           env CI=yes ./get-deps --testing
+          sudo apt-get install -y xvfb
 
       - name: Build and test
         if: matrix.id != 'windows'
@@ -127,6 +128,10 @@ jobs:
             -p wakterm-mux-server \
             -p strip-ansi-escapes
           cargo nextest run --all --no-fail-fast
+
+      - name: Start the GUI
+        if: matrix.id == 'ubuntu'
+        run: ci/gui-smoke.sh target/release
 
       - name: Check derived files
         if: matrix.id == 'ubuntu'

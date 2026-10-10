@@ -166,6 +166,16 @@ else
 fi
 echo ""
 
+# A GUI that cannot start would reach every client that builds this commit.
+if command -v xvfb-run >/dev/null; then
+    echo "=== Step 1b: Start the GUI ==="
+    "$REPO_ROOT/ci/gui-smoke.sh" "$REPO_ROOT/target/release" || { echo "  The GUI does not start; not deploying." >&2; exit 1; }
+    echo ""
+else
+    echo "=== Step 1b: Skip GUI start check (xvfb-run is not installed) ==="
+    echo ""
+fi
+
 if $SAVE_SESSION; then
     echo "=== Step 2: Save manual layout snapshot ==="
     cd "$REPO_ROOT"
