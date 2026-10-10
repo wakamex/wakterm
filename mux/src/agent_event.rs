@@ -133,6 +133,11 @@ struct JsonlCursor {
     /// skipped record and restores it.
     #[serde(default)]
     turn_before_gap: Option<String>,
+    /// The latest provider error Claude reported in the open turn, such as
+    /// an expired login, which ends the turn when Claude goes idle without
+    /// replying.
+    #[serde(default)]
+    turn_error: Option<String>,
 }
 
 impl JsonlCursor {
@@ -1466,8 +1471,17 @@ fn close_unanswered_claude_turn(
     );
     final_event.turn_id = Some(turn_id.clone());
     final_event.outcome = Some("aborted".to_string());
-    final_event.reason = Some("no_reply".to_string());
-    final_event.detail = Some("Claude went idle without replying.".to_string());
+    // A provider error, such as an expired login, is why Claude stopped.
+    match cursor.turn_error.take() {
+        Some(error) => {
+            final_event.reason = Some("provider_error".to_string());
+            final_event.detail = Some(error);
+        }
+        None => {
+            final_event.reason = Some("no_reply".to_string());
+            final_event.detail = Some("Claude went idle without replying.".to_string());
+        }
+    }
     let mut state = PendingEvent::new(
         format!("{key}:state"),
         AgentEventKind::TurnStateChanged,
@@ -1495,6 +1509,7 @@ fn initial_jsonl_cursor(
         pending_turn_start: None,
         current_prompt_id,
         turn_before_gap: None,
+        turn_error: None,
     })
 }
 
@@ -1920,6 +1935,7 @@ fn project_claude(
                 .and_then(Value::as_str)
                 .map(str::to_string);
             cursor.turn_before_gap = None;
+            cursor.turn_error = None;
             cursor.last_assistant_text = None;
             cursor.turn_open = true;
             let mut started = PendingEvent::new(
@@ -1998,6 +2014,7 @@ fn project_claude(
                 })
                 .or_else(|| record.get("error").and_then(Value::as_str))
                 .unwrap_or("Claude provider API error");
+            cursor.turn_error = Some(detail.to_string());
             return Ok(vec![observer_failure(
                 format!("{record_key}:api-error"),
                 timestamp,
@@ -2024,6 +2041,7 @@ fn project_claude(
                         .map(str::to_string)
                 })
                 .unwrap_or_else(|| "Claude emitted a synthetic provider failure".to_string());
+            cursor.turn_error = Some(detail.clone());
             return Ok(vec![observer_failure(
                 format!("{record_key}:synthetic-failure"),
                 timestamp,
@@ -4212,6 +4230,89 @@ mod tests {
             .events
             .iter()
             .any(|event| event.kind == AgentEventKind::TurnStarted));
+    }
+
+    #[test]
+    fn claude_turn_ended_by_a_provider_error_reports_that_error() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"mode\",\"sessionId\":\"session-claude\"}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("claude");
+        let mut runtime = runtime(
+            &metadata,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        let line = |value: serde_json::Value| value.to_string() + "\n";
+        let prompt = |uuid: &str| {
+            line(
+                serde_json::json!({"type":"user","uuid":uuid,"sessionId":"session-claude",
+                "timestamp":"2026-10-10T03:32:13Z","message":{"content":"check now"}}),
+            )
+        };
+        let close_idle_turn = |runtime: &mut AgentRuntimeSnapshot| {
+            store.observe_agent(&metadata, runtime).unwrap();
+            runtime.turn_phase = Some("idle".to_string());
+            fs::File::options()
+                .write(true)
+                .open(&session)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+                .unwrap();
+            store.observe_agent(&metadata, runtime).unwrap();
+            runtime.turn_phase = None;
+        };
+
+        // Claude answers a prompt with its expired-login notice and stops.
+        append(
+            &session,
+            &[
+                prompt("turn-login"),
+                line(serde_json::json!({"type":"assistant","uuid":"login-notice",
+                    "sessionId":"session-claude","timestamp":"2026-10-10T03:32:14Z",
+                    "message":{"id":"msg-1","model":"<synthetic>","stop_reason":"stop_sequence",
+                        "content":[{"type":"text","text":"Login expired · Please run /login"}]}})),
+            ]
+            .concat(),
+        );
+        close_idle_turn(&mut runtime);
+        // A later turn that ends without a reply keeps the plain reason.
+        append(&session, &prompt("turn-quiet"));
+        close_idle_turn(&mut runtime);
+
+        let finals = store
+            .read_page(after, 100)
+            .unwrap()
+            .events
+            .into_iter()
+            .filter(|event| event.kind == AgentEventKind::TurnFinal)
+            .map(|event| (event.turn_id, event.outcome, event.reason, event.detail))
+            .collect::<Vec<_>>();
+        let some = |text: &str| Some(text.to_string());
+        assert_eq!(
+            finals,
+            vec![
+                (
+                    some("turn-login"),
+                    some("aborted"),
+                    some("provider_error"),
+                    some("Login expired · Please run /login")
+                ),
+                (
+                    some("turn-quiet"),
+                    some("aborted"),
+                    some("no_reply"),
+                    some("Claude went idle without replying.")
+                ),
+            ]
+        );
     }
 
     #[test]
