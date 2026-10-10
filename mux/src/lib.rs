@@ -2920,6 +2920,10 @@ impl Mux {
         let mut metadata = pending.metadata;
         metadata.adopted_pid = candidate.foreground_pid;
         metadata.adopted_start_time = candidate.process_start_time;
+        // Installing the agent forgets the pane's seen reply, but the
+        // resumed agent is the one whose reply the user saw before the
+        // restart.
+        let seen_at = self.agent_attention_seen_at(pane_id);
         if let Err(err) =
             self.install_agent_metadata_runtime_without_process_identity(pane_id, metadata, runtime)
         {
@@ -2929,6 +2933,9 @@ impl Mux {
                 format!("Wakterm could not bind the agent: {err:#}."),
             );
             return AgentRestoreOutcome::Failed;
+        }
+        if let Some(seen_at) = seen_at {
+            self.restore_agent_attention_seen_at(pane_id, seen_at);
         }
 
         self.refresh_agent_runtime_for_pane_with_update(
@@ -10078,6 +10085,9 @@ mod test {
             "session-match".to_string(),
         )
         .unwrap();
+        // The reply the user had seen before the restart stays seen.
+        let seen_at = Utc::now();
+        mux.restore_agent_attention_seen_at(matching_pane_id, seen_at);
         mux.detected_agent_panes.write().insert(matching_pane_id);
         let mut matching_runtime = AgentRuntimeSnapshot::new(&matching_metadata);
         matching_runtime.transport = crate::agent::AgentTransport::ObservedPty;
@@ -10123,6 +10133,7 @@ mod test {
             .pending_agent_restores
             .read()
             .contains_key(&matching_pane_id));
+        assert_eq!(mux.agent_attention_seen_at(matching_pane_id), Some(seen_at));
 
         let mismatching_session = tempfile::tempdir().unwrap();
         let mismatching_path = mismatching_session.path().join("rollout.jsonl");
