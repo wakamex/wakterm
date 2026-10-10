@@ -795,6 +795,32 @@ fn connect_event_store(path: &Path) -> anyhow::Result<Connection> {
     }
     let conn = Connection::open(path)?;
     conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    // SQLite refuses some lock upgrades at once rather than waiting out the
+    // busy timeout, such as switching a new database to WAL while another
+    // connection does the same, so the setup is retried while it is busy.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match setup_event_store(&conn) {
+            Err(err)
+                if Instant::now() < deadline
+                    && matches!(
+                        err.sqlite_error_code(),
+                        Some(
+                            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                        )
+                    ) =>
+            {
+                thread::sleep(Duration::from_millis(20));
+            }
+            result => {
+                result?;
+                return Ok(conn);
+            }
+        }
+    }
+}
+
+fn setup_event_store(conn: &Connection) -> rusqlite::Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "FULL")?;
     conn.execute_batch(
@@ -811,8 +837,7 @@ fn connect_event_store(path: &Path) -> anyhow::Result<Connection> {
              key TEXT PRIMARY KEY,
              value INTEGER NOT NULL
          );",
-    )?;
-    Ok(conn)
+    )
 }
 
 fn read_page_from_connection(
