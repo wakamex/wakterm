@@ -1833,7 +1833,7 @@ impl SendAgentCommand {
                 |request| client.write_to_pane(request),
                 |request| client.send_paste(request),
                 |request| client.submit_typed_input(request),
-                |agent_id, sha256, timeout| {
+                |agent_id, sha256, command, timeout| {
                     let client = client.clone();
                     async move {
                         let Some(after) = events_from else {
@@ -1856,6 +1856,7 @@ impl SendAgentCommand {
                             after,
                             &agent_id,
                             &sha256,
+                            command,
                             timeout,
                         )
                         .await
@@ -1897,7 +1898,9 @@ impl SendAgentCommand {
         SubmitInputFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
         // Waits up to the given time for the provider to record the input
         // with this hash; None when the event stream cannot confirm input.
-        ConfirmInputFn: Fn(String, String, Duration) -> ConfirmInputFut,
+        // The flag says the input is a slash command, which a harness can
+        // record under another name than the one typed.
+        ConfirmInputFn: Fn(String, String, bool, Duration) -> ConfirmInputFut,
         ConfirmInputFut: Future<Output = anyhow::Result<Option<AgentSendAcknowledgement>>>,
     {
         let agents = list_agents().await?.agents;
@@ -1926,6 +1929,7 @@ impl SendAgentCommand {
         }
         let text = self.read_text()?;
         let input_sha256 = mux::agent::message_sha256(&text);
+        let sent_text = text.clone();
         let baseline = AgentAckBaseline::from_agent(&agent);
         let use_raw_write = self.no_paste || prefers_raw_input(&agent.runtime.harness);
 
@@ -1955,6 +1959,7 @@ impl SendAgentCommand {
         // dialog open, Enter is pressed again.
         if submitted && mux::agent::records_input_events(&agent.runtime.harness) {
             let claude = matches!(agent.runtime.harness, AgentHarness::Claude);
+            let command = claude && mux::agent::is_claude_command(&sent_text);
             let started = Instant::now();
             let deadline = started + Duration::from_millis(self.ack_timeout_ms);
             let mut resubmits = 0;
@@ -1968,6 +1973,7 @@ impl SendAgentCommand {
                 confirm_input(
                     agent.metadata.agent_id.clone(),
                     input_sha256.clone(),
+                    command,
                     window,
                 )
                 .await?
@@ -2917,6 +2923,7 @@ async fn wait_for_input_accepted<ReadPage, ReadPageFut>(
     mut after: u64,
     agent_id: &str,
     input_sha256: &str,
+    command: bool,
     timeout: Duration,
 ) -> anyhow::Result<AgentSendAcknowledgement>
 where
@@ -2930,7 +2937,8 @@ where
         let accepted = page.events.iter().any(|event| {
             event.agent_id == agent_id
                 && event.kind == mux::agent_event::AgentEventKind::InputAccepted
-                && event.input_sha256.as_deref() == Some(input_sha256)
+                && (event.input_sha256.as_deref() == Some(input_sha256)
+                    || (command && event.reason.as_deref() == Some("command")))
         });
         if accepted {
             return Ok(AgentSendAcknowledgement {
@@ -3647,6 +3655,7 @@ mod test {
             10,
             "agent",
             &sha256,
+            false,
             Duration::from_secs(5),
         ))
         .unwrap();
@@ -3660,6 +3669,7 @@ mod test {
             10,
             "agent",
             &sha256,
+            false,
             Duration::from_millis(0),
         ))
         .unwrap();
@@ -4038,7 +4048,7 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
-            |_, _, _| async { Ok(None) },
+            |_, _, _, _| async { Ok(None) },
         ))
         .unwrap();
 
@@ -4176,7 +4186,7 @@ mod test {
                 },
                 {
                     let confirms = Rc::clone(&confirms);
-                    move |_, _, _| {
+                    move |_, _, _, _| {
                         // Claude takes the input on the third look.
                         let recorded = {
                             let mut confirms = confirms.borrow_mut();
@@ -4253,7 +4263,7 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
-            |_, _, _| async { Ok(None) },
+            |_, _, _, _| async { Ok(None) },
         ))
         .unwrap();
 
@@ -4313,7 +4323,7 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
-            |_, _, _| async { Ok(None) },
+            |_, _, _, _| async { Ok(None) },
         ))
         .unwrap();
 
@@ -4943,7 +4953,7 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
-            |_, _, _| async { Ok(None) },
+            |_, _, _, _| async { Ok(None) },
         ))
         .unwrap();
 
@@ -5002,7 +5012,7 @@ mod test {
                     async { Ok(UnitResponse {}) }
                 }
             },
-            |_, _, _| async { Ok(None) },
+            |_, _, _, _| async { Ok(None) },
         ))
         .unwrap();
 
@@ -5057,7 +5067,7 @@ mod test {
                 }
             },
             |_: SubmitTypedInput| async { panic!("submit_typed_input should not be used") },
-            |_, _, _| async { Ok(None) },
+            |_, _, _, _| async { Ok(None) },
         ))
         .unwrap();
 

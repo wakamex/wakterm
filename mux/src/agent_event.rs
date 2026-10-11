@@ -722,12 +722,15 @@ impl AgentEventStore {
     /// Waits up to `wait` after `after_sequence` for the agent incarnation to
     /// record input. With `input_sha256`, only input with that hash counts,
     /// from `input_accepted` or `turn_started`; without it, any turn start
-    /// counts.
+    /// counts. With `command`, a recorded slash command also counts under
+    /// any hash, since a harness can record a command under another name
+    /// than the alias that was typed.
     pub async fn wait_for_input(
         &self,
         agent_id: &str,
         incarnation_id: &str,
         input_sha256: Option<&str>,
+        command: bool,
         mut after_sequence: u64,
         wait: Duration,
     ) -> anyhow::Result<InputWait> {
@@ -750,6 +753,12 @@ impl AgentEventStore {
                     )
                 {
                     continue;
+                }
+                if command
+                    && event.kind == AgentEventKind::InputAccepted
+                    && event.reason.as_deref() == Some("command")
+                {
+                    return Ok(InputWait::Recorded);
                 }
                 match input_sha256 {
                     None if event.kind == AgentEventKind::TurnStarted => {
@@ -1986,16 +1995,31 @@ fn project_claude(
                 timestamp,
             );
             started.turn_id = Some(turn_id.clone());
-            started.input_sha256 = crate::agent::claude_user_text(record)
-                .map(|text| crate::agent::message_sha256(crate::agent::unwrap_claude_paste(&text)));
+            // Claude's own notes, such as the caveat it records with a local
+            // command, are not input. A slash command is input as its
+            // command and arguments, not as the tags Claude wraps it in.
+            let text = crate::agent::claude_user_text(record)
+                .filter(|_| record.get("isMeta").and_then(Value::as_bool) != Some(true));
+            let command = text.as_deref().and_then(crate::agent::claude_command_text);
+            started.input_sha256 = match (&command, &text) {
+                (Some(command), _) => Some(crate::agent::message_sha256(command)),
+                (None, Some(text)) => Some(crate::agent::message_sha256(
+                    crate::agent::unwrap_claude_paste(text),
+                )),
+                (None, None) => None,
+            };
             let accepted = started.input_sha256.clone().map(|sha256| {
-                input_accepted(
+                let mut accepted = input_accepted(
                     format!("{record_key}:input"),
                     timestamp,
                     Some(turn_id.clone()),
                     sha256,
                     false,
-                )
+                );
+                if command.is_some() {
+                    accepted.reason = Some("command".to_string());
+                }
+                accepted
             });
             let mut state = PendingEvent::new(
                 format!("{record_key}:state"),
@@ -3398,6 +3422,7 @@ mod tests {
                 agent_id,
                 incarnation_id,
                 Some(sha256),
+                false,
                 after,
                 Duration::from_millis(50),
             ))
@@ -3461,6 +3486,7 @@ mod tests {
                     &agent_id,
                     &incarnation,
                     Some(&crate::agent::message_sha256("more")),
+                    false,
                     before_second_write,
                     Duration::from_secs(5),
                 ))
@@ -4272,6 +4298,88 @@ mod tests {
             .events
             .iter()
             .any(|event| event.kind == AgentEventKind::TurnStarted));
+    }
+
+    #[test]
+    fn claude_slash_command_is_input_as_its_command_text() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"mode\",\"sessionId\":\"session-claude\"}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("claude");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
+        );
+        let incarnation = crate::agent_admission::incarnation_id(&metadata).unwrap();
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        let line = |value: serde_json::Value| value.to_string() + "\n";
+        // What Claude records for `/new`, an alias of `/clear`, and for a
+        // command with arguments.
+        append(
+            &session,
+            &[
+                line(serde_json::json!({"type":"user","uuid":"caveat","isMeta":true,
+                    "sessionId":"session-claude","timestamp":"2026-10-11T04:23:55Z",
+                    "message":{"content":"<local-command-caveat>The command below was run directly in Claude Code.</local-command-caveat>"}})),
+                line(serde_json::json!({"type":"user","uuid":"clear","sessionId":"session-claude",
+                    "timestamp":"2026-10-11T04:23:54Z","message":{"content":
+                    "<command-name>/clear</command-name>\n            <command-message>clear</command-message>\n            <command-args></command-args>"}})),
+                line(serde_json::json!({"type":"user","uuid":"model","sessionId":"session-claude",
+                    "timestamp":"2026-10-11T04:24:00Z","message":{"content":
+                    "<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>opus</command-args>"}})),
+            ]
+            .concat(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+
+        let accepted = store
+            .read_page(after, 100)
+            .unwrap()
+            .events
+            .into_iter()
+            .filter(|event| event.kind == AgentEventKind::InputAccepted)
+            .map(|event| (event.input_sha256.unwrap(), event.reason))
+            .collect::<Vec<_>>();
+        let command = |text: &str| {
+            (
+                crate::agent::message_sha256(text),
+                Some("command".to_string()),
+            )
+        };
+        // Claude's caveat note is not input.
+        assert_eq!(accepted, vec![command("/clear"), command("/model opus")]);
+
+        let wait = |sha256: &str, command: bool| {
+            promise::spawn::block_on(store.wait_for_input(
+                &metadata.agent_id,
+                &incarnation,
+                Some(sha256),
+                command,
+                after,
+                Duration::from_millis(50),
+            ))
+            .unwrap()
+        };
+        // The command as recorded confirms by its hash.
+        let clear = crate::agent::message_sha256("/clear");
+        assert_eq!(wait(&clear, false), InputWait::Recorded);
+        // The alias that was typed confirms as a command, not by hash.
+        let alias = crate::agent::message_sha256("/new");
+        assert_eq!(wait(&alias, true), InputWait::Recorded);
+        assert!(matches!(
+            wait(&alias, false),
+            InputWait::Pending {
+                other_input: true,
+                ..
+            }
+        ));
     }
 
     #[test]

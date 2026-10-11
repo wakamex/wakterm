@@ -2231,6 +2231,13 @@ async fn admit_agent_prompt(
                 )
                 .await
                 {
+                    // A slash command is done once Claude records it; many
+                    // never start work or change Claude's status.
+                    Ok(AdmittedInput::Recorded)
+                        if mux::agent::is_claude_command(&request.prompt) =>
+                    {
+                        AgentAdmissionReceipt::accepted(&request, None)
+                    }
                     Ok(AdmittedInput::Recorded) => {
                         // Claude can record a prompt without working on it.
                         // Its own status must have changed since the write.
@@ -2403,6 +2410,7 @@ async fn confirm_admitted_input(
     let input_sha256 = mux::agent::records_input_events(harness)
         .then(|| mux::agent::message_sha256(&request.prompt));
     let claude = matches!(harness, mux::agent::AgentHarness::Claude);
+    let command = claude && mux::agent::is_claude_command(&request.prompt);
     let deadline = std::time::Instant::now() + ADMISSION_TURN_CONFIRMATION;
     let mut other_input = false;
     let mut resubmits = 0;
@@ -2418,6 +2426,7 @@ async fn confirm_admitted_input(
                 &request.agent_id,
                 &request.incarnation_id,
                 input_sha256.as_deref(),
+                command,
                 after_sequence,
                 window,
             )

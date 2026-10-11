@@ -3993,6 +3993,32 @@ pub(crate) fn claude_user_text(record: &Value) -> Option<String> {
     }
 }
 
+/// The slash command a Claude user record holds, as the command and its
+/// arguments, such as `/model opus`. Claude records a slash command as
+/// `<command-name>`, `<command-message>` and `<command-args>` tags, and
+/// under the command's own name when an alias was typed: `/new` is recorded
+/// as `/clear`.
+pub(crate) fn claude_command_text(text: &str) -> Option<String> {
+    let tagged = |tag: &str| {
+        let (_, rest) = text.split_once(&format!("<{tag}>"))?;
+        Some(rest.split_once(&format!("</{tag}>"))?.0.trim())
+    };
+    if !text.trim_start().starts_with("<command-name>") {
+        return None;
+    }
+    let name = tagged("command-name")?;
+    Some(match tagged("command-args") {
+        Some(args) if !args.is_empty() => format!("{name} {args}"),
+        _ => name.to_string(),
+    })
+}
+
+/// Whether text sent to Claude is a slash command.
+pub fn is_claude_command(text: &str) -> bool {
+    let text = text.trim();
+    text.starts_with('/') && !text.contains('\n')
+}
+
 /// Claude stores pasted input inside a `<pasted_content id="N">` wrapper.
 /// Returns the pasted text when the message is exactly one such paste.
 pub(crate) fn unwrap_claude_paste(text: &str) -> &str {
