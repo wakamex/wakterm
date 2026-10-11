@@ -60,9 +60,12 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: "7c48ce23cb4423feb34a7fe3921e307f"
+          # Passed through the environment: pasting the message into the
+          # script would let its quotes and other shell syntax take effect.
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message || github.sha }}
         run: |
           npx wrangler@4.69.0 pages deploy gh_pages \
             --project-name wakterm \
             --branch main \
             --commit-hash "${GITHUB_SHA}" \
-            --commit-message "${{ github.event.head_commit.message || github.sha }}"
+            --commit-message "$(printf '%s\n' "$COMMIT_MESSAGE" | head -n 1)"
