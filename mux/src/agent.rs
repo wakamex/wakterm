@@ -2108,6 +2108,15 @@ pub fn claude_idle_since(metadata: &AgentMetadata, since: std::time::SystemTime)
     })
 }
 
+/// Whether the observed Claude reports one of its dialogs open.
+pub fn claude_dialog_open(runtime: &AgentRuntimeSnapshot) -> bool {
+    runtime
+        .turn_phase
+        .as_deref()
+        .and_then(|phase| phase.strip_prefix(CLAUDE_WAITING_PHASE_PREFIX))
+        == Some("dialog open")
+}
+
 /// Whether Claude reports the agent's exact process waiting for the user's
 /// answer to a question, the only dialog it labels `input needed` that a
 /// model turn can open.

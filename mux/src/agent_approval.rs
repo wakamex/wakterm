@@ -112,14 +112,23 @@ pub enum AgentApprovalWork {
     /// Keys to press in a Claude pane, with screen checks between them. They
     /// take seconds, so the caller runs them away from the main thread.
     ClaudeQuestion(ClaudeQuestionKeys),
+    /// Keys that answer Claude's "Session paused" menu, with screen checks.
+    ClaudeRefusalMenu(crate::claude_refusal_menu::RefusalMenuKeys),
 }
 
 impl AgentApprovalWork {
+    /// Whether the remaining work waits on a pane's screen, and so must run
+    /// away from the main thread.
+    pub fn waits_on_screen(&self) -> bool {
+        !matches!(self, Self::Resolved(_))
+    }
+
     /// Runs any remaining work on the current thread.
     pub fn complete(self) -> anyhow::Result<AgentApprovalResolution> {
         match self {
             Self::Resolved(resolution) => Ok(resolution),
             Self::ClaudeQuestion(keys) => keys.run(),
+            Self::ClaudeRefusalMenu(keys) => keys.run(),
         }
     }
 }
@@ -251,6 +260,9 @@ impl Mux {
             .agent_event_store
             .find_approval(&resolution.request_id)?
             .context("approval request is no longer pending")?;
+        if request.kind == crate::claude_refusal_menu::REFUSAL_MENU_KIND {
+            return self.resolve_claude_refusal_menu(request, resolution);
+        }
         anyhow::ensure!(
             matches!(
                 request.kind.as_str(),
@@ -356,6 +368,69 @@ impl Mux {
             steps,
             resolved,
         }))
+    }
+
+    /// Prepares the keys that answer Claude's "Session paused" menu, after
+    /// checking that the same Claude process still shows the same menu.
+    fn resolve_claude_refusal_menu(
+        &self,
+        request: AgentApprovalRequest,
+        resolution: AgentApprovalResolutionRequest,
+    ) -> anyhow::Result<AgentApprovalWork> {
+        anyhow::ensure!(
+            request.agent_id == resolution.agent_id
+                && request.incarnation_id == resolution.incarnation_id,
+            "approval target identity changed"
+        );
+        anyhow::ensure!(
+            resolution.answers.is_empty(),
+            "this approval takes a choice, not answers"
+        );
+        anyhow::ensure!(
+            request
+                .choices
+                .iter()
+                .any(|choice| choice.id == resolution.choice_id),
+            "approval choice is not available"
+        );
+        let (pane_id, metadata) = self
+            .agent_metadata_by_pane
+            .read()
+            .iter()
+            .find(|(_, metadata)| metadata.agent_id == resolution.agent_id)
+            .map(|(pane_id, metadata)| (*pane_id, metadata.clone()))
+            .context("approval target is no longer available")?;
+        anyhow::ensure!(
+            incarnation_id(&metadata).as_deref() == Some(resolution.incarnation_id.as_str()),
+            "approval target incarnation changed"
+        );
+        let dialog_open = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .is_some_and(|runtime| runtime.alive && crate::agent::claude_dialog_open(runtime));
+        anyhow::ensure!(dialog_open, "Claude does not report a dialog open");
+        anyhow::ensure!(
+            !crate::agent::claude_dialog_keys_rebound(),
+            "Claude's keybindings.json changes its dialogs' keys; answer the menu in the agent's pane"
+        );
+        let pane = self
+            .get_pane(pane_id)
+            .context("approval target pane disappeared")?;
+        let shown = crate::claude_refusal_menu::parse(&crate::claude_refusal_menu::screen(&pane))
+            .context("approval request is no longer pending")?;
+        anyhow::ensure!(
+            shown.labels[0] == request.choices[0].label
+                && shown.labels[1] == request.choices[1].label,
+            "approval request is no longer pending"
+        );
+        Ok(AgentApprovalWork::ClaudeRefusalMenu(
+            crate::claude_refusal_menu::RefusalMenuKeys {
+                pane,
+                request,
+                choice_id: resolution.choice_id,
+            },
+        ))
     }
 
     pub(crate) fn expire_agent_approval(&self, message: &Value) {

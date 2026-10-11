@@ -889,9 +889,9 @@ impl SessionHandler {
                         }))
                     };
                     match Mux::get().resolve_agent_approval(resolution) {
-                        // Pressing a Claude question's keys waits on its
+                        // Pressing keys in a Claude dialog waits on its
                         // screen, so it runs away from the main thread.
-                        Ok(work @ mux::agent_approval::AgentApprovalWork::ClaudeQuestion(_)) => {
+                        Ok(work) if work.waits_on_screen() => {
                             std::thread::spawn(move || respond(work.complete()));
                         }
                         Ok(work) => respond(work.complete()),

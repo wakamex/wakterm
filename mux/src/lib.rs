@@ -59,6 +59,7 @@ pub mod agent_reminder;
 pub mod agent_request;
 pub mod agent_service;
 pub mod claude_question_keys;
+pub mod claude_refusal_menu;
 pub mod client;
 pub mod codex_app_server;
 pub mod codex_process_memory;
@@ -670,6 +671,11 @@ enum AgentObserverCommand {
         runtime: AgentRuntimeSnapshot,
         message: serde_json::Value,
     },
+    ClaudeRefusalMenu {
+        metadata: AgentMetadata,
+        observed_at: DateTime<Utc>,
+        menu: claude_refusal_menu::RefusalMenu,
+    },
     Unavailable {
         metadata: AgentMetadata,
         observed_at: DateTime<Utc>,
@@ -1143,6 +1149,20 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                 if let Some(writer) = event_writer.as_mut() {
                     if let Err(err) = writer.record_unavailable(&metadata, observed_at, &reason) {
                         log::error!("failed to persist unavailable agent event: {err:#}");
+                        writer_failed = true;
+                    }
+                }
+            }
+            AgentObserverCommand::ClaudeRefusalMenu {
+                metadata,
+                observed_at,
+                menu,
+            } => {
+                if let Some(writer) = event_writer.as_mut() {
+                    if let Err(err) =
+                        writer.record_claude_refusal_menu(&metadata, observed_at, &menu)
+                    {
+                        log::error!("failed to persist Claude's Session paused menu: {err:#}");
                         writer_failed = true;
                     }
                 }
@@ -3413,6 +3433,8 @@ impl Mux {
         histogram!("mux.agent_observer.refresh.apply.latency").record(update.refresh_elapsed);
         counter!("mux.agent_observer.refresh.applied.rate").increment(1);
 
+        self.report_claude_refusal_menu(update.pane_id);
+
         if schedule_trailing_refresh {
             self.schedule_trailing_agent_observer_refresh(update.pane_id);
         }
@@ -3560,6 +3582,38 @@ impl Mux {
         input.generation += 1;
         input.last_kind = kind;
         input.at = Some(Instant::now());
+    }
+
+    /// Reports Claude's "Session paused" menu as an approval request when
+    /// the agent in the pane is a Claude that reports a dialog open and its
+    /// screen shows that menu. Claude records nothing else about the menu.
+    fn report_claude_refusal_menu(&self, pane_id: PaneId) {
+        let dialog_open = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .is_some_and(|runtime| {
+                runtime.harness == AgentHarness::Claude && agent::claude_dialog_open(runtime)
+            });
+        if !dialog_open {
+            return;
+        }
+        let (Some(metadata), Some(pane)) = (
+            self.get_agent_metadata_for_pane(pane_id),
+            self.get_pane(pane_id),
+        ) else {
+            return;
+        };
+        let Some(menu) = claude_refusal_menu::parse(&claude_refusal_menu::screen(&pane)) else {
+            return;
+        };
+        let _ = self
+            .agent_observer_tx
+            .send(AgentObserverCommand::ClaudeRefusalMenu {
+                metadata: (*metadata).clone(),
+                observed_at: Utc::now(),
+                menu,
+            });
     }
 
     /// Thaws the agent in the pane if it is frozen.

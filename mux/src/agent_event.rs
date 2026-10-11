@@ -960,6 +960,48 @@ impl AgentEventWriter {
     }
 }
 
+impl AgentEventWriter {
+    /// Records Claude's "Session paused" menu, read from the agent's pane,
+    /// as an approval request in the agent's current turn. The same menu
+    /// read again is the same event.
+    pub(crate) fn record_claude_refusal_menu(
+        &mut self,
+        metadata: &AgentMetadata,
+        observed_at: DateTime<Utc>,
+        menu: &crate::claude_refusal_menu::RefusalMenu,
+    ) -> anyhow::Result<()> {
+        let Some(incarnation) = incarnation_id(metadata) else {
+            return Ok(());
+        };
+        let turn_id =
+            match load_projection(&self.conn, &metadata.agent_id)?.and_then(|state| state.cursor) {
+                Some(ProviderCursor::Claude(cursor)) => cursor.current_turn_id,
+                _ => None,
+            };
+        let Some(approval) = crate::claude_refusal_menu::approval_request(
+            menu,
+            metadata,
+            turn_id.as_deref().unwrap_or_default(),
+            observed_at,
+        ) else {
+            return Ok(());
+        };
+        let mut event = PendingEvent::new(
+            format!("claude-refusal-menu:{}", approval.request_id),
+            AgentEventKind::ApprovalRequested,
+            observed_at,
+        );
+        event.turn_id = turn_id;
+        event.approval = Some(approval);
+        let tx = self.conn.transaction()?;
+        insert_event(&tx, &metadata.agent_id, &incarnation, event)?;
+        tx.commit()?;
+        let latest = latest_sequence(&self.conn)?;
+        self.store.publish_latest_sequence(latest);
+        Ok(())
+    }
+}
+
 fn provider_runtime_update(events: &[PendingEvent]) -> Option<AgentEventRuntimeUpdate> {
     let mut update = None;
     for event in events {
@@ -4230,6 +4272,68 @@ mod tests {
             .events
             .iter()
             .any(|event| event.kind == AgentEventKind::TurnStarted));
+    }
+
+    #[test]
+    fn claude_refusal_menu_is_one_approval_request_in_the_current_turn() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"mode\",\"sessionId\":\"session-claude\"}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("claude");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
+        );
+        let mut writer = store.writer().unwrap();
+        writer.observe_agent(&metadata, &runtime).unwrap();
+        append(
+            &session,
+            "{\"type\":\"user\",\"uuid\":\"turn-paused\",\"sessionId\":\"session-claude\",\"timestamp\":\"2026-10-11T04:05:00Z\",\"message\":{\"content\":\"work\"}}\n",
+        );
+        writer.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+
+        let menu = crate::claude_refusal_menu::RefusalMenu {
+            body: "Opus 5.5's safeguards flagged this session. Details: [cyber]".to_string(),
+            labels: [
+                "Switch to Opus 4.8".to_string(),
+                "Edit prompt and retry with Opus 5.5".to_string(),
+            ],
+            focused: 0,
+        };
+        // The screen is read on every observation while the menu is up.
+        for _ in 0..3 {
+            writer
+                .record_claude_refusal_menu(&metadata, Utc::now(), &menu)
+                .unwrap();
+        }
+
+        let events = store.read_page(after, 100).unwrap().events;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, AgentEventKind::ApprovalRequested);
+        assert_eq!(events[0].turn_id.as_deref(), Some("turn-paused"));
+        let approval = events[0].approval.clone().unwrap();
+        assert_eq!(approval.kind, crate::claude_refusal_menu::REFUSAL_MENU_KIND);
+        assert_eq!(approval.turn_id, "turn-paused");
+        assert_eq!(
+            approval
+                .choices
+                .iter()
+                .map(|choice| choice.id.as_str())
+                .collect::<Vec<_>>(),
+            ["retry_fallback", "edit_prompt"]
+        );
+        // A resolution finds the request by its ID.
+        assert_eq!(
+            store.find_approval(&approval.request_id).unwrap(),
+            Some(approval)
+        );
     }
 
     #[test]
