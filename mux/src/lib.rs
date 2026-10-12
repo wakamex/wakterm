@@ -3991,6 +3991,35 @@ impl Mux {
         }
     }
 
+    /// The pane of a live registered agent whose turn state is not known yet,
+    /// such as one that went quiet before any observation of it completed.
+    pub fn agent_with_unknown_turn_state(&self, agent_id: &str) -> Option<PaneId> {
+        let pane_id = self
+            .agent_metadata_by_pane
+            .read()
+            .iter()
+            .find(|(_, metadata)| metadata.agent_id == agent_id)
+            .map(|(pane_id, _)| *pane_id)?;
+        self.agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .is_some_and(|runtime| {
+                runtime.alive && matches!(runtime.turn_state, crate::agent::AgentTurnState::Unknown)
+            })
+            .then_some(pane_id)
+    }
+
+    /// Requests an observation of the agent in the pane now. It completes in
+    /// the background.
+    pub fn observe_agent_now(&self, pane_id: PaneId) {
+        self.refresh_agent_runtime_for_pane_with_update(
+            pane_id,
+            false,
+            AgentRefreshPolicy::Immediate,
+            |_| {},
+        );
+    }
+
     pub fn refresh_agent_runtime_for_tab(&self, tab_id: TabId) {
         let Some(tab) = self.get_tab(tab_id) else {
             return;
@@ -8723,6 +8752,47 @@ mod test {
         assert!(mux.detected_agent_panes.read().contains(&pane_id));
         assert!(mux.agent_runtime_by_pane.read().get(&pane_id).is_some());
         assert_eq!(*title_changes.lock(), 1);
+    }
+
+    #[test]
+    fn agent_with_unknown_turn_state_is_found_until_it_is_observed() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new(145, size, domain.id);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        let metadata = sample_agent_metadata("quiet");
+        mux.set_agent_metadata(pane_id, metadata.clone()).unwrap();
+
+        let set_turn_state = |turn_state| {
+            let mut runtimes = mux.agent_runtime_by_pane.write();
+            let runtime = runtimes.get_mut(&pane_id).unwrap();
+            runtime.alive = true;
+            runtime.turn_state = turn_state;
+        };
+        set_turn_state(crate::agent::AgentTurnState::Unknown);
+        assert_eq!(
+            mux.agent_with_unknown_turn_state(&metadata.agent_id),
+            Some(pane_id)
+        );
+        set_turn_state(crate::agent::AgentTurnState::WaitingOnUser);
+        assert_eq!(mux.agent_with_unknown_turn_state(&metadata.agent_id), None);
+        assert_eq!(mux.agent_with_unknown_turn_state("another-agent"), None);
     }
 
     #[test]

@@ -1985,6 +1985,10 @@ fn schedule_agent_prompt_admission<SND>(
     .detach();
 }
 
+/// How long admission waits for an observation of an agent whose turn state
+/// is not known yet.
+const UNKNOWN_STATE_OBSERVATION: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// How long a one-way admission waits for the agent to record the written
 /// prompt.
 const ADMISSION_TURN_CONFIRMATION: std::time::Duration = std::time::Duration::from_secs(15);
@@ -2077,6 +2081,20 @@ async fn admit_agent_prompt(
                     "request_id was already used for different input",
                 ));
             }
+        }
+    }
+
+    // A quiet agent may not have been observed since it was adopted, so its
+    // turn state is unknown and admission would refuse it. Observe it now.
+    if let Some(pane_id) = Mux::get().agent_with_unknown_turn_state(&request.agent_id) {
+        Mux::get().observe_agent_now(pane_id);
+        let deadline = std::time::Instant::now() + UNKNOWN_STATE_OBSERVATION;
+        while std::time::Instant::now() < deadline
+            && Mux::get()
+                .agent_with_unknown_turn_state(&request.agent_id)
+                .is_some()
+        {
+            smol::Timer::after(std::time::Duration::from_millis(50)).await;
         }
     }
 
