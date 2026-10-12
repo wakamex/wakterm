@@ -255,6 +255,37 @@ mod test {
         assert_eq!(parse(&lines(&moved)).unwrap().focused, 1);
     }
 
+    /// The menu as a live pane showed it, with Claude Code 2.1.296.
+    const LIVE_MENU: &str = "──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Session paused                                                                                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                                                  
+  Opus 5's safeguards flagged this message. Our intentionally broad safeguards allow us to deliver more capabilities faster, but can sometimes flag legitimate coding and cybersecurity tasks. Send feedback with /feedback or learn more:
+  https://support.claude.com/en/articles/16049681                                                                                                                                                                                                                                 
+                                                                                                                                                                                                                                                                                  
+  Details: `[cyber]`
+                                                                                                                                                                                                                                                                                  
+  ❯ 1. Switch to Opus 4.8
+    2. Edit prompt and retry with Opus 5                                                                                                                                                                                                                                          
+                                                                                                                                                                                                                                                                                  
+✻ Waiting for API response · will retry in 2m 40s · check your network";
+
+    #[test]
+    fn parses_the_menu_as_a_live_pane_shows_it() {
+        let menu = parse(&lines(LIVE_MENU)).unwrap();
+        assert_eq!(
+            menu.labels,
+            [
+                "Switch to Opus 4.8".to_string(),
+                "Edit prompt and retry with Opus 5".to_string()
+            ]
+        );
+        assert_eq!(menu.focused, 0);
+        assert!(menu
+            .body
+            .starts_with("Opus 5's safeguards flagged this message."));
+        assert!(menu.body.ends_with("Details: `[cyber]`"));
+    }
+
     #[test]
     fn other_screens_are_not_the_menu() {
         // The usage-credits dialog shares the title but not the choices.
