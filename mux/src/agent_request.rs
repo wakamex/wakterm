@@ -387,6 +387,13 @@ impl AgentRequest {
                 }
                 AgentEventKind::TurnFinal => {
                     let Some(bound) = self.provider_turn_id.as_deref() else {
+                        // The target is admitted as idle from its transcript,
+                        // which can be before the event stream records the
+                        // final of its previous turn. A turn that ended
+                        // before this request existed is not the request's.
+                        if event.observed_at < self.created_at {
+                            continue;
+                        }
                         self.finish(
                             AgentRequestState::Indeterminate,
                             now,
@@ -890,6 +897,52 @@ mod tests {
             assert_eq!(request.state, AgentRequestState::Indeterminate);
             assert_eq!(request.detail.as_deref(), Some(detail));
         }
+    }
+
+    #[test]
+    fn pty_request_skips_the_final_of_a_turn_that_ended_before_it_was_created() {
+        let mut request = pty_request("do work");
+        let mut previous = pty_event(
+            11,
+            AgentEventKind::TurnFinal,
+            "turn-1",
+            Some("completed"),
+            Some("earlier answer"),
+        );
+        previous.observed_at = request.created_at - chrono::Duration::milliseconds(150);
+        let mut done = pty_event(
+            13,
+            AgentEventKind::TurnFinal,
+            "turn-2",
+            Some("completed"),
+            Some("done"),
+        );
+        done.observed_at = request.created_at + chrono::Duration::seconds(60);
+        request.reconcile_event_page(
+            &managed_page(vec![previous, started(12, "turn-2", Some("do work")), done]),
+            Utc::now(),
+        );
+        assert_eq!(request.state, AgentRequestState::Completed);
+        assert_eq!(request.provider_turn_id.as_deref(), Some("turn-2"));
+        assert_eq!(request.final_message.as_deref(), Some("done"));
+
+        // A final after the request was created, with no start, is still
+        // not a turn the request can claim.
+        let mut request = pty_request("do work");
+        let mut unstarted = pty_event(
+            11,
+            AgentEventKind::TurnFinal,
+            "turn-2",
+            Some("completed"),
+            Some("done"),
+        );
+        unstarted.observed_at = request.created_at + chrono::Duration::seconds(60);
+        request.reconcile_event_page(&managed_page(vec![unstarted]), Utc::now());
+        assert_eq!(request.state, AgentRequestState::Indeterminate);
+        assert_eq!(
+            request.detail.as_deref(),
+            Some("provider turn completed without a durable start boundary")
+        );
     }
 
     #[test]
