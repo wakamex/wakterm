@@ -1927,6 +1927,11 @@ fn claude_human_user(record: &Value) -> bool {
     if record.get("type").and_then(Value::as_str) != Some("user") {
         return false;
     }
+    // Claude records the summary that replaces a compacted conversation as
+    // a user message. It continues the running turn, under its prompt id.
+    if record.get("isCompactSummary").and_then(Value::as_bool) == Some(true) {
+        return false;
+    }
     let Some(content) = record
         .get("message")
         .and_then(|message| message.get("content"))
@@ -4175,6 +4180,58 @@ mod tests {
         let last = page.latest_sequence;
         store.observe_agent(&metadata, &runtime).unwrap();
         assert!(store.read_page(last, 100).unwrap().events.is_empty());
+    }
+
+    #[test]
+    fn claude_compaction_summary_continues_the_running_turn() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"mode\",\"sessionId\":\"session-claude\"}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("claude");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        let line = |value: serde_json::Value| value.to_string() + "\n";
+        append(
+            &session,
+            &[
+                line(serde_json::json!({"type":"user","uuid":"turn-1","promptId":"prompt-1",
+                    "sessionId":"session-claude","timestamp":"2026-10-12T02:33:21Z",
+                    "message":{"content":"investigate"}})),
+                line(serde_json::json!({"type":"system","subtype":"compact_boundary",
+                    "sessionId":"session-claude","timestamp":"2026-10-12T02:35:11Z",
+                    "compactMetadata":{"trigger":"auto"}})),
+                line(serde_json::json!({"type":"user","uuid":"summary","promptId":"prompt-1",
+                    "isCompactSummary":true,"isVisibleInTranscriptOnly":true,
+                    "sessionId":"session-claude","timestamp":"2026-10-12T02:35:11Z",
+                    "message":{"content":"This session is being continued from a previous conversation."}})),
+                line(serde_json::json!({"type":"assistant","uuid":"final","sessionId":"session-claude",
+                    "timestamp":"2026-10-12T02:40:00Z","message":{"id":"final","model":"claude",
+                    "stop_reason":"end_turn","content":[{"type":"text","text":"found it"}]}})),
+            ]
+            .concat(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+
+        let events = store.read_page(after, 100).unwrap().events;
+        let turns = |kind: AgentEventKind| {
+            events
+                .iter()
+                .filter(|event| event.kind == kind)
+                .map(|event| event.turn_id.as_deref())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(turns(AgentEventKind::TurnStarted), [Some("turn-1")]);
+        assert_eq!(turns(AgentEventKind::TurnFinal), [Some("turn-1")]);
     }
 
     #[test]
