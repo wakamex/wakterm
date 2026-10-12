@@ -1863,6 +1863,25 @@ impl SendAgentCommand {
                         .map(Some)
                     }
                 },
+                |pane_id| {
+                    let client = client.clone();
+                    async move {
+                        let dims = client
+                            .get_dimensions(codec::GetPaneRenderableDimensions { pane_id })
+                            .await?
+                            .dimensions;
+                        let top = dims.physical_top;
+                        let (lines, _images) = client
+                            .get_lines(codec::GetLines {
+                                pane_id,
+                                lines: vec![top..top + dims.viewport_rows as isize],
+                            })
+                            .await?
+                            .lines
+                            .extract_data();
+                        Ok(lines.into_iter().map(|(_, line)| line).collect())
+                    }
+                },
             )
             .await?;
         write_json(&result)
@@ -1879,6 +1898,8 @@ impl SendAgentCommand {
         SubmitInputFut,
         ConfirmInputFn,
         ConfirmInputFut,
+        ReadScreenFn,
+        ReadScreenFut,
     >(
         &self,
         mut list_agents: ListAgents,
@@ -1886,6 +1907,7 @@ impl SendAgentCommand {
         send_paste: SendPasteFn,
         submit_input: SubmitInputFn,
         confirm_input: ConfirmInputFn,
+        read_screen: ReadScreenFn,
     ) -> anyhow::Result<AgentSendResult>
     where
         ListAgents: FnMut() -> ListAgentsFut,
@@ -1902,12 +1924,21 @@ impl SendAgentCommand {
         // record under another name than the one typed.
         ConfirmInputFn: Fn(String, String, bool, Duration) -> ConfirmInputFut,
         ConfirmInputFut: Future<Output = anyhow::Result<Option<AgentSendAcknowledgement>>>,
+        // The pane's visible lines.
+        ReadScreenFn: FnOnce(PaneId) -> ReadScreenFut,
+        ReadScreenFut: Future<Output = anyhow::Result<Vec<wakterm_term::Line>>>,
     {
         let agents = list_agents().await?.agents;
         let agent = find_agent(&agents, &self.target)
             .cloned()
             .with_context(|| format!("no agent named or identified by {}", self.target))?;
-        if let Some(detail) = mux::agent::input_blocked_reason(&agent.runtime) {
+        // Text the user is typing would be sent with the message.
+        let draft_blocked = matches!(agent.runtime.harness, AgentHarness::Claude)
+            && mux::agent::claude_draft(&read_screen(agent.pane_id).await?).is_some();
+        let blocked = mux::agent::input_blocked_reason(&agent.runtime).or_else(|| {
+            draft_blocked.then(|| "the input box holds text the user is typing".to_string())
+        });
+        if let Some(detail) = blocked {
             return Ok(AgentSendResult {
                 agent_id: agent.metadata.agent_id.clone(),
                 agent_name: agent.metadata.name.clone(),
@@ -4049,6 +4080,7 @@ mod test {
                 }
             },
             |_, _, _, _| async { Ok(None) },
+            |_| async { Ok(Vec::new()) },
         ))
         .unwrap();
 
@@ -4208,6 +4240,7 @@ mod test {
                         }
                     }
                 },
+                |_| async { Ok(Vec::new()) },
             ))
             .unwrap();
 
@@ -4264,6 +4297,7 @@ mod test {
                 }
             },
             |_, _, _, _| async { Ok(None) },
+            |_| async { Ok(Vec::new()) },
         ))
         .unwrap();
 
@@ -4274,6 +4308,78 @@ mod test {
         assert_eq!(
             json["refusal"]["detail"],
             "the target is waiting for dialog open"
+        );
+    }
+
+    #[test]
+    fn send_refuses_without_writing_while_the_user_types_in_claude() {
+        let writes = Rc::new(RefCell::new(0usize));
+        let command = SendAgentCommand {
+            target: "reviewer".to_string(),
+            no_paste: false,
+            no_submit: false,
+            return_final: false,
+            request_id: None,
+            ack_timeout_ms: 0,
+            ack_poll_ms: 0,
+            final_timeout_ms: 0,
+            text: Some("fix this".to_string()),
+        };
+        let mut agent = sample_agent(30, "reviewer");
+        agent.metadata.launch_cmd = "claude".to_string();
+        agent.runtime.harness = mux::agent::AgentHarness::Claude;
+        let attrs = wakterm_term::CellAttributes::default();
+        let screen = vec![
+            wakterm_term::Line::from_text("────────", &attrs, 0, None),
+            wakterm_term::Line::from_text("❯\u{a0}lol earheart agent just r", &attrs, 0, None),
+            wakterm_term::Line::from_text("────────", &attrs, 0, None),
+        ];
+
+        let result = promise::spawn::block_on(command.run_with(
+            move || {
+                let agent = agent.clone();
+                async move {
+                    Ok(ListAgentsResponse {
+                        agents: vec![agent],
+                    })
+                }
+            },
+            {
+                let writes = Rc::clone(&writes);
+                move |_: WriteToPane| {
+                    *writes.borrow_mut() += 1;
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            {
+                let writes = Rc::clone(&writes);
+                move |_: SendPaste| {
+                    *writes.borrow_mut() += 1;
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            {
+                let writes = Rc::clone(&writes);
+                move |_: SubmitTypedInput| {
+                    *writes.borrow_mut() += 1;
+                    async { Ok(UnitResponse {}) }
+                }
+            },
+            |_, _, _, _| async { Ok(None) },
+            move |pane_id| {
+                assert_eq!(pane_id, 30);
+                async move { Ok(screen) }
+            },
+        ))
+        .unwrap();
+
+        assert!(!result.submitted);
+        assert_eq!(*writes.borrow(), 0);
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["refusal"]["reason"], "input_blocked");
+        assert_eq!(
+            json["refusal"]["detail"],
+            "the input box holds text the user is typing"
         );
     }
 
@@ -4324,6 +4430,7 @@ mod test {
                 }
             },
             |_, _, _, _| async { Ok(None) },
+            |_| async { Ok(Vec::new()) },
         ))
         .unwrap();
 
@@ -4954,6 +5061,7 @@ mod test {
                 }
             },
             |_, _, _, _| async { Ok(None) },
+            |_| async { Ok(Vec::new()) },
         ))
         .unwrap();
 
@@ -5013,6 +5121,7 @@ mod test {
                 }
             },
             |_, _, _, _| async { Ok(None) },
+            |_| async { Ok(Vec::new()) },
         ))
         .unwrap();
 
@@ -5068,6 +5177,7 @@ mod test {
             },
             |_: SubmitTypedInput| async { panic!("submit_typed_input should not be used") },
             |_, _, _, _| async { Ok(None) },
+            |_| async { Ok(Vec::new()) },
         ))
         .unwrap();
 

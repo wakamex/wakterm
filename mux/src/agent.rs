@@ -3993,6 +3993,45 @@ pub(crate) fn claude_user_text(record: &Value) -> Option<String> {
     }
 }
 
+/// The text the user has typed into Claude's input box, read from the
+/// pane's visible lines, or None when the box is empty or not on screen.
+/// The box is the prompt line, `❯` and a space right after a horizontal
+/// rule, and the lines below it up to the next rule. Claude draws a prompt
+/// suggestion in the empty box dimmed; typed text is drawn at normal
+/// intensity.
+pub fn claude_draft(lines: &[wakterm_term::Line]) -> Option<String> {
+    let is_rule = |line: &wakterm_term::Line| line.as_str().trim_start().starts_with('─');
+    let prompt = (1..lines.len()).rev().find(|&index| {
+        is_rule(&lines[index - 1])
+            && lines[index]
+                .as_str()
+                .trim_start()
+                .strip_prefix('❯')
+                .is_some_and(|rest| rest.starts_with(['\u{a0}', ' ']))
+    })?;
+    let mut draft = String::new();
+    for (offset, line) in lines[prompt..].iter().enumerate() {
+        if offset > 0 && is_rule(line) {
+            break;
+        }
+        let typed: String = line
+            .visible_cells()
+            .skip_while(|cell| offset == 0 && cell.str() != "❯")
+            .skip(usize::from(offset == 0))
+            .filter(|cell| cell.attrs().intensity() != wakterm_term::Intensity::Half)
+            .map(|cell| cell.str().to_string())
+            .collect();
+        let typed = typed.trim().trim_matches('\u{a0}');
+        if !typed.is_empty() {
+            if !draft.is_empty() {
+                draft.push('\n');
+            }
+            draft.push_str(typed);
+        }
+    }
+    (!draft.is_empty()).then_some(draft)
+}
+
 /// The slash command a Claude user record holds, as the command and its
 /// arguments, such as `/model opus`. Claude records a slash command as
 /// `<command-name>`, `<command-message>` and `<command-args>` tags, and
@@ -5474,6 +5513,76 @@ mod test {
         assert_eq!(
             serde_json::to_string(&AgentOrigin::Managed).unwrap(),
             r#""managed""#
+        );
+    }
+
+    #[test]
+    fn claude_draft_is_typed_text_in_the_input_box_not_a_suggestion() {
+        use wakterm_term::{CellAttributes, Intensity, Line};
+        let normal = CellAttributes::default();
+        let mut dim = CellAttributes::default();
+        dim.set_intensity(Intensity::Half);
+        // A line of text segments, each normal or dimmed.
+        let line = |parts: &[(&str, bool)]| {
+            let mut cells = Vec::new();
+            for (text, dimmed) in parts {
+                let attrs = if *dimmed { &dim } else { &normal };
+                cells.extend(
+                    Line::from_text(text, attrs, 0, None)
+                        .visible_cells()
+                        .map(|cell| cell.as_cell()),
+                );
+            }
+            Line::from_cells(cells, 0)
+        };
+        let rule = || line(&[("────────────────────", false)]);
+        let screen = |prompt: Line, below: Vec<Line>| {
+            let mut lines = vec![
+                line(&[("✻ Crunched for 14s · done 3:46 p.m.", true)]),
+                line(&[("", false)]),
+                rule(),
+                prompt,
+            ];
+            lines.extend(below);
+            lines.push(rule());
+            lines.push(line(&[("  /code/bsky [Sonnet 5.5]", true)]));
+            lines
+        };
+
+        // Empty box, and a dimmed prompt suggestion.
+        assert_eq!(
+            claude_draft(&screen(line(&[("❯\u{a0}", false)]), vec![])),
+            None
+        );
+        assert_eq!(
+            claude_draft(&screen(
+                line(&[("❯\u{a0}", false), ("run one search now to confirm", true)]),
+                vec![]
+            )),
+            None
+        );
+        // Typed text, including a draft that continues on another line.
+        assert_eq!(
+            claude_draft(&screen(
+                line(&[("❯\u{a0}", false), ("lol earheart agent just r", false)]),
+                vec![]
+            )),
+            Some("lol earheart agent just r".to_string())
+        );
+        assert_eq!(
+            claude_draft(&screen(
+                line(&[("❯\u{a0}", false), ("first line", false)]),
+                vec![line(&[("  second line", false)])]
+            )),
+            Some("first line\nsecond line".to_string())
+        );
+        // A dialog's cursor row is not the input box.
+        assert_eq!(
+            claude_draft(&[
+                line(&[("Session paused", false)]),
+                line(&[("❯ 1. Switch to Opus 4.8", false)])
+            ]),
+            None
         );
     }
 

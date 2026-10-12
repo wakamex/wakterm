@@ -80,6 +80,14 @@ async fn deliver(reminder: &AgentReminder) -> anyhow::Result<bool> {
     if pane.downcast_ref::<mux::localpane::LocalPane>().is_none() {
         return Ok(false);
     }
+    if matches!(agent.runtime.harness, AgentHarness::Claude) {
+        let dims = pane.get_dimensions();
+        let top = dims.physical_top;
+        let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
+        if mux::agent::claude_draft(&lines).is_some() {
+            anyhow::bail!("the input box holds text the user is typing");
+        }
+    }
     let paste = !matches!(agent.runtime.harness, AgentHarness::Gemini);
     pane.send_prompt(&reminder.message, paste)?;
     wait_for_redraw(agent.pane_id).await;
