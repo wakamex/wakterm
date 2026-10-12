@@ -3411,6 +3411,9 @@ impl Mux {
             runtime.last_turn_completed_at = update.runtime.last_turn_completed_at;
             runtime.observed_turn = update.runtime.observed_turn;
             runtime.observer_error = update.runtime.observer_error;
+            // Derived from this observation, so that a dialog that closed
+            // no longer marks the agent as waiting for an approval.
+            runtime.attention_reason = update.runtime.attention_reason;
             runtime.background_job = update.runtime.background_job;
             runtime.observer_started_at = update.runtime.observer_started_at;
             runtime.last_harness_refresh_at = update.runtime.last_harness_refresh_at;
@@ -7377,8 +7380,8 @@ mod test {
             unimplemented!();
         }
 
-        fn get_lines(&self, _lines: Range<StableRowIndex>) -> (StableRowIndex, Vec<Line>) {
-            unimplemented!();
+        fn get_lines(&self, lines: Range<StableRowIndex>) -> (StableRowIndex, Vec<Line>) {
+            (lines.start, Vec::new())
         }
 
         fn with_lines_mut(
@@ -8720,6 +8723,64 @@ mod test {
         assert!(mux.detected_agent_panes.read().contains(&pane_id));
         assert!(mux.agent_runtime_by_pane.read().get(&pane_id).is_some());
         assert_eq!(*title_changes.lock(), 1);
+    }
+
+    #[test]
+    fn closed_claude_dialog_no_longer_marks_the_agent_busy() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new(144, size, domain.id);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        mux.set_agent_metadata(pane_id, sample_agent_metadata("dialog"))
+            .unwrap();
+
+        let observe = |generation: u64, phase: &str| {
+            let mut runtime = AgentRuntimeSnapshot::new(&sample_agent_metadata("dialog"));
+            runtime.harness = crate::agent::AgentHarness::Claude;
+            runtime.transport = crate::agent::AgentTransport::ObservedPty;
+            runtime.alive = true;
+            runtime.turn_state = crate::agent::AgentTurnState::WaitingOnUser;
+            runtime.turn_phase = Some(phase.to_string());
+            runtime.session_path = Some("/tmp/claude-dialog.jsonl".to_string());
+            crate::agent::finalize_runtime_snapshot(&mut runtime);
+            mux.apply_agent_observer_update(AgentObserverUpdate {
+                pane_id,
+                generation,
+                process: mux.observed_process(pane_id),
+                runtime,
+                queue_delay: Duration::ZERO,
+                refresh_elapsed: Duration::ZERO,
+                schedule_trailing_refresh: false,
+            });
+            mux.agent_runtime_by_pane.read()[&pane_id].clone()
+        };
+
+        let waiting = observe(1, "waiting for dialog open");
+        assert_eq!(
+            waiting.attention_reason.as_deref(),
+            Some("approval-requested")
+        );
+        assert_eq!(waiting.status, crate::agent::AgentStatus::Busy);
+
+        let idle = observe(2, "idle");
+        assert_eq!(idle.attention_reason, None);
+        assert_eq!(idle.status, crate::agent::AgentStatus::Idle);
     }
 
     #[test]
