@@ -308,6 +308,10 @@ impl<'a> AgentService<'a> {
         self.mux.resubmit_admitted_prompt(candidate, written_at)
     }
 
+    pub fn admitted_prompt_in_input_box(&self, candidate: &AgentAdmissionCandidate) -> bool {
+        self.mux.admitted_prompt_in_input_box(candidate)
+    }
+
     pub fn request_store(&self) -> AgentRequestStore {
         self.mux.agent_request_store()
     }

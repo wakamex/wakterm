@@ -1994,9 +1994,8 @@ const UNKNOWN_STATE_OBSERVATION: std::time::Duration = std::time::Duration::from
 const ADMISSION_TURN_CONFIRMATION: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// How long a Claude admission waits for Claude to take the prompt before
-/// pressing Enter again, and how many times it does.
+/// pressing Enter again. It does so until the confirmation window ends.
 const CLAUDE_RESUBMIT_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
-const CLAUDE_RESUBMIT_ATTEMPTS: u32 = 3;
 
 /// How long a Claude admission waits after its turn starts for Claude's own
 /// status to record the change.
@@ -2293,6 +2292,15 @@ async fn admit_agent_prompt(
                             "prompt was written, but the agent recorded different input instead, \
                              which may combine this prompt with text already in its input box"
                                 .to_string()
+                        } else if Mux::get()
+                            .agent_service()
+                            .admitted_prompt_in_input_box(&candidate)
+                        {
+                            format!(
+                                "prompt was written and is still in the agent's input box, \
+                                 unsubmitted after {} s; Enter submits it",
+                                ADMISSION_TURN_CONFIRMATION.as_secs()
+                            )
                         } else {
                             format!(
                                 "prompt was written, but the agent did not record it within {} s",
@@ -2363,10 +2371,15 @@ async fn admit_agent_prompt(
 /// Enter is pressed, and how long to wait at most.
 const REDRAW_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 const REDRAW_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long to wait for a program that has drawn nothing since the write.
+/// It has not read the input yet, as when it was frozen and its memory is
+/// being paged back in, and an Enter written now would arrive with the text.
+const REDRAW_UNRESPONSIVE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Waits until the pane has drawn what was just typed into it: its output
 /// changed and then stayed unchanged for `REDRAW_SETTLE`, or `REDRAW_LIMIT`
-/// passed.
+/// passed since it first changed, or it drew nothing for
+/// `REDRAW_UNRESPONSIVE_LIMIT`.
 pub(crate) async fn wait_for_redraw(pane_id: mux::pane::PaneId) {
     wait_until_output_settles(
         || {
@@ -2376,22 +2389,29 @@ pub(crate) async fn wait_for_redraw(pane_id: mux::pane::PaneId) {
         },
         REDRAW_SETTLE,
         REDRAW_LIMIT,
+        REDRAW_UNRESPONSIVE_LIMIT,
     )
     .await;
 }
 
 /// Waits until `seqno`, a pane's output sequence number, has changed and
-/// then stayed unchanged for `settle`, for at most `limit`. Returns at once
-/// when the pane is gone.
+/// then stayed unchanged for `settle`. Gives up `limit` after the first
+/// change, or after `unresponsive_limit` without any. Returns at once when
+/// the pane is gone.
 async fn wait_until_output_settles(
     seqno: impl Fn() -> Option<usize>,
     settle: std::time::Duration,
     limit: std::time::Duration,
+    unresponsive_limit: std::time::Duration,
 ) {
     let started = std::time::Instant::now();
     let mut last = seqno();
+    let mut first_change = None;
     let mut changed_at = None;
-    while started.elapsed() < limit {
+    while match first_change {
+        Some(first) => std::time::Instant::now() < first + limit,
+        None => started.elapsed() < unresponsive_limit,
+    } {
         smol::Timer::after(std::time::Duration::from_millis(10)).await;
         let current = seqno();
         if current.is_none() {
@@ -2399,8 +2419,10 @@ async fn wait_until_output_settles(
         }
         if current != last {
             last = current;
-            changed_at = Some(std::time::Instant::now());
-        } else if changed_at.is_some_and(|at| at.elapsed() >= settle) {
+            let now = std::time::Instant::now();
+            first_change.get_or_insert(now);
+            changed_at = Some(now);
+        } else if changed_at.is_some_and(|at: std::time::Instant| at.elapsed() >= settle) {
             return;
         }
     }
@@ -2431,10 +2453,9 @@ async fn confirm_admitted_input(
     let command = claude && mux::agent::is_claude_command(&request.prompt);
     let deadline = std::time::Instant::now() + ADMISSION_TURN_CONFIRMATION;
     let mut other_input = false;
-    let mut resubmits = 0;
     loop {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        let window = if claude && resubmits < CLAUDE_RESUBMIT_ATTEMPTS {
+        let window = if claude {
             remaining.min(CLAUDE_RESUBMIT_AFTER)
         } else {
             remaining
@@ -2463,8 +2484,7 @@ async fn confirm_admitted_input(
         if std::time::Instant::now() >= deadline {
             return Ok(AdmittedInput::NotRecorded { other_input });
         }
-        if claude && resubmits < CLAUDE_RESUBMIT_ATTEMPTS && !other_input {
-            resubmits += 1;
+        if claude && !other_input {
             Mux::get()
                 .agent_service()
                 .resubmit_admitted_prompt(candidate, written_at)?;
@@ -2619,19 +2639,47 @@ mod test {
         use std::time::{Duration, Instant};
         let settle = Duration::from_millis(60);
         let limit = Duration::from_millis(600);
+        let unresponsive = Duration::from_millis(1500);
 
         // Output changes for about 100 ms, then stays still.
         let started = Instant::now();
         let seqno = || Some((started.elapsed().as_millis().min(100) / 25) as usize);
-        smol::block_on(wait_until_output_settles(seqno, settle, limit));
+        smol::block_on(wait_until_output_settles(
+            seqno,
+            settle,
+            limit,
+            unresponsive,
+        ));
         let waited = started.elapsed();
         assert!(waited >= Duration::from_millis(160), "{waited:?}");
         assert!(waited < limit, "{waited:?}");
 
-        // Output that never changes waits until the limit.
+        // Output that keeps changing stops at the limit after its first
+        // change.
         let started = Instant::now();
-        smol::block_on(wait_until_output_settles(|| Some(1), settle, limit));
-        assert!(started.elapsed() >= limit);
+        let busy = || Some((started.elapsed().as_millis() / 10) as usize);
+        smol::block_on(wait_until_output_settles(busy, settle, limit, unresponsive));
+        let waited = started.elapsed();
+        assert!(waited >= limit && waited < unresponsive, "{waited:?}");
+
+        // A program that draws nothing is waited for longer, and one that
+        // wakes up late is still caught before Enter.
+        let started = Instant::now();
+        smol::block_on(wait_until_output_settles(
+            || Some(1),
+            settle,
+            limit,
+            unresponsive,
+        ));
+        assert!(started.elapsed() >= unresponsive);
+        let started = Instant::now();
+        let late = || Some(usize::from(started.elapsed() >= limit + limit / 2));
+        smol::block_on(wait_until_output_settles(late, settle, limit, unresponsive));
+        let waited = started.elapsed();
+        assert!(
+            waited >= limit + limit / 2 && waited < unresponsive,
+            "{waited:?}"
+        );
 
         // A pane that is gone returns at once.
         let calls = Cell::new(0);
@@ -2643,6 +2691,7 @@ mod test {
             },
             settle,
             limit,
+            unresponsive,
         ));
         assert!(started.elapsed() < settle);
     }

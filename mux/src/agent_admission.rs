@@ -580,6 +580,20 @@ impl Mux {
         Ok(true)
     }
 
+    /// Whether the admitted Claude's pane shows text in its input box.
+    pub(crate) fn admitted_prompt_in_input_box(&self, candidate: &AgentAdmissionCandidate) -> bool {
+        if candidate.runtime.harness != crate::agent::AgentHarness::Claude {
+            return false;
+        }
+        let Some(pane) = self.get_pane(candidate.pane_id) else {
+            return false;
+        };
+        let dims = pane.get_dimensions();
+        let top = dims.physical_top;
+        let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
+        crate::agent::claude_draft(&lines).is_some()
+    }
+
     pub(crate) fn agent_request_store(&self) -> AgentRequestStore {
         self.agent_request_store.clone()
     }
