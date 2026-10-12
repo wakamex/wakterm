@@ -7425,7 +7425,10 @@ mod test {
         }
 
         fn get_lines(&self, lines: Range<StableRowIndex>) -> (StableRowIndex, Vec<Line>) {
-            (lines.start, Vec::new())
+            // An empty Codex input box, which admission requires of a Codex
+            // pane, and no Claude input box.
+            let prompt = Line::from_text("\u{203a} ", &Default::default(), 0, None);
+            (lines.start, vec![prompt])
         }
 
         fn with_lines_mut(

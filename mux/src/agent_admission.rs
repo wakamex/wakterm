@@ -490,18 +490,17 @@ impl Mux {
                 "Claude has not finished starting, so a startup prompt may have the keyboard",
             ));
         }
-        // A draft in the input box would be submitted with the prompt.
-        if candidate.runtime.harness == crate::agent::AgentHarness::Claude {
-            let dims = pane.get_dimensions();
-            let top = dims.physical_top;
-            let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
-            if crate::agent::claude_draft(&lines).is_some() {
-                return Some(AgentAdmissionReceipt::rejected(
-                    request,
-                    AgentAdmissionStatus::Busy,
-                    "the input box holds text the user is typing",
-                ));
-            }
+        // A draft in the input box would be submitted with the prompt, and
+        // a view over the box would take the prompt's Enter as its answer.
+        let dims = pane.get_dimensions();
+        let top = dims.physical_top;
+        let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
+        if let Some(reason) = crate::agent::input_box_blocked(&candidate.runtime.harness, &lines) {
+            return Some(AgentAdmissionReceipt::rejected(
+                request,
+                AgentAdmissionStatus::Busy,
+                reason,
+            ));
         }
         if !pane.supports_atomic_prompt_submission() {
             return Some(AgentAdmissionReceipt::rejected(

@@ -1932,12 +1932,21 @@ impl SendAgentCommand {
         let agent = find_agent(&agents, &self.target)
             .cloned()
             .with_context(|| format!("no agent named or identified by {}", self.target))?;
-        // Text the user is typing would be sent with the message.
-        let draft_blocked = matches!(agent.runtime.harness, AgentHarness::Claude)
-            && mux::agent::claude_draft(&read_screen(agent.pane_id).await?).is_some();
-        let blocked = mux::agent::input_blocked_reason(&agent.runtime).or_else(|| {
-            draft_blocked.then(|| "the input box holds text the user is typing".to_string())
-        });
+        // Text the user is typing would be sent with the message, and a
+        // view over the input box would take its Enter as an answer.
+        let box_blocked = if matches!(
+            agent.runtime.harness,
+            AgentHarness::Claude | AgentHarness::Codex
+        ) {
+            mux::agent::input_box_blocked(
+                &agent.runtime.harness,
+                &read_screen(agent.pane_id).await?,
+            )
+        } else {
+            None
+        };
+        let blocked = mux::agent::input_blocked_reason(&agent.runtime)
+            .or_else(|| box_blocked.map(str::to_string));
         if let Some(detail) = blocked {
             return Ok(AgentSendResult {
                 agent_id: agent.metadata.agent_id.clone(),
@@ -4008,6 +4017,16 @@ mod test {
         assert_eq!(find_agent(&agents, "missing"), None);
     }
 
+    /// The lines of a pane that shows Codex's input box with nothing typed.
+    fn empty_codex_screen() -> Vec<wakterm_term::Line> {
+        vec![wakterm_term::Line::from_text(
+            "\u{203a} ",
+            &Default::default(),
+            0,
+            None,
+        )]
+    }
+
     #[test]
     fn send_uses_observed_transport_and_waits_for_ack() {
         let paste_calls = Rc::new(RefCell::new(vec![]));
@@ -4080,7 +4099,7 @@ mod test {
                 }
             },
             |_, _, _, _| async { Ok(None) },
-            |_| async { Ok(Vec::new()) },
+            |_| async { Ok(empty_codex_screen()) },
         ))
         .unwrap();
 
@@ -4240,7 +4259,7 @@ mod test {
                         }
                     }
                 },
-                |_| async { Ok(Vec::new()) },
+                |_| async { Ok(empty_codex_screen()) },
             ))
             .unwrap();
 
@@ -4297,7 +4316,7 @@ mod test {
                 }
             },
             |_, _, _, _| async { Ok(None) },
-            |_| async { Ok(Vec::new()) },
+            |_| async { Ok(empty_codex_screen()) },
         ))
         .unwrap();
 
@@ -4312,75 +4331,93 @@ mod test {
     }
 
     #[test]
-    fn send_refuses_without_writing_while_the_user_types_in_claude() {
-        let writes = Rc::new(RefCell::new(0usize));
-        let command = SendAgentCommand {
-            target: "reviewer".to_string(),
-            no_paste: false,
-            no_submit: false,
-            return_final: false,
-            request_id: None,
-            ack_timeout_ms: 0,
-            ack_poll_ms: 0,
-            final_timeout_ms: 0,
-            text: Some("fix this".to_string()),
-        };
-        let mut agent = sample_agent(30, "reviewer");
-        agent.metadata.launch_cmd = "claude".to_string();
-        agent.runtime.harness = mux::agent::AgentHarness::Claude;
+    fn send_refuses_without_writing_into_an_input_box_that_is_not_empty() {
         let attrs = wakterm_term::CellAttributes::default();
-        let screen = vec![
-            wakterm_term::Line::from_text("────────", &attrs, 0, None),
-            wakterm_term::Line::from_text("❯\u{a0}lol earheart agent just r", &attrs, 0, None),
-            wakterm_term::Line::from_text("────────", &attrs, 0, None),
+        let line = |text: &str| wakterm_term::Line::from_text(text, &attrs, 0, None);
+        let cases = [
+            (
+                mux::agent::AgentHarness::Claude,
+                "claude",
+                vec![
+                    line("────────"),
+                    line("❯\u{a0}lol earheart agent just r"),
+                    line("────────"),
+                ],
+                "the input box holds text the user is typing",
+            ),
+            // A Codex approval overlay stands where the input box was.
+            (
+                mux::agent::AgentHarness::Codex,
+                "codex",
+                vec![
+                    line("  Would you like to run the following command?"),
+                    line("› 1. Yes, proceed (y)"),
+                    line("  2. No, and tell Codex what to do differently (esc)"),
+                ],
+                "Codex's input box is not empty or not on screen",
+            ),
         ];
+        for (harness, launch_cmd, screen, detail) in cases {
+            let writes = Rc::new(RefCell::new(0usize));
+            let command = SendAgentCommand {
+                target: "reviewer".to_string(),
+                no_paste: false,
+                no_submit: false,
+                return_final: false,
+                request_id: None,
+                ack_timeout_ms: 0,
+                ack_poll_ms: 0,
+                final_timeout_ms: 0,
+                text: Some("fix this".to_string()),
+            };
+            let mut agent = sample_agent(30, "reviewer");
+            agent.metadata.launch_cmd = launch_cmd.to_string();
+            agent.runtime.harness = harness;
 
-        let result = promise::spawn::block_on(command.run_with(
-            move || {
-                let agent = agent.clone();
-                async move {
-                    Ok(ListAgentsResponse {
-                        agents: vec![agent],
-                    })
-                }
-            },
-            {
-                let writes = Rc::clone(&writes);
-                move |_: WriteToPane| {
-                    *writes.borrow_mut() += 1;
-                    async { Ok(UnitResponse {}) }
-                }
-            },
-            {
-                let writes = Rc::clone(&writes);
-                move |_: SendPaste| {
-                    *writes.borrow_mut() += 1;
-                    async { Ok(UnitResponse {}) }
-                }
-            },
-            {
-                let writes = Rc::clone(&writes);
-                move |_: SubmitTypedInput| {
-                    *writes.borrow_mut() += 1;
-                    async { Ok(UnitResponse {}) }
-                }
-            },
-            |_, _, _, _| async { Ok(None) },
-            move |pane_id| {
-                assert_eq!(pane_id, 30);
-                async move { Ok(screen) }
-            },
-        ))
-        .unwrap();
+            let result = promise::spawn::block_on(command.run_with(
+                move || {
+                    let agent = agent.clone();
+                    async move {
+                        Ok(ListAgentsResponse {
+                            agents: vec![agent],
+                        })
+                    }
+                },
+                {
+                    let writes = Rc::clone(&writes);
+                    move |_: WriteToPane| {
+                        *writes.borrow_mut() += 1;
+                        async { Ok(UnitResponse {}) }
+                    }
+                },
+                {
+                    let writes = Rc::clone(&writes);
+                    move |_: SendPaste| {
+                        *writes.borrow_mut() += 1;
+                        async { Ok(UnitResponse {}) }
+                    }
+                },
+                {
+                    let writes = Rc::clone(&writes);
+                    move |_: SubmitTypedInput| {
+                        *writes.borrow_mut() += 1;
+                        async { Ok(UnitResponse {}) }
+                    }
+                },
+                |_, _, _, _| async { Ok(None) },
+                move |pane_id| {
+                    assert_eq!(pane_id, 30);
+                    async move { Ok(screen) }
+                },
+            ))
+            .unwrap();
 
-        assert!(!result.submitted);
-        assert_eq!(*writes.borrow(), 0);
-        let json = serde_json::to_value(&result).unwrap();
-        assert_eq!(json["refusal"]["reason"], "input_blocked");
-        assert_eq!(
-            json["refusal"]["detail"],
-            "the input box holds text the user is typing"
-        );
+            assert!(!result.submitted);
+            assert_eq!(*writes.borrow(), 0);
+            let json = serde_json::to_value(&result).unwrap();
+            assert_eq!(json["refusal"]["reason"], "input_blocked");
+            assert_eq!(json["refusal"]["detail"], detail);
+        }
     }
 
     #[test]
@@ -4430,7 +4467,7 @@ mod test {
                 }
             },
             |_, _, _, _| async { Ok(None) },
-            |_| async { Ok(Vec::new()) },
+            |_| async { Ok(empty_codex_screen()) },
         ))
         .unwrap();
 
@@ -5061,7 +5098,7 @@ mod test {
                 }
             },
             |_, _, _, _| async { Ok(None) },
-            |_| async { Ok(Vec::new()) },
+            |_| async { Ok(empty_codex_screen()) },
         ))
         .unwrap();
 
@@ -5121,7 +5158,7 @@ mod test {
                 }
             },
             |_, _, _, _| async { Ok(None) },
-            |_| async { Ok(Vec::new()) },
+            |_| async { Ok(empty_codex_screen()) },
         ))
         .unwrap();
 
@@ -5177,7 +5214,7 @@ mod test {
             },
             |_: SubmitTypedInput| async { panic!("submit_typed_input should not be used") },
             |_, _, _, _| async { Ok(None) },
-            |_| async { Ok(Vec::new()) },
+            |_| async { Ok(empty_codex_screen()) },
         ))
         .unwrap();
 

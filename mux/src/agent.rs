@@ -1152,11 +1152,57 @@ const CLAUDE_WAITING_PHASE_PREFIX: &str = "waiting for ";
 /// Why typed input would not reach the harness's prompt: a dialog or
 /// question has the keyboard.
 pub fn input_blocked_reason(runtime: &AgentRuntimeSnapshot) -> Option<String> {
-    let waiting_for = runtime
+    if let Some(waiting_for) = runtime
         .turn_phase
-        .as_deref()?
-        .strip_prefix(CLAUDE_WAITING_PHASE_PREFIX)?;
-    Some(format!("the target is waiting for {waiting_for}"))
+        .as_deref()
+        .and_then(|phase| phase.strip_prefix(CLAUDE_WAITING_PHASE_PREFIX))
+    {
+        return Some(format!("the target is waiting for {waiting_for}"));
+    }
+    // A managed Codex reports an approval or question it waits on. Its
+    // overlay discards pasted text and takes Enter as its highlighted choice.
+    (matches!(runtime.harness, AgentHarness::Codex)
+        && runtime.attention_reason.as_deref() == Some("approval-requested"))
+    .then(|| "the target is waiting for an approval".to_string())
+}
+
+/// Why a message written to the harness's pane would not arrive in an empty
+/// input box, judged from the pane's visible lines.
+pub fn input_box_blocked(
+    harness: &AgentHarness,
+    lines: &[wakterm_term::Line],
+) -> Option<&'static str> {
+    match harness {
+        AgentHarness::Claude => claude_draft(lines)
+            .is_some()
+            .then_some("the input box holds text the user is typing"),
+        AgentHarness::Codex => (!codex_input_box_empty(lines))
+            .then_some("Codex's input box is not empty or not on screen"),
+        _ => None,
+    }
+}
+
+/// Whether the pane's visible lines show Codex's input box, enabled and
+/// with nothing typed in it. The box is the lowest line that starts with
+/// Codex's prompt, `\u{203a}` or at its highest effort level `\u{bb}`. Codex
+/// draws the prompt dimmed while the box takes no input, its placeholder
+/// dimmed, and typed text at normal intensity. An approval, question or
+/// other view that takes the keyboard replaces the box, and the lowest
+/// prompt line is then a choice's cursor or an earlier message, which hold
+/// text.
+pub fn codex_input_box_empty(lines: &[wakterm_term::Line]) -> bool {
+    let dimmed =
+        |cell: &wakterm_term::CellRef| cell.attrs().intensity() == wakterm_term::Intensity::Half;
+    let Some(prompt) = lines
+        .iter()
+        .rev()
+        .find(|line| line.as_str().starts_with(['\u{203a}', '\u{bb}']))
+    else {
+        return false;
+    };
+    let mut cells = prompt.visible_cells();
+    cells.next().is_some_and(|glyph| !dimmed(&glyph))
+        && cells.all(|cell| cell.str().trim().is_empty() || dimmed(&cell))
 }
 
 fn derive_effective_turn_state(runtime: &AgentRuntimeSnapshot) -> AgentTurnState {
@@ -5589,6 +5635,111 @@ mod test {
                 line(&[("❯ 1. Switch to Opus 4.8", false)])
             ]),
             None
+        );
+    }
+
+    #[test]
+    fn codex_input_box_is_empty_only_with_its_placeholder_or_nothing_typed() {
+        use wakterm_term::{CellAttributes, Intensity, Line};
+        let normal = CellAttributes::default();
+        let mut dim = CellAttributes::default();
+        dim.set_intensity(Intensity::Half);
+        let line = |parts: &[(&str, bool)]| {
+            let mut cells = Vec::new();
+            for (text, dimmed) in parts {
+                let attrs = if *dimmed { &dim } else { &normal };
+                cells.extend(
+                    Line::from_text(text, attrs, 0, None)
+                        .visible_cells()
+                        .map(|cell| cell.as_cell()),
+                );
+            }
+            Line::from_cells(cells, 0)
+        };
+        let footer = || line(&[("  GPT-6-Astra medium \u{b7} /code/codex", false)]);
+        let history = || line(&[("\u{203a} an earlier message", false)]);
+        let screen = |bottom: Vec<Line>| {
+            let mut lines = vec![history(), line(&[("  Worked for 2m 4s", true)])];
+            lines.extend(bottom);
+            lines
+        };
+
+        // The placeholder, or nothing at all, while idle or mid-turn.
+        let placeholder = line(&[("\u{203a} ", false), ("Ask Codex to do anything", true)]);
+        assert!(codex_input_box_empty(&screen(vec![placeholder, footer()])));
+        assert!(codex_input_box_empty(&screen(vec![
+            line(&[("\u{203a} ", false)]),
+            footer()
+        ])));
+        // A draft.
+        assert!(!codex_input_box_empty(&screen(vec![
+            line(&[("\u{203a} ", false), ("half a thou", false)]),
+            footer()
+        ])));
+        // The prompt of the highest effort level, and a box that takes no
+        // input, whose prompt is dimmed.
+        assert!(codex_input_box_empty(&screen(vec![
+            line(&[("\u{bb} ", false), ("Ask Codex to do anything", true)]),
+            footer()
+        ])));
+        assert!(!codex_input_box_empty(&screen(vec![
+            line(&[("\u{203a} ", true), ("Ask Codex to do anything", true)]),
+            footer()
+        ])));
+        // An approval overlay in place of the box: the lowest prompt line is
+        // its cursor row, or with another cursor glyph, the earlier message.
+        assert!(!codex_input_box_empty(&screen(vec![
+            line(&[("  Would you like to run the following command?", false)]),
+            line(&[("\u{203a} 1. Yes, proceed (y)", false)]),
+            line(&[(
+                "  2. No, and tell Codex what to do differently (esc)",
+                false
+            )]),
+        ])));
+        assert!(!codex_input_box_empty(&screen(vec![
+            line(&[("  Would you like to run the following command?", false)]),
+            line(&[("  > 1. Yes, proceed (y)", false)]),
+        ])));
+        // No input box on screen at all.
+        assert!(!codex_input_box_empty(&[line(&[(
+            "/ T R A N S C R I P T",
+            false
+        )])]));
+        assert!(!codex_input_box_empty(&[]));
+
+        assert_eq!(
+            input_box_blocked(&AgentHarness::Codex, &screen(vec![footer()])),
+            Some("Codex's input box is not empty or not on screen")
+        );
+        assert_eq!(input_box_blocked(&AgentHarness::Gemini, &[]), None);
+    }
+
+    #[test]
+    fn managed_codex_waiting_on_an_approval_blocks_input() {
+        let metadata = AgentMetadata {
+            agent_id: "codex-approval".to_string(),
+            name: "codex".to_string(),
+            launch_cmd: "codex".to_string(),
+            declared_cwd: "/tmp".to_string(),
+            adopted_pid: None,
+            adopted_start_time: None,
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+            launch_supervisor: None,
+            codex_app_server: None,
+        };
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.alive = true;
+        runtime.harness = AgentHarness::Codex;
+        runtime.turn_state = AgentTurnState::WaitingOnUser;
+        assert_eq!(input_blocked_reason(&runtime), None);
+        runtime.attention_reason = Some("approval-requested".to_string());
+        assert_eq!(
+            input_blocked_reason(&runtime).as_deref(),
+            Some("the target is waiting for an approval")
         );
     }
 
