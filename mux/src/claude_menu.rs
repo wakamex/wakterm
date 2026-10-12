@@ -1,11 +1,13 @@
-//! Claude Code's "Session paused" menu, shown when a model's safeguards
-//! refuse a response twice in one turn. It offers to switch to a fallback
-//! model or to edit the prompt, and waits without a timeout.
+//! Claude Code's confirmation menus: a title and an explanation under a
+//! rule, then numbered choices with a cursor on one of them. A slash command
+//! raises some, such as "Switch model?", and Claude raises "Session paused"
+//! when a model's safeguards refuse a response twice in one turn. Claude
+//! waits on them without a timeout.
 //!
-//! Claude records nothing about the menu while it is up: its transcript is
-//! silent and its session record reports only `waiting` for `dialog open`,
-//! which other dialogs share. The menu is therefore read from the pane's
-//! screen, and answered with keys checked against the screen.
+//! Claude records nothing about a menu while it is up: its transcript is
+//! silent and its session record reports only `waiting` for `dialog open`.
+//! A menu is therefore read from the pane's screen, and answered with keys
+//! checked against the screen.
 
 use crate::agent::AgentMetadata;
 use crate::agent_admission::incarnation_id;
@@ -16,66 +18,120 @@ use crate::pane::Pane;
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use std::convert::TryInto;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wakterm_term::{KeyCode, KeyModifiers};
 
-/// The approval kind of the menu, and the IDs of its two choices.
+/// The approval kind of a menu, whose choice IDs are the choices' numbers.
+pub const MENU_KIND: &str = "claude_menu";
+/// The approval kind of the "Session paused" menu that offers a fallback
+/// model, and the IDs of its two choices.
 pub const REFUSAL_MENU_KIND: &str = "claude_refusal_fallback";
 pub const RETRY_FALLBACK: &str = "retry_fallback";
 pub const EDIT_PROMPT: &str = "edit_prompt";
 
-const TITLE: &str = "Session paused";
-const SWITCH_PREFIX: &str = "1. Switch to";
-const EDIT_PREFIX: &str = "2. Edit prompt and retry";
-const FOCUS_MARKER: char = '❯';
+const REFUSAL_TITLE: &str = "Session paused";
+const REFUSAL_LABEL_PREFIXES: [&str; 2] = ["Switch to", "Edit prompt and retry"];
+const FOCUS_MARKER: char = '\u{276f}';
+/// How far above its choices a menu's rule may be.
+const MAX_HEADER_LINES: usize = 40;
 
-/// The menu as the screen shows it.
+/// A menu as the screen shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RefusalMenu {
+pub struct ClaudeMenu {
+    pub title: String,
     /// The explanation between the title and the choices.
     pub body: String,
-    /// The choices' labels, without their numbers: switch, then edit.
-    pub labels: [String; 2],
+    /// The choices' labels, without their numbers, in order.
+    pub labels: Vec<String>,
     /// The index of the choice the cursor is on.
     pub focused: usize,
 }
 
-/// Reads the menu from a pane's visible lines, or None when they do not show
-/// its title followed by exactly its two choices.
-pub fn parse(lines: &[String]) -> Option<RefusalMenu> {
-    let title = lines.iter().rposition(|line| line.contains(TITLE))?;
-    let mut body = Vec::new();
-    let mut labels: Vec<String> = Vec::new();
-    let mut focused = None;
-    for line in &lines[title + 1..] {
-        let text = line.trim_matches(|c: char| c.is_whitespace() || c == '│');
-        let (marked, choice) = match text.strip_prefix(FOCUS_MARKER) {
-            Some(rest) => (true, rest.trim_start()),
-            None => (false, text),
-        };
-        let expected = [SWITCH_PREFIX, EDIT_PREFIX].get(labels.len()).copied();
-        if expected.is_some_and(|prefix| choice.starts_with(prefix)) {
-            if marked {
-                focused = Some(labels.len());
+impl ClaudeMenu {
+    /// Whether this is the same menu as `other`, wherever its cursor is.
+    pub fn same_menu(&self, other: &ClaudeMenu) -> bool {
+        self.title == other.title && self.labels == other.labels
+    }
+
+    fn offers_fallback_model(&self) -> bool {
+        self.title == REFUSAL_TITLE
+            && self.labels.len() == REFUSAL_LABEL_PREFIXES.len()
+            && self
+                .labels
+                .iter()
+                .zip(REFUSAL_LABEL_PREFIXES)
+                .all(|(label, prefix)| label.starts_with(prefix))
+    }
+}
+
+/// A line without its indentation and box borders.
+fn content(line: &str) -> &str {
+    line.trim_matches(|c: char| c.is_whitespace() || c == '\u{2502}')
+}
+
+/// A line that only draws a rule or a box edge.
+fn is_rule(line: &str) -> bool {
+    let line = line.trim();
+    line.chars().count() >= 3
+        && line
+            .chars()
+            .all(|c| matches!(c, '\u{2500}'..='\u{257f}' | '\u{2594}'))
+}
+
+/// Splits a choice line into whether the cursor is on it, its number and
+/// its label.
+fn choice(line: &str) -> Option<(bool, usize, &str)> {
+    let text = content(line);
+    let (marked, text) = match text.strip_prefix(FOCUS_MARKER) {
+        Some(rest) => (true, rest.trim_start()),
+        None => (false, text),
+    };
+    let (number, label) = text.split_once(". ")?;
+    let label = label.trim();
+    if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit()) || label.is_empty() {
+        return None;
+    }
+    Some((marked, number.parse().ok()?, label))
+}
+
+/// Reads the menu from a pane's visible lines: the lowest run of at least
+/// two consecutive lines numbered from 1 with the cursor on exactly one,
+/// below a title that follows a rule. None when the lines show no such menu.
+pub fn parse(lines: &[String]) -> Option<ClaudeMenu> {
+    let cursor = lines
+        .iter()
+        .rposition(|line| choice(line).is_some_and(|(marked, _, _)| marked))?;
+    let (_, cursor_number, _) = choice(&lines[cursor])?;
+    let first = cursor.checked_sub(cursor_number.checked_sub(1)?)?;
+    let mut labels = Vec::new();
+    for line in &lines[first..] {
+        match choice(line) {
+            Some((marked, number, label))
+                if number == labels.len() + 1 && marked == (first + labels.len() == cursor) =>
+            {
+                labels.push(label.to_string())
             }
-            labels.push(choice[3..].to_string());
-        } else if labels.is_empty() {
-            if !text.is_empty() {
-                body.push(text);
-            }
-        } else if labels.len() == 2 {
-            break;
-        } else {
-            // Something other than the second choice follows the first.
-            return None;
+            _ => break,
         }
     }
-    Some(RefusalMenu {
-        body: body.join(" "),
-        labels: labels.try_into().ok()?,
-        focused: focused?,
+    if labels.len() < 2 || first + labels.len() <= cursor {
+        return None;
+    }
+    let rule = lines[..first]
+        .iter()
+        .rposition(|line| is_rule(line))
+        .filter(|rule| first - rule <= MAX_HEADER_LINES)?;
+    let mut header = lines[rule + 1..first]
+        .iter()
+        .map(|line| content(line))
+        .filter(|text| !text.is_empty());
+    let title = header.next()?.to_string();
+    Some(ClaudeMenu {
+        title,
+        body: header.collect::<Vec<_>>().join(" "),
+        labels,
+        focused: cursor - first,
     })
 }
 
@@ -90,49 +146,69 @@ pub fn screen(pane: &Arc<dyn Pane>) -> Vec<String> {
         .collect()
 }
 
-/// The approval request for a menu shown in the given turn. Its ID covers
-/// the menu's text, so the same menu read again is the same request.
+/// The approval request for a menu that appeared at `shown_at` in the given
+/// turn. Its ID covers the menu's text and when it appeared, so the same
+/// menu read again is the same request.
 pub fn approval_request(
-    menu: &RefusalMenu,
+    menu: &ClaudeMenu,
     metadata: &AgentMetadata,
     turn_id: &str,
-    observed_at: DateTime<Utc>,
+    shown_at: DateTime<Utc>,
 ) -> Option<AgentApprovalRequest> {
     let incarnation = incarnation_id(metadata)?;
     let request_key = format!(
-        "claude-refusal-menu\0{}\0{incarnation}\0{turn_id}\0{}\0{}",
-        metadata.agent_id, menu.labels[0], menu.labels[1]
+        "claude-menu\0{}\0{incarnation}\0{turn_id}\0{}\0{}\0{}",
+        metadata.agent_id,
+        shown_at.timestamp_micros(),
+        menu.title,
+        menu.labels.join("\0")
     );
     let request_id = format!("{:x}", Sha256::digest(request_key.as_bytes()))[..24].to_string();
-    let choice = |id: &str, label: &str| AgentApprovalChoice {
-        id: id.to_string(),
-        label: label.to_string(),
-        description: None,
-    };
+    let fallback = menu.offers_fallback_model();
+    let choices = menu
+        .labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| AgentApprovalChoice {
+            id: if fallback {
+                [RETRY_FALLBACK, EDIT_PROMPT][index].to_string()
+            } else {
+                (index + 1).to_string()
+            },
+            label: label.clone(),
+            description: None,
+        })
+        .collect();
     Some(AgentApprovalRequest {
         schema: AGENT_APPROVAL_SCHEMA.to_string(),
-        kind: REFUSAL_MENU_KIND.to_string(),
+        kind: if fallback {
+            REFUSAL_MENU_KIND
+        } else {
+            MENU_KIND
+        }
+        .to_string(),
         item_id: request_id.clone(),
         request_id,
         agent_id: metadata.agent_id.clone(),
         incarnation_id: incarnation,
         turn_id: turn_id.to_string(),
-        observed_at,
-        prompt: Some(format!("{TITLE}: {}", menu.body)),
+        observed_at: shown_at,
+        prompt: Some(if menu.body.is_empty() {
+            menu.title.clone()
+        } else {
+            format!("{}: {}", menu.title, menu.body)
+        }),
         reason: None,
         command: None,
         cwd: None,
-        choices: vec![
-            choice(RETRY_FALLBACK, &menu.labels[0]),
-            choice(EDIT_PROMPT, &menu.labels[1]),
-        ],
+        choices,
         questions: Vec::new(),
     })
 }
 
 /// Keys that answer the menu in a pane, checked against its screen. They
 /// take up to seconds, so they run away from the main thread.
-pub struct RefusalMenuKeys {
+pub struct MenuKeys {
     pub(crate) pane: Arc<dyn Pane>,
     pub(crate) request: AgentApprovalRequest,
     pub(crate) choice_id: String,
@@ -141,7 +217,7 @@ pub struct RefusalMenuKeys {
 const KEY_PAUSE: Duration = Duration::from_millis(150);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
-impl RefusalMenuKeys {
+impl MenuKeys {
     /// Answers the menu in the pane with the chosen option.
     pub fn run(self) -> anyhow::Result<AgentApprovalResolution> {
         let target = self
@@ -150,13 +226,15 @@ impl RefusalMenuKeys {
             .iter()
             .position(|choice| choice.id == self.choice_id)
             .context("approval choice is not available")?;
-        let labels = [
-            self.request.choices[0].label.as_str(),
-            self.request.choices[1].label.as_str(),
-        ];
+        let labels = self
+            .request
+            .choices
+            .iter()
+            .map(|choice| choice.label.as_str())
+            .collect::<Vec<_>>();
         answer(
             target,
-            labels,
+            &labels,
             || screen(&self.pane),
             |key| self.pane.key_down(key, KeyModifiers::NONE),
         )?;
@@ -176,21 +254,17 @@ impl RefusalMenuKeys {
 /// pressing Enter when the screen does not show the menu with these labels.
 fn answer(
     target: usize,
-    labels: [&str; 2],
+    labels: &[&str],
     read_screen: impl Fn() -> Vec<String>,
     mut press: impl FnMut(KeyCode) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    for _ in 0..3 {
-        let menu =
-            parse(&read_screen()).context("the pane no longer shows the Session paused menu")?;
-        anyhow::ensure!(
-            menu.labels[0] == labels[0] && menu.labels[1] == labels[1],
-            "the pane shows a different Session paused menu"
-        );
+    for _ in 0..=labels.len() {
+        let menu = parse(&read_screen()).context("the pane no longer shows the menu")?;
+        anyhow::ensure!(menu.labels == labels, "the pane shows a different menu");
         if menu.focused == target {
             press(KeyCode::Enter)?;
             let deadline = Instant::now() + CLOSE_TIMEOUT;
-            while parse(&read_screen()).is_some() {
+            while parse(&read_screen()).is_some_and(|shown| shown.labels == labels) {
                 anyhow::ensure!(
                     Instant::now() < deadline,
                     "Enter was pressed, but the menu is still on screen"
@@ -242,11 +316,9 @@ mod test {
         );
         assert_eq!(
             menu.labels,
-            [
-                "Switch to Opus 4.8".to_string(),
-                "Edit prompt and retry with Opus 5.5".to_string()
-            ]
+            ["Switch to Opus 4.8", "Edit prompt and retry with Opus 5.5"]
         );
+        assert_eq!(menu.title, "Session paused");
         assert_eq!(menu.focused, 0);
 
         let moved = MENU
@@ -274,10 +346,7 @@ mod test {
         let menu = parse(&lines(LIVE_MENU)).unwrap();
         assert_eq!(
             menu.labels,
-            [
-                "Switch to Opus 4.8".to_string(),
-                "Edit prompt and retry with Opus 5".to_string()
-            ]
+            ["Switch to Opus 4.8", "Edit prompt and retry with Opus 5"]
         );
         assert_eq!(menu.focused, 0);
         assert!(menu
@@ -286,23 +355,103 @@ mod test {
         assert!(menu.body.ends_with("Details: `[cyber]`"));
     }
 
+    /// The confirmation `/model` raises in a session with history, as a
+    /// pane showed it.
+    const SWITCH_MODEL: &str = "\
+\u{25cf} earlier reply
+\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}\u{2594}
+   Switch model?
+   Your next response will be slower and use more tokens
+   This conversation is cached for the current model. Switching to Opus 5.5 means the full history gets re-read on your next message.
+   \u{276f} 1. Yes, switch to Opus 5.5
+     2. No, go back
+";
+
     #[test]
-    fn other_screens_are_not_the_menu() {
+    fn parses_a_menu_a_slash_command_raises() {
+        let menu = parse(&lines(SWITCH_MODEL)).unwrap();
+        assert_eq!(menu.title, "Switch model?");
+        assert!(menu.body.starts_with("Your next response will be slower"));
+        assert!(menu.body.ends_with("re-read on your next message."));
+        assert_eq!(menu.labels, ["Yes, switch to Opus 5.5", "No, go back"]);
+        assert_eq!(menu.focused, 0);
+    }
+
+    #[test]
+    fn parses_a_menu_of_more_than_two_choices_with_the_cursor_on_any() {
+        let three = SWITCH_MODEL.replace("\u{276f} 1.", "  1.").replace(
+            "     2. No, go back",
+            "     2. No, go back\n   \u{276f} 3. Ask later",
+        );
+        let menu = parse(&lines(&three)).unwrap();
+        assert_eq!(menu.labels.len(), 3);
+        assert_eq!(menu.focused, 2);
+    }
+
+    #[test]
+    fn other_screens_are_not_a_menu() {
+        // Only one choice, no cursor, or two cursors is not a menu to answer.
+        let one = MENU.replace(
+            "\u{2502}   2. Edit prompt and retry with Opus 5.5     \u{2502}\n",
+            "",
+        );
+        assert_eq!(parse(&lines(&one)), None);
+        assert_eq!(parse(&lines(&MENU.replace('\u{276f}', " "))), None);
+        let two_cursors = SWITCH_MODEL.replace("     2.", "   \u{276f} 2.");
+        assert_eq!(parse(&lines(&two_cursors)), None);
+        // Choices that do not count from 1, or have no title under a rule.
+        assert_eq!(parse(&lines(&SWITCH_MODEL.replace("2. No", "3. No"))), None);
+        let from_two = SWITCH_MODEL
+            .replace("1. Yes", "2. Yes")
+            .replace("2. No", "3. No");
+        assert_eq!(parse(&lines(&from_two)), None);
+        let no_rule = SWITCH_MODEL.replace('\u{2594}', "x");
+        assert_eq!(parse(&lines(&no_rule)), None);
+        assert_eq!(parse(&lines("just a prompt\n\u{276f} ")), None);
+        // A numbered list the user is typing at the prompt has one line.
+        assert_eq!(parse(&lines("\u{2500}\u{2500}\u{2500}\u{2500}\n\u{276f} 1. first\n\u{2500}\u{2500}\u{2500}\u{2500}")), None);
+    }
+
+    #[test]
+    fn only_the_fallback_menu_has_the_fallback_kind() {
+        let metadata = metadata();
+        let at = Utc::now();
+        let switch = parse(&lines(SWITCH_MODEL)).unwrap();
+        let request = approval_request(&switch, &metadata, "", at).unwrap();
+        assert_eq!(request.kind, MENU_KIND);
+        assert_eq!(
+            request
+                .choices
+                .iter()
+                .map(|choice| (choice.id.as_str(), choice.label.as_str()))
+                .collect::<Vec<_>>(),
+            [("1", "Yes, switch to Opus 5.5"), ("2", "No, go back")]
+        );
+        assert!(request
+            .prompt
+            .unwrap()
+            .starts_with("Switch model?: Your next"));
         // The usage-credits dialog shares the title but not the choices.
         let credits = MENU
             .replace("1. Switch to Opus 4.8", "1. Continue on usage credits")
             .replace("2. Edit prompt and retry with Opus 5.5", "2. Switch models");
-        assert_eq!(parse(&lines(&credits)), None);
-        // Only one of the two choices, or no cursor, is not a menu to answer.
-        let one = MENU.replace("│   2. Edit prompt and retry with Opus 5.5     │\n", "");
-        assert_eq!(parse(&lines(&one)), None);
-        assert_eq!(parse(&lines(&MENU.replace('❯', " "))), None);
-        assert_eq!(parse(&lines("just a prompt\n> ")), None);
+        let credits = parse(&lines(&credits)).unwrap();
+        assert_eq!(
+            approval_request(&credits, &metadata, "", at).unwrap().kind,
+            MENU_KIND
+        );
+        // The same menu shown again later is another request.
+        let later = at + chrono::Duration::seconds(30);
+        assert_ne!(
+            approval_request(&switch, &metadata, "", later)
+                .unwrap()
+                .request_id,
+            request.request_id
+        );
     }
 
-    #[test]
-    fn the_same_menu_is_the_same_request() {
-        let metadata = AgentMetadata {
+    fn metadata() -> AgentMetadata {
+        AgentMetadata {
             agent_id: "agent".to_string(),
             name: "claude".to_string(),
             launch_cmd: "claude".to_string(),
@@ -316,9 +465,15 @@ mod test {
             managed_checkout: false,
             launch_supervisor: None,
             codex_app_server: None,
-        };
+        }
+    }
+
+    #[test]
+    fn the_same_menu_is_the_same_request() {
+        let metadata = metadata();
+        let at = Utc::now();
         let menu = parse(&lines(MENU)).unwrap();
-        let request = approval_request(&menu, &metadata, "turn-1", Utc::now()).unwrap();
+        let request = approval_request(&menu, &metadata, "turn-1", at).unwrap();
         assert_eq!(request.kind, REFUSAL_MENU_KIND);
         assert_eq!(
             request
@@ -335,9 +490,9 @@ mod test {
             .prompt
             .unwrap()
             .starts_with("Session paused: Opus 5.5"));
-        let again = approval_request(&menu, &metadata, "turn-1", Utc::now()).unwrap();
+        let again = approval_request(&menu, &metadata, "turn-1", at).unwrap();
         assert_eq!(again.request_id, request.request_id);
-        let next_turn = approval_request(&menu, &metadata, "turn-2", Utc::now()).unwrap();
+        let next_turn = approval_request(&menu, &metadata, "turn-2", at).unwrap();
         assert_ne!(next_turn.request_id, request.request_id);
     }
 
@@ -388,15 +543,15 @@ mod test {
     fn answering_moves_to_the_chosen_row_before_enter() {
         // The focused first choice needs only Enter.
         let menu = FakeMenu::new(0, true);
-        answer(0, LABELS, || menu.screen(), |key| menu.press(key)).unwrap();
+        answer(0, &LABELS, || menu.screen(), |key| menu.press(key)).unwrap();
         assert_eq!(*menu.keys.borrow(), [KeyCode::Enter]);
 
         // The second choice is reached with Down, and the first with Up.
         let menu = FakeMenu::new(0, true);
-        answer(1, LABELS, || menu.screen(), |key| menu.press(key)).unwrap();
+        answer(1, &LABELS, || menu.screen(), |key| menu.press(key)).unwrap();
         assert_eq!(*menu.keys.borrow(), [KeyCode::DownArrow, KeyCode::Enter]);
         let menu = FakeMenu::new(1, true);
-        answer(0, LABELS, || menu.screen(), |key| menu.press(key)).unwrap();
+        answer(0, &LABELS, || menu.screen(), |key| menu.press(key)).unwrap();
         assert_eq!(*menu.keys.borrow(), [KeyCode::UpArrow, KeyCode::Enter]);
     }
 
@@ -404,17 +559,17 @@ mod test {
     fn answering_never_confirms_the_wrong_row_or_another_menu() {
         // Arrows that do not move the cursor: Enter is never pressed.
         let menu = FakeMenu::new(0, false);
-        assert!(answer(1, LABELS, || menu.screen(), |key| menu.press(key)).is_err());
+        assert!(answer(1, &LABELS, || menu.screen(), |key| menu.press(key)).is_err());
         assert!(!menu.keys.borrow().contains(&KeyCode::Enter));
 
         // A menu with other labels, or no menu, gets no keys at all.
         let menu = FakeMenu::new(0, true);
         let other = ["Switch to Opus 5", "Edit prompt and retry with Opus 5.5"];
-        assert!(answer(0, other, || menu.screen(), |key| menu.press(key)).is_err());
+        assert!(answer(0, &other, || menu.screen(), |key| menu.press(key)).is_err());
         assert!(menu.keys.borrow().is_empty());
         let gone = FakeMenu::new(0, true);
         gone.focused.set(None);
-        assert!(answer(0, LABELS, || gone.screen(), |key| gone.press(key)).is_err());
+        assert!(answer(0, &LABELS, || gone.screen(), |key| gone.press(key)).is_err());
         assert!(gone.keys.borrow().is_empty());
     }
 }

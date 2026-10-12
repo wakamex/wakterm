@@ -112,8 +112,8 @@ pub enum AgentApprovalWork {
     /// Keys to press in a Claude pane, with screen checks between them. They
     /// take seconds, so the caller runs them away from the main thread.
     ClaudeQuestion(ClaudeQuestionKeys),
-    /// Keys that answer Claude's "Session paused" menu, with screen checks.
-    ClaudeRefusalMenu(crate::claude_refusal_menu::RefusalMenuKeys),
+    /// Keys that answer a Claude confirmation menu, with screen checks.
+    ClaudeMenu(crate::claude_menu::MenuKeys),
 }
 
 impl AgentApprovalWork {
@@ -128,7 +128,7 @@ impl AgentApprovalWork {
         match self {
             Self::Resolved(resolution) => Ok(resolution),
             Self::ClaudeQuestion(keys) => keys.run(),
-            Self::ClaudeRefusalMenu(keys) => keys.run(),
+            Self::ClaudeMenu(keys) => keys.run(),
         }
     }
 }
@@ -260,8 +260,11 @@ impl Mux {
             .agent_event_store
             .find_approval(&resolution.request_id)?
             .context("approval request is no longer pending")?;
-        if request.kind == crate::claude_refusal_menu::REFUSAL_MENU_KIND {
-            return self.resolve_claude_refusal_menu(request, resolution);
+        if matches!(
+            request.kind.as_str(),
+            crate::claude_menu::MENU_KIND | crate::claude_menu::REFUSAL_MENU_KIND
+        ) {
+            return self.resolve_claude_menu(request, resolution);
         }
         anyhow::ensure!(
             matches!(
@@ -370,9 +373,9 @@ impl Mux {
         }))
     }
 
-    /// Prepares the keys that answer Claude's "Session paused" menu, after
+    /// Prepares the keys that answer a Claude confirmation menu, after
     /// checking that the same Claude process still shows the same menu.
-    fn resolve_claude_refusal_menu(
+    fn resolve_claude_menu(
         &self,
         request: AgentApprovalRequest,
         resolution: AgentApprovalResolutionRequest,
@@ -417,15 +420,17 @@ impl Mux {
         let pane = self
             .get_pane(pane_id)
             .context("approval target pane disappeared")?;
-        let shown = crate::claude_refusal_menu::parse(&crate::claude_refusal_menu::screen(&pane))
+        let shown = crate::claude_menu::parse(&crate::claude_menu::screen(&pane))
             .context("approval request is no longer pending")?;
         anyhow::ensure!(
-            shown.labels[0] == request.choices[0].label
-                && shown.labels[1] == request.choices[1].label,
+            shown
+                .labels
+                .iter()
+                .eq(request.choices.iter().map(|choice| &choice.label)),
             "approval request is no longer pending"
         );
-        Ok(AgentApprovalWork::ClaudeRefusalMenu(
-            crate::claude_refusal_menu::RefusalMenuKeys {
+        Ok(AgentApprovalWork::ClaudeMenu(
+            crate::claude_menu::MenuKeys {
                 pane,
                 request,
                 choice_id: resolution.choice_id,

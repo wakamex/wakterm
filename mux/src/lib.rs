@@ -58,8 +58,8 @@ pub mod agent_freeze;
 pub mod agent_reminder;
 pub mod agent_request;
 pub mod agent_service;
+pub mod claude_menu;
 pub mod claude_question_keys;
-pub mod claude_refusal_menu;
 pub mod client;
 pub mod codex_app_server;
 pub mod codex_process_memory;
@@ -225,6 +225,8 @@ pub struct Mux {
     agent_input_by_pane: RwLock<HashMap<PaneId, AgentPaneInput>>,
     /// The process of each frozen agent pane.
     frozen_agents: Mutex<HashMap<PaneId, u32>>,
+    /// The Claude menu each pane shows, and when it appeared.
+    claude_menus: Mutex<HashMap<PaneId, (claude_menu::ClaudeMenu, DateTime<Utc>)>>,
     /// When the mux started freezing idle agents, which counts as their
     /// latest input until they get some.
     agent_freeze_started: Mutex<Option<Instant>>,
@@ -671,10 +673,10 @@ enum AgentObserverCommand {
         runtime: AgentRuntimeSnapshot,
         message: serde_json::Value,
     },
-    ClaudeRefusalMenu {
+    ClaudeMenu {
         metadata: AgentMetadata,
-        observed_at: DateTime<Utc>,
-        menu: claude_refusal_menu::RefusalMenu,
+        shown_at: DateTime<Utc>,
+        menu: claude_menu::ClaudeMenu,
     },
     Unavailable {
         metadata: AgentMetadata,
@@ -1153,16 +1155,14 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                     }
                 }
             }
-            AgentObserverCommand::ClaudeRefusalMenu {
+            AgentObserverCommand::ClaudeMenu {
                 metadata,
-                observed_at,
+                shown_at,
                 menu,
             } => {
                 if let Some(writer) = event_writer.as_mut() {
-                    if let Err(err) =
-                        writer.record_claude_refusal_menu(&metadata, observed_at, &menu)
-                    {
-                        log::error!("failed to persist Claude's Session paused menu: {err:#}");
+                    if let Err(err) = writer.record_claude_menu(&metadata, shown_at, &menu) {
+                        log::error!("failed to persist Claude's menu: {err:#}");
                         writer_failed = true;
                     }
                 }
@@ -1376,6 +1376,7 @@ impl Mux {
             agent_output_reader,
             agent_input_by_pane: RwLock::new(HashMap::new()),
             frozen_agents: Mutex::new(HashMap::new()),
+            claude_menus: Mutex::new(HashMap::new()),
             agent_freeze_started: Mutex::new(None),
             agent_attention_seen_at: RwLock::new(HashMap::new()),
             windows: RwLock::new(HashMap::new()),
@@ -3436,7 +3437,7 @@ impl Mux {
         histogram!("mux.agent_observer.refresh.apply.latency").record(update.refresh_elapsed);
         counter!("mux.agent_observer.refresh.applied.rate").increment(1);
 
-        self.report_claude_refusal_menu(update.pane_id);
+        self.report_claude_menu(update.pane_id);
 
         if schedule_trailing_refresh {
             self.schedule_trailing_agent_observer_refresh(update.pane_id);
@@ -3587,10 +3588,10 @@ impl Mux {
         input.at = Some(Instant::now());
     }
 
-    /// Reports Claude's "Session paused" menu as an approval request when
-    /// the agent in the pane is a Claude that reports a dialog open and its
-    /// screen shows that menu. Claude records nothing else about the menu.
-    fn report_claude_refusal_menu(&self, pane_id: PaneId) {
+    /// Reports a Claude confirmation menu as an approval request when the
+    /// agent in the pane is a Claude that reports a dialog open and its
+    /// screen shows a menu. Claude records nothing else about the menu.
+    fn report_claude_menu(&self, pane_id: PaneId) {
         let dialog_open = self
             .agent_runtime_by_pane
             .read()
@@ -3599,6 +3600,7 @@ impl Mux {
                 runtime.harness == AgentHarness::Claude && agent::claude_dialog_open(runtime)
             });
         if !dialog_open {
+            self.claude_menus.lock().remove(&pane_id);
             return;
         }
         let (Some(metadata), Some(pane)) = (
@@ -3607,14 +3609,27 @@ impl Mux {
         ) else {
             return;
         };
-        let Some(menu) = claude_refusal_menu::parse(&claude_refusal_menu::screen(&pane)) else {
+        // A screen read mid-redraw may show no menu; the dialog closing is
+        // what ends one.
+        let Some(menu) = claude_menu::parse(&claude_menu::screen(&pane)) else {
             return;
+        };
+        let shown_at = {
+            let mut menus = self.claude_menus.lock();
+            match menus.get(&pane_id) {
+                Some((shown, shown_at)) if shown.same_menu(&menu) => *shown_at,
+                _ => {
+                    let now = Utc::now();
+                    menus.insert(pane_id, (menu.clone(), now));
+                    now
+                }
+            }
         };
         let _ = self
             .agent_observer_tx
-            .send(AgentObserverCommand::ClaudeRefusalMenu {
+            .send(AgentObserverCommand::ClaudeMenu {
                 metadata: (*metadata).clone(),
-                observed_at: Utc::now(),
+                shown_at,
                 menu,
             });
     }

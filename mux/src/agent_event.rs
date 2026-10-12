@@ -970,14 +970,14 @@ impl AgentEventWriter {
 }
 
 impl AgentEventWriter {
-    /// Records Claude's "Session paused" menu, read from the agent's pane,
-    /// as an approval request in the agent's current turn. The same menu
-    /// read again is the same event.
-    pub(crate) fn record_claude_refusal_menu(
+    /// Records a Claude confirmation menu, read from the agent's pane, as
+    /// an approval request in the agent's current turn. The same menu read
+    /// again is the same event.
+    pub(crate) fn record_claude_menu(
         &mut self,
         metadata: &AgentMetadata,
-        observed_at: DateTime<Utc>,
-        menu: &crate::claude_refusal_menu::RefusalMenu,
+        shown_at: DateTime<Utc>,
+        menu: &crate::claude_menu::ClaudeMenu,
     ) -> anyhow::Result<()> {
         let Some(incarnation) = incarnation_id(metadata) else {
             return Ok(());
@@ -987,18 +987,18 @@ impl AgentEventWriter {
                 Some(ProviderCursor::Claude(cursor)) => cursor.current_turn_id,
                 _ => None,
             };
-        let Some(approval) = crate::claude_refusal_menu::approval_request(
+        let Some(approval) = crate::claude_menu::approval_request(
             menu,
             metadata,
             turn_id.as_deref().unwrap_or_default(),
-            observed_at,
+            shown_at,
         ) else {
             return Ok(());
         };
         let mut event = PendingEvent::new(
-            format!("claude-refusal-menu:{}", approval.request_id),
+            format!("claude-menu:{}", approval.request_id),
             AgentEventKind::ApprovalRequested,
-            observed_at,
+            shown_at,
         );
         event.turn_id = turn_id;
         event.approval = Some(approval);
@@ -4464,18 +4464,20 @@ mod tests {
         writer.observe_agent(&metadata, &runtime).unwrap();
         let after = store.latest_sequence();
 
-        let menu = crate::claude_refusal_menu::RefusalMenu {
+        let menu = crate::claude_menu::ClaudeMenu {
+            title: "Session paused".to_string(),
             body: "Opus 5.5's safeguards flagged this session. Details: [cyber]".to_string(),
-            labels: [
+            labels: vec![
                 "Switch to Opus 4.8".to_string(),
                 "Edit prompt and retry with Opus 5.5".to_string(),
             ],
             focused: 0,
         };
         // The screen is read on every observation while the menu is up.
+        let shown_at = Utc::now();
         for _ in 0..3 {
             writer
-                .record_claude_refusal_menu(&metadata, Utc::now(), &menu)
+                .record_claude_menu(&metadata, shown_at, &menu)
                 .unwrap();
         }
 
@@ -4484,7 +4486,7 @@ mod tests {
         assert_eq!(events[0].kind, AgentEventKind::ApprovalRequested);
         assert_eq!(events[0].turn_id.as_deref(), Some("turn-paused"));
         let approval = events[0].approval.clone().unwrap();
-        assert_eq!(approval.kind, crate::claude_refusal_menu::REFUSAL_MENU_KIND);
+        assert_eq!(approval.kind, crate::claude_menu::REFUSAL_MENU_KIND);
         assert_eq!(approval.turn_id, "turn-paused");
         assert_eq!(
             approval
