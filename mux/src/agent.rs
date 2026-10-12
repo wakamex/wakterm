@@ -3338,17 +3338,23 @@ fn codex_session_owned_by_process(
         return Ok(None);
     }
 
+    // Each thread lists only the children it spawned. The Codex launcher
+    // spawns the process that writes the rollout from a secondary thread.
     fn collect_pids(pid: u32, pids: &mut Vec<u32>) {
         pids.push(pid);
-        let children_path = format!("/proc/{pid}/task/{pid}/children");
-        let Ok(children) = fs::read_to_string(children_path) else {
+        let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else {
             return;
         };
-        for child in children
-            .split_whitespace()
-            .filter_map(|child| child.parse().ok())
-        {
-            collect_pids(child, pids);
+        for task in tasks.flatten() {
+            let Ok(children) = fs::read_to_string(task.path().join("children")) else {
+                continue;
+            };
+            for child in children
+                .split_whitespace()
+                .filter_map(|child| child.parse().ok())
+            {
+                collect_pids(child, pids);
+            }
         }
     }
 
@@ -7383,6 +7389,63 @@ mod test {
                 .map(|turn| turn.provider_turn_id.as_str()),
             Some("turn-primary")
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn observe_codex_finds_rollout_held_by_a_child_spawned_from_another_thread() {
+        let _env_lock = env_lock();
+        let temp = TempDir::new().unwrap();
+        let rollout = temp.path().join("rollout-threaded.jsonl");
+        fs::write(
+            &rollout,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"session_id\":\"session-threaded\",\"id\":\"session-threaded\",\"cwd\":\"/tmp/threaded-launcher\",\"source\":\"cli\",\"thread_source\":\"user\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-10-12T02:22:48Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-threaded\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-10-12T02:22:50Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-threaded\",\"last_agent_message\":\"Hi\"}}\n"
+            ),
+        )
+        .unwrap();
+        // Only the child holds the rollout open, and a thread other than
+        // this process's main thread spawned it. The thread stays alive, as
+        // the launcher's does; an exiting thread's children move to another.
+        let held = fs::File::open(&rollout).unwrap();
+        let (spawned_tx, spawned_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let spawner = std::thread::spawn(move || {
+            let child = std::process::Command::new("sleep")
+                .arg("60")
+                .stdin(held)
+                .spawn()
+                .unwrap();
+            spawned_tx.send(child).unwrap();
+            let _ = done_rx.recv();
+        });
+        let mut child = spawned_rx.recv().unwrap();
+        let process_id = std::process::id();
+        let process = LocalProcessInfo::with_root_pid(process_id).unwrap();
+
+        set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
+        let observed = observe_codex(
+            "/tmp/threaded-launcher",
+            Some(rollout.to_string_lossy().as_ref()),
+            None,
+            Some(process_id),
+            Some(process.start_time),
+            None,
+        );
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        done_tx.send(()).unwrap();
+        spawner.join().unwrap();
+
+        let observed = observed.unwrap().unwrap();
+        assert_eq!(
+            observed.session_path.as_deref(),
+            Some(rollout.to_string_lossy().as_ref())
+        );
+        assert!(matches!(observed.turn_state, AgentTurnState::WaitingOnUser));
     }
 
     #[test]
