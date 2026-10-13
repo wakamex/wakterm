@@ -1077,12 +1077,12 @@ fn spawn_agent_observer_timer(mux_instance_id: usize) -> Sender<PaneId> {
 const CLAUDE_DRAFT_IDLE: Duration = Duration::from_secs(60);
 
 /// What a message written to an agent's pane would meet in its input box.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AgentInputBox {
     /// An empty box, or a harness whose box is not read.
     Ready,
     /// The message would not arrive alone in the box, for this reason.
-    Blocked(&'static str),
+    Blocked(String),
     /// A draft in Claude's box that nobody has typed into for a while.
     /// Claude can stash it and restore it after the message is submitted.
     IdleClaudeDraft,
@@ -3676,15 +3676,17 @@ impl Mux {
             .get(&pane_id)
             .and_then(|input| input.at)
             .is_some_and(|at| at.elapsed() < CLAUDE_DRAFT_IDLE);
-        if harness == AgentHarness::Claude && !typed_recently && !agent::claude_stash_key_rebound()
-        {
-            AgentInputBox::IdleClaudeDraft
-        } else {
-            AgentInputBox::Blocked(reason)
+        if harness != AgentHarness::Claude || typed_recently {
+            return AgentInputBox::Blocked(reason.to_string());
+        }
+        match agent::claude_stash_key() {
+            Ok(_) => AgentInputBox::IdleClaudeDraft,
+            Err(why) => AgentInputBox::Blocked(format!("the input box holds a draft, and {why}")),
         }
     }
 
-    /// Presses Claude's stash key in the pane, which moves the draft out of
+    /// Presses the key of Claude's stash action in the pane, Ctrl+S unless
+    /// the user rebound it, which moves the draft out of
     /// the input box. Claude puts it back after the next prompt is
     /// submitted. The key toggles, so this is only for a box that holds a
     /// draft.
@@ -3692,8 +3694,9 @@ impl Mux {
         let pane = self
             .get_pane(pane_id)
             .with_context(|| format!("pane {pane_id} disappeared"))?;
+        let key = agent::claude_stash_key().map_err(|why| anyhow!(why))?;
         self.thaw_agent_pane(pane_id);
-        pane.writer().write_all(b"\x13")?;
+        pane.writer().write_all(&key)?;
         Ok(())
     }
 
@@ -8944,7 +8947,7 @@ mod test {
         mux.record_agent_input_generation(drafting, "keyboard");
         assert_eq!(
             mux.agent_input_box(drafting),
-            AgentInputBox::Blocked("the input box holds text the user is typing")
+            AgentInputBox::Blocked("the input box holds text the user is typing".to_string())
         );
         // The draft counts as left there once the pane has had no input for
         // a while.

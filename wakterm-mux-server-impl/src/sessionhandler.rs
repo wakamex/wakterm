@@ -2408,8 +2408,8 @@ pub(crate) async fn prepare_agent_input_box(
     pane_id: mux::pane::PaneId,
 ) -> anyhow::Result<PrepareAgentInputBoxResponse> {
     use mux::AgentInputBox;
-    let response = |blocked: Option<&str>, draft_stashed| PrepareAgentInputBoxResponse {
-        blocked: blocked.map(str::to_string),
+    let response = |blocked: Option<String>, draft_stashed| PrepareAgentInputBoxResponse {
+        blocked,
         draft_stashed,
     };
     match Mux::get().agent_input_box(pane_id) {
@@ -2421,7 +2421,7 @@ pub(crate) async fn prepare_agent_input_box(
             Ok(match Mux::get().agent_input_box(pane_id) {
                 AgentInputBox::Ready => response(None, true),
                 _ => response(
-                    Some("the input box holds a draft that Claude did not set aside"),
+                    Some("the input box holds a draft that Claude did not set aside".to_string()),
                     false,
                 ),
             })

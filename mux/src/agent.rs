@@ -2188,18 +2188,126 @@ pub(crate) fn claude_dialog_keys_rebound() -> bool {
         .any(|context| text.contains(context))
 }
 
-/// Whether the user's Claude keybindings may change the key that stashes a
-/// draft, Ctrl+S, or what that key does.
-pub(crate) fn claude_stash_key_rebound() -> bool {
-    let Some(path) = claude_sessions_root()
+/// The action Claude's stash key runs, and the key it has by default.
+const CLAUDE_STASH_ACTION: &str = "chat:stash";
+const CLAUDE_STASH_DEFAULT_KEY: &str = "ctrl+s";
+
+/// The bytes that press the key Claude's stash action is bound to, read
+/// from the user's `keybindings.json` on each use. The error says why no
+/// key can be pressed: the action has none, or its key is not one that can
+/// be sent as input.
+pub(crate) fn claude_stash_key() -> Result<Vec<u8>, String> {
+    let config = claude_sessions_root()
         .and_then(|projects| projects.parent().map(|root| root.join("keybindings.json")))
-    else {
-        return false;
-    };
-    let Ok(text) = fs::read_to_string(path) else {
-        return false;
-    };
-    text.contains("chat:stash") || text.to_ascii_lowercase().contains("\"ctrl+s\"")
+        .and_then(|path| fs::read_to_string(path).ok());
+    claude_stash_key_from(config.as_deref())
+}
+
+fn claude_stash_key_from(config: Option<&str>) -> Result<Vec<u8>, String> {
+    // Claude appends the user's bindings to its defaults, and the last
+    // binding of a key wins. A file it cannot use leaves the defaults.
+    let mut bindings: Vec<(String, Option<String>)> = vec![(
+        CLAUDE_STASH_DEFAULT_KEY.to_string(),
+        Some(CLAUDE_STASH_ACTION.to_string()),
+    )];
+    let user_blocks = config
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .and_then(|config| config.get("bindings").and_then(Value::as_array).cloned())
+        .unwrap_or_default();
+    for block in &user_blocks {
+        // Only bindings of the contexts active at the prompt apply.
+        if !matches!(
+            block.get("context").and_then(Value::as_str),
+            Some("Chat" | "Global")
+        ) {
+            continue;
+        }
+        let Some(block_bindings) = block.get("bindings").and_then(Value::as_object) else {
+            continue;
+        };
+        for (key, action) in block_bindings {
+            let key = claude_key_name(key);
+            bindings.retain(|(bound, _)| *bound != key);
+            bindings.push((key, action.as_str().map(str::to_string)));
+        }
+    }
+    let mut unsendable = None;
+    for (key, action) in bindings.iter().rev() {
+        if action.as_deref() != Some(CLAUDE_STASH_ACTION) {
+            continue;
+        }
+        match claude_key_bytes(key) {
+            Some(bytes) => return Ok(bytes),
+            None => unsendable = unsendable.or(Some(key)),
+        }
+    }
+    Err(match unsendable {
+        Some(key) => format!(
+            "Claude's stash action is bound to {key}, which Wakterm cannot send as key input"
+        ),
+        None => "Claude's stash action has no key in keybindings.json".to_string(),
+    })
+}
+
+/// A key or chord from Claude's keybindings in one spelling: lowercase,
+/// modifiers under one name each and in a fixed order.
+fn claude_key_name(key: &str) -> String {
+    key.split_whitespace()
+        .map(|stroke| {
+            let mut modifiers = Vec::new();
+            let mut name = String::new();
+            for part in stroke.split('+') {
+                match part.to_ascii_lowercase().as_str() {
+                    "ctrl" | "control" => modifiers.push("ctrl"),
+                    "alt" | "opt" | "option" => modifiers.push("alt"),
+                    "shift" => modifiers.push("shift"),
+                    "meta" => modifiers.push("meta"),
+                    "cmd" | "command" | "super" | "win" => modifiers.push("super"),
+                    other => name = other.to_string(),
+                }
+            }
+            modifiers.sort_unstable();
+            modifiers.dedup();
+            modifiers.push(&name);
+            modifiers.join("+")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The bytes a terminal sends for a key or chord named by
+/// `claude_key_name`, or None for one with no plain byte form: Ctrl with a
+/// letter, or Alt or Meta with a letter or digit, optionally with Ctrl.
+/// Ctrl+H, I, J and M are left out, since their bytes are Backspace, Tab
+/// and Enter.
+fn claude_key_bytes(key: &str) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    for stroke in key.split(' ') {
+        let mut parts = stroke.split('+').collect::<Vec<_>>();
+        let name = parts.pop()?;
+        let &[letter] = name.as_bytes() else {
+            return None;
+        };
+        let ctrl = parts.contains(&"ctrl");
+        let escape = parts.contains(&"alt") || parts.contains(&"meta");
+        if parts
+            .iter()
+            .any(|part| !matches!(*part, "ctrl" | "alt" | "meta"))
+            || !(ctrl || escape)
+        {
+            return None;
+        }
+        if escape {
+            bytes.push(0x1b);
+        }
+        match (ctrl, letter) {
+            (true, b'h' | b'i' | b'j' | b'm') => return None,
+            (true, b'a'..=b'z') => bytes.push(letter & 0x1f),
+            (false, b'a'..=b'z' | b'0'..=b'9') => bytes.push(letter),
+            _ => return None,
+        }
+    }
+    (!bytes.is_empty()).then_some(bytes)
 }
 
 /// Resume a Claude session in the pane with the pane's own launch flags.
@@ -5742,6 +5850,56 @@ mod test {
             message_sha256(" hi \n"),
             format!("{:x}", Sha256::digest(b"hi"))
         );
+    }
+
+    #[test]
+    fn claude_stash_key_follows_the_users_keybindings() {
+        let key = |config: &str| claude_stash_key_from(Some(config));
+        let chat = |bindings: &str| {
+            format!(r#"{{"bindings":[{{"context":"Chat","bindings":{bindings}}}]}}"#)
+        };
+
+        // The default, with no file, an unusable file, or unrelated bindings.
+        assert_eq!(claude_stash_key_from(None), Ok(vec![0x13]));
+        assert_eq!(key("not json"), Ok(vec![0x13]));
+        assert_eq!(key(&chat(r#"{"ctrl+l":"chat:submit"}"#)), Ok(vec![0x13]));
+        // Ctrl+S bound in a context that is not active at the prompt.
+        assert_eq!(
+            key(r#"{"bindings":[{"context":"Autocomplete","bindings":{"ctrl+s":null}}]}"#),
+            Ok(vec![0x13])
+        );
+
+        // Remapped: the new key is pressed, whatever became of Ctrl+S.
+        assert_eq!(key(&chat(r#"{"ctrl+k":"chat:stash"}"#)), Ok(vec![0x0b]));
+        assert_eq!(
+            key(&chat(r#"{"Control+S":"chat:submit","alt+s":"chat:stash"}"#)),
+            Ok(vec![0x1b, b's'])
+        );
+        assert_eq!(
+            key(&chat(r#"{"ctrl+s":null,"ctrl+x ctrl+t":"chat:stash"}"#)),
+            Ok(vec![0x18, 0x14])
+        );
+        // A key that cannot be sent is skipped while another is bound.
+        assert_eq!(key(&chat(r#"{"cmd+s":"chat:stash"}"#)), Ok(vec![0x13]));
+
+        // Ctrl+S taken by another action, or unbound, with no other key.
+        for bindings in [r#"{"ctrl+s":"chat:submit"}"#, r#"{"ctrl+s":null}"#] {
+            assert_eq!(
+                key(&chat(bindings)),
+                Err("Claude's stash action has no key in keybindings.json".to_string())
+            );
+        }
+        // Only a key with no byte form.
+        assert_eq!(
+            key(&chat(r#"{"ctrl+s":null,"Cmd+Shift+S":"chat:stash"}"#)),
+            Err(
+                "Claude's stash action is bound to shift+super+s, which Wakterm cannot send \
+                 as key input"
+                    .to_string()
+            )
+        );
+        assert_eq!(claude_key_bytes("ctrl+m"), None);
+        assert_eq!(claude_key_bytes("s"), None);
     }
 
     #[test]
