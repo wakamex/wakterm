@@ -1826,6 +1826,11 @@ impl Client {
     rpc!(write_to_pane, WriteToPane, UnitResponse);
     rpc!(submit_typed_input, SubmitTypedInput, UnitResponse);
     rpc!(
+        prepare_agent_input_box,
+        PrepareAgentInputBox,
+        PrepareAgentInputBoxResponse
+    );
+    rpc!(
         create_agent_reminder,
         CreateAgentReminder,
         AgentReminderResponse

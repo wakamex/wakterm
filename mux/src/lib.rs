@@ -1072,6 +1072,22 @@ fn spawn_agent_observer_timer(mux_instance_id: usize) -> Sender<PaneId> {
     tx
 }
 
+/// How long after the last input to a pane a draft in Claude's input box
+/// still counts as text the user is typing.
+const CLAUDE_DRAFT_IDLE: Duration = Duration::from_secs(60);
+
+/// What a message written to an agent's pane would meet in its input box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentInputBox {
+    /// An empty box, or a harness whose box is not read.
+    Ready,
+    /// The message would not arrive alone in the box, for this reason.
+    Blocked(&'static str),
+    /// A draft in Claude's box that nobody has typed into for a while.
+    /// Claude can stash it and restore it after the message is submitted.
+    IdleClaudeDraft,
+}
+
 fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: AgentEventStore) {
     let mut event_writer = None;
     while let Ok(command) = rx.recv() {
@@ -3632,6 +3648,53 @@ impl Mux {
                 shown_at,
                 menu,
             });
+    }
+
+    /// Whether a message written to the agent's pane now would arrive in an
+    /// empty input box, judged from the pane's screen.
+    pub fn agent_input_box(&self, pane_id: PaneId) -> AgentInputBox {
+        let Some(harness) = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .map(|runtime| runtime.harness.clone())
+        else {
+            return AgentInputBox::Ready;
+        };
+        let Some(pane) = self.get_pane(pane_id) else {
+            return AgentInputBox::Ready;
+        };
+        let dims = pane.get_dimensions();
+        let top = dims.physical_top;
+        let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
+        let Some(reason) = agent::input_box_blocked(&harness, &lines) else {
+            return AgentInputBox::Ready;
+        };
+        let typed_recently = self
+            .agent_input_by_pane
+            .read()
+            .get(&pane_id)
+            .and_then(|input| input.at)
+            .is_some_and(|at| at.elapsed() < CLAUDE_DRAFT_IDLE);
+        if harness == AgentHarness::Claude && !typed_recently && !agent::claude_stash_key_rebound()
+        {
+            AgentInputBox::IdleClaudeDraft
+        } else {
+            AgentInputBox::Blocked(reason)
+        }
+    }
+
+    /// Presses Claude's stash key in the pane, which moves the draft out of
+    /// the input box. Claude puts it back after the next prompt is
+    /// submitted. The key toggles, so this is only for a box that holds a
+    /// draft.
+    pub fn stash_claude_draft(&self, pane_id: PaneId) -> anyhow::Result<()> {
+        let pane = self
+            .get_pane(pane_id)
+            .with_context(|| format!("pane {pane_id} disappeared"))?;
+        self.thaw_agent_pane(pane_id);
+        pane.writer().write_all(b"\x13")?;
+        Ok(())
     }
 
     /// Thaws the agent in the pane if it is frozen.
@@ -7185,6 +7248,9 @@ mod test {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
+    /// The title of a fake pane whose screen shows a Claude draft.
+    const CLAUDE_DRAFT_TITLE: &str = "claude draft";
+
     struct FakePane {
         id: PaneId,
         size: Mutex<TerminalSize>,
@@ -7425,10 +7491,22 @@ mod test {
         }
 
         fn get_lines(&self, lines: Range<StableRowIndex>) -> (StableRowIndex, Vec<Line>) {
+            let line = |text: &str| Line::from_text(text, &Default::default(), 0, None);
+            // A pane with this title shows a draft in Claude's input box.
+            if self.title == CLAUDE_DRAFT_TITLE {
+                let rule = "\u{2500}".repeat(8);
+                return (
+                    lines.start,
+                    vec![
+                        line(&rule),
+                        line("\u{276f}\u{a0}half a thought"),
+                        line(&rule),
+                    ],
+                );
+            }
             // An empty Codex input box, which admission requires of a Codex
             // pane, and no Claude input box.
-            let prompt = Line::from_text("\u{203a} ", &Default::default(), 0, None);
-            (lines.start, vec![prompt])
+            (lines.start, vec![line("\u{203a} ")])
         }
 
         fn with_lines_mut(
@@ -8811,6 +8889,74 @@ mod test {
         set_turn_state(crate::agent::AgentTurnState::WaitingOnUser);
         assert_eq!(mux.agent_with_unknown_turn_state(&metadata.agent_id), None);
         assert_eq!(mux.agent_with_unknown_turn_state("another-agent"), None);
+    }
+
+    #[test]
+    fn claude_draft_blocks_input_only_while_someone_is_typing_it() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let add_agent = |pane: Arc<dyn Pane>, name: &str| {
+            let tab = Arc::new(Tab::new(&size));
+            tab.assign_pane(&pane);
+            mux.add_tab_and_active_pane(&tab).unwrap();
+            mux.add_tab_to_window(&tab, window_id).unwrap();
+            let mut metadata = sample_agent_metadata(name);
+            metadata.launch_cmd = "claude".to_string();
+            mux.set_agent_metadata(pane.pane_id(), metadata).unwrap();
+            let mut runtimes = mux.agent_runtime_by_pane.write();
+            let runtime = runtimes.get_mut(&pane.pane_id()).unwrap();
+            runtime.alive = true;
+            runtime.harness = AgentHarness::Claude;
+            pane.pane_id()
+        };
+        let drafting = add_agent(
+            FakePane::new_detected(
+                146,
+                size,
+                domain.id,
+                CLAUDE_DRAFT_TITLE,
+                "/tmp/drafting",
+                "claude",
+                &["claude"],
+            ),
+            "drafting",
+        );
+        let empty = add_agent(FakePane::new(147, size, domain.id), "empty");
+
+        assert_eq!(mux.agent_input_box(empty), AgentInputBox::Ready);
+        // No input has reached the pane, so nobody is typing the draft.
+        assert_eq!(
+            mux.agent_input_box(drafting),
+            AgentInputBox::IdleClaudeDraft
+        );
+        mux.record_agent_input_generation(drafting, "keyboard");
+        assert_eq!(
+            mux.agent_input_box(drafting),
+            AgentInputBox::Blocked("the input box holds text the user is typing")
+        );
+        // The draft counts as left there once the pane has had no input for
+        // a while.
+        mux.agent_input_by_pane
+            .write()
+            .get_mut(&drafting)
+            .unwrap()
+            .at = Instant::now().checked_sub(CLAUDE_DRAFT_IDLE);
+        assert_eq!(
+            mux.agent_input_box(drafting),
+            AgentInputBox::IdleClaudeDraft
+        );
     }
 
     #[test]

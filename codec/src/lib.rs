@@ -584,6 +584,8 @@ pdu! {
     ListAgentRemindersResponse: 107,
     CancelAgentReminder: 108,
     CancelAgentReminderResponse: 109,
+    PrepareAgentInputBox: 110,
+    PrepareAgentInputBoxResponse: 111,
 }
 
 impl Pdu {
@@ -1067,6 +1069,22 @@ pub struct CancelAgentReminder {
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct CancelAgentReminderResponse {
     pub cancelled: bool,
+}
+
+/// Asks whether a message written to an agent's pane now would arrive alone
+/// in its input box, and sets aside a draft that nobody is typing.
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct PrepareAgentInputBox {
+    pub pane_id: PaneId,
+}
+
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct PrepareAgentInputBoxResponse {
+    /// Why nothing may be written, or None when the box is ready.
+    pub blocked: Option<String>,
+    /// Whether a draft was moved out of the box. The harness restores it
+    /// after the next prompt is submitted.
+    pub draft_stashed: bool,
 }
 
 /// Presses Enter in a pane once it has redrawn what was just typed into it,
@@ -1939,6 +1957,28 @@ mod test {
                 id: "reminder-1".to_string(),
             }),
             Pdu::CancelAgentReminderResponse(CancelAgentReminderResponse { cancelled: true }),
+        ] {
+            let mut encoded = Vec::new();
+            pdu.encode(&mut encoded, 42).unwrap();
+            assert_eq!(
+                Pdu::decode(encoded.as_slice()).unwrap(),
+                DecodedPdu { serial: 42, pdu }
+            );
+        }
+    }
+
+    #[test]
+    fn prepare_agent_input_box_round_trips() {
+        for pdu in [
+            Pdu::PrepareAgentInputBox(PrepareAgentInputBox { pane_id: 7 }),
+            Pdu::PrepareAgentInputBoxResponse(PrepareAgentInputBoxResponse {
+                blocked: None,
+                draft_stashed: false,
+            }),
+            Pdu::PrepareAgentInputBoxResponse(PrepareAgentInputBoxResponse {
+                blocked: Some("the input box holds text the user is typing".to_string()),
+                draft_stashed: true,
+            }),
         ] {
             let mut encoded = Vec::new();
             pdu.encode(&mut encoded, 42).unwrap();

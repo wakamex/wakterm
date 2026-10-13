@@ -2188,6 +2188,20 @@ pub(crate) fn claude_dialog_keys_rebound() -> bool {
         .any(|context| text.contains(context))
 }
 
+/// Whether the user's Claude keybindings may change the key that stashes a
+/// draft, Ctrl+S, or what that key does.
+pub(crate) fn claude_stash_key_rebound() -> bool {
+    let Some(path) = claude_sessions_root()
+        .and_then(|projects| projects.parent().map(|root| root.join("keybindings.json")))
+    else {
+        return false;
+    };
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    text.contains("chat:stash") || text.to_ascii_lowercase().contains("\"ctrl+s\"")
+}
+
 /// Resume a Claude session in the pane with the pane's own launch flags.
 /// An attach client has none, so it gets a plain command.
 fn claude_pane_resume_command(launch_cmd: &str, session_id: &str) -> (String, bool) {

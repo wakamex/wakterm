@@ -857,6 +857,15 @@ impl SessionHandler {
                 })
                 .detach();
             }
+            Pdu::PrepareAgentInputBox(PrepareAgentInputBox { pane_id }) => {
+                spawn_into_main_thread(async move {
+                    let result = prepare_agent_input_box(pane_id)
+                        .await
+                        .map(Pdu::PrepareAgentInputBoxResponse);
+                    send_response(result);
+                })
+                .detach();
+            }
             Pdu::SubmitTypedInput(SubmitTypedInput { pane_id }) => {
                 spawn_into_main_thread(async move {
                     let result = async {
@@ -1938,6 +1947,7 @@ impl SessionHandler {
             | Pdu::AgentReminderResponse { .. }
             | Pdu::ListAgentRemindersResponse { .. }
             | Pdu::CancelAgentReminderResponse { .. }
+            | Pdu::PrepareAgentInputBoxResponse { .. }
             | Pdu::PreparedCodexLaunch { .. }
             | Pdu::SetClipboard { .. }
             | Pdu::NotifyAlert { .. }
@@ -2143,6 +2153,28 @@ async fn admit_agent_prompt(
             ));
         }
         return Ok(receipt);
+    }
+
+    // Sets aside a draft in the input box that nobody is typing.
+    let blocked = match prepare_agent_input_box(candidate.pane_id).await {
+        Ok(prepared) => prepared.blocked,
+        Err(err) => Some(format!("the input box could not be prepared: {err:#}")),
+    };
+    if let Some(reason) = blocked {
+        if let Err(err) =
+            release_unwritten_claim(&request, request_store.clone(), admission_store.clone()).await
+        {
+            return Ok(AgentAdmissionReceipt::rejected(
+                &request,
+                AgentAdmissionStatus::InternalFailure,
+                format!("prompt was not written, but its admission claim could not be released: {err:#}"),
+            ));
+        }
+        return Ok(AgentAdmissionReceipt::rejected(
+            &request,
+            AgentAdmissionStatus::Busy,
+            reason,
+        ));
     }
 
     let mut return_request = match candidate.proposed_return_request() {
@@ -2369,6 +2401,34 @@ async fn admit_agent_prompt(
 
 /// How long a pane's output must stay unchanged after typed input before
 /// Enter is pressed, and how long to wait at most.
+/// Makes an agent's input box ready for a message: reports why nothing may
+/// be written, or sets aside a draft in Claude's box that nobody is typing
+/// and confirms on the screen that the box is then empty.
+pub(crate) async fn prepare_agent_input_box(
+    pane_id: mux::pane::PaneId,
+) -> anyhow::Result<PrepareAgentInputBoxResponse> {
+    use mux::AgentInputBox;
+    let response = |blocked: Option<&str>, draft_stashed| PrepareAgentInputBoxResponse {
+        blocked: blocked.map(str::to_string),
+        draft_stashed,
+    };
+    match Mux::get().agent_input_box(pane_id) {
+        AgentInputBox::Ready => Ok(response(None, false)),
+        AgentInputBox::Blocked(reason) => Ok(response(Some(reason), false)),
+        AgentInputBox::IdleClaudeDraft => {
+            Mux::get().stash_claude_draft(pane_id)?;
+            wait_for_redraw(pane_id).await;
+            Ok(match Mux::get().agent_input_box(pane_id) {
+                AgentInputBox::Ready => response(None, true),
+                _ => response(
+                    Some("the input box holds a draft that Claude did not set aside"),
+                    false,
+                ),
+            })
+        }
+    }
+}
+
 const REDRAW_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 const REDRAW_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// How long to wait for a program that has drawn nothing since the write.

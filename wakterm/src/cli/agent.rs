@@ -1866,20 +1866,10 @@ impl SendAgentCommand {
                 |pane_id| {
                     let client = client.clone();
                     async move {
-                        let dims = client
-                            .get_dimensions(codec::GetPaneRenderableDimensions { pane_id })
+                        Ok(client
+                            .prepare_agent_input_box(codec::PrepareAgentInputBox { pane_id })
                             .await?
-                            .dimensions;
-                        let top = dims.physical_top;
-                        let (lines, _images) = client
-                            .get_lines(codec::GetLines {
-                                pane_id,
-                                lines: vec![top..top + dims.viewport_rows as isize],
-                            })
-                            .await?
-                            .lines
-                            .extract_data();
-                        Ok(lines.into_iter().map(|(_, line)| line).collect())
+                            .blocked)
                     }
                 },
             )
@@ -1898,8 +1888,8 @@ impl SendAgentCommand {
         SubmitInputFut,
         ConfirmInputFn,
         ConfirmInputFut,
-        ReadScreenFn,
-        ReadScreenFut,
+        PrepareInputBoxFn,
+        PrepareInputBoxFut,
     >(
         &self,
         mut list_agents: ListAgents,
@@ -1907,7 +1897,7 @@ impl SendAgentCommand {
         send_paste: SendPasteFn,
         submit_input: SubmitInputFn,
         confirm_input: ConfirmInputFn,
-        read_screen: ReadScreenFn,
+        prepare_input_box: PrepareInputBoxFn,
     ) -> anyhow::Result<AgentSendResult>
     where
         ListAgents: FnMut() -> ListAgentsFut,
@@ -1924,9 +1914,10 @@ impl SendAgentCommand {
         // record under another name than the one typed.
         ConfirmInputFn: Fn(String, String, bool, Duration) -> ConfirmInputFut,
         ConfirmInputFut: Future<Output = anyhow::Result<Option<AgentSendAcknowledgement>>>,
-        // The pane's visible lines.
-        ReadScreenFn: FnOnce(PaneId) -> ReadScreenFut,
-        ReadScreenFut: Future<Output = anyhow::Result<Vec<wakterm_term::Line>>>,
+        // Why the pane's input box cannot take a message, or None once it
+        // is ready; a draft nobody is typing is set aside first.
+        PrepareInputBoxFn: FnOnce(PaneId) -> PrepareInputBoxFut,
+        PrepareInputBoxFut: Future<Output = anyhow::Result<Option<String>>>,
     {
         let agents = list_agents().await?.agents;
         let agent = find_agent(&agents, &self.target)
@@ -1934,19 +1925,10 @@ impl SendAgentCommand {
             .with_context(|| format!("no agent named or identified by {}", self.target))?;
         // Text the user is typing would be sent with the message, and a
         // view over the input box would take its Enter as an answer.
-        let box_blocked = if matches!(
-            agent.runtime.harness,
-            AgentHarness::Claude | AgentHarness::Codex
-        ) {
-            mux::agent::input_box_blocked(
-                &agent.runtime.harness,
-                &read_screen(agent.pane_id).await?,
-            )
-        } else {
-            None
+        let blocked = match mux::agent::input_blocked_reason(&agent.runtime) {
+            Some(reason) => Some(reason),
+            None => prepare_input_box(agent.pane_id).await?,
         };
-        let blocked = mux::agent::input_blocked_reason(&agent.runtime)
-            .or_else(|| box_blocked.map(str::to_string));
         if let Some(detail) = blocked {
             return Ok(AgentSendResult {
                 agent_id: agent.metadata.agent_id.clone(),
@@ -4017,16 +3999,6 @@ mod test {
         assert_eq!(find_agent(&agents, "missing"), None);
     }
 
-    /// The lines of a pane that shows Codex's input box with nothing typed.
-    fn empty_codex_screen() -> Vec<wakterm_term::Line> {
-        vec![wakterm_term::Line::from_text(
-            "\u{203a} ",
-            &Default::default(),
-            0,
-            None,
-        )]
-    }
-
     #[test]
     fn send_uses_observed_transport_and_waits_for_ack() {
         let paste_calls = Rc::new(RefCell::new(vec![]));
@@ -4099,7 +4071,7 @@ mod test {
                 }
             },
             |_, _, _, _| async { Ok(None) },
-            |_| async { Ok(empty_codex_screen()) },
+            |_| async { Ok(None) },
         ))
         .unwrap();
 
@@ -4259,7 +4231,7 @@ mod test {
                         }
                     }
                 },
-                |_| async { Ok(empty_codex_screen()) },
+                |_| async { Ok(None) },
             ))
             .unwrap();
 
@@ -4316,7 +4288,7 @@ mod test {
                 }
             },
             |_, _, _, _| async { Ok(None) },
-            |_| async { Ok(empty_codex_screen()) },
+            |_| async { Ok(None) },
         ))
         .unwrap();
 
@@ -4331,33 +4303,11 @@ mod test {
     }
 
     #[test]
-    fn send_refuses_without_writing_into_an_input_box_that_is_not_empty() {
-        let attrs = wakterm_term::CellAttributes::default();
-        let line = |text: &str| wakterm_term::Line::from_text(text, &attrs, 0, None);
-        let cases = [
-            (
-                mux::agent::AgentHarness::Claude,
-                "claude",
-                vec![
-                    line("────────"),
-                    line("❯\u{a0}lol earheart agent just r"),
-                    line("────────"),
-                ],
-                "the input box holds text the user is typing",
-            ),
-            // A Codex approval overlay stands where the input box was.
-            (
-                mux::agent::AgentHarness::Codex,
-                "codex",
-                vec![
-                    line("  Would you like to run the following command?"),
-                    line("› 1. Yes, proceed (y)"),
-                    line("  2. No, and tell Codex what to do differently (esc)"),
-                ],
-                "Codex's input box is not empty or not on screen",
-            ),
-        ];
-        for (harness, launch_cmd, screen, detail) in cases {
+    fn send_refuses_without_writing_when_the_input_box_cannot_take_a_message() {
+        for detail in [
+            "the input box holds text the user is typing",
+            "Codex's input box is not empty or not on screen",
+        ] {
             let writes = Rc::new(RefCell::new(0usize));
             let command = SendAgentCommand {
                 target: "reviewer".to_string(),
@@ -4370,9 +4320,7 @@ mod test {
                 final_timeout_ms: 0,
                 text: Some("fix this".to_string()),
             };
-            let mut agent = sample_agent(30, "reviewer");
-            agent.metadata.launch_cmd = launch_cmd.to_string();
-            agent.runtime.harness = harness;
+            let agent = sample_agent(30, "reviewer");
 
             let result = promise::spawn::block_on(command.run_with(
                 move || {
@@ -4407,7 +4355,7 @@ mod test {
                 |_, _, _, _| async { Ok(None) },
                 move |pane_id| {
                     assert_eq!(pane_id, 30);
-                    async move { Ok(screen) }
+                    async move { Ok(Some(detail.to_string())) }
                 },
             ))
             .unwrap();
@@ -4467,7 +4415,7 @@ mod test {
                 }
             },
             |_, _, _, _| async { Ok(None) },
-            |_| async { Ok(empty_codex_screen()) },
+            |_| async { Ok(None) },
         ))
         .unwrap();
 
@@ -5098,7 +5046,7 @@ mod test {
                 }
             },
             |_, _, _, _| async { Ok(None) },
-            |_| async { Ok(empty_codex_screen()) },
+            |_| async { Ok(None) },
         ))
         .unwrap();
 
@@ -5158,7 +5106,7 @@ mod test {
                 }
             },
             |_, _, _, _| async { Ok(None) },
-            |_| async { Ok(empty_codex_screen()) },
+            |_| async { Ok(None) },
         ))
         .unwrap();
 
@@ -5214,7 +5162,7 @@ mod test {
             },
             |_: SubmitTypedInput| async { panic!("submit_typed_input should not be used") },
             |_, _, _, _| async { Ok(None) },
-            |_| async { Ok(empty_codex_screen()) },
+            |_| async { Ok(None) },
         ))
         .unwrap();
 

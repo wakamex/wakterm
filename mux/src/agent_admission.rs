@@ -492,10 +492,8 @@ impl Mux {
         }
         // A draft in the input box would be submitted with the prompt, and
         // a view over the box would take the prompt's Enter as its answer.
-        let dims = pane.get_dimensions();
-        let top = dims.physical_top;
-        let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
-        if let Some(reason) = crate::agent::input_box_blocked(&candidate.runtime.harness, &lines) {
+        // A draft nobody is typing is set aside before the prompt is written.
+        if let crate::AgentInputBox::Blocked(reason) = self.agent_input_box(candidate.pane_id) {
             return Some(AgentAdmissionReceipt::rejected(
                 request,
                 AgentAdmissionStatus::Busy,
@@ -523,6 +521,10 @@ impl Mux {
                 receipt.detail
             );
         }
+        anyhow::ensure!(
+            self.agent_input_box(candidate.pane_id) == crate::AgentInputBox::Ready,
+            "the input box holds a draft that was not set aside"
+        );
         let pane = self
             .get_pane(candidate.pane_id)
             .with_context(|| format!("target pane {} disappeared", candidate.pane_id))?;
