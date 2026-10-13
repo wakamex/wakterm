@@ -4511,9 +4511,12 @@ pub(crate) fn read_codex_output_messages_from_file(
 }
 
 /// The hash that identifies input in Agent API events, such as
-/// `input_accepted` and `turn_started`: the SHA-256 of the trimmed text.
+/// `input_accepted` and `turn_started`: the SHA-256 of the trimmed text with
+/// each tab as four spaces. Claude records a pasted tab as four spaces, so
+/// the text sent and the text recorded hash alike.
 pub fn message_sha256(message: &str) -> String {
-    format!("{:x}", Sha256::digest(message.trim().as_bytes()))
+    let text = message.trim().replace('\t', "    ");
+    format!("{:x}", Sha256::digest(text.as_bytes()))
 }
 
 fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservationDetails> {
@@ -5726,6 +5729,19 @@ mod test {
             Some("Codex's input box is not empty or not on screen")
         );
         assert_eq!(input_box_blocked(&AgentHarness::Gemini, &[]), None);
+    }
+
+    #[test]
+    fn input_hash_is_the_same_for_tabs_and_the_spaces_claude_records() {
+        let sent = "webpage capture\n\tSaved from\t\nno other snapshots\n";
+        let recorded = "webpage capture\n    Saved from    \nno other snapshots";
+        assert_eq!(message_sha256(sent), message_sha256(recorded));
+        assert_ne!(message_sha256(sent), message_sha256("webpage capture"));
+        // Text without tabs keeps the plain SHA-256 of its trimmed form.
+        assert_eq!(
+            message_sha256(" hi \n"),
+            format!("{:x}", Sha256::digest(b"hi"))
+        );
     }
 
     #[test]

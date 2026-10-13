@@ -450,7 +450,7 @@ impl AgentRequest {
 }
 
 pub fn prompt_sha256(prompt: &str) -> String {
-    format!("{:x}", Sha256::digest(prompt.trim().as_bytes()))
+    crate::agent::message_sha256(prompt)
 }
 
 fn submission_sha256(prompt: &str) -> String {
