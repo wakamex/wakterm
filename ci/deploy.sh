@@ -126,6 +126,8 @@ case $OSTYPE in
         $zipdir/mesa
     7z a -tzip $zipname $zipdir
     iscc.exe -DMyAppVersion=${TAG_NAME#nightly} -F${instname} ci/windows-installer.iss
+    SHA256=$(sha256sum $zipname | cut -d' ' -f1)
+    sed -e "s/@TAG@/$TAG_NAME/g" -e "s/@SHA256@/$SHA256/g" < ci/wakterm-scoop.json.template > wakterm.json
     ;;
   linux-gnu|linux)
     distro=$(lsb_release -is 2>/dev/null || sh -c "source /etc/os-release && echo \$NAME")
@@ -141,26 +143,16 @@ case $OSTYPE in
           SPEC_RELEASE=0
         fi
 
-        # Set up variables for spec generation
         if test -n "${COPR_SRPM}" ; then
           TAR_NAME=$(git -c "core.abbrev=8" show -s "--format=%cd_%h" "--date=format:%Y%m%d_%H%M%S")
-          HERE="."
-          BUILD_SECTION=$(cat <<'BUILDEOFEOF'
-%prep
-%autosetup
-%build
-
-echo Here I am
-
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source ~/.cargo/env
-
-cargo build --release \
-      -p wakterm-gui -p wakterm -p wakterm-mux-server \
-      -p strip-ansi-escapes
-BUILDEOFEOF
-)
-          BUILD_REQUIRES=$(cat <<BREQEOF
+          cat > wakterm.spec <<EOF
+Name: wakterm
+Version: ${WAKTERM_RPM_VERSION}
+Release: ${SPEC_RELEASE}
+Packager: wakamex <wakamex@users.noreply.github.com>
+License: MIT
+URL: https://wakterm.org/
+Summary: wakterm.
 BuildRequires: gcc, gcc-c++, make, curl, fontconfig-devel, openssl-devel, libxcb-devel, libxkbcommon-devel, libxkbcommon-x11-devel, wayland-devel, xcb-util-devel, xcb-util-keysyms-devel, xcb-util-image-devel, xcb-util-wm-devel, git
 %if 0%{?suse_version}
 BuildRequires: Mesa-libEGL-devel
@@ -171,28 +163,6 @@ BuildRequires: mesa-libEGL-devel
 BuildRequires: openssl-devel-engine
 %endif
 Source0: wakterm-${TAR_NAME}.tar.gz
-BREQEOF
-)
-        else
-          HERE="${HERE}"
-          BUILD_SECTION=$(cat <<'BUILDEOFEOF'
-%build
-echo build
-BUILDEOFEOF
-)
-          BUILD_REQUIRES=""
-        fi
-
-        # Generate single spec with subpackages
-        cat > wakterm.spec <<EOF
-Name: wakterm
-Version: ${WAKTERM_RPM_VERSION}
-Release: ${SPEC_RELEASE}
-Packager: wakamex <wakamex@users.noreply.github.com>
-License: MIT
-URL: https://wakterm.org/
-Summary: wakterm.
-${BUILD_REQUIRES}
 Requires: wakterm-common, wakterm-gui, wakterm-mux-server
 
 %global debug_package %{nil}
@@ -202,7 +172,6 @@ wakterm is a terminal emulator with support for modern features
 such as fonts with ligatures, hyperlinks, tabs and multiple
 windows.
 
-# Subpackage: wakterm-common
 %package -n wakterm-common
 Summary: wakterm - Common CLI components
 Requires: openssl
@@ -210,7 +179,6 @@ Requires: openssl
 wakterm-common provides the base CLI launcher and utilities shared by
 all wakterm components.
 
-# Subpackage: wakterm-gui
 %package -n wakterm-gui
 Summary: wakterm - GUI and multiplexer
 Requires: wakterm-common
@@ -224,7 +192,6 @@ wakterm-gui is a GPU-accelerated cross-platform terminal emulator with
 support for modern features such as fonts with ligatures, hyperlinks,
 tabs and multiple windows.
 
-# Subpackage: wakterm-mux-server
 %package -n wakterm-mux-server
 Summary: wakterm - Multiplexer server (headless)
 Requires: openssl
@@ -233,11 +200,18 @@ wakterm-mux-server is a headless terminal multiplexer that can be used
 as a session manager for terminal sessions, without requiring X11,
 Wayland, or other GUI libraries.
 
-${BUILD_SECTION}
+%prep
+%autosetup
+%build
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source ~/.cargo/env
+cargo build --release \
+      -p wakterm-gui -p wakterm -p wakterm-mux-server \
+      -p strip-ansi-escapes
 
 %install
 set -x
-cd ${HERE}
+cd .
 mkdir -p %{buildroot}/usr/bin %{buildroot}/etc/profile.d %{buildroot}/usr/share/icons/hicolor/128x128/apps %{buildroot}/usr/share/applications %{buildroot}/usr/share/metainfo %{buildroot}/usr/share/nautilus-python/extensions
 install -Dm755 assets/open-wakterm-here -t %{buildroot}/usr/bin
 install -Dsm755 $TARGET_DIR/release/wakterm -t %{buildroot}/usr/bin
@@ -277,12 +251,72 @@ install -Dm644 assets/wakterm-nautilus.py %{buildroot}/usr/share/nautilus-python
 * Mon Oct 2 2023 wakamex
 - See git for full changelog
 EOF
-
-        if test -n "${COPR_SRPM}" ; then
           /usr/bin/rpmbuild -bs --rmspec wakterm.spec --verbose
           mv $(rpm --eval '%{_srcrpmdir}')/wakterm-${TAR_NAME}*.src.rpm "${COPR_SRPM}"/
         else
-          /usr/bin/rpmbuild -bb --rmspec wakterm.spec --verbose
+          cat > wakterm.spec <<EOF
+Name: wakterm
+Version: ${WAKTERM_RPM_VERSION}
+Release: ${SPEC_RELEASE}
+Packager: wakamex <wakamex@users.noreply.github.com>
+License: MIT
+URL: https://wakterm.org/
+Summary: wakterm.
+%if 0%{?suse_version}
+Requires: dbus-1, fontconfig, openssl, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-egl1, libwayland-cursor0, Mesa-libEGL1, libxcb-keysyms1, libxcb-ewmh2, libxcb-icccm4
+%else
+Requires: dbus, fontconfig, openssl, libxcb, libxkbcommon, libxkbcommon-x11, libwayland-client, libwayland-egl, libwayland-cursor, mesa-libEGL, xcb-util-keysyms, xcb-util-wm
+%endif
+
+%global debug_package %{nil}
+
+%description
+wakterm is a terminal emulator with support for modern features
+such as fonts with ligatures, hyperlinks, tabs and multiple
+windows.
+
+%build
+echo build
+
+%install
+set -x
+cd ${HERE}
+mkdir -p %{buildroot}/usr/bin %{buildroot}/etc/profile.d %{buildroot}/usr/share/icons/hicolor/128x128/apps %{buildroot}/usr/share/applications %{buildroot}/usr/share/metainfo %{buildroot}/usr/share/nautilus-python/extensions
+install -Dm755 assets/open-wakterm-here -t %{buildroot}/usr/bin
+install -Dsm755 $TARGET_DIR/release/wakterm -t %{buildroot}/usr/bin
+install -Dsm755 $TARGET_DIR/release/wakterm-gui -t %{buildroot}/usr/bin
+install -Dsm755 $TARGET_DIR/release/wakterm-mux-server -t %{buildroot}/usr/bin
+install -Dsm755 $TARGET_DIR/release/strip-ansi-escapes -t %{buildroot}/usr/bin
+install -Dm644 assets/shell-integration/* -t %{buildroot}/etc/profile.d
+install -Dm644 assets/shell-completion/zsh %{buildroot}/usr/share/zsh/site-functions/_wakterm
+install -Dm644 assets/shell-completion/bash %{buildroot}/etc/bash_completion.d/wakterm
+install -Dm644 assets/icon/terminal.png %{buildroot}/usr/share/icons/hicolor/128x128/apps/org.wezfurlong.wakterm.png
+install -Dm644 assets/wakterm.desktop %{buildroot}/usr/share/applications/org.wezfurlong.wakterm.desktop
+install -Dm644 assets/wakterm.appdata.xml %{buildroot}/usr/share/metainfo/org.wezfurlong.wakterm.appdata.xml
+install -Dm644 assets/wakterm-nautilus.py %{buildroot}/usr/share/nautilus-python/extensions/wakterm-nautilus.py
+
+%files
+/usr/bin/open-wakterm-here
+/usr/bin/wakterm
+/usr/bin/wakterm-gui
+/usr/bin/wakterm-mux-server
+/usr/bin/strip-ansi-escapes
+/usr/share/zsh/site-functions/_wakterm
+/etc/bash_completion.d/wakterm
+/usr/share/icons/hicolor/128x128/apps/org.wezfurlong.wakterm.png
+/usr/share/applications/org.wezfurlong.wakterm.desktop
+/usr/share/metainfo/org.wezfurlong.wakterm.appdata.xml
+/usr/share/nautilus-python/extensions/wakterm-nautilus.py*
+/etc/profile.d/*
+
+%changelog
+* Mon Oct 2 2023 wakamex
+- See git for full changelog
+EOF
+          rm -rf rpmpkg
+          /usr/bin/rpmbuild -bb --rmspec --define "_rpmdir $HERE/rpmpkg" wakterm.spec --verbose
+          mv rpmpkg/*/wakterm-*.rpm .
+          rm -rf rpmpkg
         fi
 
         ;;

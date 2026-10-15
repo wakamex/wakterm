@@ -263,8 +263,6 @@ TOC = [
             Page("Windows", "install/windows.md"),
             Page("macOS", "install/macos.md"),
             Page("Linux", "install/linux.md"),
-            Page("FreeBSD", "install/freebsd.md"),
-            Page("NetBSD", "install/netbsd.md"),
             Page("Build from source", "install/source.md"),
         ],
     ),

@@ -12,13 +12,13 @@ Upstream WezTerm's last tagged stable release is 20240203-110809 from February 2
 | Platform / Format | WezTerm | wakterm | Notes |
 |---|:-:|:-:|---|
 | macOS (.zip, universal) | :material-check: | :material-check: | |
-| macOS Homebrew cask | :material-check: | :material-check: | wakterm tap |
+| macOS Homebrew cask | :material-check: | :material-check: | wakamex/tap |
 | macOS MacPorts | :material-check: | :material-close: | |
 | Windows (setup.exe + zip) | :material-check: | :material-check: | |
-| Windows winget | :material-check: | :material-check: | wakamex.wakterm |
-| Windows Scoop | :material-check: | :material-close: | |
+| Windows winget | :material-check: | :material-close: | |
+| Windows Scoop | :material-check: | :material-check: | wakamex/scoop-bucket |
 | Windows Chocolatey | :material-check: | :material-close: | |
-| Ubuntu/Debian (.deb) | :material-check: | :material-check: | |
+| Ubuntu/Debian (.deb + .tar.xz) | :material-check: | :material-check: | |
 | Fedora (.rpm) | :material-check: | :material-check: | CI builds on fedora-latest |
 | openSUSE | :material-check: | :material-close: | |
 | Arch Linux (AUR) | :material-check: | :material-close: | |

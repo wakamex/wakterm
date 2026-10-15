@@ -9,13 +9,8 @@ cask "wakterm" do
 
   url "https://github.com/wakamex/wakterm/releases/download/#{version}/wakterm-macos-#{version}.zip"
   name "wakterm"
-  desc "A GPU-accelerated cross-platform terminal emulator and multiplexer written by @wez and implemented in Rust"
+  desc "Agent-aware GPU-accelerated terminal emulator and multiplexer"
   homepage "https://wakterm.org/"
-
-  conflicts_with cask: "wakamex/wakterm/wakterm-nightly"
-
-  # Unclear what the minimal OS version is
-  # depends_on macos: ">= :sierra"
 
   app "wakterm.app"
   [

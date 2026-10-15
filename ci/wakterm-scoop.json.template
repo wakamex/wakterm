@@ -1,0 +1,36 @@
+{
+    "version": "@TAG@",
+    "description": "Agent-aware GPU-accelerated terminal emulator and multiplexer",
+    "homepage": "https://wakterm.org/",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/wakamex/wakterm/releases/download/@TAG@/wakterm-windows-@TAG@.zip",
+            "hash": "@SHA256@",
+            "extract_dir": "wakterm-windows-@TAG@"
+        }
+    },
+    "bin": [
+        "wakterm.exe",
+        "wakterm-gui.exe",
+        "wakterm-mux-server.exe",
+        "strip-ansi-escapes.exe"
+    ],
+    "shortcuts": [
+        [
+            "wakterm-gui.exe",
+            "wakterm"
+        ]
+    ],
+    "checkver": {
+        "github": "https://github.com/wakamex/wakterm"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/wakamex/wakterm/releases/download/$version/wakterm-windows-$version.zip",
+                "extract_dir": "wakterm-windows-$version"
+            }
+        }
+    }
+}

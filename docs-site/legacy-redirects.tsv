@@ -630,10 +630,12 @@ old_route	new_route
 /hyperlinks.html	/hyperlinks/
 /imgcat.html	/imgcat/
 /index.html	/
-/install/freebsd.html	/install/freebsd/
+/install/freebsd.html	/install/source/
+/install/freebsd/	/install/source/
 /install/linux.html	/install/linux/
 /install/macos.html	/install/macos/
-/install/netbsd.html	/install/netbsd/
+/install/netbsd.html	/install/source/
+/install/netbsd/	/install/source/
 /install/source.html	/install/source/
 /install/windows.html	/install/windows/
 /installation.html	/installation/

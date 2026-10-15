@@ -1,73 +1,32 @@
 ## Installing on Windows
 
-64-bit Windows 10.0.17763 or later is required to run wakterm; running on
-earlier versions of Windows is not possible, as wakterm requires [Pseudo
-Console support that was first released in Windows
-10.0.17763](https://devblogs.microsoft.com/commandline/windows-command-line-introducing-the-windows-pseudo-console-conpty/).
+64-bit Windows 10 version 1809 (build 17763) or later is required to run wakterm, as it relies on [Windows Pseudo Console (ConPTY)](https://devblogs.microsoft.com/commandline/windows-command-line-introducing-the-windows-pseudo-console-conpty/) support.
 
-You can download a setup.exe style installer to guide the installation
-(requires admin privileges) or a simple zip file and manage the files for
-yourself (no special privileges required).
+### Scoop
 
-[:fontawesome-brands-windows: Windows (setup.exe) :material-tray-arrow-down:]({{ windows_exe_stable }}){ .md-button }
-[:fontawesome-brands-windows: Nightly Windows (setup.exe) :material-tray-arrow-down:]({{ windows_exe_nightly }}){ .md-button }
-
-wakterm is available in a setup.exe style installer; the installer is produced
-with Inno Setup and will install wakterm to your program files directory and
-register that location in your PATH environment.  The installer can be run
-as a GUI to guide you through the install, but also offers the [standard
-Inno Setup command line options](https://jrsoftware.org/ishelp/index.php?topic=setupcmdline)
-to configure/script the installation process.
-
-[:fontawesome-brands-windows: Windows (zip) :material-tray-arrow-down:]({{ windows_zip_stable }}){ .md-button }
-[:fontawesome-brands-windows: Nightly Windows (zip) :material-tray-arrow-down:]({{ windows_zip_nightly }}){ .md-button }
-
-wakterm is also available in a simple zip file that can be extracted and
-run from anywhere, including a flash drive for a portable/relocatable
-installation.
-
-1. Download <a href="{{ windows_zip_stable }}">Release</a>
-2. Extract the zipfile and double-click `wakterm.exe` to run the UI
-3. Configuration instructions can be [found here](../guides/configuration/files.md)
-
-### For `winget` users
-
-If you prefer to use the command line to manage installing software,
-then you may wish to try [winget](https://github.com/microsoft/winget-cli#installing-the-client).
-`winget` is installed as part of the [App Installer](https://www.microsoft.com/en-us/p/app-installer/9nblggh4nns1)
-that is available from the Microsoft Store.
-
-Once you have `winget`, you can install wakterm like so:
+If you use [Scoop](https://scoop.sh/), you can install wakterm from the `wakamex` bucket:
 
 ```console
-$ winget install wakamex.wakterm
-```
-
-and to later upgrade it:
-
-```console
-$ winget upgrade wakamex.wakterm
-```
-
-### For `Scoop` users
-
-Another option if you prefer to use the command line to manage installing
-software, is [Scoop](https://scoop.sh/).
-
-Wezterm is available from the "Extras" bucket and once you have installed
-scoop itself can be installed like so:
-
-```console
-$ scoop bucket add extras
+$ scoop bucket add wakamex https://github.com/wakamex/scoop-bucket
 $ scoop install wakterm
 ```
 
-### For `Chocolatey` users
-
-If you prefer to use [Chocolatey](https://chocolatey.org) to manage software,
-wakterm is available from the Community Repository.  It can be installed like
-so:
+To upgrade to a newer release:
 
 ```console
-$ choco install wakterm -y
+$ scoop update wakterm
 ```
+
+### Direct download
+
+You can also download an [Inno Setup](https://jrsoftware.org/isinfo.php) installer (`setup.exe`) or a portable `.zip` archive from [GitHub Releases](https://github.com/wakamex/wakterm/releases).
+
+[:fontawesome-brands-windows: Windows (setup.exe) :material-tray-arrow-down:]({{ windows_exe_stable }}){ .md-button }
+
+The `setup.exe` installer installs wakterm to your Program Files directory and adds that location to `PATH`. It can run interactively or with the [standard Inno Setup command-line options](https://jrsoftware.org/ishelp/index.php?topic=setupcmdline).
+
+[:fontawesome-brands-windows: Windows (zip) :material-tray-arrow-down:]({{ windows_zip_stable }}){ .md-button }
+
+1. Download the [portable Windows zip archive]({{ windows_zip_stable }}).
+2. Extract the archive and run `wakterm-gui.exe` or `wakterm.exe`.
+3. Configuration instructions are in [Configuration Files](../guides/configuration/files.md).

@@ -3,15 +3,15 @@ set -x
 name="$1"
 
 notes=$(cat <<EOT
-See https://wakterm.org/changelog.html#$name for the changelog
+See https://wakterm.org/changelog/#$name for the changelog.
 
-If you're looking for nightly downloads or more detailed installation instructions:
+Installation instructions:
 
-[Windows](https://wakterm.org/install/windows.html)
-[macOS](https://wakterm.org/install/macos.html)
-[Linux](https://wakterm.org/install/linux.html)
-[FreeBSD](https://wakterm.org/install/freebsd.html)
+- [Windows](https://wakterm.org/install/windows/)
+- [macOS](https://wakterm.org/install/macos/)
+- [Linux](https://wakterm.org/install/linux/)
+- [Build from source](https://wakterm.org/install/source/)
 EOT
 )
 
-gh release view "$name" || gh release create --prerelease --notes "$notes" --title "$name" "$name"
+gh release view "$name" || gh release create --notes "$notes" --title "$name" "$name"
