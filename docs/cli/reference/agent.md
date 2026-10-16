@@ -18,7 +18,9 @@ Supported harnesses include Agy, Claude, Codex, Gemini, OpenCode, and ZCode.
 - `wakterm agent events`: read durable normalized Agent API v1 events
 - `wakterm agent capabilities`: print versioned Wakterm Agent API capabilities
 - `wakterm agent catalog`: print the narrow Agent API catalog
+- `wakterm agent caller`: print the catalog entry of the agent this command runs for
 - `wakterm agent admit`: atomically admit and submit an agent prompt
+- `wakterm agent approval`: resolve an exact pending agent approval or question form
 - `wakterm agent send`: send a prompt to an agent pane with optional return correlation
 - `wakterm agent request`: inspect, stream, or cancel durable agent return requests
 - `wakterm agent remind`: schedule messages that the mux sends to an agent later or on a repeat
@@ -170,7 +172,7 @@ Sends a message to an agent pane.
 {% include "../../generated/cli-help/cmd-synopsis-wakterm-agent-send--help.txt" %}
 ```
 
-For idle Codex agents, `--return-final` enables durable asynchronous return correlation.
+For idle Agy, Claude, and Codex agents, `--return-final` enables durable asynchronous return correlation.
 
 ```sh
 # Send prompt to an agent pane
@@ -298,6 +300,7 @@ Prints Agent API capabilities and the current narrow agent catalog.
 
 ```console
 {% include "../../generated/cli-help/cmd-synopsis-wakterm-agent-catalog--help.txt" %}
+```
 
 ## `wakterm agent approval`
 
@@ -309,7 +312,6 @@ A Claude question form with several questions or multi-select answers is reporte
 wakterm agent approval --request-id REQUEST_ID --agent-id AGENT_ID --incarnation INCARNATION_ID --choice CHOICE_ID
 wakterm agent approval --request-id REQUEST_ID --agent-id AGENT_ID --incarnation INCARNATION_ID \
   --choice submit --answers '[{"question":0,"choices":["option_2"]}]'
-```
 ```
 
 ## `wakterm agent interrupt`

@@ -16,13 +16,15 @@ wakterm keeps the core WezTerm terminal foundation, with extra focus on multiple
 - Supervised Codex app-server TUI via `wakterm agent launch codex`
 - [Measured idle overhead](headless-mux-benchmark.md): 34.44 MiB PSS to restore and hold 20 workspace tabs and 7 shell splits, with 0.0016% of one core
 - [Shared Codex app-server benchmark](codex-app-server-benchmark.md): 46.4% less PSS and 89.2% less idle CPU across 20 Codex TUIs
-- Versioned [Agent API v1](agent-api/v1/index.md) with capability negotiation, catalog, authoritative prompt admission, and durable event streams
-- [Hidden tabs and dedicated tab navigator](reference/lua/keyassignment/ShowTabNavigator.md) (`Alt-E` or `Ctrl-Shift-E` / `Cmd-E` and `Ctrl-Shift-S` / `Cmd-Shift-S`)
-- Agent attention indicators with subtle icon pulse and shared turn review acknowledgement across clients
+- Versioned [Agent API v1](agent-api/v1/index.md) with capability negotiation, catalog, caller resolution, authoritative prompt admission, approval and question-form resolution, and durable event streams
+- [Idle agent freezing](reference/config/agent_idle_freeze.md) on Linux and Windows to swap out inactive Claude sessions, paired with mux-delivered [agent reminders](cli/reference/agent.md#wakterm-agent-remind) (`wakterm agent remind`)
+- [Hidden tabs and dedicated tab navigator](reference/lua/keyassignment/ShowTabNavigator.md) (`Alt-E` or `Ctrl-Shift-E` / `Cmd-E`, `Ctrl-Shift-S` / `Cmd-Shift-S`, and `Ctrl-H` in the navigator)
+- Live [activity-order tab sorting](reference/lua/keyassignment/ToggleTabActivityOrder.md) (`Ctrl-Shift-B`), [shrinking overflowing tab titles](reference/config/tab_titles_shrink_to_fit.md) down to their harness icon, and `Alt-1..9` tab switching
+- Agent attention indicators with subtle icon pulse, working-tab activity marker, optional dimming of working or already-reviewed agent tabs, and shared turn review acknowledgement across clients
 - Automatic tab naming from active agent directories with collision disambiguation
 - Native harness icons and generated per-tab background colors in the tab bar
 - Live agent progress with `wakterm agent watch` and `wakterm agent list -f`
-- Prompt submission and interrupt flows that keep the real harness UI in the pane
+- Prompt submission and interrupt flows that keep the real harness UI in the pane, set aside idle Claude drafts, and refuse to type over active user input
 - Multi-client multiplexer synchronization with server authority, explicit resize origin tracking, and reconnect tab order reconciliation
 - Reliable split and spawn sizing so panes agree on the same layout across clients
 - User-set tab titles are preserved instead of being overwritten by terminal escape sequences
