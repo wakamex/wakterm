@@ -8,6 +8,7 @@ use crate::termwindow::render::window_buttons::window_button_element;
 use crate::termwindow::{TabHarnessIcon, TermWindowNotif, UIItem, UIItemType};
 use crate::utilsprites::RenderMetrics;
 use config::{Dimension, DimensionContext, TabBarColors};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -49,10 +50,119 @@ const ATTENTION_DOT: &[Poly] = &[Poly {
     style: PolyStyle::Fill,
 }];
 
-/// How far toward the tab's background each of a cut title's last
-/// characters is drawn, and how many cells of a cut title remain at least.
+/// How far toward the tab's background a cut title's last characters are
+/// drawn: two characters while the title is long, one as it nears its
+/// shortest.
 const TITLE_FADE_STEPS: [f32; 2] = [0.45, 0.75];
-const MIN_SHRUNK_TITLE_CELLS: f32 = 3.;
+const TITLE_FADE_STEP: f32 = 0.6;
+/// How many characters of a cut title stay fully drawn. A tab with a harness
+/// icon narrows further by sliding its title under the icon.
+const MIN_SHRUNK_TITLE_CHARS: usize = 3;
+/// The width of the bar in which tabs are measured: wide enough that no tab
+/// is squeezed.
+const MEASURE_WIDTH: f32 = 1_000_000.;
+
+/// How a tab's title is drawn when the tabs do not fit: how far each kept
+/// character is faded toward the tab's background, by the byte offset where
+/// the character ends, and the width of the space left of the title where
+/// the harness icon is drawn, when that space is narrowed.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct TitleCut {
+    fades: Vec<(usize, f32)>,
+    icon_space: Option<f32>,
+}
+
+/// How to draw a title of these character widths, as cumulative widths at
+/// each character boundary, in `allowance` pixels. With an icon, the space
+/// before the title is `icon_space` wide, and narrowing it slides the title
+/// under the icon. Returns how many characters to keep and how to draw them.
+fn cut_title(
+    prefixes: &[(usize, f32)],
+    allowance: f32,
+    icon_space: Option<f32>,
+) -> (usize, TitleCut) {
+    let width_of = |chars: usize| {
+        if chars == 0 {
+            0.
+        } else {
+            prefixes[chars - 1].1
+        }
+    };
+    let fitting = |width: f32| prefixes.iter().take_while(|(_, w)| *w <= width).count();
+    let min_chars = prefixes.len().min(MIN_SHRUNK_TITLE_CHARS);
+    let fit = fitting(allowance);
+    if fit >= min_chars {
+        // The fade covers the last two characters, then fewer as the title
+        // nears its shortest, so that its full characters stay readable.
+        let fading = (fit - min_chars).min(TITLE_FADE_STEPS.len());
+        let steps: &[f32] = match fading {
+            0 => &[],
+            1 => &[TITLE_FADE_STEP],
+            _ => &TITLE_FADE_STEPS,
+        };
+        let fades = prefixes[..fit]
+            .iter()
+            .enumerate()
+            .map(|(i, (end, _))| {
+                let from_end = fit - 1 - i;
+                let fade = if from_end < steps.len() {
+                    steps[steps.len() - 1 - from_end]
+                } else {
+                    0.
+                };
+                (*end, fade)
+            })
+            .collect();
+        return (
+            fit,
+            TitleCut {
+                fades,
+                icon_space: None,
+            },
+        );
+    }
+    let Some(icon_space) = icon_space else {
+        // Without an icon to slide under, the title keeps its shortest form.
+        let fades = prefixes[..min_chars]
+            .iter()
+            .map(|(end, _)| (*end, 0.))
+            .collect();
+        return (
+            min_chars,
+            TitleCut {
+                fades,
+                icon_space: None,
+            },
+        );
+    };
+    // The icon space and the title share the tab's room. The title slides
+    // left under the icon, and drops characters only once it has slid all
+    // the way, and each character fades by how much of it the icon covers.
+    let room = icon_space + allowance.max(0.);
+    let keep = if room >= width_of(min_chars) {
+        min_chars
+    } else {
+        fitting(room)
+    };
+    let space = (room - width_of(keep)).max(0.);
+    let fades = prefixes[..keep]
+        .iter()
+        .enumerate()
+        .map(|(i, (end, right))| {
+            let left = space + width_of(i);
+            let right = space + right;
+            let covered = ((icon_space - left) / (right - left).max(1.)).clamp(0., 1.);
+            (*end, covered)
+        })
+        .collect();
+    (
+        keep,
+        TitleCut {
+            fades,
+            icon_space: Some(space),
+        },
+    )
+}
 
 fn mix(from: LinearRgba, to: LinearRgba, k: f32) -> LinearRgba {
     LinearRgba(
@@ -91,48 +201,60 @@ impl crate::TermWindow {
 
     pub fn build_fancy_tab_bar(&self, palette: &ColorPalette) -> anyhow::Result<ComputedElement> {
         let items = self.tab_bar.items();
-        let full = self.layout_fancy_tab_bar(palette, items, &[])?;
+        let width = self.dimensions.pixel_width as f32;
+        let no_cuts = HashMap::new();
         if !self.config.tab_titles_shrink_to_fit {
-            return Ok(full);
+            return self.layout_fancy_tab_bar(palette, items, &no_cuts, false, width);
         }
-        let full_ui_items = full.ui_items();
+        // Tabs past the window's edge are laid out with no room and lose
+        // their width, so the tabs are measured in a bar wide enough for all
+        // of them, and only the chosen layout is drawn at the window's width.
+        let measure = |items: &[TabEntry], cuts: &HashMap<usize, TitleCut>, compact: bool| {
+            self.layout_fancy_tab_bar(palette, items, cuts, compact, MEASURE_WIDTH)
+                .map(|computed| computed.ui_items())
+        };
+        if self.tab_overflow(&measure(items, &no_cuts, false)?) <= 0. {
+            return self.layout_fancy_tab_bar(palette, items, &no_cuts, false, width);
+        }
+        // Tabs that do not fit first lose the close button of every tab but
+        // the active one, then title width.
+        let compact = measure(items, &no_cuts, true)?;
+        let mut chosen = (items.to_vec(), no_cuts.clone());
         // The shared width comes from an estimate of the space the tabs
         // take; whatever still overflows after layout is measured and taken
         // off the space before the next pass.
-        let mut computed = full;
         let mut slack = 0.;
         for _ in 0..3 {
-            let Some((shrunk, faded)) = self.shrink_tab_titles(items, &full_ui_items, slack)?
-            else {
+            let Some((shrunk, cuts)) = self.shrink_tab_titles(items, &compact, slack)? else {
                 break;
             };
-            computed = self.layout_fancy_tab_bar(palette, &shrunk, &faded)?;
-            let overflow = self.tab_overflow(&computed.ui_items());
+            let overflow = self.tab_overflow(&measure(&shrunk, &cuts, true)?);
+            chosen = (shrunk, cuts);
             if overflow <= 0. {
                 break;
             }
             slack += overflow;
         }
-        Ok(computed)
+        self.layout_fancy_tab_bar(palette, &chosen.0, &chosen.1, true, width)
     }
 
-    /// How far, in pixels, the tabs and the new tab button reach past the
-    /// space the tab bar leaves them: its right edge, or the leftmost item
-    /// placed at the right, such as the window buttons.
+    /// How far, in pixels, the tabs and the new tab button of a bar laid out
+    /// `MEASURE_WIDTH` wide would reach past the space the window's tab bar
+    /// leaves them: its right edge, less the items placed at the right, such
+    /// as the window buttons.
     fn tab_overflow(&self, ui_items: &[UIItem]) -> f32 {
         let border = self.get_os_border();
         let bar_right = (self.dimensions.pixel_width - border.right.get()) as f32;
         let mut tabs_right = 0f32;
         let mut limit = bar_right;
         for item in ui_items {
-            let right = (item.x + item.width) as f32;
             match &item.item_type {
                 UIItemType::TabBar(TabBarItem::Tab { .. } | TabBarItem::NewTabButton) => {
-                    tabs_right = tabs_right.max(right)
+                    tabs_right = tabs_right.max((item.x + item.width) as f32)
                 }
-                UIItemType::TabBar(TabBarItem::RightStatus | TabBarItem::WindowButton(_)) => {
-                    limit = limit.min(item.x as f32)
-                }
+                UIItemType::TabBar(
+                    TabBarItem::RightStatus | TabBarItem::WindowButton(_) | TabBarItem::None,
+                ) if (item.width as f32) < MEASURE_WIDTH / 2. => limit -= item.width as f32,
                 _ => {}
             }
         }
@@ -140,21 +262,24 @@ impl crate::TermWindow {
     }
 
     /// Shortens tab titles when the tabs overflow the tab bar, with `slack`
-    /// pixels fewer than the tabs appear to have. Every title
-    /// longer than a shared width is cut to that width, and shorter titles
-    /// stay whole, using the largest width at which the tabs fit. Each cut
-    /// title keeps at least a few characters; tabs that still do not fit
-    /// overflow as before. Returns the entries with cut titles and the
-    /// indices of the tabs that were cut, or None when every title fits.
+    /// pixels fewer than the tabs appear to have. Every title longer than a
+    /// shared width is cut to that width, and shorter titles stay whole,
+    /// using the largest width at which the tabs fit. The active tab keeps
+    /// its whole title. A cut title keeps at least a few characters, and a
+    /// tab with a harness icon then narrows further by sliding its title
+    /// under the icon; tabs that still do not fit overflow as before.
+    /// Returns the entries with cut titles and how to draw each cut title,
+    /// or None when every title fits.
     fn shrink_tab_titles(
         &self,
         items: &[TabEntry],
         ui_items: &[UIItem],
         slack: f32,
-    ) -> anyhow::Result<Option<(Vec<TabEntry>, Vec<usize>)>> {
+    ) -> anyhow::Result<Option<(Vec<TabEntry>, HashMap<usize, TitleCut>)>> {
         let font = self.fonts.title_font()?;
         let metrics = RenderMetrics::with_font_metrics(&font.metrics());
         let cell_width = metrics.cell_size.width as f32;
+        let tab_bar_height = self.tab_bar_pixel_height()?;
         let border = self.get_os_border();
         let bar_width =
             self.dimensions.pixel_width as f32 - (border.left + border.right).get() as f32;
@@ -184,7 +309,8 @@ impl crate::TermWindow {
         }
 
         // Each tab's title as cumulative widths at each character boundary,
-        // and the tab's width beyond its title.
+        // the tab's width beyond its title, and the narrowest the title can
+        // become.
         let mut titles = vec![];
         for (tab_idx, _, width) in &tabs {
             let Some(entry) = items.iter().find(
@@ -195,34 +321,47 @@ impl crate::TermWindow {
             let text = entry.title.as_str().into_owned();
             let prefixes = self.title_prefix_widths(&font, &text)?;
             let text_width = prefixes.last().map(|(_, width)| *width).unwrap_or(0.);
+            let icon_space = (!entry.icons.is_empty()).then(|| {
+                multi_icon_slot_width(tab_bar_height, entry.icons.len())
+                    + harness_icon_gap(&metrics)
+            });
+            let active = matches!(entry.item, TabBarItem::Tab { active: true, .. });
+            let min_width = if active {
+                text_width
+            } else if icon_space.is_some() {
+                0.
+            } else {
+                prefixes
+                    .get(MIN_SHRUNK_TITLE_CHARS.min(prefixes.len()).saturating_sub(1))
+                    .map(|(_, width)| *width)
+                    .unwrap_or(0.)
+            };
             titles.push((
                 entry,
-                text,
                 prefixes,
                 text_width,
                 (width - text_width).max(0.),
+                min_width,
+                icon_space,
             ));
         }
 
-        let widths: Vec<(f32, f32)> = titles
+        let widths: Vec<(f32, f32, f32)> = titles
             .iter()
-            .map(|(_, _, _, text_width, overhead)| (*text_width, *overhead))
+            .map(|(_, _, text_width, overhead, min_width, _)| (*text_width, *overhead, *min_width))
             .collect();
-        let cap = shared_title_width(&widths, available, MIN_SHRUNK_TITLE_CELLS * cell_width);
+        let cap = shared_title_width(&widths, available);
 
         let mut shrunk = items.to_vec();
-        let mut faded = vec![];
-        for (entry, text, prefixes, text_width, _) in &titles {
-            if *text_width <= cap {
+        let mut cuts = HashMap::new();
+        for (entry, prefixes, text_width, _, min_width, icon_space) in &titles {
+            if *text_width <= cap || *min_width >= *text_width {
                 continue;
             }
-            let keep = prefixes
-                .iter()
-                .take_while(|(_, width)| *width <= cap)
-                .last()
-                .map(|(end, _)| *end)
-                .unwrap_or(0);
-            let cells = unicode_column_width(&text[..keep], None);
+            let (keep, cut) = cut_title(prefixes, cap, *icon_space);
+            let end = keep.checked_sub(1).map(|i| prefixes[i].0).unwrap_or(0);
+            let text = entry.title.as_str().into_owned();
+            let cells = unicode_column_width(&text[..end], None);
             let TabBarItem::Tab { tab_idx, .. } = entry.item else {
                 continue;
             };
@@ -230,10 +369,10 @@ impl crate::TermWindow {
                 |target| matches!(target.item, TabBarItem::Tab { tab_idx: idx, .. } if idx == tab_idx),
             ) {
                 target.title.resize(cells, SEQ_ZERO);
-                faded.push(tab_idx);
+                cuts.insert(tab_idx, cut);
             }
         }
-        Ok(Some((shrunk, faded)))
+        Ok(Some((shrunk, cuts)))
     }
 
     /// The width of each prefix of a title in the title font, as the byte
@@ -274,7 +413,9 @@ impl crate::TermWindow {
         &self,
         palette: &ColorPalette,
         items: &[TabEntry],
-        faded: &[usize],
+        cuts: &HashMap<usize, TitleCut>,
+        compact: bool,
+        bar_width: f32,
     ) -> anyhow::Result<ComputedElement> {
         let tab_bar_height = self.tab_bar_pixel_height()?;
         let font = self.fonts.title_font()?;
@@ -335,54 +476,61 @@ impl crate::TermWindow {
                 })
             };
             // A cut title fades into the tab's background over its last
-            // characters, which are drawn in colors between the two.
+            // characters, and under its icon, each drawn in a color between
+            // the two.
             let fade_title = |title: Element, tab_idx: usize, text: LinearRgba, bg: LinearRgba| {
-                if !faded.contains(&tab_idx) {
+                let Some(cut) = cuts.get(&tab_idx) else {
+                    return title;
+                };
+                if cut.fades.iter().all(|(_, fade)| *fade <= 0.) {
                     return title;
                 }
                 let content = item.title.as_str().into_owned();
-                let tail_start = content
-                    .char_indices()
-                    .rev()
-                    .nth(TITLE_FADE_STEPS.len() - 1)
-                    .map(|(index, _)| index)
-                    .unwrap_or(0);
-                let mut parts = vec![Element::new(
-                    &font,
-                    ElementContent::Text(content[..tail_start].to_string()),
-                )
-                .colors(ElementColors {
-                    border: BorderColor::default(),
-                    bg: InheritableColor::Inherited,
-                    text: text.into(),
-                })];
-                let tail = content[tail_start..].chars();
-                let steps = &TITLE_FADE_STEPS[TITLE_FADE_STEPS.len() - tail.clone().count()..];
-                for (c, step) in tail.zip(steps) {
-                    parts.push(
-                        Element::new(&font, ElementContent::Text(c.to_string())).colors(
-                            ElementColors {
+                let mut parts: Vec<Element> = vec![];
+                let mut start = 0;
+                let mut run_start = 0;
+                let mut run_fade = None;
+                let flush = |parts: &mut Vec<Element>, from: usize, to: usize, fade: f32| {
+                    if from < to {
+                        parts.push(
+                            Element::new(
+                                &font,
+                                ElementContent::Text(content[from..to].to_string()),
+                            )
+                            .colors(ElementColors {
                                 border: BorderColor::default(),
                                 bg: InheritableColor::Inherited,
-                                text: mix(text, bg, *step).into(),
-                            },
-                        ),
-                    );
+                                text: mix(text, bg, fade).into(),
+                            }),
+                        );
+                    }
+                };
+                for (end, fade) in &cut.fades {
+                    let end = (*end).min(content.len());
+                    if run_fade != Some(*fade) {
+                        if let Some(previous) = run_fade {
+                            flush(&mut parts, run_start, start, previous);
+                        }
+                        run_start = start;
+                        run_fade = Some(*fade);
+                    }
+                    start = end;
+                }
+                if let Some(previous) = run_fade {
+                    flush(&mut parts, run_start, start, previous);
                 }
                 Element::new(&font, ElementContent::Children(parts))
             };
-            let wrap_icon_title = |title: Element, icon_count: usize| {
-                Element::new(
-                    &font,
-                    ElementContent::Children(vec![
-                        make_harness_icon_spacer(
-                            &font,
-                            multi_icon_slot_width(tab_bar_height, icon_count),
-                            harness_icon_gap(&metrics),
-                        ),
-                        title,
-                    ]),
-                )
+            let wrap_icon_title = |title: Element, icon_count: usize, tab_idx: usize| {
+                let spacer = match cuts.get(&tab_idx).and_then(|cut| cut.icon_space) {
+                    Some(space) => make_harness_icon_spacer(&font, space, 0.),
+                    None => make_harness_icon_spacer(
+                        &font,
+                        multi_icon_slot_width(tab_bar_height, icon_count),
+                        harness_icon_gap(&metrics),
+                    ),
+                };
+                Element::new(&font, ElementContent::Children(vec![spacer, title]))
             };
 
             let new_tab = colors.new_tab();
@@ -471,7 +619,7 @@ impl crate::TermWindow {
                     });
                     let title = fade_title(title, tab_idx, resolved_text, resolved_bg);
                     let element = if !item.icons.is_empty() {
-                        wrap_icon_title(title, item.icons.len())
+                        wrap_icon_title(title, item.icons.len(), tab_idx)
                     } else {
                         title
                     };
@@ -549,7 +697,7 @@ impl crate::TermWindow {
                     });
                     let title = fade_title(title, tab_idx, text, bg);
                     let element = if !item.icons.is_empty() {
-                        wrap_icon_title(title, item.icons.len())
+                        wrap_icon_title(title, item.icons.len(), tab_idx)
                     } else {
                         title
                     };
@@ -638,7 +786,7 @@ impl crate::TermWindow {
                         ElementContent::Text(_) => unreachable!(),
                         ElementContent::Poly { .. } => unreachable!(),
                         ElementContent::Children(mut kids) => {
-                            if self.config.show_close_tab_button_in_tabs {
+                            if self.config.show_close_tab_button_in_tabs && (active || !compact) {
                                 kids.push(make_x_button(&font, &metrics, &colors, tab_idx, active));
                             }
                             ElementContent::Children(kids)
@@ -706,7 +854,7 @@ impl crate::TermWindow {
         let tabs = Element::new(&font, content)
             .display(DisplayType::Block)
             .item_type(UIItemType::TabBar(TabBarItem::None))
-            .min_width(Some(Dimension::Pixels(self.dimensions.pixel_width as f32)))
+            .min_width(Some(Dimension::Pixels(bar_width)))
             .min_height(Some(Dimension::Pixels(tab_bar_height)))
             .vertical_align(VerticalAlign::Bottom)
             .colors(bar_colors);
@@ -722,13 +870,13 @@ impl crate::TermWindow {
                 },
                 width: DimensionContext {
                     dpi: self.dimensions.dpi as f32,
-                    pixel_max: self.dimensions.pixel_width as f32,
+                    pixel_max: bar_width,
                     pixel_cell: metrics.cell_size.width as f32,
                 },
                 bounds: euclid::rect(
                     border.left.get() as f32,
                     0.,
-                    self.dimensions.pixel_width as f32 - (border.left + border.right).get() as f32,
+                    bar_width - (border.left + border.right).get() as f32,
                     tab_bar_height,
                 ),
                 metrics: &metrics,
@@ -859,18 +1007,18 @@ impl crate::TermWindow {
 }
 
 /// The largest width that every title longer than it can be cut to so that
-/// the tabs fit in `available` pixels, given each tab's title width and its
-/// width beyond the title. Never less than `min_width`.
-fn shared_title_width(widths: &[(f32, f32)], available: f32, min_width: f32) -> f32 {
+/// the tabs fit in `available` pixels, given each tab's title width, its
+/// width beyond the title, and the narrowest its title can become.
+fn shared_title_width(widths: &[(f32, f32, f32)], available: f32) -> f32 {
     let fits = |cap: f32| {
         widths
             .iter()
-            .map(|(title, overhead)| overhead + title.min(cap))
+            .map(|(title, overhead, min)| overhead + title.min(cap.max(*min)))
             .sum::<f32>()
             <= available
     };
-    let longest = widths.iter().map(|(title, _)| *title).fold(0., f32::max);
-    let (mut low, mut high) = (min_width, longest.max(min_width));
+    let longest = widths.iter().map(|(title, _, _)| *title).fold(0., f32::max);
+    let (mut low, mut high) = (0., longest);
     if fits(high) {
         return high;
     }
@@ -1080,21 +1228,77 @@ mod tests {
 
 #[cfg(test)]
 mod test {
-    use super::shared_title_width;
+    use super::{cut_title, shared_title_width, TITLE_FADE_STEP, TITLE_FADE_STEPS};
 
     #[test]
     fn shared_title_width_cuts_only_the_longest_titles() {
-        // Titles of 10, 40 and 100 pixels, each tab 6 pixels wider.
-        let widths = [(10., 6.), (40., 6.), (100., 6.)];
+        // Titles of 10, 40 and 100 pixels, each tab 6 pixels wider, none
+        // shorter than 5 pixels.
+        let widths = [(10., 6., 5.), (40., 6., 5.), (100., 6., 5.)];
         // Everything fits: no title is cut.
-        assert_eq!(shared_title_width(&widths, 200., 5.), 100.);
+        assert_eq!(shared_title_width(&widths, 200.), 100.);
         // 6 * 3 + 10 + 40 + cap = 120 at a cap of 52: only the longest is cut.
-        let cap = shared_title_width(&widths, 120., 5.);
+        let cap = shared_title_width(&widths, 120.);
         assert!((cap - 52.).abs() <= 0.5, "{}", cap);
         // 6 * 3 + 10 + 2 * cap = 60 at a cap of 16: the short title stays whole.
-        let cap = shared_title_width(&widths, 60., 5.);
+        let cap = shared_title_width(&widths, 60.);
         assert!((cap - 16.).abs() <= 0.5, "{}", cap);
-        // Too narrow even at the minimum: the minimum is kept.
-        assert_eq!(shared_title_width(&widths, 10., 5.), 5.);
+        // A title that may not shrink, such as the active tab's, keeps its
+        // width, and the others make room.
+        let widths = [(100., 6., 100.), (100., 6., 0.)];
+        let cap = shared_title_width(&widths, 160.);
+        assert!((cap - 48.).abs() <= 0.5, "{}", cap);
+    }
+
+    /// A title of ten characters, each 10 pixels wide.
+    fn prefixes() -> Vec<(usize, f32)> {
+        (1..=10).map(|i| (i, i as f32 * 10.)).collect()
+    }
+
+    fn fades(cut: &super::TitleCut) -> Vec<f32> {
+        cut.fades.iter().map(|(_, fade)| *fade).collect()
+    }
+
+    #[test]
+    fn a_cut_title_fades_its_last_characters_then_fewer_near_its_shortest() {
+        let prefixes = prefixes();
+        // Room for 6 characters: 4 full, then the two fade steps.
+        let (keep, cut) = cut_title(&prefixes, 65., Some(20.));
+        assert_eq!(keep, 6);
+        assert_eq!(
+            fades(&cut),
+            [0., 0., 0., 0., TITLE_FADE_STEPS[0], TITLE_FADE_STEPS[1]]
+        );
+        assert_eq!(cut.icon_space, None);
+        // 4 characters: 3 full and one fading; 3: no fade at all.
+        assert_eq!(
+            fades(&cut_title(&prefixes, 40., Some(20.)).1),
+            [0., 0., 0., TITLE_FADE_STEP]
+        );
+        assert_eq!(fades(&cut_title(&prefixes, 30., Some(20.)).1), [0., 0., 0.]);
+    }
+
+    #[test]
+    fn below_its_shortest_a_title_slides_under_its_icon_and_fades() {
+        let prefixes = prefixes();
+        // 20 pixels of room for the title: the 30-pixel title moves 10 pixels
+        // left, so the icon's 20-pixel space narrows to 10 and half covers the
+        // first character.
+        let (keep, cut) = cut_title(&prefixes, 20., Some(20.));
+        assert_eq!(keep, 3);
+        assert_eq!(cut.icon_space, Some(10.));
+        assert_eq!(fades(&cut), [1., 0., 0.]);
+        let (_, cut) = cut_title(&prefixes, 25., Some(20.));
+        assert_eq!(cut.icon_space, Some(15.));
+        assert_eq!(fades(&cut), [0.5, 0., 0.]);
+        // No room for the title: only the icon's space is left, and whatever
+        // text remains under it is fully faded.
+        let (keep, cut) = cut_title(&prefixes, 0., Some(20.));
+        assert_eq!(keep, 2);
+        assert_eq!(cut.icon_space, Some(0.));
+        assert_eq!(fades(&cut), [1., 1.]);
+        // Without an icon the title stops at its shortest.
+        let (keep, cut) = cut_title(&prefixes, 0., None);
+        assert_eq!((keep, fades(&cut)), (3, vec![0., 0., 0.]));
     }
 }
