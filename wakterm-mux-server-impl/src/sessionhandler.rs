@@ -870,6 +870,18 @@ impl SessionHandler {
                 spawn_into_main_thread(async move {
                     let result = async {
                         wait_for_redraw(pane_id).await;
+                        if Mux::get().withdraw_typed_input_if_agent_working(pane_id)? {
+                            wait_for_redraw(pane_id).await;
+                            anyhow::bail!(
+                                "agy started a turn before the message was submitted; the \
+                                 message was {}",
+                                if Mux::get().agy_input_box_empty(pane_id) {
+                                    "taken back out of its input box"
+                                } else {
+                                    "left in its input box, since it could not be removed"
+                                }
+                            );
+                        }
                         let pane = Mux::get()
                             .get_pane(pane_id)
                             .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
@@ -2243,9 +2255,43 @@ async fn admit_agent_prompt(
     let delivery = match Mux::get().agent_service().write_admitted_prompt(&candidate) {
         Ok(()) => {
             wait_for_redraw(candidate.pane_id).await;
-            Mux::get()
-                .agent_service()
-                .submit_admitted_prompt(&candidate)
+            match Mux::get().withdraw_typed_input_if_agent_working(candidate.pane_id) {
+                Ok(true) => {
+                    wait_for_redraw(candidate.pane_id).await;
+                    if Mux::get().agy_input_box_empty(candidate.pane_id) {
+                        if let Err(err) = release_unwritten_claim(
+                            &request,
+                            request_store.clone(),
+                            admission_store.clone(),
+                        )
+                        .await
+                        {
+                            return Ok(AgentAdmissionReceipt::rejected(
+                                &request,
+                                AgentAdmissionStatus::InternalFailure,
+                                format!(
+                                    "the prompt was taken back, but its admission claim could \
+                                     not be released: {err:#}"
+                                ),
+                            ));
+                        }
+                        return Ok(AgentAdmissionReceipt::rejected(
+                            &request,
+                            AgentAdmissionStatus::Busy,
+                            "agy started a turn before the prompt was submitted; the prompt \
+                             was taken back out of its input box",
+                        ));
+                    }
+                    Err(anyhow!(
+                        "agy started a turn before the prompt was submitted, and the prompt \
+                         could not be taken back out of its input box"
+                    ))
+                }
+                Ok(false) => Mux::get()
+                    .agent_service()
+                    .submit_admitted_prompt(&candidate),
+                Err(err) => Err(err),
+            }
         }
         Err(err) => Err(err),
     };

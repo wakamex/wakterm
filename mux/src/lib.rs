@@ -3685,6 +3685,49 @@ impl Mux {
         }
     }
 
+    /// Takes back text just typed into an agy pane when agy started a turn
+    /// before Enter was pressed. agy queues input submitted during a turn and
+    /// can send it together with the user's next input, so the text is
+    /// removed from the box instead, one line at a time: Ctrl+U clears a
+    /// line and Backspace joins it to the one above. Returns whether the
+    /// text was taken back; an error when it could not be removed.
+    pub fn withdraw_typed_input_if_agent_working(&self, pane_id: PaneId) -> anyhow::Result<bool> {
+        let is_agy = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .is_some_and(|runtime| runtime.harness == AgentHarness::Agy);
+        if !is_agy {
+            return Ok(false);
+        }
+        let pane = self
+            .get_pane(pane_id)
+            .with_context(|| format!("pane {pane_id} disappeared"))?;
+        let screen = |pane: &Arc<dyn Pane>| {
+            let dims = pane.get_dimensions();
+            let top = dims.physical_top;
+            let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
+            agent::agy_input_box(&lines)
+        };
+        let Some(state) = screen(&pane).filter(|state| state.working) else {
+            return Ok(false);
+        };
+        let mut keys = b"\x15\x7f".repeat(state.rows);
+        keys.push(0x15);
+        pane.writer().write_all(&keys)?;
+        Ok(true)
+    }
+
+    /// Whether the agy pane's input box is empty.
+    pub fn agy_input_box_empty(&self, pane_id: PaneId) -> bool {
+        self.get_pane(pane_id).is_some_and(|pane| {
+            let dims = pane.get_dimensions();
+            let top = dims.physical_top;
+            let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
+            agent::agy_input_box(&lines).is_some_and(|state| state.text.is_empty())
+        })
+    }
+
     /// Presses the key of Claude's stash action in the pane, Ctrl+S unless
     /// the user rebound it, which moves the draft out of
     /// the input box. Claude puts it back after the next prompt is

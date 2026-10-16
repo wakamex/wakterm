@@ -1178,8 +1178,62 @@ pub fn input_box_blocked(
             .then_some("the input box holds text the user is typing"),
         AgentHarness::Codex => (!codex_input_box_empty(lines))
             .then_some("Codex's input box is not empty or not on screen"),
+        AgentHarness::Agy => match agy_input_box(lines) {
+            None => Some("agy's input box is not on screen"),
+            Some(state) if state.working => Some(
+                "agy is working on a turn, and would queue the message to send with the user's \
+                 next input",
+            ),
+            Some(state) if !state.text.is_empty() => {
+                Some("the input box holds text the user is typing")
+            }
+            Some(_) => None,
+        },
         _ => None,
     }
+}
+
+/// agy's input box as its pane shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgyInputBox {
+    /// The text in the box, its lines joined with newlines.
+    pub text: String,
+    /// How many screen lines the box's text takes.
+    pub rows: usize,
+    /// Whether the footer under the box says a turn is running.
+    pub working: bool,
+}
+
+/// Reads agy's input box from the pane's visible lines: the lowest line that
+/// starts with `>` right below a rule, and the lines under it up to the next
+/// rule. The footer below that rule reads "esc to cancel" while a turn runs.
+/// agy draws no placeholder, so any text after the `>` was typed or pasted.
+pub fn agy_input_box(lines: &[wakterm_term::Line]) -> Option<AgyInputBox> {
+    let text = |line: &wakterm_term::Line| line.as_str().trim_end().to_string();
+    let is_rule = |line: &str| line.trim_start().starts_with('\u{2500}');
+    let lines: Vec<String> = lines.iter().map(text).collect();
+    let prompt = (1..lines.len())
+        .rev()
+        .find(|&i| is_rule(&lines[i - 1]) && lines[i].starts_with('>'))?;
+    let end = (prompt + 1..lines.len()).find(|&i| is_rule(&lines[i]))?;
+    let mut content = vec![lines[prompt][1..].trim().to_string()];
+    content.extend(
+        lines[prompt + 1..end]
+            .iter()
+            .map(|line| line.trim().to_string()),
+    );
+    while content.last().is_some_and(String::is_empty) && content.len() > 1 {
+        content.pop();
+    }
+    let working = lines[end + 1..]
+        .iter()
+        .take(2)
+        .any(|line| line.contains("esc to cancel"));
+    Some(AgyInputBox {
+        rows: content.len(),
+        text: content.join("\n").trim().to_string(),
+        working,
+    })
 }
 
 /// Whether the pane's visible lines show Codex's input box, enabled and
@@ -5900,6 +5954,47 @@ mod test {
         );
         assert_eq!(claude_key_bytes("ctrl+m"), None);
         assert_eq!(claude_key_bytes("s"), None);
+    }
+
+    #[test]
+    fn agy_input_box_is_read_with_its_text_and_whether_a_turn_runs() {
+        let screen = |rows: &[&str]| {
+            rows.iter()
+                .map(|row| wakterm_term::Line::from_text(row, &Default::default(), 0, None))
+                .collect::<Vec<_>>()
+        };
+        let rule = "\u{2500}".repeat(20);
+        let idle = screen(&["  earlier reply", &rule, ">", &rule, "? for shortcuts"]);
+        let state = agy_input_box(&idle).unwrap();
+        assert_eq!((state.text.as_str(), state.working), ("", false));
+        assert_eq!(input_box_blocked(&AgentHarness::Agy, &idle), None);
+
+        let working = screen(&["  Running command...", &rule, ">", &rule, "esc to cancel"]);
+        assert!(agy_input_box(&working).unwrap().working);
+        assert!(input_box_blocked(&AgentHarness::Agy, &working)
+            .is_some_and(|reason| reason.contains("working on a turn")));
+
+        let draft = screen(&[
+            &rule,
+            "> if the breakdown is by model",
+            "  family",
+            "",
+            &rule,
+            "",
+        ]);
+        let state = agy_input_box(&draft).unwrap();
+        assert_eq!(state.text, "if the breakdown is by model\nfamily");
+        assert_eq!(state.rows, 2);
+        assert_eq!(
+            input_box_blocked(&AgentHarness::Agy, &draft),
+            Some("the input box holds text the user is typing")
+        );
+        // A quoted line in the transcript is not the box.
+        assert_eq!(agy_input_box(&screen(&["> quoted", "text"])), None);
+        assert_eq!(
+            input_box_blocked(&AgentHarness::Agy, &[]),
+            Some("agy's input box is not on screen")
+        );
     }
 
     #[test]

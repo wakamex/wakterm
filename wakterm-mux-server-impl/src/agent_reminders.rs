@@ -89,6 +89,9 @@ async fn deliver(reminder: &AgentReminder) -> anyhow::Result<bool> {
     let paste = !matches!(agent.runtime.harness, AgentHarness::Gemini);
     pane.send_prompt(&reminder.message, paste)?;
     wait_for_redraw(agent.pane_id).await;
+    if mux.withdraw_typed_input_if_agent_working(agent.pane_id)? {
+        anyhow::bail!("agy started a turn before the message was submitted");
+    }
     pane.writer().write_all(b"\r")?;
     Ok(true)
 }
