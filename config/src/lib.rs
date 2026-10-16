@@ -473,6 +473,10 @@ struct ConfigInner {
     warnings: Vec<String>,
     generation: usize,
     watcher: Option<notify::RecommendedWatcher>,
+    /// Set once the file watcher could not be created, such as when the
+    /// user has no inotify instances left. Configuration then loads without
+    /// live reload, and creating the watcher is not retried.
+    watcher_failed: bool,
     subscribers: HashMap<usize, Box<dyn Fn() -> bool + Send>>,
 }
 
@@ -484,6 +488,7 @@ impl ConfigInner {
             warnings: vec![],
             generation: 0,
             watcher: None,
+            watcher_failed: false,
             subscribers: HashMap::new(),
         }
     }
@@ -507,10 +512,20 @@ impl ConfigInner {
     }
 
     fn watch_path(&mut self, path: PathBuf) {
-        if self.watcher.is_none() {
+        if self.watcher.is_none() && !self.watcher_failed {
             let (tx, rx) = std::sync::mpsc::channel();
             const DELAY: Duration = Duration::from_millis(200);
-            let watcher = notify::recommended_watcher(tx).unwrap();
+            let watcher = match notify::recommended_watcher(tx) {
+                Ok(watcher) => watcher,
+                Err(err) => {
+                    self.watcher_failed = true;
+                    log::warn!(
+                        "not watching the configuration for changes, so it will not reload \
+                         live: {err:#}"
+                    );
+                    return;
+                }
+            };
             let path = path.clone();
 
             std::thread::spawn(move || {
