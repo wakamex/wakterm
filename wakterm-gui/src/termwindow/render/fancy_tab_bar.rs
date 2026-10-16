@@ -58,6 +58,11 @@ const TITLE_FADE_STEP: f32 = 0.6;
 /// How many characters of a cut title stay fully drawn. A tab with a harness
 /// icon narrows further by sliding its title under the icon.
 const MIN_SHRUNK_TITLE_CHARS: usize = 3;
+/// How far a working agent's tab is drawn toward the tab bar's background,
+/// and its icon toward transparent; and how long its activity marker takes
+/// to blink.
+const WORKING_TAB_DIM: f32 = 0.55;
+const WORKING_MARKER_PERIOD: Duration = Duration::from_millis(1200);
 /// The width of the bar in which tabs are measured: wide enough that no tab
 /// is squeezed.
 const MEASURE_WIDTH: f32 = 1_000_000.;
@@ -690,6 +695,14 @@ impl crate::TermWindow {
                     let text = explicit_fg_color
                         .unwrap_or_else(|| inactive_tab.fg_color.into())
                         .to_linear();
+                    // A tab whose agents are all working is darkened toward the
+                    // tab bar, so that tabs waiting for the user stand out.
+                    let (bg, text) = if self.config.agent_tab_dim_working && item.agents_working {
+                        let bg = mix(bg, colors.background().to_linear(), WORKING_TAB_DIM);
+                        (bg, mix(text, bg, WORKING_TAB_DIM))
+                    } else {
+                        (bg, text)
+                    };
                     let title = make_title(if item.icons.is_empty() {
                         None
                     } else {
@@ -964,6 +977,12 @@ impl crate::TermWindow {
                 color.3 *= opacity;
                 self.update_next_frame_time(Some(Instant::now() + Duration::from_millis(33)));
             }
+            let working = self.config.agent_tab_dim_working && entry.agents_working;
+            let active = matches!(entry.item, TabBarItem::Tab { active: true, .. });
+            let marker_color = color;
+            if working && !active {
+                color.3 *= 1. - WORKING_TAB_DIM;
+            }
             let item_height = item.height as f32;
             let single_icon_size = (item_height - 2.0).max(0.0);
             let overlap_stride = single_icon_size * 0.65;
@@ -984,6 +1003,27 @@ impl crate::TermWindow {
                     color,
                 )?
                 .set_grayscale();
+            }
+            // A working agent's marker blinks at the icon's lower right.
+            if working {
+                let cycle = WORKING_MARKER_PERIOD.as_secs_f32();
+                let phase = ATTENTION_PULSE_START.elapsed().as_secs_f32() % cycle / cycle;
+                let mut marker_color = marker_color;
+                marker_color.3 *= 0.5 + 0.5 * (phase * std::f32::consts::TAU).cos();
+                self.update_next_frame_time(Some(Instant::now() + Duration::from_millis(50)));
+                let dot_size = (single_icon_size * 0.24).max(3.0);
+                self.poly_quad(
+                    &mut layers,
+                    1,
+                    euclid::point2(
+                        item.x as f32 + tab_left_padding + single_icon_size - dot_size * 0.5,
+                        item.y as f32 + item_height - dot_size - 1.0,
+                    ),
+                    ATTENTION_DOT,
+                    1,
+                    euclid::size2(dot_size, dot_size),
+                    marker_color,
+                )?;
             }
             if entry.needs_attention && !self.config.agent_tab_attention_pulse {
                 let dot_size = (single_icon_size * 0.22).max(3.0);

@@ -4520,6 +4520,35 @@ impl Mux {
         self.cached_tab_badge_state_for_agents(tab_id, Some(view_id))
     }
 
+    /// Whether the tab's agents are all working: at least one agent in the
+    /// tab is waiting on its own turn, and none waits for the user. Tabs
+    /// without agents, and agents in an unknown state, are not working.
+    pub fn tab_agents_working(&self, tab_id: TabId) -> bool {
+        use crate::agent::AgentTurnState;
+        let Some(tab) = self.get_tab(tab_id) else {
+            return false;
+        };
+        let runtimes = self.agent_runtime_by_pane.read();
+        let mirrored = self.mirrored_agent_snapshot_by_pane.read();
+        let mut working = false;
+        for positioned in tab.iter_panes_ignoring_zoom() {
+            let pane_id = positioned.pane.pane_id();
+            let turn_state = if self.get_agent_metadata_for_pane(pane_id).is_some() {
+                runtimes.get(&pane_id).map(|runtime| &runtime.turn_state)
+            } else {
+                mirrored
+                    .get(&pane_id)
+                    .map(|agent| &agent.runtime.turn_state)
+            };
+            match turn_state {
+                Some(AgentTurnState::WaitingOnUser) => return false,
+                Some(AgentTurnState::WaitingOnAgent) => working = true,
+                _ => {}
+            }
+        }
+        working
+    }
+
     pub fn tab_badge_state_for_current_identity(&self, tab_id: TabId) -> AgentTabBadgeState {
         match self.active_view_id() {
             Some(view_id) => self.tab_badge_state_for_view(view_id.as_ref(), tab_id),
@@ -8892,6 +8921,67 @@ mod test {
         set_turn_state(crate::agent::AgentTurnState::WaitingOnUser);
         assert_eq!(mux.agent_with_unknown_turn_state(&metadata.agent_id), None);
         assert_eq!(mux.agent_with_unknown_turn_state("another-agent"), None);
+    }
+
+    #[test]
+    fn a_tab_is_working_only_while_no_agent_in_it_waits_for_the_user() {
+        use crate::agent::AgentTurnState;
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let first = FakePane::new(150, size, domain.id);
+        tab.assign_pane(&first);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        let second = FakePane::new(151, size, domain.id);
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: crate::tab::SplitDirection::Horizontal,
+                target_is_second: true,
+                top_level: false,
+                size: crate::tab::SplitSize::Percent(50),
+            },
+            Arc::clone(&second),
+        )
+        .unwrap();
+        mux.add_pane(&second).unwrap();
+        let set_turn = |pane: &Arc<dyn Pane>, name: &str, turn_state| {
+            if mux.get_agent_metadata_for_pane(pane.pane_id()).is_none() {
+                mux.set_agent_metadata(pane.pane_id(), sample_agent_metadata(name))
+                    .unwrap();
+            }
+            mux.agent_runtime_by_pane
+                .write()
+                .get_mut(&pane.pane_id())
+                .unwrap()
+                .turn_state = turn_state;
+        };
+
+        // A tab without agents is not working.
+        assert!(!mux.tab_agents_working(tab.tab_id()));
+        set_turn(&first, "first", AgentTurnState::WaitingOnAgent);
+        assert!(mux.tab_agents_working(tab.tab_id()));
+        // An agent waiting for the user, or one in an unknown state beside a
+        // working one, decides as follows.
+        set_turn(&second, "second", AgentTurnState::WaitingOnUser);
+        assert!(!mux.tab_agents_working(tab.tab_id()));
+        set_turn(&second, "second", AgentTurnState::Unknown);
+        assert!(mux.tab_agents_working(tab.tab_id()));
+        set_turn(&first, "first", AgentTurnState::Unknown);
+        assert!(!mux.tab_agents_working(tab.tab_id()));
     }
 
     #[test]

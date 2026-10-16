@@ -299,6 +299,8 @@ pub struct TabInformation {
     pub active_pane: Option<PaneInformation>,
     pub harness_icons: Vec<TabHarnessIcon>,
     pub needs_attention: bool,
+    /// Whether the tab's agents are all working, none waiting for the user.
+    pub agents_working: bool,
     pub assigned_color: Option<config::RgbaColor>,
     pub window_id: MuxWindowId,
     pub effective_title: String,
@@ -345,6 +347,7 @@ impl UserData for TabInformation {
                 .collect::<Vec<_>>())
         });
         fields.add_field_method_get("needs_attention", |_, this| Ok(this.needs_attention));
+        fields.add_field_method_get("agents_working", |_, this| Ok(this.agents_working));
         fields.add_field_method_get("assigned_color", |_, this| {
             Ok(this.assigned_color.map(String::from))
         });
@@ -3903,6 +3906,7 @@ impl TermWindow {
                 let needs_attention = mux
                     .tab_badge_state_for_current_identity(tab.tab_id())
                     .needs_attention;
+                let agents_working = mux.tab_agents_working(tab.tab_id());
 
                 TabInformation {
                     tab_index: idx,
@@ -3920,6 +3924,7 @@ impl TermWindow {
                         .unwrap_or_default(),
                     harness_icons,
                     needs_attention,
+                    agents_working,
                     assigned_color: None,
                     active_pane: active_pane.map(|pane| {
                         let mut info = Self::pos_pane_to_pane_info(pane);
@@ -4160,6 +4165,7 @@ mod test {
             active_pane: active_pane_title.map(pane_with_title),
             harness_icons: vec![],
             needs_attention: false,
+            agents_working: false,
             assigned_color: None,
             window_id: 0,
             effective_title: tab_title.to_string(),

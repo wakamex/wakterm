@@ -198,6 +198,11 @@ pub struct Config {
     #[dynamic(default = "default_true")]
     pub agent_tab_attention_pulse: bool,
 
+    /// Draw tabs whose agents are working dimmed, with a blinking activity
+    /// marker, so that tabs waiting for the user stand out.
+    #[dynamic(default = "default_true")]
+    pub agent_tab_dim_working: bool,
+
     /// Text prefix shown in tab titles for agents with no known harness icon.
     /// When a harness-specific icon (Claude, Codex, etc.) is available, the
     /// icon is used instead and this text badge is suppressed.

@@ -394,6 +394,7 @@ mod tests {
             }),
             harness_icons: vec![],
             needs_attention: false,
+            agents_working: false,
             assigned_color: None,
             window_id: 0,
             effective_title: title.to_string(),
