@@ -12,6 +12,10 @@ documented contract correctly.
 
 After changing CLI arguments or help text, key assignments, or default key bindings, run `make update-derived` and commit the regenerated completions, CLI help, key tables, and `docs/guides/configuration/default-keys.md` with the change. CI runs `make check-derived` and fails on stale files, but only after a push.
 
+## Periodic changelog and docs sweep
+
+To bring the fork changelog and docs current with `main`, find the ending commit of the top range in `CHANGELOG-FORK.md` and inspect `git log --no-merges <last-sha>..HEAD`. Prepend a new dated range section (`## Changes from YYYY-MM-DD through YYYY-MM-DD (commits <start> through <end>)`) to `CHANGELOG-FORK.md` grouped under `Agent Harnesses and Agent API`, `Tabs and Tab Navigator`, `Fonts, Multiplexer, and Platform Portability`, and `Docs, Packaging, and Tooling`, linking each entry to its commit URLs. Update `docs/features.md`, `README.md`, and any stale pages under `docs/cli/reference/` or `docs/reference/` for user-visible additions in that range, then verify with `make check-derived` and `DOCS_OFFLINE=1 ./ci/build-docs.sh`.
+
 ## Mux protocol types
 
 The mux protocol encodes structs field by field without field names, so the reader must see exactly the fields the writer wrote. Do not use `skip_serializing_if` or other conditional serialization on any type that crosses the protocol, including types from other crates embedded in a PDU, such as agent events and snapshots. After changing such a type, run `cargo test -p codec` as well as the owning crate's tests, and keep the codec round-trip tests covering the new field both empty and set.
