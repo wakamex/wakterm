@@ -138,6 +138,14 @@ struct JsonlCursor {
     /// replying.
     #[serde(default)]
     turn_error: Option<String>,
+    /// When this cursor was armed at the end of a new session file that
+    /// replaced the agent's previous one. A provider can go on appending to
+    /// that file history it already recorded in the previous one, as Claude
+    /// does when it copies a conversation into a new session file. Records
+    /// timestamped more than `COPIED_HISTORY_SLACK` before this time still
+    /// update the cursor's turn state, but report no events.
+    #[serde(default)]
+    armed_at: Option<DateTime<Utc>>,
 }
 
 impl JsonlCursor {
@@ -1561,6 +1569,7 @@ fn initial_jsonl_cursor(
         current_prompt_id,
         turn_before_gap: None,
         turn_error: None,
+        armed_at: None,
     })
 }
 
@@ -1628,6 +1637,11 @@ fn latest_jsonl_turn(
     }
     Ok((current, prompt_id))
 }
+
+/// How long before a new session file was armed a record in it may be
+/// timestamped and still count as new: a provider stamps a record before it
+/// writes it.
+const COPIED_HISTORY_SLACK: chrono::Duration = chrono::Duration::seconds(2);
 
 fn read_new_jsonl(
     path: &Path,
@@ -1705,20 +1719,31 @@ fn read_new_jsonl(
                 continue;
             }
         };
-        events.extend(visit(start, &record, cursor)?);
+        let visited = visit(start, &record, cursor)?;
+        let recorded_earlier = cursor
+            .armed_at
+            .zip(record_time(&record))
+            .is_some_and(|(armed_at, at)| at < armed_at - COPIED_HISTORY_SLACK);
+        if !recorded_earlier {
+            events.extend(visited);
+        }
     }
     cursor.checkpoint_sha256 = checkpoint_sha256(path, cursor.offset)?;
     Ok(events)
 }
 
 fn event_time(record: &Value) -> DateTime<Utc> {
+    record_time(record).unwrap_or_else(Utc::now)
+}
+
+/// The time a provider record says it was written, if it says.
+fn record_time(record: &Value) -> Option<DateTime<Utc>> {
     record
         .get("timestamp")
         .or_else(|| record.get("created_at"))
         .and_then(Value::as_str)
         .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
         .map(|value| value.with_timezone(&Utc))
-        .unwrap_or_else(Utc::now)
 }
 
 fn codex_turn_id(record: &Value) -> Option<&str> {
@@ -2593,7 +2618,10 @@ fn reset_jsonl_projection(
     } else {
         format!("{provider} provider session was rewritten; a new tail baseline was armed")
     };
-    let cursor = initial_jsonl_cursor(path, provider, source_id)?;
+    let mut cursor = initial_jsonl_cursor(path, provider, source_id)?;
+    if session_changed {
+        cursor.armed_at = Some(Utc::now());
+    }
     let event = observer_failure(
         format!(
             "{provider}:{}:baseline-reset:{}:{}",
@@ -4180,6 +4208,92 @@ mod tests {
         let last = page.latest_sequence;
         store.observe_agent(&metadata, &runtime).unwrap();
         assert!(store.read_page(last, 100).unwrap().events.is_empty());
+    }
+
+    #[test]
+    fn history_copied_into_a_new_claude_session_file_is_not_reported_again() {
+        let temp = TempDir::new().unwrap();
+        let first = temp.path().join("first.jsonl");
+        let second = temp.path().join("second.jsonl");
+        let line = |value: serde_json::Value| value.to_string() + "\n";
+        let user = |session: &str, uuid: &str, at: &str, text: &str| {
+            line(
+                serde_json::json!({"type":"user","uuid":uuid,"promptId":uuid,
+                "sessionId":session,"timestamp":at,"message":{"content":text}}),
+            )
+        };
+        let reply = |session: &str, uuid: &str, at: &str| {
+            line(
+                serde_json::json!({"type":"assistant","uuid":uuid,"sessionId":session,
+                "timestamp":at,"message":{"id":uuid,"model":"claude","stop_reason":"end_turn",
+                "content":[{"type":"text","text":"done"}]}}),
+            )
+        };
+        fs::write(&first, "{\"type\":\"mode\",\"sessionId\":\"first\"}\n").unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("claude");
+        let observe = |path: &Path| {
+            store
+                .observe_agent(
+                    &metadata,
+                    &runtime(
+                        &metadata,
+                        AgentHarness::Claude,
+                        path.to_string_lossy().into(),
+                    ),
+                )
+                .unwrap()
+        };
+        observe(&first);
+        let old = (Utc::now() - chrono::Duration::days(3)).to_rfc3339();
+        append(
+            &first,
+            &[
+                user("first", "turn-old", &old, "old work"),
+                reply("first", "reply-old", &old),
+            ]
+            .concat(),
+        );
+        observe(&first);
+        let after_switch = store.latest_sequence();
+
+        // Claude moves the session to a new file, which it then fills with
+        // the conversation so far before the next turn.
+        fs::write(&second, "{\"type\":\"mode\",\"sessionId\":\"second\"}\n").unwrap();
+        observe(&second);
+        let now = Utc::now().to_rfc3339();
+        append(
+            &second,
+            &[
+                user("second", "turn-old", &old, "old work"),
+                reply("second", "reply-old", &old),
+                user("second", "turn-new", &now, "new work"),
+                reply("second", "reply-new", &now),
+            ]
+            .concat(),
+        );
+        observe(&second);
+
+        let turns = store
+            .read_page(after_switch, 100)
+            .unwrap()
+            .events
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    AgentEventKind::TurnStarted | AgentEventKind::TurnFinal
+                )
+            })
+            .map(|event| (event.kind, event.turn_id.unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            turns,
+            [
+                (AgentEventKind::TurnStarted, "turn-new".to_string()),
+                (AgentEventKind::TurnFinal, "turn-new".to_string()),
+            ]
+        );
     }
 
     #[test]
