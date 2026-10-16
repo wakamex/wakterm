@@ -301,6 +301,9 @@ pub struct TabInformation {
     pub needs_attention: bool,
     /// Whether the tab's agents are all working, none waiting for the user.
     pub agents_working: bool,
+    /// Whether an agent in the tab waits for the user, and its latest reply
+    /// was already reviewed.
+    pub agents_reviewed: bool,
     pub assigned_color: Option<config::RgbaColor>,
     pub window_id: MuxWindowId,
     pub effective_title: String,
@@ -348,6 +351,7 @@ impl UserData for TabInformation {
         });
         fields.add_field_method_get("needs_attention", |_, this| Ok(this.needs_attention));
         fields.add_field_method_get("agents_working", |_, this| Ok(this.agents_working));
+        fields.add_field_method_get("agents_reviewed", |_, this| Ok(this.agents_reviewed));
         fields.add_field_method_get("assigned_color", |_, this| {
             Ok(this.assigned_color.map(String::from))
         });
@@ -3903,10 +3907,10 @@ impl TermWindow {
                     .into_iter()
                     .filter_map(TabHarnessIcon::from_agent_harness)
                     .collect();
-                let needs_attention = mux
-                    .tab_badge_state_for_current_identity(tab.tab_id())
-                    .needs_attention;
+                let badge = mux.tab_badge_state_for_current_identity(tab.tab_id());
+                let needs_attention = badge.needs_attention;
                 let agents_working = mux.tab_agents_working(tab.tab_id());
+                let agents_reviewed = badge.waiting_on_user && !badge.needs_attention;
 
                 TabInformation {
                     tab_index: idx,
@@ -3925,6 +3929,7 @@ impl TermWindow {
                     harness_icons,
                     needs_attention,
                     agents_working,
+                    agents_reviewed,
                     assigned_color: None,
                     active_pane: active_pane.map(|pane| {
                         let mut info = Self::pos_pane_to_pane_info(pane);
@@ -4166,6 +4171,7 @@ mod test {
             harness_icons: vec![],
             needs_attention: false,
             agents_working: false,
+            agents_reviewed: false,
             assigned_color: None,
             window_id: 0,
             effective_title: tab_title.to_string(),

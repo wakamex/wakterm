@@ -200,6 +200,13 @@ const PLUS_BUTTON: &[Poly] = &[
 ];
 
 impl crate::TermWindow {
+    /// Whether the tab is drawn dimmed: its agents are all working, or, when
+    /// that is enabled, its agent waits with a reply already reviewed.
+    fn tab_dimmed(&self, entry: &TabEntry) -> bool {
+        (self.config.agent_tab_dim_working && entry.agents_working)
+            || (self.config.agent_tab_dim_reviewed && entry.agents_reviewed)
+    }
+
     pub fn invalidate_fancy_tab_bar(&mut self) {
         self.fancy_tab_bar.take();
     }
@@ -695,9 +702,10 @@ impl crate::TermWindow {
                     let text = explicit_fg_color
                         .unwrap_or_else(|| inactive_tab.fg_color.into())
                         .to_linear();
-                    // A tab whose agents are all working is darkened toward the
-                    // tab bar, so that tabs waiting for the user stand out.
-                    let (bg, text) = if self.config.agent_tab_dim_working && item.agents_working {
+                    // A tab whose agents are all working, or optionally whose
+                    // reply was reviewed, is darkened toward the tab bar, so
+                    // that tabs waiting for the user stand out.
+                    let (bg, text) = if self.tab_dimmed(item) {
                         let bg = mix(bg, colors.background().to_linear(), WORKING_TAB_DIM);
                         (bg, mix(text, bg, WORKING_TAB_DIM))
                     } else {
@@ -980,7 +988,7 @@ impl crate::TermWindow {
             let working = self.config.agent_tab_dim_working && entry.agents_working;
             let active = matches!(entry.item, TabBarItem::Tab { active: true, .. });
             let marker_color = color;
-            if working && !active {
+            if self.tab_dimmed(entry) && !active {
                 color.3 *= 1. - WORKING_TAB_DIM;
             }
             let item_height = item.height as f32;

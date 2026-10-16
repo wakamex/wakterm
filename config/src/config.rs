@@ -203,6 +203,11 @@ pub struct Config {
     #[dynamic(default = "default_true")]
     pub agent_tab_dim_working: bool,
 
+    /// Also draw dimmed, without the activity marker, tabs whose agents wait
+    /// for the user but whose latest reply was already reviewed.
+    #[dynamic(default)]
+    pub agent_tab_dim_reviewed: bool,
+
     /// Text prefix shown in tab titles for agents with no known harness icon.
     /// When a harness-specific icon (Claude, Codex, etc.) is available, the
     /// icon is used instead and this text badge is suppressed.

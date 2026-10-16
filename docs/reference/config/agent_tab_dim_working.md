@@ -15,4 +15,10 @@ Set this to `false` to draw every tab in its normal colors:
 config.agent_tab_dim_working = false
 ```
 
+Set `agent_tab_dim_reviewed = true` to also dim, without the dot, a tab whose agent waits for you but whose latest reply you have already seen. Then only the active tab and tabs with an unread reply keep their normal colors. It is off by default:
+
+```lua
+config.agent_tab_dim_reviewed = true
+```
+
 See also: [agent_tab_attention_pulse](agent_tab_attention_pulse.md).
