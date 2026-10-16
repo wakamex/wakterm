@@ -1034,7 +1034,8 @@ impl crate::TermWindow {
                     1,
                     euclid::size2(dot_size, dot_size),
                     marker_color,
-                )?;
+                )?
+                .set_grayscale();
             }
             if entry.needs_attention && !self.config.agent_tab_attention_pulse {
                 let dot_size = (single_icon_size * 0.22).max(3.0);
