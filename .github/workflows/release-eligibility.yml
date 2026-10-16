@@ -1,0 +1,17 @@
+name: release-eligible
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-eligible-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-eligible:
+    uses: ./.github/workflows/validation.yml

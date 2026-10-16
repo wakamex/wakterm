@@ -44,8 +44,19 @@ fn main() {
                 ])
                 .output()
             {
-                let info = String::from_utf8_lossy(&output.stdout);
-                ci_tag = info.trim().to_string();
+                if output.status.success() {
+                    let info = String::from_utf8_lossy(&output.stdout);
+                    ci_tag = info.trim().to_string();
+                }
+            }
+        }
+
+        if ci_tag.is_empty() {
+            if let Ok(ver) = std::fs::read("../VERSION") {
+                if let Ok(s) = String::from_utf8(ver) {
+                    ci_tag = s.trim().to_string();
+                    println!("cargo:rerun-if-changed=../VERSION");
+                }
             }
         }
     }

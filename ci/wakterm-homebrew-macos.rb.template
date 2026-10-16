@@ -4,10 +4,10 @@
 # by automation in the wakterm repo.
 # vim:ft=ruby:
 cask "wakterm" do
-  version "@TAG@"
+  version "@VERSION@"
   sha256 "@SHA256@"
 
-  url "https://github.com/wakamex/wakterm/releases/download/#{version}/wakterm-macos-#{version}.zip"
+  url "https://github.com/wakamex/wakterm/releases/download/v#{version}/wakterm-macos-v#{version}.zip"
   name "wakterm"
   desc "Agent-aware GPU-accelerated terminal emulator and multiplexer"
   homepage "https://wakterm.org/"

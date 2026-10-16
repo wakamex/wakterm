@@ -1,43 +1,65 @@
-name: release
+name: publish
 
 on:
   push:
     tags:
-      - "20*"
+      - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  validate:
+    uses: ./.github/workflows/validation.yml
+
+  verify-tag:
+    name: Verify release tag and notes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require an annotated tag matching VERSION and committed release notes
+        uses: wakamex/release-actions/verify-release-tag@stable
+        with:
+          version-command: cat VERSION
+
   build:
     name: ${{ matrix.name }}
+    needs:
+      - validate
+      - verify-tag
     runs-on: ${{ matrix.runs_on }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - id: ubuntu
-            name: ubuntu-latest
-            runs_on: ubuntu-latest
+            name: ubuntu-24.04
+            runs_on: ubuntu-24.04
             artifact_name: release-ubuntu
             artifact_glob: |
               wakterm-*.deb
               wakterm-*.xz
           - id: macos
-            name: macos-latest
-            runs_on: macos-latest
+            name: macos-15
+            runs_on: macos-15
             artifact_name: release-macos
             artifact_glob: |
               wakterm-*.zip
-              wakterm.rb
           - id: windows
-            name: windows-latest
-            runs_on: windows-latest
+            name: windows-2025
+            runs_on: windows-2025
             artifact_name: release-windows
             artifact_glob: |
               wakterm-*.zip
               wakterm-*.exe
-              wakterm.json
 
     env:
       CARGO_INCREMENTAL: "0"
@@ -46,9 +68,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
+          persist-credentials: false
 
       - name: Record release tag
         shell: bash
@@ -56,24 +79,13 @@ jobs:
 
       - name: Install Rust
         if: matrix.id != 'windows'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
       - name: Install Rust
         if: matrix.id == 'windows'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           target: x86_64-pc-windows-msvc
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: release-${{ matrix.id }}
-
-      - name: Install cargo-nextest from Cargo
-        uses: baptiste0928/cargo-install@v3
-        with:
-          crate: cargo-nextest
-          cache-key: release-${{ matrix.id }}
 
       - name: Install Linux system deps
         if: matrix.id == 'ubuntu'
@@ -88,54 +100,56 @@ jobs:
           rustup target add aarch64-apple-darwin
           rustup target add x86_64-apple-darwin
 
-      - name: Build, test, and package
+      - name: Build and package on Ubuntu
         if: matrix.id == 'ubuntu'
         shell: bash
         run: |
-          cargo build --release \
+          cargo build --release --locked \
             -p wakterm \
             -p wakterm-gui \
             -p wakterm-mux-server \
             -p strip-ansi-escapes
-          cargo nextest run --all --no-fail-fast
           bash ci/deploy.sh
 
-      - name: Build, test, and package
+      - name: Build and package on macOS
         if: matrix.id == 'macos'
         shell: bash
         run: |
           for target in x86_64-apple-darwin aarch64-apple-darwin; do
-            cargo build --target "$target" --release -p wakterm
-            cargo build --target "$target" --release -p wakterm-gui
-            cargo build --target "$target" --release -p wakterm-mux-server
-            cargo build --target "$target" --release -p strip-ansi-escapes
+            cargo build --target "$target" --release --locked \
+              -p wakterm \
+              -p wakterm-gui \
+              -p wakterm-mux-server \
+              -p strip-ansi-escapes
           done
-          cargo nextest run --all --no-fail-fast --target=x86_64-apple-darwin
           bash ci/deploy.sh
 
-      - name: Build, test, and package
+      - name: Build on Windows
         if: matrix.id == 'windows'
         shell: cmd
         run: |
           PATH C:\Strawberry\perl\bin;%PATH%
-          cargo build --release -p wakterm -p wakterm-gui -p wakterm-mux-server -p strip-ansi-escapes
-          cargo nextest run --all --no-fail-fast
+          cargo build --release --locked -p wakterm -p wakterm-gui -p wakterm-mux-server -p strip-ansi-escapes
 
       - name: Package Windows artifacts
         if: matrix.id == 'windows'
         shell: bash
         run: bash ci/deploy.sh
 
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v7
+      - name: Upload target artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_glob }}
+          if-no-files-found: error
 
   build-fedora:
-    name: fedora-latest
-    runs-on: ubuntu-latest
-    container: fedora:latest
+    name: fedora-43
+    needs:
+      - validate
+      - verify-tag
+    runs-on: ubuntu-24.04
+    container: fedora:43
 
     env:
       CARGO_INCREMENTAL: "0"
@@ -150,9 +164,10 @@ jobs:
         run: dnf install -y ca-certificates curl git
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
+          persist-credentials: false
 
       - name: Record release tag
         run: printf '%s\n' "${TAG_NAME}" > .tag
@@ -165,61 +180,53 @@ jobs:
       - name: Install Linux system deps
         run: env CI=yes ./get-deps --testing
 
-      - name: Install cargo-nextest
-        run: cargo install cargo-nextest --locked
-
-      - name: Build, test, and package
+      - name: Build and package
         run: |
-          cargo build --release \
+          cargo build --release --locked \
             -p wakterm \
             -p wakterm-gui \
             -p wakterm-mux-server \
             -p strip-ansi-escapes
-          cargo nextest run --all --no-fail-fast
           bash ci/deploy.sh
 
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v7
+      - name: Upload Fedora artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-fedora
           path: wakterm-*.rpm
+          if-no-files-found: error
 
-  publish:
-    name: publish-release
-    runs-on: ubuntu-latest
+  stage:
+    name: Stage release assets
     needs:
       - build
       - build-fedora
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Download release artifacts
-        uses: actions/download-artifact@v8
+      - name: Download target artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: release-*
           merge-multiple: true
+          path: release-assets
 
-      - name: Generate checksums
-        shell: bash
-        run: |
-          shopt -s nullglob
-          files=(wakterm-*.deb wakterm-*.rpm wakterm-*.xz wakterm-*.zip wakterm-*.exe)
-          for f in "${files[@]}"; do
-            sha256sum "$f" > "$f.sha256"
-          done
+      - name: Upload combined release-assets artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: release-assets/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 30
 
-      - name: Create release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: bash ci/create-release.sh "${GITHUB_REF_NAME}"
-
-      - name: Upload release artifacts
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          shopt -s nullglob
-          files=(wakterm-*.deb wakterm-*.rpm wakterm-*.xz wakterm-*.zip wakterm-*.exe *.sha256 wakterm.rb wakterm.json)
-          gh release upload --clobber "${GITHUB_REF_NAME}" "${files[@]}"
+  release:
+    needs: stage
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      id-token: write
+    uses: wakamex/release-actions/.github/workflows/binary-release.yml@stable
+    with:
+      artifact: release-assets

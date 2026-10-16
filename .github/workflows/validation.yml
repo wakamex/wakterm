@@ -1,0 +1,179 @@
+name: validation
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: ubuntu
+            name: ubuntu-24.04
+            runs_on: ubuntu-24.04
+            nextest_key: ubuntu-24.04
+          - id: macos
+            name: macos-15
+            runs_on: macos-15
+            nextest_key: macos-15
+          - id: windows
+            name: windows-2025
+            runs_on: windows-2025
+            nextest_key: windows-2025
+
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTUP_WINDOWS_PATH_ADD_BIN: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Rust
+        if: matrix.id != 'windows'
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - name: Install Rust
+        if: matrix.id == 'windows'
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - name: Install cargo-nextest from Cargo
+        uses: baptiste0928/cargo-install@8195d4f734a149db85385bb4102b42efcd373759 # v3.5.0
+        with:
+          crate: cargo-nextest
+          cache-key: ci-${{ matrix.nextest_key }}
+
+      - name: Install gelatyx
+        if: matrix.id == 'ubuntu'
+        uses: baptiste0928/cargo-install@8195d4f734a149db85385bb4102b42efcd373759 # v3.5.0
+        with:
+          crate: gelatyx
+          version: "0.3.0"
+          cache-key: gelatyx-${{ matrix.id }}
+
+      - name: Install Linux system deps
+        if: matrix.id == 'ubuntu'
+        run: |
+          sudo apt-get update
+          env CI=yes ./get-deps --testing
+          sudo apt-get install -y xvfb
+
+      - name: Install macOS targets
+        if: matrix.id == 'macos'
+        shell: bash
+        run: |
+          rustup target add aarch64-apple-darwin
+          rustup target add x86_64-apple-darwin
+
+      - name: Build, test, and package on Ubuntu
+        if: matrix.id == 'ubuntu'
+        shell: bash
+        run: |
+          cargo build --release --locked \
+            -p wakterm \
+            -p wakterm-gui \
+            -p wakterm-mux-server \
+            -p strip-ansi-escapes
+          cargo nextest run --all --no-fail-fast
+          ci/gui-smoke.sh target/release
+          make check-derived DERIVED_PROFILE=release
+          TAG_NAME="v$(cat VERSION)" bash ci/deploy.sh
+
+      - name: Build, test, and package on macOS
+        if: matrix.id == 'macos'
+        shell: bash
+        run: |
+          for target in x86_64-apple-darwin aarch64-apple-darwin; do
+            cargo build --target "$target" --release --locked \
+              -p wakterm \
+              -p wakterm-gui \
+              -p wakterm-mux-server \
+              -p strip-ansi-escapes
+          done
+          cargo nextest run --all --no-fail-fast --target=aarch64-apple-darwin
+          TAG_NAME="v$(cat VERSION)" bash ci/deploy.sh
+
+      - name: Build and test on Windows
+        if: matrix.id == 'windows'
+        shell: cmd
+        run: |
+          PATH C:\Strawberry\perl\bin;%PATH%
+          cargo build --release --locked -p wakterm -p wakterm-gui -p wakterm-mux-server -p strip-ansi-escapes
+          cargo nextest run --all --no-fail-fast
+
+      - name: Package on Windows
+        if: matrix.id == 'windows'
+        shell: bash
+        run: TAG_NAME="v$(cat VERSION)" bash ci/deploy.sh
+
+  build-test-fedora:
+    name: fedora-43
+    runs-on: ubuntu-24.04
+    container: fedora:43
+
+    env:
+      CARGO_INCREMENTAL: "0"
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install container prerequisites
+        run: dnf install -y ca-certificates curl git
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install Linux system deps
+        run: env CI=yes ./get-deps --testing
+
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked
+
+      - name: Build, test, and package
+        run: |
+          cargo build --release --locked \
+            -p wakterm \
+            -p wakterm-gui \
+            -p wakterm-mux-server \
+            -p strip-ansi-escapes
+          cargo nextest run --all --no-fail-fast
+          TAG_NAME="v$(cat VERSION)" bash ci/deploy.sh
+
+  validate:
+    name: validate
+    if: always()
+    needs:
+      - build-test
+      - build-test-fedora
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require all target builds and tests to succeed
+        uses: wakamex/release-actions/validate-gate@stable
+        with:
+          needs: ${{ toJSON(needs) }}

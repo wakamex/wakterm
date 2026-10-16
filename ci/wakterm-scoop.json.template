@@ -1,5 +1,5 @@
 {
-    "version": "@TAG@",
+    "version": "@VERSION@",
     "description": "Agent-aware GPU-accelerated terminal emulator and multiplexer",
     "homepage": "https://wakterm.org/",
     "license": "MIT",
@@ -28,8 +28,8 @@
     "autoupdate": {
         "architecture": {
             "64bit": {
-                "url": "https://github.com/wakamex/wakterm/releases/download/$version/wakterm-windows-$version.zip",
-                "extract_dir": "wakterm-windows-$version"
+                "url": "https://github.com/wakamex/wakterm/releases/download/v$version/wakterm-windows-v$version.zip",
+                "extract_dir": "wakterm-windows-v$version"
             }
         }
     }

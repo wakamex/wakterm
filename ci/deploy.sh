@@ -5,6 +5,9 @@ set -e
 TARGET_DIR=${1:-target}
 
 TAG_NAME=${TAG_NAME:-$(git -c "core.abbrev=8" show -s "--format=%cd-%h" "--date=format:%Y%m%d-%H%M%S")}
+VERSION_NO_V=${TAG_NAME#v}
+VERSION_NO_V=${VERSION_NO_V#nightly-}
+VERSION_NO_V=${VERSION_NO_V#nightly}
 
 HERE=$(pwd)
 
@@ -35,6 +38,8 @@ case $OSTYPE in
     mkdir -p $zipdir/wakterm.app/Contents/Resources
     cp -r assets/shell-integration/* $zipdir/wakterm.app/Contents/Resources
     cp -r assets/shell-completion $zipdir/wakterm.app/Contents/Resources
+    cp LICENSE.md $zipdir/
+    cp LICENSE.md assets/fonts/LICENSE_*.txt $zipdir/wakterm.app/Contents/Resources/
     tic -xe wakterm -o $zipdir/wakterm.app/Contents/Resources/terminfo termwiz/data/wakterm.terminfo
 
     for bin in wakterm wakterm-mux-server wakterm-gui strip-ansi-escapes ; do
@@ -97,7 +102,7 @@ case $OSTYPE in
     set -x
 
     SHA256=$(shasum -a 256 $zipname | cut -d' ' -f1)
-    sed -e "s/@TAG@/$TAG_NAME/g" -e "s/@SHA256@/$SHA256/g" < ci/wakterm-homebrew-macos.rb.template > wakterm.rb
+    sed -e "s/@TAG@/$TAG_NAME/g" -e "s/@VERSION@/$VERSION_NO_V/g" -e "s/@SHA256@/$SHA256/g" < ci/wakterm-homebrew-macos.rb.template > wakterm.rb
 
     ;;
   msys)
@@ -110,7 +115,7 @@ case $OSTYPE in
       instname=wakterm-${TAG_NAME}-setup
     fi
     rm -rf $zipdir $zipname
-    mkdir $zipdir
+    mkdir -p $zipdir/licenses
     cp $TARGET_DIR/release/wakterm.exe \
       $TARGET_DIR/release/wakterm-mux-server.exe \
       $TARGET_DIR/release/wakterm-gui.exe \
@@ -120,21 +125,26 @@ case $OSTYPE in
       assets/windows/conhost/OpenConsole.exe \
       assets/windows/angle/libEGL.dll \
       assets/windows/angle/libGLESv2.dll \
+      LICENSE.md \
       $zipdir
+    cp assets/fonts/LICENSE_*.txt $zipdir/licenses/
     mkdir $zipdir/mesa
     cp $TARGET_DIR/release/mesa/opengl32.dll \
         $zipdir/mesa
     7z a -tzip $zipname $zipdir
-    iscc.exe -DMyAppVersion=${TAG_NAME#nightly} -F${instname} ci/windows-installer.iss
+    if ! command -v iscc.exe >/dev/null 2>&1 && [[ -x "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" ]]; then
+      PATH="/c/Program Files (x86)/Inno Setup 6:$PATH"
+    fi
+    iscc.exe -DMyAppVersion=${VERSION_NO_V} -F${instname} ci/windows-installer.iss
     SHA256=$(sha256sum $zipname | cut -d' ' -f1)
-    sed -e "s/@TAG@/$TAG_NAME/g" -e "s/@SHA256@/$SHA256/g" < ci/wakterm-scoop.json.template > wakterm.json
+    sed -e "s/@TAG@/$TAG_NAME/g" -e "s/@VERSION@/$VERSION_NO_V/g" -e "s/@SHA256@/$SHA256/g" < ci/wakterm-scoop.json.template > wakterm.json
     ;;
   linux-gnu|linux)
     distro=$(lsb_release -is 2>/dev/null || sh -c "source /etc/os-release && echo \$NAME")
     distver=$(lsb_release -rs 2>/dev/null || sh -c "source /etc/os-release && echo \$VERSION_ID")
     case "$distro" in
       *Fedora*|*CentOS*|*SUSE*)
-        WAKTERM_RPM_VERSION=$(echo ${TAG_NAME#nightly-} | tr - _)
+        WAKTERM_RPM_VERSION=$(echo ${VERSION_NO_V} | tr - _)
         distroid=$(sh -c "source /etc/os-release && echo \$ID" | tr - _)
         distver=$(sh -c "source /etc/os-release && echo \$VERSION_ID" | tr - _)
 
@@ -150,7 +160,7 @@ Name: wakterm
 Version: ${WAKTERM_RPM_VERSION}
 Release: ${SPEC_RELEASE}
 Packager: wakamex <wakamex@users.noreply.github.com>
-License: MIT
+License: MIT AND OFL-1.1 AND Apache-2.0 AND CC-BY-4.0 AND Unlicense
 URL: https://wakterm.org/
 Summary: wakterm.
 BuildRequires: gcc, gcc-c++, make, curl, fontconfig-devel, openssl-devel, libxcb-devel, libxkbcommon-devel, libxkbcommon-x11-devel, wayland-devel, xcb-util-devel, xcb-util-keysyms-devel, xcb-util-image-devel, xcb-util-wm-devel, git
@@ -212,7 +222,7 @@ cargo build --release \
 %install
 set -x
 cd .
-mkdir -p %{buildroot}/usr/bin %{buildroot}/etc/profile.d %{buildroot}/usr/share/icons/hicolor/128x128/apps %{buildroot}/usr/share/applications %{buildroot}/usr/share/metainfo %{buildroot}/usr/share/nautilus-python/extensions
+mkdir -p %{buildroot}/usr/bin %{buildroot}/etc/profile.d %{buildroot}/usr/share/icons/hicolor/128x128/apps %{buildroot}/usr/share/applications %{buildroot}/usr/share/metainfo %{buildroot}/usr/share/nautilus-python/extensions %{buildroot}/usr/share/licenses/wakterm
 install -Dm755 assets/open-wakterm-here -t %{buildroot}/usr/bin
 install -Dsm755 $TARGET_DIR/release/wakterm -t %{buildroot}/usr/bin
 install -Dsm755 $TARGET_DIR/release/wakterm-gui -t %{buildroot}/usr/bin
@@ -225,11 +235,13 @@ install -Dm644 assets/icon/terminal.png %{buildroot}/usr/share/icons/hicolor/128
 install -Dm644 assets/wakterm.desktop %{buildroot}/usr/share/applications/org.wezfurlong.wakterm.desktop
 install -Dm644 assets/wakterm.appdata.xml %{buildroot}/usr/share/metainfo/org.wezfurlong.wakterm.appdata.xml
 install -Dm644 assets/wakterm-nautilus.py %{buildroot}/usr/share/nautilus-python/extensions/wakterm-nautilus.py
+install -Dm644 LICENSE.md assets/fonts/LICENSE_*.txt -t %{buildroot}/usr/share/licenses/wakterm
 
 %files
 # Main package (metapackage) has no files
 
 %files -n wakterm-common
+%license /usr/share/licenses/wakterm/*
 /usr/bin/wakterm
 /usr/bin/strip-ansi-escapes
 /usr/share/zsh/site-functions/_wakterm
@@ -259,7 +271,7 @@ Name: wakterm
 Version: ${WAKTERM_RPM_VERSION}
 Release: ${SPEC_RELEASE}
 Packager: wakamex <wakamex@users.noreply.github.com>
-License: MIT
+License: MIT AND OFL-1.1 AND Apache-2.0 AND CC-BY-4.0 AND Unlicense
 URL: https://wakterm.org/
 Summary: wakterm.
 %if 0%{?suse_version}
@@ -281,7 +293,7 @@ echo build
 %install
 set -x
 cd ${HERE}
-mkdir -p %{buildroot}/usr/bin %{buildroot}/etc/profile.d %{buildroot}/usr/share/icons/hicolor/128x128/apps %{buildroot}/usr/share/applications %{buildroot}/usr/share/metainfo %{buildroot}/usr/share/nautilus-python/extensions
+mkdir -p %{buildroot}/usr/bin %{buildroot}/etc/profile.d %{buildroot}/usr/share/icons/hicolor/128x128/apps %{buildroot}/usr/share/applications %{buildroot}/usr/share/metainfo %{buildroot}/usr/share/nautilus-python/extensions %{buildroot}/usr/share/licenses/wakterm
 install -Dm755 assets/open-wakterm-here -t %{buildroot}/usr/bin
 install -Dsm755 $TARGET_DIR/release/wakterm -t %{buildroot}/usr/bin
 install -Dsm755 $TARGET_DIR/release/wakterm-gui -t %{buildroot}/usr/bin
@@ -294,8 +306,10 @@ install -Dm644 assets/icon/terminal.png %{buildroot}/usr/share/icons/hicolor/128
 install -Dm644 assets/wakterm.desktop %{buildroot}/usr/share/applications/org.wezfurlong.wakterm.desktop
 install -Dm644 assets/wakterm.appdata.xml %{buildroot}/usr/share/metainfo/org.wezfurlong.wakterm.appdata.xml
 install -Dm644 assets/wakterm-nautilus.py %{buildroot}/usr/share/nautilus-python/extensions/wakterm-nautilus.py
+install -Dm644 LICENSE.md assets/fonts/LICENSE_*.txt -t %{buildroot}/usr/share/licenses/wakterm
 
 %files
+%license /usr/share/licenses/wakterm/*
 /usr/bin/open-wakterm-here
 /usr/bin/wakterm
 /usr/bin/wakterm-gui
@@ -322,7 +336,7 @@ EOF
         ;;
       Ubuntu*|Debian*|Pop)
         rm -rf pkg
-        mkdir -p pkg/debian/usr/bin pkg/debian/DEBIAN pkg/debian/usr/share/{applications,wakterm}
+        mkdir -p pkg/debian/usr/bin pkg/debian/DEBIAN pkg/debian/usr/share/{applications,wakterm,doc/wakterm}
 
         if [[ "$BUILD_REASON" == "Schedule" ]] ; then
           pkgname=wakterm-nightly
@@ -334,7 +348,7 @@ EOF
 
         cat > pkg/debian/control <<EOF
 Package: $pkgname
-Version: ${TAG_NAME#nightly-}
+Version: ${VERSION_NO_V}
 Conflicts: $conflicts
 Architecture: $(dpkg-architecture -q DEB_BUILD_ARCH_CPU)
 Maintainer: wakamex <wakamex@users.noreply.github.com>
@@ -388,6 +402,7 @@ EOF
         install -Dm644 assets/shell-completion/bash pkg/debian/usr/share/bash-completion/completions/wakterm
         install -Dm644 assets/shell-completion/zsh pkg/debian/usr/share/zsh/functions/Completion/Unix/_wakterm
         install -Dm644 assets/shell-integration/* -t pkg/debian/etc/profile.d
+        install -Dm644 LICENSE.md assets/fonts/LICENSE_*.txt -t pkg/debian/usr/share/doc/wakterm
 
         if [[ "$BUILD_REASON" == "Schedule" ]] ; then
           debname=wakterm-nightly.$distro$distver

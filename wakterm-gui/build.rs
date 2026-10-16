@@ -12,6 +12,7 @@ fn main() {
             .and_then(|cwd| cwd.parent().map(|p| p.to_path_buf()))
             .unwrap();
         let exe_output_dir = repo_dir.join("target").join(profile);
+        let _ = std::fs::create_dir_all(&exe_output_dir);
         let windows_dir = repo_dir.join("assets").join("windows");
 
         let conhost_dir = windows_dir.join("conhost");
@@ -84,9 +85,15 @@ fn main() {
             if let Ok(output) = cmd.output() {
                 if output.status.success() {
                     String::from_utf8_lossy(&output.stdout).trim().to_owned()
+                } else if let Ok(ver) = std::fs::read_to_string("../VERSION") {
+                    println!("cargo:rerun-if-changed=../VERSION");
+                    ver.trim().to_owned()
                 } else {
                     "UNKNOWN".to_owned()
                 }
+            } else if let Ok(ver) = std::fs::read_to_string("../VERSION") {
+                println!("cargo:rerun-if-changed=../VERSION");
+                ver.trim().to_owned()
             } else {
                 "UNKNOWN".to_owned()
             }
@@ -171,6 +178,7 @@ END
         let build_target_dir = std::env::var("CARGO_TARGET_DIR")
             .and_then(|s| Ok(std::path::PathBuf::from(s)))
             .unwrap_or(repo_dir.join("target").join(profile));
+        let _ = std::fs::create_dir_all(&build_target_dir);
         let dest_plist = build_target_dir.join("Info.plist");
         println!("cargo:rerun-if-changed=assets/macos/wakterm.app/Contents/Info.plist");
 

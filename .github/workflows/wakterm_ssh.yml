@@ -24,20 +24,20 @@ on:
 
 jobs:
   build-wakterm-ssh-feature-libssh-rs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: "Install Rust"
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - name: "Cache cargo"
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             wakterm-ssh
           key: "wakterm-ssh-libssh-rs-${{ runner.os }}"
       - name: "Install cargo-nextest from Cargo"
-        uses: baptiste0928/cargo-install@v3
+        uses: baptiste0928/cargo-install@8195d4f734a149db85385bb4102b42efcd373759 # v3.5.0
         with:
           crate: "cargo-nextest"
       - name: Build
@@ -46,20 +46,20 @@ jobs:
           cargo build -p wakterm-ssh --no-default-features --features "libssh-rs vendored-openssl-libssh-rs"
           cargo nextest run --no-fail-fast -p wakterm-ssh --no-default-features --features "libssh-rs vendored-openssl-libssh-rs"
   build-wakterm-ssh-feature-ssh2:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: "Install Rust"
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - name: "Cache cargo"
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             wakterm-ssh
           key: "wakterm-ssh-ssh2-${{ runner.os }}"
       - name: "Install cargo-nextest from Cargo"
-        uses: baptiste0928/cargo-install@v3
+        uses: baptiste0928/cargo-install@8195d4f734a149db85385bb4102b42efcd373759 # v3.5.0
         with:
           crate: "cargo-nextest"
       - name: Build

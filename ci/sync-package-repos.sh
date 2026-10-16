@@ -7,6 +7,7 @@ if [[ $# -lt 1 ]]; then
 fi
 
 TAG_NAME="$1"
+VERSION_NO_V="${TAG_NAME#v}"
 PUSH="${2:-}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 GH_BIN="${GH_BIN:-$(command -v gh || echo /home/linuxbrew/.linuxbrew/bin/gh)}"
@@ -14,30 +15,36 @@ REPO="${WAKTERM_REPO:-wakamex/wakterm}"
 TAP_REPO="${HOMEBREW_TAP_REPO:-wakamex/homebrew-tap}"
 BUCKET_REPO="${SCOOP_BUCKET_REPO:-wakamex/scoop-bucket}"
 
+actual_tag="$(git -C "$HERE" describe --exact-match --tags)"
+if [[ "$actual_tag" != "$TAG_NAME" ]]; then
+  echo "Error: current checkout is at '$actual_tag', expected tag '$TAG_NAME'" >&2
+  exit 1
+fi
+
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
 "$GH_BIN" release download "$TAG_NAME" \
   --repo "$REPO" \
-  --pattern "wakterm-macos-${TAG_NAME}.zip.sha256" \
-  --pattern "wakterm-windows-${TAG_NAME}.zip.sha256" \
+  --pattern "SHA256SUMS" \
   --dir "$tmpdir"
 
-macos_sha256="$(awk '{print $1}' "$tmpdir/wakterm-macos-${TAG_NAME}.zip.sha256")"
-windows_sha256="$(awk '{print $1}' "$tmpdir/wakterm-windows-${TAG_NAME}.zip.sha256")"
+macos_sha256="$(awk -v f="wakterm-macos-${TAG_NAME}.zip" '$2 == f || $2 == "*"f {print $1}' "$tmpdir/SHA256SUMS")"
+windows_sha256="$(awk -v f="wakterm-windows-${TAG_NAME}.zip" '$2 == f || $2 == "*"f {print $1}' "$tmpdir/SHA256SUMS")"
 
 test -n "$macos_sha256"
 test -n "$windows_sha256"
 
-sed -e "s/@TAG@/$TAG_NAME/g" -e "s/@SHA256@/$macos_sha256/g" \
+sed -e "s/@TAG@/$TAG_NAME/g" -e "s/@VERSION@/$VERSION_NO_V/g" -e "s/@SHA256@/$macos_sha256/g" \
   < "$HERE/ci/wakterm-homebrew-macos.rb.template" \
   > "$tmpdir/wakterm.rb"
 
-sed -e "s/@TAG@/$TAG_NAME/g" -e "s/@SHA256@/$windows_sha256/g" \
+sed -e "s/@TAG@/$TAG_NAME/g" -e "s/@VERSION@/$VERSION_NO_V/g" -e "s/@SHA256@/$windows_sha256/g" \
   < "$HERE/ci/wakterm-scoop.json.template" \
   > "$tmpdir/wakterm.json"
 
 echo "Generated manifests in $tmpdir:"
+echo "  Version:        $VERSION_NO_V ($TAG_NAME)"
 echo "  macOS SHA-256:   $macos_sha256"
 echo "  Windows SHA-256: $windows_sha256"
 
