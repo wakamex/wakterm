@@ -1012,8 +1012,11 @@ impl crate::TermWindow {
                 )?
                 .set_grayscale();
             }
-            // A working agent's marker blinks at the icon's lower right.
-            if working {
+            // A working agent's marker blinks at the icon's lower right where
+            // the tab's color does not already say it works: on the active
+            // tab, which is never dimmed, and when dimmed tabs may also be
+            // ones whose reply was reviewed.
+            if working && (active || self.config.agent_tab_dim_reviewed) {
                 let cycle = WORKING_MARKER_PERIOD.as_secs_f32();
                 let phase = ATTENTION_PULSE_START.elapsed().as_secs_f32() % cycle / cycle;
                 let mut marker_color = marker_color;
