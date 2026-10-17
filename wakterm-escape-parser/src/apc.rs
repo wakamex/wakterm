@@ -489,8 +489,19 @@ mod win {
         if size > max_bytes {
             return Err(super::kitty_data_too_large(size, max_bytes));
         }
-        let buf_slice = unsafe { std::slice::from_raw_parts(shm.buf.add(offset), size) };
-        let data = buf_slice.to_vec();
+
+        // Shared memory can technically be edited by any process, so we copy the data out.
+        let mut data = Vec::with_capacity(size);
+        if size > 0 {
+            let src = unsafe { shm.buf.add(offset) };
+
+            // SAFETY: We have allocated a vector with enough capacity to hold `size` bytes,
+            // and we are copying from a valid memory region (`src`) into that vector.
+            unsafe {
+                src.copy_to_nonoverlapping(data.as_mut_ptr(), size);
+                data.set_len(size);
+            }
+        }
 
         Ok(data)
     }
@@ -1274,6 +1285,8 @@ impl Display for KittyImage {
 #[cfg(test)]
 mod test {
     use super::*;
+    #[cfg(not(feature = "std"))]
+    use alloc::format;
     use k9::assert_equal as assert_eq;
 
     #[test]

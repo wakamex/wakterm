@@ -109,6 +109,15 @@ config.colors = {
   -- to this color to give a visual cue about the compose state.
   compose_cursor = 'orange',
 
+  -- Override the foreground color for composition/IME preview text,
+  -- such as text being dictated via macOS dictation or composed via
+  -- a dead key sequence. Falls back to the cursor foreground color.
+  compose_fg = '#1e1e2e',
+
+  -- Override the background color for composition/IME preview text.
+  -- Falls back to the cursor background color.
+  compose_bg = '#f5c2e7',
+
   -- Colors for copy_mode and quick_select
   -- In copy_mode, the color of the active text is:
   -- 1. copy_mode_active_highlight_* if additional text was selected using the mouse

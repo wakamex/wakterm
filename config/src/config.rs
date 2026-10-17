@@ -162,6 +162,12 @@ pub struct Config {
     #[dynamic(default = "default_command_palette_font_size")]
     pub command_palette_font_size: f64,
 
+    #[dynamic(
+        default = "default_one_point_oh_f64",
+        validate = "validate_line_height"
+    )]
+    pub command_palette_line_height: f64,
+
     pub command_palette_rows: Option<usize>,
     #[dynamic(default = "default_command_palette_fg_color")]
     pub command_palette_fg_color: RgbaColor,
@@ -1848,8 +1854,29 @@ pub(crate) fn compute_runtime_dir() -> anyhow::Result<PathBuf> {
     if let Some(runtime) = dirs_next::runtime_dir() {
         return Ok(runtime.join("wakterm"));
     }
+    // A command run without XDG_RUNTIME_DIR, such as through `env -i`,
+    // still belongs to a user whose systemd login session has a runtime
+    // directory, where a mux server started with the variable keeps its
+    // socket.
+    #[cfg(target_os = "linux")]
+    if let Some(runtime) = systemd_user_runtime_dir() {
+        return Ok(runtime.join("wakterm"));
+    }
 
     Ok(crate::HOME_DIR.join(".local/share/wakterm"))
+}
+
+/// The user's systemd runtime directory, `/run/user/<uid>`, when it exists
+/// and belongs to the user.
+#[cfg(target_os = "linux")]
+fn systemd_user_runtime_dir() -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let uid = unsafe { libc::getuid() };
+    let dir = PathBuf::from(format!("/run/user/{uid}"));
+    std::fs::metadata(&dir)
+        .ok()
+        .filter(|metadata| metadata.is_dir() && metadata.uid() == uid)
+        .map(|_| dir)
 }
 
 pub fn pki_dir() -> anyhow::Result<PathBuf> {
@@ -2307,7 +2334,7 @@ fn validate_row_or_col(value: &u16) -> Result<(), String> {
 fn validate_line_height(value: &f64) -> Result<(), String> {
     if *value <= 0.0 {
         Err(format!(
-            "Illegal value {value} for line_height; it must be positive and greater than zero!"
+            "Illegal value {value}; it must be positive and greater than zero!"
         ))
     } else {
         Ok(())

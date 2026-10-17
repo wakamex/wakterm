@@ -471,7 +471,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 72;
+pub const CODEC_VERSION: usize = 73;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -1408,6 +1408,7 @@ pub struct LivenessResponse {
 pub struct GetPaneRenderChangesResponse {
     pub pane_id: PaneId,
     pub mouse_grabbed: bool,
+    pub alt_screen_active: bool,
     pub cursor_position: StableCursorPosition,
     pub dimensions: RenderableDimensions,
     pub dirty_lines: Vec<Range<StableRowIndex>>,
@@ -2455,6 +2456,41 @@ mod test {
                 is_proxy: false,
             }
         );
+    }
+
+    #[test]
+    fn get_pane_render_changes_response_round_trips_alt_screen_active() {
+        for alt_screen_active in [false, true] {
+            let pdu = Pdu::GetPaneRenderChangesResponse(GetPaneRenderChangesResponse {
+                pane_id: 7,
+                mouse_grabbed: false,
+                alt_screen_active,
+                cursor_position: StableCursorPosition::default(),
+                dimensions: RenderableDimensions {
+                    cols: 80,
+                    viewport_rows: 24,
+                    scrollback_rows: 24,
+                    physical_top: 0,
+                    scrollback_top: 0,
+                    dpi: 96,
+                    pixel_width: 800,
+                    pixel_height: 480,
+                    reverse_video: false,
+                },
+                dirty_lines: vec![],
+                title: "wakterm".to_string(),
+                working_dir: None,
+                bonus_lines: Vec::new().into(),
+                input_serial: None,
+                seqno: 1,
+            });
+            let mut encoded = Vec::new();
+            pdu.encode(&mut encoded, 45).unwrap();
+            assert_eq!(
+                Pdu::decode(encoded.as_slice()).unwrap(),
+                DecodedPdu { serial: 45, pdu }
+            );
+        }
     }
 
     #[test]

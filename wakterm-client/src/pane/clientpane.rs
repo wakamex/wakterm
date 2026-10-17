@@ -44,6 +44,7 @@ pub struct ClientPane {
     mouse: Arc<Mutex<MouseState>>,
     clipboard: Mutex<Option<Arc<dyn Clipboard>>>,
     mouse_grabbed: Mutex<bool>,
+    alt_screen_active: Mutex<bool>,
     ignore_next_kill: Mutex<bool>,
     suppress_next_focus_advise: Mutex<bool>,
     user_vars: Mutex<HashMap<String, String>>,
@@ -127,6 +128,7 @@ impl ClientPane {
             palette: Mutex::new(palette),
             clipboard: Mutex::new(None),
             mouse_grabbed: Mutex::new(false),
+            alt_screen_active: Mutex::new(false),
             ignore_next_kill: Mutex::new(false),
             suppress_next_focus_advise: Mutex::new(false),
             unseen_output: Mutex::new(false),
@@ -140,6 +142,7 @@ impl ClientPane {
         match pdu {
             Pdu::GetPaneRenderChangesResponse(mut delta) => {
                 *self.mouse_grabbed.lock() = delta.mouse_grabbed;
+                *self.alt_screen_active.lock() = delta.alt_screen_active;
 
                 let bonus_lines = std::mem::take(&mut delta.bonus_lines);
                 let client = { Arc::clone(&self.renderable.lock().inner.borrow().client) };
@@ -631,8 +634,7 @@ impl Pane for ClientPane {
     }
 
     fn is_alt_screen_active(&self) -> bool {
-        // FIXME: retrieve this from the remote
-        false
+        *self.alt_screen_active.lock()
     }
 
     fn get_current_working_dir(&self, _policy: CachePolicy) -> Option<Url> {
