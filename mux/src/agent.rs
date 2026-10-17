@@ -1770,26 +1770,33 @@ fn read_last_agy_observation(path: &Path) -> anyhow::Result<HarnessObservationDe
     let mut latest_cursor = None;
     let mut latest_at = None;
     let mut user_record = None;
+    // The last step before the current turn's input, which ended the
+    // previous turn.
+    let mut previous_turn_end = None;
 
     visit_lines_reverse(path, |line| {
         let Ok(record) = serde_json::from_str::<Value>(line) else {
             return Ok(false);
         };
-        let step_index = record.get("step_index").and_then(Value::as_u64);
+        let record_type = record.get("type").and_then(Value::as_str);
         let record_at = record
             .get("created_at")
             .and_then(Value::as_str)
             .and_then(parse_rfc3339_timestamp);
-        if latest_record.is_none()
-            && record.get("type").and_then(Value::as_str) != Some("SYSTEM_MESSAGE")
-        {
-            latest_cursor = step_index;
+        if user_record.is_some() {
+            if record_type == Some("SYSTEM_MESSAGE") {
+                return Ok(false);
+            }
+            previous_turn_end = record_at;
+            return Ok(true);
+        }
+        if latest_record.is_none() && record_type != Some("SYSTEM_MESSAGE") {
+            latest_cursor = record.get("step_index").and_then(Value::as_u64);
             latest_at = record_at;
             latest_record = Some(record.clone());
         }
-        if record.get("type").and_then(Value::as_str) == Some("USER_INPUT") {
+        if record_type == Some("USER_INPUT") {
             user_record = Some(record);
-            return Ok(true);
         }
         Ok(false)
     })?;
@@ -1880,7 +1887,8 @@ fn read_last_agy_observation(path: &Path) -> anyhow::Result<HarnessObservationDe
         turn_phase,
         updated_at: latest_at,
         turn_state,
-        last_turn_completed_at: completed_at,
+        // While a turn runs, the latest completed turn is the previous one.
+        last_turn_completed_at: completed_at.or(previous_turn_end),
         observed_turn: Some(AgentObservedTurn {
             provider_turn_id,
             outcome,
@@ -7397,6 +7405,65 @@ mod test {
         // conversation; it is reported unresolved as before.
         write_session(job_session, 3_000);
         assert!(matches!(ownership(), ClaudeOwnership::UnresolvedJob { .. }));
+    }
+
+    #[test]
+    fn running_agy_turn_keeps_the_previous_turns_completion_time() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("transcript.jsonl");
+        let step = |index: u64, kind: &str, at: &str, extra: serde_json::Value| {
+            let mut record = serde_json::json!({"step_index":index,"type":kind,
+                "status":"DONE","created_at":at});
+            record
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            record.to_string() + "\n"
+        };
+        let finished = [
+            step(
+                1,
+                "USER_INPUT",
+                "2026-10-17T12:00:00Z",
+                serde_json::json!({"content":"first"}),
+            ),
+            step(
+                2,
+                "PLANNER_RESPONSE",
+                "2026-10-17T12:01:00Z",
+                serde_json::json!({"content":"done"}),
+            ),
+        ]
+        .concat();
+        fs::write(&path, &finished).unwrap();
+        let first_end = Utc.with_ymd_and_hms(2026, 10, 17, 12, 1, 0).unwrap();
+        let done = read_last_agy_observation(&path).unwrap();
+        assert!(matches!(done.turn_state, AgentTurnState::WaitingOnUser));
+        assert_eq!(done.last_turn_completed_at, Some(first_end));
+
+        // A new turn starts, after a system message, and is still running.
+        fs::write(
+            &path,
+            finished
+                + &step(
+                    3,
+                    "SYSTEM_MESSAGE",
+                    "2026-10-17T12:02:00Z",
+                    serde_json::json!({}),
+                )
+                + &step(
+                    4,
+                    "USER_INPUT",
+                    "2026-10-17T12:03:00Z",
+                    serde_json::json!({"content":"second"}),
+                )
+                + &step(5, "GENERIC", "2026-10-17T12:03:10Z", serde_json::json!({})),
+        )
+        .unwrap();
+        let running = read_last_agy_observation(&path).unwrap();
+        assert!(matches!(running.turn_state, AgentTurnState::WaitingOnAgent));
+        assert_eq!(running.last_turn_completed_at, Some(first_end));
+        assert_eq!(running.observed_turn.unwrap().completed_at, None);
     }
 
     #[test]
