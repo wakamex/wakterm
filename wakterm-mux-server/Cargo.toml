@@ -31,8 +31,11 @@ serde_json.workspace = true
 wakterm-term.workspace = true
 
 [target."cfg(windows)".dependencies]
-winapi = { workspace=true, features = [ "winuser" ]}
+winapi = { workspace=true, features = [ "winuser", "fileapi", "minwinbase", "winerror" ]}
 
 [target.'cfg(windows)'.build-dependencies]
 embed-resource.workspace = true
 cc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

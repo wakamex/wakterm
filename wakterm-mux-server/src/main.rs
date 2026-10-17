@@ -16,6 +16,7 @@ use wakterm_gui_subcommands::*;
 use wakterm_mux_server_impl::update_mux_domains_for_server;
 
 mod daemonize;
+mod session_lock;
 
 lazy_static::lazy_static! {
     static ref SHUTDOWN_FLAG: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
@@ -210,6 +211,10 @@ fn run() -> anyhow::Result<()> {
     for name in &config::configuration().mux_env_remove {
         std::env::remove_var(name);
     }
+
+    // Held until the server exits; a second server on the same saved
+    // session would resume every agent in it a second time.
+    let _session_lock = session_lock::acquire()?;
 
     wakterm_blob_leases::register_storage(Arc::new(
         wakterm_blob_leases::simple_tempdir::SimpleTempDir::new_in(&*config::CACHE_DIR)?,
