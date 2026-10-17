@@ -62,6 +62,8 @@ dhat-heap.json
 /wakterm*.AppImage.zsync
 /wakterm-macos-*
 /wakterm*-src.tar.gz
+/wakterm-*-xcb-imdkit-source.tar.gz
+/THIRD_PARTY_LICENSES.txt
 /wakterm-linuxbrew.rb
 /wakterm.rb
 /perf.data*

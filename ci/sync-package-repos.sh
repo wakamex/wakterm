@@ -49,9 +49,14 @@ echo "  macOS SHA-256:   $macos_sha256"
 echo "  Windows SHA-256: $windows_sha256"
 
 if [[ "$PUSH" == "--push" ]]; then
+  git_name="$(git -C "$HERE" config user.name || echo wakamex)"
+  git_email="$(git -C "$HERE" config user.email || echo wakamex@users.noreply.github.com)"
+
   "$GH_BIN" repo view "$TAP_REPO" >/dev/null 2>&1 || \
     "$GH_BIN" repo create "$TAP_REPO" --public --description "Homebrew tap for wakterm"
   "$GH_BIN" repo clone "$TAP_REPO" "$tmpdir/homebrew-tap"
+  git -C "$tmpdir/homebrew-tap" config user.name "$git_name"
+  git -C "$tmpdir/homebrew-tap" config user.email "$git_email"
   mkdir -p "$tmpdir/homebrew-tap/Casks"
   cp "$tmpdir/wakterm.rb" "$tmpdir/homebrew-tap/Casks/wakterm.rb"
   git -C "$tmpdir/homebrew-tap" add Casks/wakterm.rb
@@ -63,6 +68,8 @@ if [[ "$PUSH" == "--push" ]]; then
   "$GH_BIN" repo view "$BUCKET_REPO" >/dev/null 2>&1 || \
     "$GH_BIN" repo create "$BUCKET_REPO" --public --description "Scoop bucket for wakterm"
   "$GH_BIN" repo clone "$BUCKET_REPO" "$tmpdir/scoop-bucket"
+  git -C "$tmpdir/scoop-bucket" config user.name "$git_name"
+  git -C "$tmpdir/scoop-bucket" config user.email "$git_email"
   mkdir -p "$tmpdir/scoop-bucket/bucket"
   cp "$tmpdir/wakterm.json" "$tmpdir/scoop-bucket/bucket/wakterm.json"
   git -C "$tmpdir/scoop-bucket" add bucket/wakterm.json

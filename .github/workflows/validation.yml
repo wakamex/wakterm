@@ -93,6 +93,9 @@ jobs:
           ci/gui-smoke.sh target/release
           make check-derived DERIVED_PROFILE=release
           TAG_NAME="v$(cat VERSION)" bash ci/deploy.sh
+          test -s "wakterm-v$(cat VERSION)-xcb-imdkit-source.tar.gz"
+          tar -tJf "wakterm-v$(cat VERSION)".*.tar.xz | grep -q "usr/share/doc/wakterm/THIRD_PARTY_LICENSES.txt"
+          tar -tJf "wakterm-v$(cat VERSION)".*.tar.xz | grep -q "usr/share/doc/wakterm/COPYING.LGPLv2.1"
 
       - name: Build, test, and package on macOS
         if: matrix.id == 'macos'
@@ -107,6 +110,7 @@ jobs:
           done
           cargo nextest run --all --no-fail-fast --target=aarch64-apple-darwin
           TAG_NAME="v$(cat VERSION)" bash ci/deploy.sh
+          unzip -l "wakterm-macos-v$(cat VERSION).zip" | grep -q "THIRD_PARTY_LICENSES.txt"
 
       - name: Build and test on Windows
         if: matrix.id == 'windows'
@@ -119,7 +123,12 @@ jobs:
       - name: Package on Windows
         if: matrix.id == 'windows'
         shell: bash
-        run: TAG_NAME="v$(cat VERSION)" bash ci/deploy.sh
+        run: |
+          TAG_NAME="v$(cat VERSION)" bash ci/deploy.sh
+          7z l "wakterm-windows-v$(cat VERSION).zip" | grep -q "licenses/THIRD_PARTY_LICENSES.txt"
+          7z l "wakterm-windows-v$(cat VERSION).zip" | grep -q "licenses/ANGLE.md"
+          7z l "wakterm-windows-v$(cat VERSION).zip" | grep -q "licenses/ConPTY.txt"
+          7z l "wakterm-windows-v$(cat VERSION).zip" | grep -q "licenses/Mesa.txt"
 
   build-test-fedora:
     name: fedora-43
@@ -135,7 +144,7 @@ jobs:
 
     steps:
       - name: Install container prerequisites
-        run: dnf install -y ca-certificates curl git
+        run: dnf install -y ca-certificates curl git python3
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -163,6 +172,8 @@ jobs:
             -p strip-ansi-escapes
           cargo nextest run --all --no-fail-fast
           TAG_NAME="v$(cat VERSION)" bash ci/deploy.sh
+          rpm -qlp wakterm-*.rpm | grep -q "/usr/share/licenses/wakterm/THIRD_PARTY_LICENSES.txt"
+          rpm -qlp wakterm-*.rpm | grep -q "/usr/share/licenses/wakterm/COPYING.LGPLv2.1"
 
   validate:
     name: validate

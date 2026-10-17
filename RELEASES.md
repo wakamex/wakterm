@@ -8,12 +8,12 @@ wakterm is published as prebuilt binary archives and system packages on GitHub R
 
 | Platform | Runner / container | Rust target(s) | Published asset(s) |
 |---|---|---|---|
-| Ubuntu / Debian x86-64 | `ubuntu-24.04` | `x86_64-unknown-linux-gnu` | `wakterm-vX.Y.Z.Ubuntu24.04.deb`, `wakterm-vX.Y.Z.Ubuntu24.04.tar.xz` |
+| Ubuntu / Debian x86-64 | `ubuntu-24.04` | `x86_64-unknown-linux-gnu` | `wakterm-vX.Y.Z.Ubuntu24.04.deb`, `wakterm-vX.Y.Z.Ubuntu24.04.tar.xz`, `wakterm-vX.Y.Z-xcb-imdkit-source.tar.gz` |
 | Fedora / RPM x86-64 | `ubuntu-24.04` (`fedora:43` container) | `x86_64-unknown-linux-gnu` | `wakterm-X.Y.Z-1.fedora43.x86_64.rpm` |
 | macOS Universal | `macos-15` | `aarch64-apple-darwin`, `x86_64-apple-darwin` | `wakterm-macos-vX.Y.Z.zip` |
 | Windows x86-64 | `windows-2025` | `x86_64-pc-windows-msvc` | `wakterm-vX.Y.Z-setup.exe`, `wakterm-windows-vX.Y.Z.zip` |
 
-All release builds use the stable Rust toolchain with `--locked` against the committed `Cargo.lock` on clean runners without restored build caches. Each distributed archive and package includes `LICENSE.md` and the bundled font license files (`assets/fonts/LICENSE_*.txt`).
+All release builds use the stable Rust toolchain with `--locked` against the committed `Cargo.lock` on clean runners without restored build caches. Each distributed archive and package includes `LICENSE.md`, `THIRD_PARTY_LICENSES.txt` (generated from `cargo metadata` by `ci/generate-third-party-licenses.py`), the bundled font license files (`assets/fonts/LICENSE_*.txt`), and platform library licenses (`licenses/COPYING.LGPLv2.1` on Linux, and `licenses/ANGLE.md`, `licenses/ConPTY.txt`, and `licenses/Mesa.txt` on Windows). On Linux, `ci/stage-xcb-imdkit-source.sh` also packages `wakterm-vX.Y.Z-xcb-imdkit-source.tar.gz` with the corresponding source for `xcb-imdkit` (linked under the [GNU Lesser General Public License v2.1 (LGPL-2.1)](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html)).
 
 To build the release binaries and package for the current host platform locally:
 

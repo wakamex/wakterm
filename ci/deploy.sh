@@ -11,6 +11,10 @@ VERSION_NO_V=${VERSION_NO_V#nightly}
 
 HERE=$(pwd)
 
+PYTHON_BIN=$(command -v python3 || command -v python)
+"$PYTHON_BIN" "$HERE/ci/generate-third-party-licenses.py" "$HERE/THIRD_PARTY_LICENSES.txt"
+test -s "$HERE/THIRD_PARTY_LICENSES.txt"
+
 if test -z "${SUDO+x}" && hash sudo 2>/dev/null; then
   SUDO="sudo"
 fi
@@ -38,8 +42,8 @@ case $OSTYPE in
     mkdir -p $zipdir/wakterm.app/Contents/Resources
     cp -r assets/shell-integration/* $zipdir/wakterm.app/Contents/Resources
     cp -r assets/shell-completion $zipdir/wakterm.app/Contents/Resources
-    cp LICENSE.md $zipdir/
-    cp LICENSE.md assets/fonts/LICENSE_*.txt $zipdir/wakterm.app/Contents/Resources/
+    cp LICENSE.md THIRD_PARTY_LICENSES.txt $zipdir/
+    cp LICENSE.md THIRD_PARTY_LICENSES.txt assets/fonts/LICENSE_*.txt $zipdir/wakterm.app/Contents/Resources/
     tic -xe wakterm -o $zipdir/wakterm.app/Contents/Resources/terminfo termwiz/data/wakterm.terminfo
 
     for bin in wakterm wakterm-mux-server wakterm-gui strip-ansi-escapes ; do
@@ -127,7 +131,12 @@ case $OSTYPE in
       assets/windows/angle/libGLESv2.dll \
       LICENSE.md \
       $zipdir
-    cp assets/fonts/LICENSE_*.txt $zipdir/licenses/
+    cp THIRD_PARTY_LICENSES.txt \
+      licenses/ANGLE.md \
+      licenses/ConPTY.txt \
+      licenses/Mesa.txt \
+      assets/fonts/LICENSE_*.txt \
+      $zipdir/licenses/
     mkdir $zipdir/mesa
     cp $TARGET_DIR/release/mesa/opengl32.dll \
         $zipdir/mesa
@@ -160,7 +169,7 @@ Name: wakterm
 Version: ${WAKTERM_RPM_VERSION}
 Release: ${SPEC_RELEASE}
 Packager: wakamex <wakamex@users.noreply.github.com>
-License: MIT AND OFL-1.1 AND Apache-2.0 AND CC-BY-4.0 AND Unlicense
+License: MIT AND OFL-1.1 AND Apache-2.0 AND CC-BY-4.0 AND Unlicense AND MPL-2.0 AND LGPL-2.1-only
 URL: https://wakterm.org/
 Summary: wakterm.
 BuildRequires: gcc, gcc-c++, make, curl, fontconfig-devel, openssl-devel, libxcb-devel, libxkbcommon-devel, libxkbcommon-x11-devel, wayland-devel, xcb-util-devel, xcb-util-keysyms-devel, xcb-util-image-devel, xcb-util-wm-devel, git
@@ -235,7 +244,7 @@ install -Dm644 assets/icon/terminal.png %{buildroot}/usr/share/icons/hicolor/128
 install -Dm644 assets/wakterm.desktop %{buildroot}/usr/share/applications/org.wezfurlong.wakterm.desktop
 install -Dm644 assets/wakterm.appdata.xml %{buildroot}/usr/share/metainfo/org.wezfurlong.wakterm.appdata.xml
 install -Dm644 assets/wakterm-nautilus.py %{buildroot}/usr/share/nautilus-python/extensions/wakterm-nautilus.py
-install -Dm644 LICENSE.md assets/fonts/LICENSE_*.txt -t %{buildroot}/usr/share/licenses/wakterm
+install -Dm644 LICENSE.md THIRD_PARTY_LICENSES.txt licenses/COPYING.LGPLv2.1 assets/fonts/LICENSE_*.txt -t %{buildroot}/usr/share/licenses/wakterm
 
 %files
 # Main package (metapackage) has no files
@@ -271,7 +280,7 @@ Name: wakterm
 Version: ${WAKTERM_RPM_VERSION}
 Release: ${SPEC_RELEASE}
 Packager: wakamex <wakamex@users.noreply.github.com>
-License: MIT AND OFL-1.1 AND Apache-2.0 AND CC-BY-4.0 AND Unlicense
+License: MIT AND OFL-1.1 AND Apache-2.0 AND CC-BY-4.0 AND Unlicense AND MPL-2.0 AND LGPL-2.1-only
 URL: https://wakterm.org/
 Summary: wakterm.
 %if 0%{?suse_version}
@@ -306,7 +315,7 @@ install -Dm644 assets/icon/terminal.png %{buildroot}/usr/share/icons/hicolor/128
 install -Dm644 assets/wakterm.desktop %{buildroot}/usr/share/applications/org.wezfurlong.wakterm.desktop
 install -Dm644 assets/wakterm.appdata.xml %{buildroot}/usr/share/metainfo/org.wezfurlong.wakterm.appdata.xml
 install -Dm644 assets/wakterm-nautilus.py %{buildroot}/usr/share/nautilus-python/extensions/wakterm-nautilus.py
-install -Dm644 LICENSE.md assets/fonts/LICENSE_*.txt -t %{buildroot}/usr/share/licenses/wakterm
+install -Dm644 LICENSE.md THIRD_PARTY_LICENSES.txt licenses/COPYING.LGPLv2.1 assets/fonts/LICENSE_*.txt -t %{buildroot}/usr/share/licenses/wakterm
 
 %files
 %license /usr/share/licenses/wakterm/*
@@ -402,7 +411,7 @@ EOF
         install -Dm644 assets/shell-completion/bash pkg/debian/usr/share/bash-completion/completions/wakterm
         install -Dm644 assets/shell-completion/zsh pkg/debian/usr/share/zsh/functions/Completion/Unix/_wakterm
         install -Dm644 assets/shell-integration/* -t pkg/debian/etc/profile.d
-        install -Dm644 LICENSE.md assets/fonts/LICENSE_*.txt -t pkg/debian/usr/share/doc/wakterm
+        install -Dm644 LICENSE.md THIRD_PARTY_LICENSES.txt licenses/COPYING.LGPLv2.1 assets/fonts/LICENSE_*.txt -t pkg/debian/usr/share/doc/wakterm
 
         if [[ "$BUILD_REASON" == "Schedule" ]] ; then
           debname=wakterm-nightly.$distro$distver
@@ -427,6 +436,8 @@ EOF
         mv pkg/debian pkg/wakterm
         tar cJf $debname.tar.xz -C pkg wakterm
         rm -rf pkg
+
+        TAG_NAME="$TAG_NAME" bash "$HERE/ci/stage-xcb-imdkit-source.sh" "$HERE"
       ;;
     esac
     ;;

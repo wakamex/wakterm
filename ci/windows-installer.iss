@@ -53,6 +53,10 @@ Source: "..\target\release\conpty.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\OpenConsole.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\strip-ansi-escapes.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD_PARTY_LICENSES.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "..\licenses\ANGLE.md"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "..\licenses\ConPTY.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "..\licenses\Mesa.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "..\assets\fonts\LICENSE_*.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 

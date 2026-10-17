@@ -47,6 +47,7 @@ jobs:
             artifact_glob: |
               wakterm-*.deb
               wakterm-*.xz
+              wakterm-*-xcb-imdkit-source.tar.gz
           - id: macos
             name: macos-15
             runs_on: macos-15
@@ -161,7 +162,7 @@ jobs:
 
     steps:
       - name: Install container prerequisites
-        run: dnf install -y ca-certificates curl git
+        run: dnf install -y ca-certificates curl git python3
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
