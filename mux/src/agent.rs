@@ -2477,7 +2477,7 @@ fn claude_background_session(
     sessions_dir: &Path,
     job_id: &str,
     cwd: &str,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<Option<(String, Option<ClaudeReportedStatus>)>> {
     let entries = match fs::read_dir(sessions_dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -2513,10 +2513,35 @@ fn claude_background_session(
             .and_then(Value::as_str)
             .filter(|id| is_uuid(id))
         {
-            return Ok(Some(session_id.to_string()));
+            return Ok(Some((
+                session_id.to_string(),
+                claude_record_status(&record),
+            )));
         }
     }
     Ok(None)
+}
+
+/// The status a Claude session record reports.
+fn claude_record_status(record: &Value) -> Option<ClaudeReportedStatus> {
+    let status = record.get("status").and_then(Value::as_str)?;
+    Some(ClaudeReportedStatus {
+        status: status.to_string(),
+        waiting_for: record
+            .get("waitingFor")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        changed_at: record
+            .get("statusUpdatedAt")
+            .and_then(Value::as_i64)
+            .and_then(DateTime::<Utc>::from_timestamp_millis),
+        remote_control: record
+            .get("bridgeSessionId")
+            .is_some_and(|id| !id.is_null()),
+        peer_messaging: record
+            .get("messagingSocketPath")
+            .is_some_and(|path| !path.is_null()),
+    })
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -2531,59 +2556,60 @@ fn claude_ownership_from_registry(
     launch_cmd: &str,
     identifies_process: impl Fn(&Value) -> anyhow::Result<bool>,
 ) -> anyhow::Result<ClaudeOwnership> {
-    let (launched_id, job_id, status) =
-        match fs::read(registry) {
-            Ok(bytes) => {
-                let record: Value = serde_json::from_slice(&bytes)?;
-                if !identifies_process(&record)?
-                    || record.get("kind").and_then(Value::as_str) != Some("interactive")
-                    || record.get("cwd").and_then(Value::as_str) != Some(cwd)
-                {
-                    return Ok(ClaudeOwnership::Unknown);
-                }
-                let Some(session_id) = record
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .filter(|id| is_uuid(id))
-                else {
-                    return Ok(ClaudeOwnership::Unknown);
-                };
-                let parked = record
-                    .get("parkedJobId")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                let status = record.get("status").and_then(Value::as_str).map(|status| {
-                    ClaudeReportedStatus {
-                        status: status.to_string(),
-                        waiting_for: record
-                            .get("waitingFor")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        changed_at: record
-                            .get("statusUpdatedAt")
-                            .and_then(Value::as_i64)
-                            .and_then(DateTime::<Utc>::from_timestamp_millis),
-                        remote_control: record
-                            .get("bridgeSessionId")
-                            .is_some_and(|id| !id.is_null()),
-                        peer_messaging: record
-                            .get("messagingSocketPath")
-                            .is_some_and(|path| !path.is_null()),
-                    }
-                });
-                (Some(session_id.to_string()), parked, status)
+    let (launched_id, job_id, status) = match fs::read(registry) {
+        Ok(bytes) => {
+            let record: Value = serde_json::from_slice(&bytes)?;
+            if !identifies_process(&record)?
+                || record.get("kind").and_then(Value::as_str) != Some("interactive")
+                || record.get("cwd").and_then(Value::as_str) != Some(cwd)
+            {
+                return Ok(ClaudeOwnership::Unknown);
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let Some(job_id) = claude_attach_job_id(launch_cmd) else {
-                    return Ok(ClaudeOwnership::Unknown);
-                };
-                (None, Some(job_id), None)
-            }
-            Err(error) => return Err(error.into()),
-        };
+            let Some(session_id) = record
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .filter(|id| is_uuid(id))
+            else {
+                return Ok(ClaudeOwnership::Unknown);
+            };
+            let parked = record
+                .get("parkedJobId")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            (
+                Some(session_id.to_string()),
+                parked,
+                claude_record_status(&record),
+            )
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let Some(job_id) = claude_attach_job_id(launch_cmd) else {
+                return Ok(ClaudeOwnership::Unknown);
+            };
+            (None, Some(job_id), None)
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut status = status;
     let current_id = match job_id.as_deref() {
         Some(job_id) => match claude_background_session(sessions_dir, job_id, cwd)? {
-            Some(session_id) => session_id,
+            Some((session_id, job_status)) => {
+                // A window that moved its conversation to a background job
+                // keeps the status it had then; the job reports the
+                // conversation's own. The window's messaging and Remote
+                // Control state stay its own.
+                if let Some(job_status) = job_status {
+                    status = Some(match status {
+                        Some(window) => ClaudeReportedStatus {
+                            remote_control: window.remote_control,
+                            peer_messaging: window.peer_messaging,
+                            ..job_status
+                        },
+                        None => job_status,
+                    });
+                }
+                session_id
+            }
             None => {
                 let jobs_dir = sessions_dir.with_file_name("jobs");
                 return Ok(ClaudeOwnership::UnresolvedJob {
@@ -2668,7 +2694,7 @@ fn claude_background_session(
     _sessions_dir: &Path,
     _job_id: &str,
     _cwd: &str,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<Option<(String, Option<ClaudeReportedStatus>)>> {
     Ok(None)
 }
 
@@ -7225,6 +7251,69 @@ mod test {
             observed.last_turn_completed_at,
             Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 2).unwrap())
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_window_that_parked_its_conversation_reports_the_jobs_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("projects");
+        let sessions = temp.path().join("sessions");
+        let cwd = "/code/transcribe";
+        let job_session = "e92c11db-5f86-474e-82d5-5875abf8c83c";
+        fs::create_dir_all(root.join(claude_project_dir_name(cwd))).unwrap();
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(
+            root.join(claude_project_dir_name(cwd))
+                .join(format!("{job_session}.jsonl")),
+            format!("{{\"type\":\"mode\",\"sessionId\":\"{job_session}\"}}\n"),
+        )
+        .unwrap();
+        // The window's record stays busy from the moment it parked the job.
+        let window = sessions.join("100.json");
+        fs::write(
+            &window,
+            serde_json::json!({"pid":100,"sessionId":"f80805a2-082a-42c3-8941-6ede6aaf651f",
+                "cwd":cwd,"kind":"interactive","status":"busy","statusUpdatedAt":1,
+                "messagingSocketPath":"/run/peer.sock","parkedJobId":"e92c11db"})
+            .to_string(),
+        )
+        .unwrap();
+        // The job runs in a live process: this one.
+        let process = procinfo::LocalProcessInfo::with_root_pid(std::process::id()).unwrap();
+        let write_job = |status: &str| {
+            fs::write(
+                sessions.join("200.json"),
+                serde_json::json!({"pid":std::process::id(),"procStart":process.start_time.to_string(),
+                    "sessionId":job_session,"cwd":cwd,"kind":"bg","jobId":"e92c11db",
+                    "status":status,"statusUpdatedAt":2})
+                .to_string(),
+            )
+            .unwrap();
+        };
+        let owned = || match claude_ownership_from_registry(
+            &root,
+            &sessions,
+            &window,
+            cwd,
+            "claude",
+            |_| Ok(true),
+        )
+        .unwrap()
+        {
+            ClaudeOwnership::Owned(owned) => owned,
+            _ => panic!("the parked job's session is not resolved"),
+        };
+
+        write_job("idle");
+        let session = owned();
+        assert_eq!(session.current_id, job_session);
+        let status = session.status.unwrap();
+        assert_eq!(status.status, "idle");
+        // The window's own messaging socket is still the window's.
+        assert!(status.peer_messaging);
+        write_job("busy");
+        assert_eq!(owned().status.unwrap().status, "busy");
     }
 
     #[test]
