@@ -2591,7 +2591,8 @@ fn claude_ownership_from_registry(
         Err(error) => return Err(error.into()),
     };
     let mut status = status;
-    let current_id = match job_id.as_deref() {
+    let mut parked = job_id;
+    let current_id = match parked.clone().as_deref() {
         Some(job_id) => match claude_background_session(sessions_dir, job_id, cwd)? {
             Some((session_id, job_status)) => {
                 // A window that moved its conversation to a background job
@@ -2612,10 +2613,32 @@ fn claude_ownership_from_registry(
             }
             None => {
                 let jobs_dir = sessions_dir.with_file_name("jobs");
-                return Ok(ClaudeOwnership::UnresolvedJob {
-                    job_id: job_id.to_string(),
-                    session_id: claude_job_saved_session(&jobs_dir, job_id),
-                });
+                let job_session = claude_job_saved_session(&jobs_dir, job_id);
+                // A window can keep a parked job's ID after the job has
+                // finished and the window has gone on with its own
+                // conversation. Its own session written since the job's
+                // is where the conversation is.
+                let modified = |id: &str| {
+                    fs::metadata(
+                        root.join(claude_project_dir_name(cwd))
+                            .join(format!("{id}.jsonl")),
+                    )
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+                };
+                let window_is_current = launched_id
+                    .as_deref()
+                    .and_then(modified)
+                    .zip(job_session.as_deref().and_then(modified))
+                    .is_some_and(|(window, job)| window > job);
+                if !window_is_current {
+                    return Ok(ClaudeOwnership::UnresolvedJob {
+                        job_id: job_id.to_string(),
+                        session_id: job_session,
+                    });
+                }
+                parked = None;
+                launched_id.clone().expect("checked above")
             }
         },
         None => launched_id.clone().expect("registry session without a job"),
@@ -2632,7 +2655,7 @@ fn claude_ownership_from_registry(
     Ok(ClaudeOwnership::Owned(OwnedClaudeSession {
         launched_id: launched_id.unwrap_or_else(|| current_id.clone()),
         current_id,
-        job_id,
+        job_id: parked,
         status,
     }))
 }
@@ -7314,6 +7337,66 @@ mod test {
         assert!(status.peer_messaging);
         write_job("busy");
         assert_eq!(owned().status.unwrap().status, "busy");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_finished_parked_job_does_not_hide_the_windows_newer_conversation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("projects");
+        let sessions = temp.path().join("sessions");
+        let cwd = "/code/polymarket";
+        let window_session = "d5c7bba9-e9d3-4ee0-92ae-670fe32b2e1d";
+        let job_session = "4351419c-15cf-4765-a342-ab4e7560c37d";
+        let project = root.join(claude_project_dir_name(cwd));
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&sessions).unwrap();
+        fs::create_dir_all(temp.path().join("jobs").join("4351419c")).unwrap();
+        fs::write(
+            temp.path().join("jobs").join("4351419c").join("state.json"),
+            serde_json::json!({"state":"done","sessionId":job_session}).to_string(),
+        )
+        .unwrap();
+        let write_session = |id: &str, seconds: u64| {
+            let path = project.join(format!("{id}.jsonl"));
+            fs::write(
+                &path,
+                format!("{{\"type\":\"mode\",\"sessionId\":\"{id}\"}}\n"),
+            )
+            .unwrap();
+            fs::File::open(&path)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+                .unwrap();
+        };
+        // The window still names the finished job, and no job process runs.
+        let window = sessions.join("100.json");
+        fs::write(
+            &window,
+            serde_json::json!({"pid":100,"sessionId":window_session,"cwd":cwd,
+                "kind":"interactive","status":"idle","parkedJobId":"4351419c"})
+            .to_string(),
+        )
+        .unwrap();
+        let ownership = || {
+            claude_ownership_from_registry(&root, &sessions, &window, cwd, "claude", |_| Ok(true))
+                .unwrap()
+        };
+
+        write_session(job_session, 1_000);
+        write_session(window_session, 2_000);
+        match ownership() {
+            ClaudeOwnership::Owned(owned) => {
+                assert_eq!(owned.current_id, window_session);
+                assert_eq!(owned.job_id, None);
+                assert_eq!(owned.status.unwrap().status, "idle");
+            }
+            _ => panic!("the window's own conversation is not resolved"),
+        }
+        // A job whose session was written last may still hold the
+        // conversation; it is reported unresolved as before.
+        write_session(job_session, 3_000);
+        assert!(matches!(ownership(), ClaudeOwnership::UnresolvedJob { .. }));
     }
 
     #[test]
