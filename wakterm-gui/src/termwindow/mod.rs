@@ -520,6 +520,18 @@ enum EventState {
     InProgressWithQueued(Option<PaneId>),
 }
 
+/// The tab next to `closed` in `shown`, the order the tab bar showed: the
+/// first after it that is still among `current`, or else the nearest before
+/// it.
+fn activity_order_neighbor(shown: &[TabId], closed: TabId, current: &[TabId]) -> Option<TabId> {
+    let position = shown.iter().position(|tab_id| *tab_id == closed)?;
+    shown[position + 1..]
+        .iter()
+        .chain(shown[..position].iter().rev())
+        .find(|tab_id| current.contains(tab_id))
+        .copied()
+}
+
 fn display_position(tab_ids: &[TabId], tab_id: Option<TabId>) -> Option<usize> {
     let tab_id = tab_id?;
     tab_ids.iter().position(|candidate| *candidate == tab_id)
@@ -532,6 +544,11 @@ pub struct TermWindow {
     /// Show this window's tabs by latest agent activity rather than in the
     /// shared tab order.
     tab_activity_order: bool,
+    /// The tabs in the order the tab bar last showed them, and which of
+    /// them was active, so that closing the active tab can pass the focus
+    /// to its neighbor in that order.
+    displayed_tab_ids: Vec<TabId>,
+    displayed_active_tab: Option<TabId>,
     os_parameters: Option<parameters::Parameters>,
     /// When we most recently received keyboard focus
     pub focused: Option<Instant>,
@@ -900,6 +917,8 @@ impl TermWindow {
             config: config.clone(),
             config_overrides: wakterm_dynamic::Value::default(),
             tab_activity_order: false,
+            displayed_tab_ids: vec![],
+            displayed_active_tab: None,
             palette: None,
             focused: None,
             mux_window_id,
@@ -1519,6 +1538,7 @@ impl TermWindow {
                 }
                 MuxNotification::WindowInvalidated(window_id) => {
                     log::debug!("termwindow handling WindowInvalidated window_id={window_id}");
+                    self.activate_activity_order_neighbor_of_closed_tab();
                     self.acknowledge_visible_agent_attention(None);
                     window.invalidate();
                     self.update_title_post_status();
@@ -2023,6 +2043,33 @@ impl TermWindow {
         self.update_title();
     }
 
+    /// In activity order, when the active tab has closed, activates the tab
+    /// next to it in the order the tab bar showed, the following one or, for
+    /// the last tab, the one before. The mux picks a replacement by the
+    /// window's own tab order, which activity order does not show.
+    fn activate_activity_order_neighbor_of_closed_tab(&mut self) {
+        if !self.tab_activity_order {
+            return;
+        }
+        let Some(closed) = self.displayed_active_tab else {
+            return;
+        };
+        if Mux::get().get_tab(closed).is_some() {
+            return;
+        }
+        let shown = std::mem::take(&mut self.displayed_tab_ids);
+        self.displayed_active_tab = None;
+        let current = self.display_tab_ids();
+        let Some(neighbor) = activity_order_neighbor(&shown, closed, &current) else {
+            return;
+        };
+        if let Some(idx) = current.iter().position(|tab_id| *tab_id == neighbor) {
+            if let Err(err) = self.activate_tab(idx as isize) {
+                log::warn!("activating the closed tab's neighbor: {err:#}");
+            }
+        }
+    }
+
     /// Visible tabs in tab bar order. Tab indices in key assignments and the
     /// tab bar refer to positions in this list.
     fn display_tab_ids(&self) -> Vec<TabId> {
@@ -2288,6 +2335,8 @@ impl TermWindow {
         let tabs = self.get_tab_information();
         let panes = self.get_pane_information();
         let active_tab = tabs.iter().find(|t| t.is_active).cloned();
+        self.displayed_tab_ids = tabs.iter().map(|tab| tab.tab_id).collect();
+        self.displayed_active_tab = active_tab.as_ref().map(|tab| tab.tab_id);
         let active_pane = panes.iter().find(|p| p.is_active).cloned();
 
         let border = self.get_os_border();
@@ -4177,6 +4226,24 @@ mod test {
             effective_title: tab_title.to_string(),
             tab_title: tab_title.to_string(),
         }
+    }
+
+    #[test]
+    fn a_closed_tab_passes_focus_to_its_neighbor_in_the_shown_order() {
+        use super::activity_order_neighbor;
+        // The tab bar showed tabs 5, 2, 9, 7 in activity order.
+        let shown = [5, 2, 9, 7];
+        // Closing 2 activates 9, the next one shown, though in the window's
+        // own order 2 may sit next to a different tab.
+        assert_eq!(activity_order_neighbor(&shown, 2, &[5, 9, 7]), Some(9));
+        // The last tab shown passes focus to the one before it.
+        assert_eq!(activity_order_neighbor(&shown, 7, &[5, 2, 9]), Some(9));
+        // A neighbor that closed or was hidden too is skipped.
+        assert_eq!(activity_order_neighbor(&shown, 2, &[5, 7]), Some(7));
+        assert_eq!(activity_order_neighbor(&shown, 7, &[5]), Some(5));
+        // Nothing left, or a tab that was not shown.
+        assert_eq!(activity_order_neighbor(&shown, 2, &[]), None);
+        assert_eq!(activity_order_neighbor(&shown, 4, &[5, 2]), None);
     }
 
     #[test]
