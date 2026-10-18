@@ -1800,6 +1800,14 @@ fn derive_command_from_key_assignment_for_platform(
             menubar: &["Window", "Select Tab"],
             icon: Some("md_message_alert_outline"),
         },
+        ActivateOldestTabNeedingAttention => CommandDef {
+            brief: "Review oldest agent response".into(),
+            doc: "Activates the oldest unseen agent response in a visible tab.".into(),
+            keys: vec![],
+            args: &[ArgType::ActiveWindow],
+            menubar: &["Window", "Select Tab"],
+            icon: Some("md_message_alert_outline"),
+        },
         DetachDomain(SpawnTabDomain::CurrentPaneDomain) => CommandDef {
             brief: "Detach the domain of the active pane".into(),
             doc: "Detaches (disconnects from) the domain of the active pane".into(),
@@ -2309,6 +2317,7 @@ fn compute_default_actions(platform: KeyBindingPlatform) -> Vec<KeyAssignment> {
         ShowTabNavigator,
         ToggleTabActivityOrder,
         ActivateNextTabNeedingAttention,
+        ActivateOldestTabNeedingAttention,
         // ----------------- Help
         OpenUri("https://wakterm.org/".to_string()),
         OpenUri("https://github.com/wakamex/wakterm/discussions/".to_string()),

@@ -2765,8 +2765,8 @@ impl TermWindow {
         promise::spawn::spawn(future).detach();
     }
 
-    fn activate_next_tab_needing_attention(&mut self) {
-        match Mux::get().activate_next_agent_needing_attention(self.mux_window_id) {
+    fn activate_tab_needing_attention(&mut self, end: mux::AttentionQueueEnd) {
+        match Mux::get().activate_agent_needing_attention(self.mux_window_id, end) {
             Ok(Some((_tab_id, pane_id))) => {
                 if let Some(pane) = Mux::get().get_pane(pane_id) {
                     pane.focus_changed(true);
@@ -2775,7 +2775,7 @@ impl TermWindow {
                 self.update_scrollbar();
             }
             Ok(None) => {}
-            Err(err) => log::warn!("cannot activate next agent response: {err:#}"),
+            Err(err) => log::warn!("cannot activate an unseen agent response: {err:#}"),
         }
     }
 
@@ -3183,7 +3183,12 @@ impl TermWindow {
             ScrollToTop => self.scroll_to_top(pane),
             ScrollToBottom => self.scroll_to_bottom(pane),
             ShowTabNavigator => self.show_tab_navigator(),
-            ActivateNextTabNeedingAttention => self.activate_next_tab_needing_attention(),
+            ActivateNextTabNeedingAttention => {
+                self.activate_tab_needing_attention(mux::AttentionQueueEnd::Newest)
+            }
+            ActivateOldestTabNeedingAttention => {
+                self.activate_tab_needing_attention(mux::AttentionQueueEnd::Oldest)
+            }
             ShowDebugOverlay => self.show_debug_overlay(),
             ShowLauncher => self.show_launcher(),
             ShowLauncherArgs(args) => {

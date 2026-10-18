@@ -23,6 +23,7 @@ clear and convenient.
   - [ActivateKeyTable](ActivateKeyTable.md)
   - [ActivateLastTab](ActivateLastTab.md)
   - [ActivateNextTabNeedingAttention](ActivateNextTabNeedingAttention.md)
+  - [ActivateOldestTabNeedingAttention](ActivateOldestTabNeedingAttention.md)
   - [ActivatePaneByIndex](ActivatePaneByIndex.md)
   - [ActivatePaneDirection](ActivatePaneDirection.md)
   - [ActivateTab](ActivateTab.md)

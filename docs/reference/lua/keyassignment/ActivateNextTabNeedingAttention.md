@@ -2,4 +2,6 @@
 
 Activates the newest unseen completed agent response in a visible tab in the current window. Hidden tabs are skipped.
 
+[`ActivateOldestTabNeedingAttention`](ActivateOldestTabNeedingAttention.md) takes the oldest instead.
+
 This action has no default shortcut.

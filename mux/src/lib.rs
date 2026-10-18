@@ -1072,6 +1072,13 @@ fn spawn_agent_observer_timer(mux_instance_id: usize) -> Sender<PaneId> {
     tx
 }
 
+/// Which end of the queue of unseen agent responses to visit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttentionQueueEnd {
+    Newest,
+    Oldest,
+}
+
 /// How long after the last input to a pane a draft in Claude's input box
 /// still counts as text the user is typing.
 const CLAUDE_DRAFT_IDLE: Duration = Duration::from_secs(60);
@@ -4603,6 +4610,18 @@ impl Mux {
         &self,
         window_id: WindowId,
     ) -> anyhow::Result<Option<(TabId, PaneId)>> {
+        self.activate_agent_needing_attention(window_id, AttentionQueueEnd::Newest)
+    }
+
+    /// Activates the agent in a visible tab of the window whose unseen
+    /// completed turn is at `end` of the queue of such turns, ordered by
+    /// completion time. Agents without a completion time come last from
+    /// either end.
+    pub fn activate_agent_needing_attention(
+        &self,
+        window_id: WindowId,
+        end: AttentionQueueEnd,
+    ) -> anyhow::Result<Option<(TabId, PaneId)>> {
         let Some(window) = self.get_window(window_id) else {
             return Ok(None);
         };
@@ -4630,7 +4649,13 @@ impl Mux {
                 )
             })
             .collect::<Vec<_>>();
-        targets.sort_by(|left, right| right.0.cmp(&left.0));
+        targets.sort_by(|left, right| match (left.0, right.0) {
+            (Some(left), Some(right)) => match end {
+                AttentionQueueEnd::Newest => right.cmp(&left),
+                AttentionQueueEnd::Oldest => left.cmp(&right),
+            },
+            (left, right) => right.is_some().cmp(&left.is_some()),
+        });
         let Some((_completed_at, tab_id, pane_id)) = targets.first().copied() else {
             return Ok(None);
         };
@@ -13152,6 +13177,68 @@ mod test {
             mux.get_active_tab_for_window_for_current_identity(window_id)
                 .map(|tab| tab.tab_id()),
             Some(tab_ids[1])
+        );
+    }
+
+    #[test]
+    fn agent_needing_attention_is_taken_from_either_end_of_the_queue() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let mut tab_ids = vec![];
+        for pane_id in [281, 282, 283] {
+            let tab = Arc::new(Tab::new(&size));
+            tab.assign_pane(&FakePane::new(pane_id, size, domain.id));
+            mux.add_tab_and_active_pane(&tab).unwrap();
+            mux.add_tab_to_window(&tab, window_id).unwrap();
+            let metadata = sample_agent_metadata(&format!("agent-{pane_id}"));
+            mux.set_agent_metadata(pane_id, metadata).unwrap();
+            tab_ids.push(tab.tab_id());
+        }
+        let (client_id, view_id) = register_test_client(&mux, "attention-queue-ends");
+        mux.set_active_tab_for_client_view(view_id.as_ref(), window_id, tab_ids[0])
+            .unwrap();
+        let _identity = mux.with_identity(Some(client_id));
+
+        // Unread replies finished in the order 282, 283, 281.
+        let at = |minute| Utc.with_ymd_and_hms(2026, 10, 18, 12, minute, 0).unwrap();
+        for (pane_id, minute) in [(281, 30), (282, 10), (283, 20)] {
+            let metadata = mux.get_agent_metadata_for_pane(pane_id).unwrap();
+            let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+            runtime.turn_state = AgentTurnState::WaitingOnUser;
+            runtime.last_turn_completed_at = Some(at(minute));
+            mux.agent_runtime_by_pane.write().insert(pane_id, runtime);
+        }
+
+        assert_eq!(
+            mux.activate_agent_needing_attention(window_id, AttentionQueueEnd::Oldest)
+                .unwrap(),
+            Some((tab_ids[1], 282))
+        );
+        assert_eq!(
+            mux.activate_agent_needing_attention(window_id, AttentionQueueEnd::Newest)
+                .unwrap(),
+            Some((tab_ids[0], 281))
+        );
+        // The oldest of the rest, once the oldest is hidden.
+        mux.set_tab_parked(window_id, tab_ids[1], true).unwrap();
+        assert_eq!(
+            mux.activate_agent_needing_attention(window_id, AttentionQueueEnd::Oldest)
+                .unwrap(),
+            Some((tab_ids[2], 283))
         );
     }
 

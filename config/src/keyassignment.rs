@@ -576,6 +576,7 @@ pub enum KeyAssignment {
     ShowTabNavigator,
     ToggleTabActivityOrder,
     ActivateNextTabNeedingAttention,
+    ActivateOldestTabNeedingAttention,
     ShowDebugOverlay,
     HideApplication,
     QuitApplication,
