@@ -1794,7 +1794,7 @@ fn derive_command_from_key_assignment_for_platform(
         },
         ActivateNextTabNeedingAttention => CommandDef {
             brief: "Review next agent response".into(),
-            doc: "Activates the newest unseen agent response, including hidden tabs.".into(),
+            doc: "Activates the newest unseen agent response in a visible tab.".into(),
             keys: vec![],
             args: &[ArgType::ActiveWindow],
             menubar: &["Window", "Select Tab"],

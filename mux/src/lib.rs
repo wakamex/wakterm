@@ -4603,11 +4603,25 @@ impl Mux {
         &self,
         window_id: WindowId,
     ) -> anyhow::Result<Option<(TabId, PaneId)>> {
+        let Some(window) = self.get_window(window_id) else {
+            return Ok(None);
+        };
+        let parked_tab_ids = window
+            .iter()
+            .map(|tab| tab.tab_id())
+            .filter(|tab_id| window.is_tab_parked(*tab_id))
+            .collect::<HashSet<_>>();
+        drop(window);
+
         let mut agents = self.list_agents_cached();
         agents.extend(self.mirrored_agent_snapshots_for_window(window_id));
         let mut targets = agents
             .into_iter()
-            .filter(|agent| agent.window_id == window_id && agent.needs_attention)
+            .filter(|agent| {
+                agent.window_id == window_id
+                    && agent.needs_attention
+                    && !parked_tab_ids.contains(&agent.tab_id)
+            })
             .map(|agent| {
                 (
                     agent.runtime.last_turn_completed_at,
@@ -4620,12 +4634,6 @@ impl Mux {
         let Some((_completed_at, tab_id, pane_id)) = targets.first().copied() else {
             return Ok(None);
         };
-        if self
-            .get_window(window_id)
-            .is_some_and(|window| window.is_tab_parked(tab_id))
-        {
-            self.set_tab_parked(window_id, tab_id, false)?;
-        }
         self.set_focused_pane_for_current_identity_lightweight(pane_id)?;
         Ok(Some((tab_id, pane_id)))
     }
@@ -13085,6 +13093,65 @@ mod test {
         assert_eq!(
             mux.visible_tab_ids_by_last_turn(window_id + 1000),
             Vec::<TabId>::new()
+        );
+    }
+
+    #[test]
+    fn activate_next_agent_needing_attention_skips_parked_tabs() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let mut tab_ids = vec![];
+        for pane_id in [271, 272, 273] {
+            let tab = Arc::new(Tab::new(&size));
+            tab.assign_pane(&FakePane::new(pane_id, size, domain.id));
+            mux.add_tab_and_active_pane(&tab).unwrap();
+            mux.add_tab_to_window(&tab, window_id).unwrap();
+            let metadata = sample_agent_metadata(&format!("agent-{pane_id}"));
+            mux.set_agent_metadata(pane_id, metadata).unwrap();
+            tab_ids.push(tab.tab_id());
+        }
+
+        let (client_id, view_id) = register_test_client(&mux, "attention-skip-parked");
+        mux.set_active_tab_for_client_view(view_id.as_ref(), window_id, tab_ids[0])
+            .unwrap();
+        let _identity = mux.with_identity(Some(client_id));
+
+        let at = |minute| Utc.with_ymd_and_hms(2026, 9, 30, 12, minute, 0).unwrap();
+        for (pane_id, minute) in [(272, 10), (273, 20)] {
+            let metadata = mux.get_agent_metadata_for_pane(pane_id).unwrap();
+            let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+            runtime.turn_state = AgentTurnState::WaitingOnUser;
+            runtime.last_turn_completed_at = Some(at(minute));
+            mux.agent_runtime_by_pane.write().insert(pane_id, runtime);
+        }
+
+        // Park the newer unread tab; ActivateNextTabNeedingAttention should skip it
+        // and activate the visible unread tab instead without unparking the hidden one.
+        mux.set_tab_parked(window_id, tab_ids[2], true).unwrap();
+        assert_eq!(
+            mux.activate_next_agent_needing_attention(window_id)
+                .unwrap(),
+            Some((tab_ids[1], 272))
+        );
+        assert!(mux.get_window(window_id).unwrap().is_tab_parked(tab_ids[2]));
+        assert_eq!(
+            mux.get_active_tab_for_window_for_current_identity(window_id)
+                .map(|tab| tab.tab_id()),
+            Some(tab_ids[1])
         );
     }
 

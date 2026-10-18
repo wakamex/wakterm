@@ -3536,7 +3536,7 @@ mod test {
     }
 
     #[test]
-    fn mirrored_agent_snapshot_drives_exact_parked_attention_navigation() {
+    fn mirrored_agent_snapshot_skips_parked_tabs_until_unparked_for_attention_navigation() {
         let _test_lock = TEST_MUX_LOCK.lock();
         ensure_test_executor();
         let mux = Arc::new(Mux::new(None));
@@ -3621,12 +3621,20 @@ mod test {
         assert_eq!(
             mux.activate_next_agent_needing_attention(local_window_id)
                 .unwrap(),
-            Some((local_tab_id, local_pane_id))
+            None
         );
-        assert!(!mux
+        assert!(mux
             .get_window(local_window_id)
             .unwrap()
             .is_tab_parked(local_tab_id));
+
+        mux.set_tab_parked(local_window_id, local_tab_id, false)
+            .unwrap();
+        assert_eq!(
+            mux.activate_next_agent_needing_attention(local_window_id)
+                .unwrap(),
+            Some((local_tab_id, local_pane_id))
+        );
         assert_eq!(
             mux.get_active_tab_for_window_for_current_identity(local_window_id)
                 .map(|tab| tab.tab_id()),
