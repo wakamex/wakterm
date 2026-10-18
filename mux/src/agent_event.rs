@@ -138,14 +138,18 @@ struct JsonlCursor {
     /// replying.
     #[serde(default)]
     turn_error: Option<String>,
-    /// When this cursor was armed at the end of a new session file that
-    /// replaced the agent's previous one. A provider can go on appending to
-    /// that file history it already recorded in the previous one, as Claude
-    /// does when it copies a conversation into a new session file. Records
-    /// timestamped more than `COPIED_HISTORY_SLACK` before this time still
-    /// update the cursor's turn state, but report no events.
+    /// For a cursor that replaced the agent's previous session file, the
+    /// newest record time that file had reported. A provider can write into
+    /// the new file history it already recorded in the previous one, as
+    /// Claude does when it copies a conversation into a new session file,
+    /// and keeps the records' original times. Records timestamped at or
+    /// before this time still update the cursor's turn state, but report no
+    /// events.
     #[serde(default)]
     armed_at: Option<DateTime<Utc>>,
+    /// The newest time of a record this cursor has read.
+    #[serde(default)]
+    last_record_at: Option<DateTime<Utc>>,
 }
 
 impl JsonlCursor {
@@ -1570,6 +1574,7 @@ fn initial_jsonl_cursor(
         turn_before_gap: None,
         turn_error: None,
         armed_at: None,
+        last_record_at: None,
     })
 }
 
@@ -1638,9 +1643,10 @@ fn latest_jsonl_turn(
     Ok((current, prompt_id))
 }
 
-/// How long before a new session file was armed a record in it may be
-/// timestamped and still count as new: a provider stamps a record before it
-/// writes it.
+/// When a new session file is armed at its end because the previous file
+/// reported no record time, how long before that moment a record in it may
+/// be timestamped and still count as new: a provider stamps a record before
+/// it writes it.
 const COPIED_HISTORY_SLACK: chrono::Duration = chrono::Duration::seconds(2);
 
 fn read_new_jsonl(
@@ -1720,12 +1726,16 @@ fn read_new_jsonl(
             }
         };
         let visited = visit(start, &record, cursor)?;
+        let at = record_time(&record);
         let recorded_earlier = cursor
             .armed_at
-            .zip(record_time(&record))
-            .is_some_and(|(armed_at, at)| at < armed_at - COPIED_HISTORY_SLACK);
+            .zip(at)
+            .is_some_and(|(armed_at, at)| at <= armed_at);
         if !recorded_earlier {
             events.extend(visited);
+        }
+        if let Some(at) = at {
+            cursor.last_record_at = Some(cursor.last_record_at.map_or(at, |last| last.max(at)));
         }
     }
     cursor.checkpoint_sha256 = checkpoint_sha256(path, cursor.offset)?;
@@ -1776,8 +1786,11 @@ fn project_codex(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<
     let source_id = jsonl_source_id(path, "codex")?;
     let mut cursor = match cursor {
         Some(ProviderCursor::Codex(cursor)) if cursor.source_id == source_id => cursor,
-        Some(_) => {
-            return reset_jsonl_projection(path, "codex", source_id, true);
+        Some(previous) => {
+            return continue_after_reset(
+                reset_jsonl_projection(path, "codex", source_id, jsonl_cursor(&previous))?,
+                |cursor| project_codex(path, Some(cursor)),
+            );
         }
         None => {
             return Ok(ProjectedEvents {
@@ -1938,7 +1951,7 @@ fn project_codex(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<
     }) {
         Ok(events) => events,
         Err(err) if err.to_string().contains("truncated or rewritten") => {
-            return reset_jsonl_projection(path, "codex", source_id, false);
+            return reset_jsonl_projection(path, "codex", source_id, None);
         }
         Err(err) => return Err(err),
     };
@@ -1979,8 +1992,11 @@ fn project_claude(
     let source_id = jsonl_source_id(path, "claude")?;
     let mut cursor = match cursor {
         Some(ProviderCursor::Claude(cursor)) if cursor.source_id == source_id => cursor,
-        Some(_) => {
-            return reset_jsonl_projection(path, "claude", source_id, true);
+        Some(previous) => {
+            return continue_after_reset(
+                reset_jsonl_projection(path, "claude", source_id, jsonl_cursor(&previous))?,
+                |cursor| project_claude(path, Some(cursor), metadata),
+            );
         }
         None => {
             return Ok(ProjectedEvents {
@@ -2257,7 +2273,7 @@ fn project_claude(
     }) {
         Ok(events) => events,
         Err(err) if err.to_string().contains("truncated or rewritten") => {
-            return reset_jsonl_projection(path, "claude", source_id, false);
+            return reset_jsonl_projection(path, "claude", source_id, None);
         }
         Err(err) => return Err(err),
     };
@@ -2299,7 +2315,12 @@ fn project_agy(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<Pr
         .to_string();
     let mut cursor = match cursor {
         Some(ProviderCursor::Agy(cursor)) if cursor.source_id == source_id => cursor,
-        Some(_) => return reset_jsonl_projection(path, "agy", source_id, true),
+        Some(previous) => {
+            return continue_after_reset(
+                reset_jsonl_projection(path, "agy", source_id, jsonl_cursor(&previous))?,
+                |cursor| project_agy(path, Some(cursor)),
+            )
+        }
         None => {
             return Ok(ProjectedEvents {
                 cursor: ProviderCursor::Agy(initial_jsonl_cursor(path, "agy", source_id)?),
@@ -2418,7 +2439,7 @@ fn project_agy(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<Pr
     }) {
         Ok(events) => events,
         Err(err) if err.to_string().contains("truncated or rewritten") => {
-            return reset_jsonl_projection(path, "agy", source_id, false);
+            return reset_jsonl_projection(path, "agy", source_id, None);
         }
         Err(err) => return Err(err),
     };
@@ -2607,20 +2628,70 @@ fn gemini_checkpoint_sha256(messages: &[Value], index: usize) -> anyhow::Result<
     Ok(digest(&serde_json::to_vec(&relevant)?))
 }
 
+/// Reads on from where a reset armed the cursor, so that a replacing
+/// session file's records are reported in the same observation.
+fn continue_after_reset(
+    reset: ProjectedEvents,
+    project: impl FnOnce(ProviderCursor) -> anyhow::Result<ProjectedEvents>,
+) -> anyhow::Result<ProjectedEvents> {
+    let mut events = reset.events;
+    let next = project(reset.cursor)?;
+    events.extend(next.events);
+    Ok(ProjectedEvents {
+        cursor: next.cursor,
+        events,
+    })
+}
+
+/// The JSONL cursor inside a provider cursor, if it has one.
+fn jsonl_cursor(cursor: &ProviderCursor) -> Option<&JsonlCursor> {
+    match cursor {
+        ProviderCursor::Codex(cursor)
+        | ProviderCursor::Claude(cursor)
+        | ProviderCursor::Agy(cursor) => Some(cursor),
+        _ => None,
+    }
+}
+
+/// Arms a cursor for a session file that replaced the agent's previous one,
+/// whose cursor is `previous`, or that was rewritten, when `previous` is
+/// None. A replacing file is read from its start and reports only records
+/// newer than the previous file's newest: the provider may have written the
+/// change's own records, such as Claude's `/clear`, before the switch was
+/// seen, and copied older history. Without a previous record time, and for
+/// a rewritten file, the cursor starts at the file's end.
 fn reset_jsonl_projection(
     path: &Path,
     provider: &str,
     source_id: String,
-    session_changed: bool,
+    previous: Option<&JsonlCursor>,
 ) -> anyhow::Result<ProjectedEvents> {
-    let detail = if session_changed {
-        format!("confirmed {provider} provider session changed; a new tail baseline was armed")
-    } else {
-        format!("{provider} provider session was rewritten; a new tail baseline was armed")
+    let session_changed = previous.is_some();
+    let reported_through = previous.and_then(|previous| previous.last_record_at);
+    let detail = match (session_changed, reported_through) {
+        (true, Some(_)) => format!(
+            "confirmed {provider} provider session changed; the new session is read from its \
+             start, reporting records newer than the previous session's"
+        ),
+        (true, None) => {
+            format!("confirmed {provider} provider session changed; a new tail baseline was armed")
+        }
+        (false, _) => {
+            format!("{provider} provider session was rewritten; a new tail baseline was armed")
+        }
     };
     let mut cursor = initial_jsonl_cursor(path, provider, source_id)?;
     if session_changed {
-        cursor.armed_at = Some(Utc::now());
+        match reported_through {
+            Some(at) => {
+                cursor.offset = 0;
+                cursor.checkpoint_sha256 = checkpoint_sha256(path, 0)?;
+                cursor.current_turn_id = None;
+                cursor.current_prompt_id = None;
+                cursor.armed_at = Some(at);
+            }
+            None => cursor.armed_at = Some(Utc::now() - COPIED_HISTORY_SLACK),
+        }
     }
     let event = observer_failure(
         format!(
@@ -4293,6 +4364,87 @@ mod tests {
                 (AgentEventKind::TurnStarted, "turn-new".to_string()),
                 (AgentEventKind::TurnFinal, "turn-new".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn a_clear_recorded_in_the_new_session_file_is_reported_as_input() {
+        let temp = TempDir::new().unwrap();
+        let first = temp.path().join("first.jsonl");
+        let second = temp.path().join("second.jsonl");
+        let line = |value: serde_json::Value| value.to_string() + "\n";
+        let before = (Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+        fs::write(
+            &first,
+            [
+                line(serde_json::json!({"type":"mode","sessionId":"first"})),
+                line(
+                    serde_json::json!({"type":"user","uuid":"turn-1","sessionId":"first",
+                    "timestamp":before,"message":{"content":"work"}}),
+                ),
+                line(
+                    serde_json::json!({"type":"assistant","uuid":"reply-1","sessionId":"first",
+                    "timestamp":before,"message":{"id":"reply-1","model":"claude",
+                    "stop_reason":"end_turn","content":[{"type":"text","text":"done"}]}}),
+                ),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("claude");
+        let observe = |path: &Path| {
+            store
+                .observe_agent(
+                    &metadata,
+                    &runtime(
+                        &metadata,
+                        AgentHarness::Claude,
+                        path.to_string_lossy().into(),
+                    ),
+                )
+                .unwrap()
+        };
+        observe(&first);
+        append(
+            &first,
+            &line(
+                serde_json::json!({"type":"user","uuid":"turn-2","sessionId":"first",
+                "timestamp":Utc::now().to_rfc3339(),"message":{"content":"more"}}),
+            ),
+        );
+        observe(&first);
+        let after = store.latest_sequence();
+
+        // /clear starts a new session file and records the command in it
+        // before the observer sees the switch.
+        fs::write(
+            &second,
+            [
+                line(serde_json::json!({"type":"mode","sessionId":"second"})),
+                line(serde_json::json!({"type":"user","uuid":"clear","sessionId":"second",
+                    "timestamp":(Utc::now() + chrono::Duration::seconds(1)).to_rfc3339(),
+                    "message":{"content":"<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>"}})),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        observe(&second);
+
+        let accepted = store
+            .read_page(after, 100)
+            .unwrap()
+            .events
+            .into_iter()
+            .filter(|event| event.kind == AgentEventKind::InputAccepted)
+            .map(|event| (event.input_sha256.unwrap(), event.reason))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            accepted,
+            [(
+                crate::agent::message_sha256("/clear"),
+                Some("command".to_string())
+            )]
         );
     }
 
