@@ -215,7 +215,13 @@ pub struct MenuKeys {
 }
 
 const KEY_PAUSE: Duration = Duration::from_millis(150);
-const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long to wait for the screen to show the cursor's move after a key,
+/// and for the menu to close after Enter.
+#[cfg(not(test))]
+const MOVE_TIMEOUT: Duration = Duration::from_secs(20);
+#[cfg(test)]
+const MOVE_TIMEOUT: Duration = Duration::from_millis(1500);
+const CLOSE_TIMEOUT: Duration = MOVE_TIMEOUT;
 
 impl MenuKeys {
     /// Answers the menu in the pane with the chosen option.
@@ -249,38 +255,71 @@ impl MenuKeys {
     }
 }
 
-/// Moves the menu's cursor to row `target`, confirming on screen that it is
-/// there, presses Enter, and waits for the menu to close. Stops without
-/// pressing Enter when the screen does not show the menu with these labels.
+/// Moves the menu's cursor to row `target` one row at a time, waiting after
+/// each key until the screen shows the cursor on its new row, presses
+/// Enter on the chosen row, and waits for the menu to close. A slow pane
+/// can take seconds to redraw, and a key pressed before the redraw would
+/// move the cursor past the row. Stops without pressing Enter when the
+/// screen does not show the menu with these labels, or when the cursor
+/// does not move, and then says which row the cursor is on.
 fn answer(
     target: usize,
     labels: &[&str],
     read_screen: impl Fn() -> Vec<String>,
     mut press: impl FnMut(KeyCode) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    for _ in 0..=labels.len() {
+    let shown = || -> anyhow::Result<ClaudeMenu> {
         let menu = parse(&read_screen()).context("the pane no longer shows the menu")?;
         anyhow::ensure!(menu.labels == labels, "the pane shows a different menu");
+        Ok(menu)
+    };
+    let mut menu = shown()?;
+    for _ in 0..labels.len() {
         if menu.focused == target {
-            press(KeyCode::Enter)?;
-            let deadline = Instant::now() + CLOSE_TIMEOUT;
-            while parse(&read_screen()).is_some_and(|shown| shown.labels == labels) {
-                anyhow::ensure!(
-                    Instant::now() < deadline,
-                    "Enter was pressed, but the menu is still on screen"
-                );
-                std::thread::sleep(KEY_PAUSE);
-            }
-            return Ok(());
+            break;
         }
-        press(if menu.focused < target {
+        let from = menu.focused;
+        press(if from < target {
             KeyCode::DownArrow
         } else {
             KeyCode::UpArrow
         })?;
+        let deadline = Instant::now() + MOVE_TIMEOUT;
+        loop {
+            std::thread::sleep(KEY_PAUSE);
+            menu = shown()?;
+            if menu.focused != from {
+                break;
+            }
+            if Instant::now() >= deadline {
+                anyhow::bail!(
+                    "the menu's cursor stayed on row {} ({}) after the key; nothing was confirmed",
+                    from + 1,
+                    labels[from]
+                );
+            }
+        }
+    }
+    if menu.focused != target {
+        anyhow::bail!(
+            "the menu's cursor is on row {} ({}), not the chosen row {}; nothing was confirmed",
+            menu.focused + 1,
+            labels[menu.focused],
+            target + 1
+        );
+    }
+    press(KeyCode::Enter)?;
+    let deadline = Instant::now() + CLOSE_TIMEOUT;
+    while parse(&read_screen()).is_some_and(|shown| shown.labels == labels) {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "Enter was pressed on row {} ({}), but the menu is still on screen",
+            target + 1,
+            labels[target]
+        );
         std::thread::sleep(KEY_PAUSE);
     }
-    anyhow::bail!("the menu's cursor did not move to the chosen row; nothing was confirmed")
+    Ok(())
 }
 
 #[cfg(test)]
@@ -502,19 +541,36 @@ mod test {
         focused: std::cell::Cell<Option<usize>>,
         keys: std::cell::RefCell<Vec<KeyCode>>,
         arrows_work: bool,
+        /// How many screen reads after a key still show the screen from
+        /// before it, as a slow pane does.
+        redraw_lag: usize,
+        shown: std::cell::Cell<Option<usize>>,
+        stale_reads: std::cell::Cell<usize>,
     }
 
     impl FakeMenu {
         fn new(focused: usize, arrows_work: bool) -> Self {
+            Self::lagging(focused, arrows_work, 0)
+        }
+
+        fn lagging(focused: usize, arrows_work: bool, redraw_lag: usize) -> Self {
             Self {
                 focused: std::cell::Cell::new(Some(focused)),
                 keys: Default::default(),
                 arrows_work,
+                redraw_lag,
+                shown: std::cell::Cell::new(Some(focused)),
+                stale_reads: std::cell::Cell::new(0),
             }
         }
 
         fn screen(&self) -> Vec<String> {
-            match self.focused.get() {
+            if self.stale_reads.get() > 0 {
+                self.stale_reads.set(self.stale_reads.get() - 1);
+            } else {
+                self.shown.set(self.focused.get());
+            }
+            match self.shown.get() {
                 None => lines("> "),
                 Some(0) => lines(MENU),
                 Some(_) => lines(
@@ -527,12 +583,16 @@ mod test {
 
         fn press(&self, key: KeyCode) -> anyhow::Result<()> {
             self.keys.borrow_mut().push(key.clone());
+            // Two rows, and the cursor wraps around as Claude's does.
+            let row = self.focused.get();
             match key {
                 KeyCode::Enter => self.focused.set(None),
-                KeyCode::DownArrow if self.arrows_work => self.focused.set(Some(1)),
-                KeyCode::UpArrow if self.arrows_work => self.focused.set(Some(0)),
+                KeyCode::DownArrow | KeyCode::UpArrow if self.arrows_work => {
+                    self.focused.set(row.map(|row| 1 - row))
+                }
                 _ => {}
             }
+            self.stale_reads.set(self.redraw_lag);
             Ok(())
         }
     }
@@ -553,6 +613,29 @@ mod test {
         let menu = FakeMenu::new(1, true);
         answer(0, &LABELS, || menu.screen(), |key| menu.press(key)).unwrap();
         assert_eq!(*menu.keys.borrow(), [KeyCode::UpArrow, KeyCode::Enter]);
+    }
+
+    #[test]
+    fn answering_waits_for_a_slow_pane_to_draw_each_move() {
+        // The pane takes about a second to show each key's effect. One Down
+        // reaches the second row, and Enter is pressed there; a second Down
+        // would have wrapped back to the first.
+        let menu = FakeMenu::lagging(0, true, 6);
+        answer(1, &LABELS, || menu.screen(), |key| menu.press(key)).unwrap();
+        assert_eq!(*menu.keys.borrow(), [KeyCode::DownArrow, KeyCode::Enter]);
+    }
+
+    #[test]
+    fn a_cursor_that_does_not_move_is_reported_where_it_stayed() {
+        let menu = FakeMenu::new(0, false);
+        let error = answer(1, &LABELS, || menu.screen(), |key| menu.press(key)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("stayed on row 1 (Switch to Opus 4.8)"),
+            "{error}"
+        );
+        assert_eq!(*menu.keys.borrow(), [KeyCode::DownArrow]);
     }
 
     #[test]
