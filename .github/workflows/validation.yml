@@ -94,8 +94,9 @@ jobs:
           make check-derived DERIVED_PROFILE=release
           TAG_NAME="v$(cat VERSION)" bash ci/deploy.sh
           test -s "wakterm-v$(cat VERSION)-xcb-imdkit-source.tar.gz"
-          tar -tJf "wakterm-v$(cat VERSION)".*.tar.xz | grep -q "usr/share/doc/wakterm/THIRD_PARTY_LICENSES.txt"
-          tar -tJf "wakterm-v$(cat VERSION)".*.tar.xz | grep -q "usr/share/doc/wakterm/COPYING.LGPLv2.1"
+          tar -tJf "wakterm-v$(cat VERSION)".*.tar.xz > /tmp/wakterm-tar-files.txt
+          grep -q "usr/share/doc/wakterm/THIRD_PARTY_LICENSES.txt" /tmp/wakterm-tar-files.txt
+          grep -q "usr/share/doc/wakterm/COPYING.LGPLv2.1" /tmp/wakterm-tar-files.txt
 
       - name: Build, test, and package on macOS
         if: matrix.id == 'macos'
@@ -110,7 +111,8 @@ jobs:
           done
           cargo nextest run --all --no-fail-fast --target=aarch64-apple-darwin
           TAG_NAME="v$(cat VERSION)" bash ci/deploy.sh
-          unzip -l "wakterm-macos-v$(cat VERSION).zip" | grep -q "THIRD_PARTY_LICENSES.txt"
+          unzip -l "wakterm-macos-v$(cat VERSION).zip" > /tmp/wakterm-macos-files.txt
+          grep -q "THIRD_PARTY_LICENSES.txt" /tmp/wakterm-macos-files.txt
 
       - name: Build and test on Windows
         if: matrix.id == 'windows'
@@ -125,10 +127,13 @@ jobs:
         shell: bash
         run: |
           TAG_NAME="v$(cat VERSION)" bash ci/deploy.sh
-          7z l "wakterm-windows-v$(cat VERSION).zip" | grep -q "licenses/THIRD_PARTY_LICENSES.txt"
-          7z l "wakterm-windows-v$(cat VERSION).zip" | grep -q "licenses/ANGLE.md"
-          7z l "wakterm-windows-v$(cat VERSION).zip" | grep -q "licenses/ConPTY.txt"
-          7z l "wakterm-windows-v$(cat VERSION).zip" | grep -q "licenses/Mesa.txt"
+          test -s "wakterm-v$(cat VERSION)-setup.exe"
+          7z l "wakterm-windows-v$(cat VERSION).zip" > wakterm-windows-files.txt
+          grep -qE "licenses[/\\\\]THIRD_PARTY_LICENSES\.txt" wakterm-windows-files.txt
+          grep -qE "licenses[/\\\\]ANGLE\.md" wakterm-windows-files.txt
+          grep -qE "licenses[/\\\\]ConPTY\.txt" wakterm-windows-files.txt
+          grep -qE "licenses[/\\\\]Mesa\.txt" wakterm-windows-files.txt
+          rm -f wakterm-windows-files.txt
 
   build-test-fedora:
     name: fedora-43
@@ -172,8 +177,9 @@ jobs:
             -p strip-ansi-escapes
           cargo nextest run --all --no-fail-fast
           TAG_NAME="v$(cat VERSION)" bash ci/deploy.sh
-          rpm -qlp wakterm-*.rpm | grep -q "/usr/share/licenses/wakterm/THIRD_PARTY_LICENSES.txt"
-          rpm -qlp wakterm-*.rpm | grep -q "/usr/share/licenses/wakterm/COPYING.LGPLv2.1"
+          rpm -qlp wakterm-*.rpm > /tmp/wakterm-rpm-files.txt
+          grep -q "/usr/share/licenses/wakterm/THIRD_PARTY_LICENSES.txt" /tmp/wakterm-rpm-files.txt
+          grep -q "/usr/share/licenses/wakterm/COPYING.LGPLv2.1" /tmp/wakterm-rpm-files.txt
 
   validate:
     name: validate

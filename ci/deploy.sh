@@ -109,7 +109,7 @@ case $OSTYPE in
     sed -e "s/@TAG@/$TAG_NAME/g" -e "s/@VERSION@/$VERSION_NO_V/g" -e "s/@SHA256@/$SHA256/g" < ci/wakterm-homebrew-macos.rb.template > wakterm.rb
 
     ;;
-  msys)
+  msys*|cygwin*|win32*)
     zipdir=wakterm-windows-$TAG_NAME
     if [[ "$BUILD_REASON" == "Schedule" ]] ; then
       zipname=wakterm-windows-nightly.zip
