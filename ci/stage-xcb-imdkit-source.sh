@@ -33,7 +33,7 @@ cp licenses/COPYING.LGPLv2.1 "$STAGE_DIR/COPYING.LGPLv2.1"
 
 cat > "$STAGE_DIR/README.txt" <<EOF
 wakterm ${VERSION_NO_V} on Linux (X11) statically links xcb-imdkit 0.3.0
-(https://github.com/wakamex/xcb-imdkit-rs, commit 212330f2bf04f2fe07ab3b1e9ef2b8fb1ce2da5a)
+(https://github.com/wakamex/xcb-imdkit-rs, commit 212330f7c6c37794d78061a773e8f4f9e4785bbb)
 under the GNU Lesser General Public License version 2.1 (COPYING.LGPLv2.1 in this archive).
 
 xcb-imdkit-rs/ contains the complete source code and build scripts (build.rs, C sources,

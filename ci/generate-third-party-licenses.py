@@ -193,7 +193,7 @@ def main() -> int:
             "GNU Lesser General Public License v2.1 (LGPL-2.1-only) Notice",
             "-------------------------------------------------------------",
             "On Linux (X11), wakterm links xcb-imdkit 0.3.0 (https://github.com/wakamex/xcb-imdkit-rs,",
-            "commit 212330f2bf04f2fe07ab3b1e9ef2b8fb1ce2da5a) under the GNU Lesser General Public",
+            "commit 212330f7c6c37794d78061a773e8f4f9e4785bbb) under the GNU Lesser General Public",
             "License v2.1. The complete corresponding source code for xcb-imdkit is published with each",
             "release as wakterm-vX.Y.Z-xcb-imdkit-source.tar.gz, and the LGPL-2.1 text is included in",
             "COPYING.LGPLv2.1 and below.",
