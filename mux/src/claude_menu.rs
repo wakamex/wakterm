@@ -215,13 +215,11 @@ pub struct MenuKeys {
 }
 
 const KEY_PAUSE: Duration = Duration::from_millis(150);
-/// How long to wait for the screen to show the cursor's move after a key,
-/// and for the menu to close after Enter.
+/// How long to wait for the menu to close after its row's number is pressed.
 #[cfg(not(test))]
-const MOVE_TIMEOUT: Duration = Duration::from_secs(20);
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(20);
 #[cfg(test)]
-const MOVE_TIMEOUT: Duration = Duration::from_millis(1500);
-const CLOSE_TIMEOUT: Duration = MOVE_TIMEOUT;
+const CLOSE_TIMEOUT: Duration = Duration::from_millis(1500);
 
 impl MenuKeys {
     /// Answers the menu in the pane with the chosen option.
@@ -255,67 +253,35 @@ impl MenuKeys {
     }
 }
 
-/// Moves the menu's cursor to row `target` one row at a time, waiting after
-/// each key until the screen shows the cursor on its new row, presses
-/// Enter on the chosen row, and waits for the menu to close. A slow pane
-/// can take seconds to redraw, and a key pressed before the redraw would
-/// move the cursor past the row. Stops without pressing Enter when the
-/// screen does not show the menu with these labels, or when the cursor
-/// does not move, and then says which row the cursor is on.
+/// Chooses row `target` by pressing its number, which Claude's menus take
+/// as choosing and confirming that row, and waits for the menu to close.
+/// One key leaves no cursor to track, so a pane that redraws slowly cannot
+/// make the choice land on another row. Presses nothing when the screen
+/// does not show the menu with these labels. When the menu is still shown
+/// after the wait, the choice may still be on its way, so nothing else is
+/// pressed and the error says which number was.
 fn answer(
     target: usize,
     labels: &[&str],
     read_screen: impl Fn() -> Vec<String>,
     mut press: impl FnMut(KeyCode) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    let shown = || -> anyhow::Result<ClaudeMenu> {
-        let menu = parse(&read_screen()).context("the pane no longer shows the menu")?;
-        anyhow::ensure!(menu.labels == labels, "the pane shows a different menu");
-        Ok(menu)
-    };
-    let mut menu = shown()?;
-    for _ in 0..labels.len() {
-        if menu.focused == target {
-            break;
-        }
-        let from = menu.focused;
-        press(if from < target {
-            KeyCode::DownArrow
-        } else {
-            KeyCode::UpArrow
-        })?;
-        let deadline = Instant::now() + MOVE_TIMEOUT;
-        loop {
-            std::thread::sleep(KEY_PAUSE);
-            menu = shown()?;
-            if menu.focused != from {
-                break;
-            }
-            if Instant::now() >= deadline {
-                anyhow::bail!(
-                    "the menu's cursor stayed on row {} ({}) after the key; nothing was confirmed",
-                    from + 1,
-                    labels[from]
-                );
-            }
-        }
-    }
-    if menu.focused != target {
-        anyhow::bail!(
-            "the menu's cursor is on row {} ({}), not the chosen row {}; nothing was confirmed",
-            menu.focused + 1,
-            labels[menu.focused],
-            target + 1
-        );
-    }
-    press(KeyCode::Enter)?;
+    let menu = parse(&read_screen()).context("the pane no longer shows the menu")?;
+    anyhow::ensure!(menu.labels == labels, "the pane shows a different menu");
+    let digit = <u32 as std::convert::TryFrom<usize>>::try_from(target + 1)
+        .ok()
+        .and_then(|number| char::from_digit(number, 10))
+        .context("the chosen row has no number key")?;
+    press(KeyCode::Char(digit))?;
     let deadline = Instant::now() + CLOSE_TIMEOUT;
     while parse(&read_screen()).is_some_and(|shown| shown.labels == labels) {
         anyhow::ensure!(
             Instant::now() < deadline,
-            "Enter was pressed on row {} ({}), but the menu is still on screen",
+            "{digit} was pressed for row {} ({}), but the menu is still on screen after {} s; \
+             it may still take the choice, so check the pane before answering again",
             target + 1,
-            labels[target]
+            labels[target],
+            CLOSE_TIMEOUT.as_secs()
         );
         std::thread::sleep(KEY_PAUSE);
     }
@@ -540,7 +506,7 @@ mod test {
     struct FakeMenu {
         focused: std::cell::Cell<Option<usize>>,
         keys: std::cell::RefCell<Vec<KeyCode>>,
-        arrows_work: bool,
+        keys_work: bool,
         /// How many screen reads after a key still show the screen from
         /// before it, as a slow pane does.
         redraw_lag: usize,
@@ -549,15 +515,15 @@ mod test {
     }
 
     impl FakeMenu {
-        fn new(focused: usize, arrows_work: bool) -> Self {
-            Self::lagging(focused, arrows_work, 0)
+        fn new(focused: usize, keys_work: bool) -> Self {
+            Self::lagging(focused, keys_work, 0)
         }
 
-        fn lagging(focused: usize, arrows_work: bool, redraw_lag: usize) -> Self {
+        fn lagging(focused: usize, keys_work: bool, redraw_lag: usize) -> Self {
             Self {
                 focused: std::cell::Cell::new(Some(focused)),
                 keys: Default::default(),
-                arrows_work,
+                keys_work,
                 redraw_lag,
                 shown: std::cell::Cell::new(Some(focused)),
                 stale_reads: std::cell::Cell::new(0),
@@ -583,14 +549,9 @@ mod test {
 
         fn press(&self, key: KeyCode) -> anyhow::Result<()> {
             self.keys.borrow_mut().push(key.clone());
-            // Two rows, and the cursor wraps around as Claude's does.
-            let row = self.focused.get();
-            match key {
-                KeyCode::Enter => self.focused.set(None),
-                KeyCode::DownArrow | KeyCode::UpArrow if self.arrows_work => {
-                    self.focused.set(row.map(|row| 1 - row))
-                }
-                _ => {}
+            // A row's number chooses it and closes the menu.
+            if self.keys_work && matches!(key, KeyCode::Char('1' | '2')) {
+                self.focused.set(None);
             }
             self.stale_reads.set(self.redraw_lag);
             Ok(())
@@ -600,52 +561,40 @@ mod test {
     const LABELS: [&str; 2] = ["Switch to Opus 4.8", "Edit prompt and retry with Opus 5.5"];
 
     #[test]
-    fn answering_moves_to_the_chosen_row_before_enter() {
-        // The focused first choice needs only Enter.
-        let menu = FakeMenu::new(0, true);
-        answer(0, &LABELS, || menu.screen(), |key| menu.press(key)).unwrap();
-        assert_eq!(*menu.keys.borrow(), [KeyCode::Enter]);
-
-        // The second choice is reached with Down, and the first with Up.
-        let menu = FakeMenu::new(0, true);
-        answer(1, &LABELS, || menu.screen(), |key| menu.press(key)).unwrap();
-        assert_eq!(*menu.keys.borrow(), [KeyCode::DownArrow, KeyCode::Enter]);
-        let menu = FakeMenu::new(1, true);
-        answer(0, &LABELS, || menu.screen(), |key| menu.press(key)).unwrap();
-        assert_eq!(*menu.keys.borrow(), [KeyCode::UpArrow, KeyCode::Enter]);
+    fn answering_presses_the_chosen_rows_number_wherever_the_cursor_is() {
+        for (target, digit) in [(0, '1'), (1, '2')] {
+            for focused in [0, 1] {
+                let menu = FakeMenu::new(focused, true);
+                answer(target, &LABELS, || menu.screen(), |key| menu.press(key)).unwrap();
+                assert_eq!(*menu.keys.borrow(), [KeyCode::Char(digit)]);
+            }
+        }
     }
 
     #[test]
-    fn answering_waits_for_a_slow_pane_to_draw_each_move() {
-        // The pane takes about a second to show each key's effect. One Down
-        // reaches the second row, and Enter is pressed there; a second Down
-        // would have wrapped back to the first.
+    fn answering_waits_for_a_slow_pane_to_close_the_menu() {
+        // The pane takes about a second to show the key's effect.
         let menu = FakeMenu::lagging(0, true, 6);
         answer(1, &LABELS, || menu.screen(), |key| menu.press(key)).unwrap();
-        assert_eq!(*menu.keys.borrow(), [KeyCode::DownArrow, KeyCode::Enter]);
+        assert_eq!(*menu.keys.borrow(), [KeyCode::Char('2')]);
     }
 
     #[test]
-    fn a_cursor_that_does_not_move_is_reported_where_it_stayed() {
+    fn a_menu_that_stays_open_gets_no_second_key_and_is_reported() {
         let menu = FakeMenu::new(0, false);
         let error = answer(1, &LABELS, || menu.screen(), |key| menu.press(key)).unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("stayed on row 1 (Switch to Opus 4.8)"),
-            "{error}"
+                .contains("2 was pressed for row 2 (Edit prompt and retry with Opus 5.5)"),
+            "{}",
+            error
         );
-        assert_eq!(*menu.keys.borrow(), [KeyCode::DownArrow]);
+        assert_eq!(*menu.keys.borrow(), [KeyCode::Char('2')]);
     }
 
     #[test]
-    fn answering_never_confirms_the_wrong_row_or_another_menu() {
-        // Arrows that do not move the cursor: Enter is never pressed.
-        let menu = FakeMenu::new(0, false);
-        assert!(answer(1, &LABELS, || menu.screen(), |key| menu.press(key)).is_err());
-        assert!(!menu.keys.borrow().contains(&KeyCode::Enter));
-
-        // A menu with other labels, or no menu, gets no keys at all.
+    fn answering_presses_nothing_for_another_menu_or_none() {
         let menu = FakeMenu::new(0, true);
         let other = ["Switch to Opus 5", "Edit prompt and retry with Opus 5.5"];
         assert!(answer(0, &other, || menu.screen(), |key| menu.press(key)).is_err());
