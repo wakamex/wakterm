@@ -2954,9 +2954,19 @@ fn project_opencode(
             let (rowid, part_id, time_created, part_data, _message_id, message_data) = row?;
             let part: Value = serde_json::from_str(&part_data)?;
             let message: Value = serde_json::from_str(&message_data)?;
-            if message.get("role").and_then(Value::as_str) == Some("assistant")
-                && part.get("type").and_then(Value::as_str) == Some("text")
+            let assistant_text = message.get("role").and_then(Value::as_str) == Some("assistant")
+                && part.get("type").and_then(Value::as_str) == Some("text");
+            // OpenCode creates a text part when a reply starts and fills it
+            // in as the reply streams, then marks it ended. A part read
+            // before then is read again once it is finished, and so are the
+            // parts after it, which keep their order.
+            if assistant_text
+                && part.pointer("/time/end").is_none()
+                && message.pointer("/time/completed").is_none()
             {
+                break;
+            }
+            if assistant_text {
                 let turn_id = message.get("parentID").and_then(Value::as_str);
                 let text = part
                     .get("text")
@@ -5372,6 +5382,79 @@ mod tests {
     }
 
     #[test]
+    fn opencode_reply_read_while_streaming_is_reported_once_finished() {
+        let temp = TempDir::new().unwrap();
+        let provider_db = temp.path().join("opencode.sqlite3");
+        let conn = create_opencode_db(&provider_db);
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("opencode");
+        let session_path = format!(
+            "opencode://session?db={}&id=session-open",
+            url::form_urlencoded::byte_serialize(provider_db.to_string_lossy().as_bytes())
+                .collect::<String>()
+        );
+        let runtime = runtime(&metadata, AgentHarness::Opencode, session_path);
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        conn.execute(
+            "INSERT INTO message VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "stream-turn",
+                "session-open",
+                1_776_600_000_000_i64,
+                r#"{"role":"user"}"#
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "stream-answer",
+                "session-open",
+                1_776_600_001_000_i64,
+                r#"{"role":"assistant","parentID":"stream-turn"}"#
+            ],
+        )
+        .unwrap();
+        // The reply's text part exists before its text does.
+        conn.execute(
+            "INSERT INTO part VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                "stream-part",
+                "stream-answer",
+                "session-open",
+                1_776_600_001_000_i64,
+                r#"{"type":"text","text":"","time":{"start":1776600001000}}"#
+            ],
+        )
+        .unwrap();
+        store.observe_agent(&metadata, &runtime).unwrap();
+        assert!(!event_kinds(&store.read_page(after, 100).unwrap())
+            .contains(&AgentEventKind::AssistantMessage));
+
+        conn.execute(
+            "UPDATE part SET data = ?1 WHERE id = 'stream-part'",
+            params![r#"{"type":"text","text":"the whole answer","time":{"start":1776600001000,"end":1776600002000}}"#],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE message SET data = ?1 WHERE id = 'stream-answer'",
+            params![r#"{"role":"assistant","parentID":"stream-turn","finish":"stop","time":{"created":1776600001000,"completed":1776600002100}}"#],
+        )
+        .unwrap();
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let page = store.read_page(after, 100).unwrap();
+        let messages = page
+            .events
+            .iter()
+            .filter(|event| event.kind == AgentEventKind::AssistantMessage)
+            .map(|event| event.text.clone().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(messages, ["the whole answer"]);
+        assert!(event_kinds(&page).contains(&AgentEventKind::TurnFinal));
+    }
+
+    #[test]
     fn opencode_projects_parts_and_finished_messages() {
         let temp = TempDir::new().unwrap();
         let provider_db = temp.path().join("opencode.sqlite3");
@@ -5413,7 +5496,7 @@ mod tests {
                 "open-tool-1",
                 "session-open",
                 1_776_600_000_500_i64,
-                r#"{"type":"text","text":"working"}"#
+                r#"{"type":"text","text":"working","time":{"start":1776600000500,"end":1776600000600}}"#
             ],
         )
         .unwrap();
@@ -5434,7 +5517,7 @@ mod tests {
                 "open-answer-1",
                 "session-open",
                 1_776_600_001_000_i64,
-                r#"{"type":"text","text":"finished ✓"}"#
+                r#"{"type":"text","text":"finished ✓","time":{"start":1776600001000,"end":1776600001900}}"#
             ],
         )
         .unwrap();
