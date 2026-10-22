@@ -4640,12 +4640,15 @@ impl Mux {
         let Some(tab) = self.get_tab(tab_id) else {
             return AgentTabBadgeState::default();
         };
+        // Lock agent metadata before runtimes, the order installing an agent
+        // takes them in, so that a badge read cannot deadlock against it.
+        let metadata_by_pane = self.agent_metadata_by_pane.read();
         let runtime_by_pane = self.agent_runtime_by_pane.read();
         let detected_agent_panes = self.detected_agent_panes.read();
         let mut badge = AgentTabBadgeState::default();
         for positioned in tab.iter_panes_ignoring_zoom() {
             let pane_id = positioned.pane.pane_id();
-            let runtime = if self.get_agent_metadata_for_pane(pane_id).is_some()
+            let runtime = if metadata_by_pane.contains_key(&pane_id)
                 || detected_agent_panes.contains(&pane_id)
             {
                 runtime_by_pane.get(&pane_id)
@@ -4688,12 +4691,14 @@ impl Mux {
         let Some(tab) = self.get_tab(tab_id) else {
             return false;
         };
+        // Metadata before runtimes, as in cached_tab_badge_state_for_agents.
+        let metadata_by_pane = self.agent_metadata_by_pane.read();
         let runtimes = self.agent_runtime_by_pane.read();
         let mirrored = self.mirrored_agent_snapshot_by_pane.read();
         let mut working = false;
         for positioned in tab.iter_panes_ignoring_zoom() {
             let pane_id = positioned.pane.pane_id();
-            let turn_state = if self.get_agent_metadata_for_pane(pane_id).is_some() {
+            let turn_state = if metadata_by_pane.contains_key(&pane_id) {
                 runtimes.get(&pane_id).map(|runtime| &runtime.turn_state)
             } else {
                 mirrored
@@ -9181,6 +9186,74 @@ mod test {
         assert!(mux.tab_agents_working(tab.tab_id()));
         set_turn(&first, "first", AgentTurnState::Unknown);
         assert!(!mux.tab_agents_working(tab.tab_id()));
+    }
+
+    #[test]
+    fn reading_tab_badges_while_an_agent_is_installed_does_not_deadlock() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new(152, size, domain.id);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        let metadata = sample_agent_metadata("installed");
+        mux.set_agent_metadata(pane_id, metadata.clone()).unwrap();
+
+        // Installing an agent, as restoring one after a restart does, while
+        // clients read the tab's badge.
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader = {
+            let mux = Arc::clone(&mux);
+            let stop = Arc::clone(&stop);
+            let tab_id = tab.tab_id();
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    mux.cached_tab_badge_state_for_agents(tab_id, None);
+                    mux.tab_agents_working(tab_id);
+                }
+            })
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let installer = {
+            let mux = Arc::clone(&mux);
+            let runtime = AgentRuntimeSnapshot::new(&metadata);
+            std::thread::spawn(move || {
+                for _ in 0..500 {
+                    mux.install_agent_metadata_runtime_with_process_info(
+                        pane_id,
+                        metadata.clone(),
+                        runtime.clone(),
+                        None,
+                    )
+                    .unwrap();
+                }
+                done_tx.send(()).unwrap();
+            })
+        };
+        let finished = done_rx.recv_timeout(Duration::from_secs(30)).is_ok();
+        stop.store(true, Ordering::Relaxed);
+        assert!(
+            finished,
+            "installing the agent deadlocked with a badge read"
+        );
+        installer.join().unwrap();
+        reader.join().unwrap();
     }
 
     #[test]
