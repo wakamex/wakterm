@@ -1277,6 +1277,35 @@ pub fn codex_input_box_holds_text(lines: &[wakterm_term::Line]) -> bool {
         && cells.any(|cell| !cell.str().trim().is_empty() && !dimmed(&cell))
 }
 
+/// Ends the observed turn as aborted when the harness's screen shows it is no
+/// longer running, though its transcript recorded no end. The turn keeps the
+/// stop time it was first seen with, so later refreshes of the same stopped
+/// turn do not move it.
+pub fn end_turn_stopped_on_screen(
+    runtime: &mut AgentRuntimeSnapshot,
+    previous: Option<&AgentObservedTurn>,
+    now: DateTime<Utc>,
+) {
+    let Some(turn) = runtime.observed_turn.as_mut() else {
+        return;
+    };
+    if turn.outcome != AgentObservedTurnOutcome::Running {
+        return;
+    }
+    let stopped_at = previous
+        .filter(|previous| {
+            previous.provider_turn_id == turn.provider_turn_id
+                && previous.outcome == AgentObservedTurnOutcome::Aborted
+        })
+        .and_then(|previous| previous.completed_at)
+        .unwrap_or(now);
+    turn.outcome = AgentObservedTurnOutcome::Aborted;
+    turn.completed_at = Some(stopped_at);
+    runtime.turn_state = AgentTurnState::WaitingOnUser;
+    runtime.turn_phase = Some("aborted".to_string());
+    runtime.last_turn_completed_at = Some(stopped_at);
+}
+
 fn derive_effective_turn_state(runtime: &AgentRuntimeSnapshot) -> AgentTurnState {
     if !runtime.alive {
         return AgentTurnState::Unknown;
