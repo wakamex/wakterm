@@ -879,21 +879,30 @@ impl SessionHandler {
                         wait_for_redraw(pane_id).await;
                         if Mux::get().withdraw_typed_input_if_agent_working(pane_id)? {
                             wait_for_redraw(pane_id).await;
-                            anyhow::bail!(
+                            // Text left in the box may still be sent later,
+                            // so only a box that is empty again means
+                            // nothing was delivered.
+                            anyhow::ensure!(
+                                Mux::get().agy_input_box_empty(pane_id),
                                 "agy started a turn before the message was submitted; the \
-                                 message was {}",
-                                if Mux::get().agy_input_box_empty(pane_id) {
-                                    "taken back out of its input box"
-                                } else {
-                                    "left in its input box, since it could not be removed"
-                                }
+                                 message was left in its input box, since it could not be \
+                                 removed"
                             );
+                            return Ok(Pdu::SubmitTypedInputResponse(SubmitTypedInputResponse {
+                                taken_back: Some(
+                                    "agy started a turn before the message was submitted; the \
+                                     message was taken back out of its input box"
+                                        .to_string(),
+                                ),
+                            }));
                         }
                         let pane = Mux::get()
                             .get_pane(pane_id)
                             .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
                         pane.writer().write_all(b"\r")?;
-                        Ok(Pdu::UnitResponse(UnitResponse {}))
+                        Ok(Pdu::SubmitTypedInputResponse(SubmitTypedInputResponse {
+                            taken_back: None,
+                        }))
                     }
                     .await;
                     send_response(result);
@@ -1967,6 +1976,7 @@ impl SessionHandler {
             | Pdu::ListAgentRemindersResponse { .. }
             | Pdu::CancelAgentReminderResponse { .. }
             | Pdu::PrepareAgentInputBoxResponse { .. }
+            | Pdu::SubmitTypedInputResponse { .. }
             | Pdu::PreparedCodexLaunch { .. }
             | Pdu::SetClipboard { .. }
             | Pdu::NotifyAlert { .. }

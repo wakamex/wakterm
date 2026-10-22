@@ -1907,7 +1907,7 @@ impl SendAgentCommand {
         SendPasteFn: Fn(codec::SendPaste) -> SendPasteFut,
         SendPasteFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
         SubmitInputFn: Fn(codec::SubmitTypedInput) -> SubmitInputFut,
-        SubmitInputFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
+        SubmitInputFut: Future<Output = anyhow::Result<codec::SubmitTypedInputResponse>>,
         // Waits up to the given time for the provider to record the input
         // with this hash; None when the event stream cannot confirm input.
         // The flag says the input is a slash command, which a harness can
@@ -1929,25 +1929,28 @@ impl SendAgentCommand {
             Some(reason) => Some(reason),
             None => prepare_input_box(agent.pane_id).await?,
         };
+        // Nothing reached the agent: refused before writing, or the written
+        // text was taken back out of the input box before Enter.
+        let refused = |detail: String| AgentSendResult {
+            agent_id: agent.metadata.agent_id.clone(),
+            agent_name: agent.metadata.name.clone(),
+            pane_id: agent.pane_id,
+            transport: agent.runtime.transport.clone(),
+            submitted: false,
+            acknowledgement: AgentSendAcknowledgement {
+                kind: AgentAckKind::NotRequested,
+                acknowledged: false,
+                latency_ms: None,
+                session_path: agent.runtime.session_path.clone(),
+                detail: None,
+            },
+            refusal: Some(AgentSendRefusal {
+                reason: AgentSendRefusalReason::InputBlocked,
+                detail,
+            }),
+        };
         if let Some(detail) = blocked {
-            return Ok(AgentSendResult {
-                agent_id: agent.metadata.agent_id.clone(),
-                agent_name: agent.metadata.name.clone(),
-                pane_id: agent.pane_id,
-                transport: agent.runtime.transport,
-                submitted: false,
-                acknowledgement: AgentSendAcknowledgement {
-                    kind: AgentAckKind::NotRequested,
-                    acknowledged: false,
-                    latency_ms: None,
-                    session_path: agent.runtime.session_path.clone(),
-                    detail: None,
-                },
-                refusal: Some(AgentSendRefusal {
-                    reason: AgentSendRefusalReason::InputBlocked,
-                    detail,
-                }),
-            });
+            return Ok(refused(detail));
         }
         let text = self.read_text()?;
         let input_sha256 = mux::agent::message_sha256(&text);
@@ -1971,7 +1974,10 @@ impl SendAgentCommand {
 
         let submitted = !self.no_submit;
         if submitted {
-            submit_native_harness_prompt(agent.pane_id, &submit_input).await?;
+            if let Some(detail) = submit_native_harness_prompt(agent.pane_id, &submit_input).await?
+            {
+                return Ok(refused(detail));
+            }
         }
 
         // A provider that records input confirms this exact input as soon as
@@ -2011,7 +2017,11 @@ impl SendAgentCommand {
                         current.runtime.status == AgentStatus::Idle
                             && mux::agent::input_blocked_reason(&current.runtime).is_none()
                     }) {
-                        submit_native_harness_prompt(agent.pane_id, &submit_input).await?;
+                        if let Some(detail) =
+                            submit_native_harness_prompt(agent.pane_id, &submit_input).await?
+                        {
+                            return Ok(refused(detail));
+                        }
                     }
                     continue;
                 }
@@ -2032,7 +2042,10 @@ impl SendAgentCommand {
             .wait_for_acknowledgement(&mut list_agents, &agent, &baseline)
             .await?;
         if submitted && should_retry_submit(&agent, &baseline, &acknowledgement) {
-            submit_native_harness_prompt(agent.pane_id, &submit_input).await?;
+            if let Some(detail) = submit_native_harness_prompt(agent.pane_id, &submit_input).await?
+            {
+                return Ok(refused(detail));
+            }
             acknowledgement = self
                 .wait_for_acknowledgement(&mut list_agents, &agent, &baseline)
                 .await?;
@@ -2331,16 +2344,19 @@ fn prefers_raw_input(harness: &AgentHarness) -> bool {
 /// left Claude and Gemini prompts unsubmitted. An Enter that arrives while
 /// the harness is still taking a paste can be dropped: Claude discards it
 /// when a pasted line ends like an image path.
+/// Returns why the typed text was taken back out of the input box instead
+/// of submitted, when it was.
 async fn submit_native_harness_prompt<SubmitInputFn, SubmitInputFut>(
     pane_id: PaneId,
     submit_input: &SubmitInputFn,
-) -> anyhow::Result<()>
+) -> anyhow::Result<Option<String>>
 where
     SubmitInputFn: Fn(codec::SubmitTypedInput) -> SubmitInputFut,
-    SubmitInputFut: Future<Output = anyhow::Result<codec::UnitResponse>>,
+    SubmitInputFut: Future<Output = anyhow::Result<codec::SubmitTypedInputResponse>>,
 {
-    submit_input(codec::SubmitTypedInput { pane_id }).await?;
-    Ok(())
+    Ok(submit_input(codec::SubmitTypedInput { pane_id })
+        .await?
+        .taken_back)
 }
 
 #[derive(Debug, Parser, Clone)]
@@ -3701,7 +3717,7 @@ mod test {
     use chrono::TimeZone;
     use codec::{
         ListAgentsResponse, ListPanesResponse, SendKeyDown, SendPaste, SpawnResponse,
-        SubmitTypedInput, UnitResponse, WriteToPane,
+        SubmitTypedInput, SubmitTypedInputResponse, UnitResponse, WriteToPane,
     };
     use mux::agent::AgentMetadata;
     use mux::client::ClientWindowViewState;
@@ -4067,7 +4083,7 @@ mod test {
                         pane_id: request.pane_id,
                         data: b"\r".to_vec(),
                     });
-                    async { Ok(UnitResponse {}) }
+                    async { Ok(SubmitTypedInputResponse { taken_back: None }) }
                 }
             },
             |_, _, _, _| async { Ok(None) },
@@ -4204,7 +4220,7 @@ mod test {
                     let writes = Rc::clone(&writes);
                     move |_: SubmitTypedInput| {
                         *writes.borrow_mut() += 1;
-                        async { Ok(UnitResponse {}) }
+                        async { Ok(SubmitTypedInputResponse { taken_back: None }) }
                     }
                 },
                 {
@@ -4284,7 +4300,7 @@ mod test {
                 let writes = Rc::clone(&writes);
                 move |_: SubmitTypedInput| {
                     *writes.borrow_mut() += 1;
-                    async { Ok(UnitResponse {}) }
+                    async { Ok(SubmitTypedInputResponse { taken_back: None }) }
                 }
             },
             |_, _, _, _| async { Ok(None) },
@@ -4349,7 +4365,7 @@ mod test {
                     let writes = Rc::clone(&writes);
                     move |_: SubmitTypedInput| {
                         *writes.borrow_mut() += 1;
-                        async { Ok(UnitResponse {}) }
+                        async { Ok(SubmitTypedInputResponse { taken_back: None }) }
                     }
                 },
                 |_, _, _, _| async { Ok(None) },
@@ -4366,6 +4382,53 @@ mod test {
             assert_eq!(json["refusal"]["reason"], "input_blocked");
             assert_eq!(json["refusal"]["detail"], detail);
         }
+    }
+
+    #[test]
+    fn send_taken_back_out_of_the_input_box_is_a_refusal() {
+        let detail = "agy started a turn before the message was submitted; the message was \
+                      taken back out of its input box";
+        let command = SendAgentCommand {
+            target: "reviewer".to_string(),
+            no_paste: false,
+            no_submit: false,
+            return_final: false,
+            request_id: None,
+            ack_timeout_ms: 0,
+            ack_poll_ms: 0,
+            final_timeout_ms: 0,
+            text: Some("fix this".to_string()),
+        };
+        let mut agent = sample_agent(30, "reviewer");
+        agent.metadata.launch_cmd = "agy".to_string();
+        agent.runtime.harness = mux::agent::AgentHarness::Agy;
+
+        let result = promise::spawn::block_on(command.run_with(
+            move || {
+                let agent = agent.clone();
+                async move {
+                    Ok(ListAgentsResponse {
+                        agents: vec![agent],
+                    })
+                }
+            },
+            |_: WriteToPane| async { Ok(UnitResponse {}) },
+            |_: SendPaste| async { Ok(UnitResponse {}) },
+            move |_: SubmitTypedInput| async move {
+                Ok(SubmitTypedInputResponse {
+                    taken_back: Some(detail.to_string()),
+                })
+            },
+            |_, _, _, _| async { panic!("nothing was submitted to confirm") },
+            |_| async { Ok(None) },
+        ))
+        .unwrap();
+
+        assert!(!result.submitted);
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["refusal"]["reason"], "input_blocked");
+        assert_eq!(json["refusal"]["detail"], detail);
+        assert_eq!(json["acknowledgement"]["acknowledged"], false);
     }
 
     #[test]
@@ -4411,7 +4474,7 @@ mod test {
                         pane_id: request.pane_id,
                         data: b"\r".to_vec(),
                     });
-                    async { Ok(UnitResponse {}) }
+                    async { Ok(SubmitTypedInputResponse { taken_back: None }) }
                 }
             },
             |_, _, _, _| async { Ok(None) },
@@ -5042,7 +5105,7 @@ mod test {
                         pane_id: request.pane_id,
                         data: b"\r".to_vec(),
                     });
-                    async { Ok(UnitResponse {}) }
+                    async { Ok(SubmitTypedInputResponse { taken_back: None }) }
                 }
             },
             |_, _, _, _| async { Ok(None) },
@@ -5102,7 +5165,7 @@ mod test {
                         pane_id: request.pane_id,
                         data: b"\r".to_vec(),
                     });
-                    async { Ok(UnitResponse {}) }
+                    async { Ok(SubmitTypedInputResponse { taken_back: None }) }
                 }
             },
             |_, _, _, _| async { Ok(None) },

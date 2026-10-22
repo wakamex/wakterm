@@ -586,6 +586,7 @@ pdu! {
     CancelAgentReminderResponse: 109,
     PrepareAgentInputBox: 110,
     PrepareAgentInputBoxResponse: 111,
+    SubmitTypedInputResponse: 112,
 }
 
 impl Pdu {
@@ -1085,6 +1086,15 @@ pub struct PrepareAgentInputBoxResponse {
     /// Whether a draft was moved out of the box. The harness restores it
     /// after the next prompt is submitted.
     pub draft_stashed: bool,
+}
+
+/// The answer to `SubmitTypedInput`.
+#[derive(Deserialize, Serialize, PartialEq, Debug)]
+pub struct SubmitTypedInputResponse {
+    /// Why Enter was not pressed and the typed text was taken back out of
+    /// the input box, leaving nothing delivered, or None once Enter was
+    /// pressed.
+    pub taken_back: Option<String>,
 }
 
 /// Presses Enter in a pane once it has redrawn what was just typed into it,
@@ -1981,6 +1991,19 @@ mod test {
                 draft_stashed: true,
             }),
         ] {
+            let mut encoded = Vec::new();
+            pdu.encode(&mut encoded, 42).unwrap();
+            assert_eq!(
+                Pdu::decode(encoded.as_slice()).unwrap(),
+                DecodedPdu { serial: 42, pdu }
+            );
+        }
+    }
+
+    #[test]
+    fn submit_typed_input_response_round_trips() {
+        for taken_back in [None, Some("agy started a turn".to_string())] {
+            let pdu = Pdu::SubmitTypedInputResponse(SubmitTypedInputResponse { taken_back });
             let mut encoded = Vec::new();
             pdu.encode(&mut encoded, 42).unwrap();
             assert_eq!(
