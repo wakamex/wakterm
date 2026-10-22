@@ -22,7 +22,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 use wakterm_uds::{UnixListener, UnixStream};
 
-const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+/// The largest message Codex's own TUI client accepts from an app server.
+/// The TUI proxy relays the server's messages to that client, and some are
+/// larger than 16 MiB, such as a plugin/list response with a large remote
+/// plugin catalog.
+const MAX_MESSAGE_SIZE: usize = 128 << 20;
 
 fn initialize_params() -> Value {
     json!({
@@ -1847,6 +1851,38 @@ mod test {
         assert_eq!(first_rx.recv().unwrap().unwrap()["thread"], "one");
         assert_eq!(second_rx.recv().unwrap().unwrap()["thread"], "two");
         assert!(connection.pending.lock().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relays_a_message_larger_than_16_mib() {
+        let mut payload = br#"{"id":7,"result":{"plugins":""#.to_vec();
+        payload.resize(payload.len() + (18 << 20), b'a');
+        payload.extend_from_slice(br#""}}"#);
+        let mut frame = vec![0x81, 127];
+        frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        frame.extend_from_slice(&payload);
+        frame.extend_from_slice(&[0x88, 0]);
+
+        let (mut server, upstream) = UnixStream::pair().unwrap();
+        let (mut proxy_out, mut client) = UnixStream::pair().unwrap();
+        let sent = frame.clone();
+        let sender = thread::spawn(move || server.write_all(&sent).unwrap());
+        let receiver = thread::spawn(move || {
+            let mut received = Vec::new();
+            client.read_to_end(&mut received).unwrap();
+            received
+        });
+        let mut ids = Vec::new();
+        relay_websocket_frames(upstream, &mut proxy_out, |message| {
+            ids.push(message["id"].clone())
+        })
+        .unwrap();
+        drop(proxy_out);
+        sender.join().unwrap();
+
+        assert_eq!(ids, vec![json!(7)]);
+        assert!(receiver.join().unwrap() == frame);
     }
 
     #[cfg(unix)]
