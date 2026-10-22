@@ -1817,16 +1817,16 @@ impl SendAgentCommand {
         }
         // The event stream position before anything is written, so the
         // input's own event is the first one that can match.
-        let events_from = client
-            .read_agent_events(codec::ReadAgentEvents {
-                after_sequence: 0,
-                limit: 0,
-                wait_ms: 0,
-            })
-            .await
-            .ok()
-            .filter(|response| response.page.status == mux::agent_event::AgentEventStatus::Ok)
-            .map(|response| response.page.latest_sequence);
+        let events_from = send_events_from(
+            client
+                .read_agent_events(codec::ReadAgentEvents {
+                    after_sequence: 0,
+                    limit: 0,
+                    wait_ms: 0,
+                })
+                .await
+                .map(|response| response.page),
+        );
         let result = self
             .run_with(
                 || client.list_agents(),
@@ -2092,6 +2092,23 @@ impl SendAgentCommand {
                 latency_ms: None,
                 session_path: baseline.session_path.clone(),
                 detail: Some("submit skipped by --no-submit".to_string()),
+            });
+        }
+
+        // An agent that records its input is acknowledged only by that
+        // record. Its other progress, such as a turn ending as the message
+        // arrives, does not show that it took the message.
+        if mux::agent::records_input_events(&baseline_agent.runtime.harness) {
+            return Ok(AgentSendAcknowledgement {
+                kind: AgentAckKind::Unavailable,
+                acknowledged: false,
+                latency_ms: None,
+                session_path: baseline.session_path.clone(),
+                detail: Some(
+                    "the event stream could not be read, so the agent's record of the input \
+                     could not be confirmed"
+                        .to_string(),
+                ),
             });
         }
 
@@ -2951,6 +2968,14 @@ impl AgentAckBaseline {
 
 fn supports_observer_ack(harness: &AgentHarness) -> bool {
     !matches!(harness, AgentHarness::Unknown)
+}
+
+/// Where a send starts reading the event stream for the agent's record of
+/// its input: the stream's latest sequence, or None when the stream cannot
+/// be read. A page from sequence 0 reports `cursor_too_old` once the store
+/// has dropped its oldest events, and still carries the latest sequence.
+fn send_events_from(page: anyhow::Result<mux::agent_event::AgentEventPage>) -> Option<u64> {
+    page.ok().map(|page| page.latest_sequence)
 }
 
 /// Harnesses whose event projection emits `input_accepted`.
@@ -3905,6 +3930,15 @@ mod test {
         }
     }
 
+    /// An agent whose harness does not record its input, so that a send is
+    /// acknowledged by the observer's view of its progress.
+    fn observer_agent(pane_id: PaneId, name: &str) -> AgentSnapshot {
+        let mut agent = sample_agent(pane_id, name);
+        agent.metadata.launch_cmd = "opencode".to_string();
+        agent.runtime.harness = mux::agent::AgentHarness::Opencode;
+        agent
+    }
+
     fn sample_agent(pane_id: PaneId, name: &str) -> AgentSnapshot {
         AgentSnapshot {
             metadata: AgentMetadata {
@@ -4032,7 +4066,7 @@ mod test {
             text: Some("fix this".to_string()),
         };
 
-        let mut baseline = sample_agent(30, "reviewer");
+        let mut baseline = observer_agent(30, "reviewer");
         baseline.runtime.transport = mux::agent::AgentTransport::ObservedPty;
         baseline.runtime.session_path = Some("/tmp/reviewer.jsonl".to_string());
         baseline.runtime.last_progress_at =
@@ -4382,6 +4416,78 @@ mod test {
             assert_eq!(json["refusal"]["reason"], "input_blocked");
             assert_eq!(json["refusal"]["detail"], detail);
         }
+    }
+
+    #[test]
+    fn a_send_reads_the_event_stream_after_its_oldest_events_were_dropped() {
+        use mux::agent_event::{AgentEventPage, AgentEventStatus};
+        let page = |status| AgentEventPage {
+            schema: "wakterm.agent-events.v1".to_string(),
+            status,
+            requested_after_sequence: 0,
+            oldest_available_sequence: 241_789,
+            latest_sequence: 559_526,
+            next_after_sequence: None,
+            events: vec![],
+            recovery: None,
+        };
+        assert_eq!(
+            send_events_from(Ok(page(AgentEventStatus::Ok))),
+            Some(559_526)
+        );
+        assert_eq!(
+            send_events_from(Ok(page(AgentEventStatus::CursorTooOld))),
+            Some(559_526)
+        );
+        assert_eq!(
+            send_events_from(Err(anyhow::anyhow!("no event stream"))),
+            None
+        );
+    }
+
+    #[test]
+    fn progress_does_not_acknowledge_a_send_to_an_agent_that_records_input() {
+        let command = SendAgentCommand {
+            target: "reviewer".to_string(),
+            no_paste: false,
+            no_submit: false,
+            return_final: false,
+            request_id: None,
+            ack_timeout_ms: 50,
+            ack_poll_ms: 1,
+            final_timeout_ms: 0,
+            text: Some("fix this".to_string()),
+        };
+        // A Codex agent whose turn makes progress while the message
+        // arrives, with no readable record of its input.
+        let calls = Rc::new(RefCell::new(0usize));
+        let result = promise::spawn::block_on(command.run_with(
+            {
+                let calls = Rc::clone(&calls);
+                move || {
+                    let mut agent = sample_agent(30, "reviewer");
+                    *calls.borrow_mut() += 1;
+                    if *calls.borrow() > 1 {
+                        agent.runtime.last_progress_at = Some(Utc::now());
+                    }
+                    async move {
+                        Ok(ListAgentsResponse {
+                            agents: vec![agent],
+                        })
+                    }
+                }
+            },
+            |_: WriteToPane| async { Ok(UnitResponse {}) },
+            |_: SendPaste| async { Ok(UnitResponse {}) },
+            |_: SubmitTypedInput| async { Ok(SubmitTypedInputResponse { taken_back: None }) },
+            |_, _, _, _| async { Ok(None) },
+            |_| async { Ok(None) },
+        ))
+        .unwrap();
+
+        assert!(result.submitted);
+        assert!(!result.acknowledgement.acknowledged);
+        assert_eq!(result.acknowledgement.kind, AgentAckKind::Unavailable);
     }
 
     #[test]
@@ -5063,7 +5169,7 @@ mod test {
             text: Some("raw".to_string()),
         };
 
-        let baseline = sample_agent(30, "reviewer");
+        let baseline = observer_agent(30, "reviewer");
         let mut acknowledged = baseline.clone();
         acknowledged.runtime.transport = mux::agent::AgentTransport::ObservedPty;
         acknowledged.runtime.session_path = Some("/tmp/reviewer.jsonl".to_string());
@@ -5147,7 +5253,7 @@ mod test {
         let result = promise::spawn::block_on(command.run_with(
             || async {
                 Ok(ListAgentsResponse {
-                    agents: vec![sample_agent(30, "reviewer")],
+                    agents: vec![observer_agent(30, "reviewer")],
                 })
             },
             {
