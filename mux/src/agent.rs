@@ -1259,6 +1259,24 @@ pub fn codex_input_box_empty(lines: &[wakterm_term::Line]) -> bool {
         && cells.all(|cell| cell.str().trim().is_empty() || dimmed(&cell))
 }
 
+/// Whether the pane's visible lines show Codex's input box enabled and
+/// holding typed text, as opposed to empty, showing its placeholder, or
+/// replaced by another view.
+pub fn codex_input_box_holds_text(lines: &[wakterm_term::Line]) -> bool {
+    let dimmed =
+        |cell: &wakterm_term::CellRef| cell.attrs().intensity() == wakterm_term::Intensity::Half;
+    let Some(prompt) = lines
+        .iter()
+        .rev()
+        .find(|line| line.as_str().starts_with(['\u{203a}', '\u{bb}']))
+    else {
+        return false;
+    };
+    let mut cells = prompt.visible_cells();
+    cells.next().is_some_and(|glyph| !dimmed(&glyph))
+        && cells.any(|cell| !cell.str().trim().is_empty() && !dimmed(&cell))
+}
+
 fn derive_effective_turn_state(runtime: &AgentRuntimeSnapshot) -> AgentTurnState {
     if !runtime.alive {
         return AgentTurnState::Unknown;
@@ -6052,6 +6070,44 @@ mod test {
             input_box_blocked(&AgentHarness::Agy, &[]),
             Some("agy's input box is not on screen")
         );
+    }
+
+    #[test]
+    fn codex_input_box_holds_typed_text_only() {
+        use wakterm_term::{CellAttributes, Intensity, Line};
+        let normal = CellAttributes::default();
+        let mut dim = CellAttributes::default();
+        dim.set_intensity(Intensity::Half);
+        let line = |parts: &[(&str, bool)]| {
+            let mut cells = Vec::new();
+            for (text, dimmed) in parts {
+                let attrs = if *dimmed { &dim } else { &normal };
+                cells.extend(
+                    Line::from_text(text, attrs, 0, None)
+                        .visible_cells()
+                        .map(|cell| cell.as_cell()),
+                );
+            }
+            Line::from_cells(cells, 0)
+        };
+        assert!(codex_input_box_holds_text(&[line(&[(
+            "\u{203a} source locally any newfound literature",
+            false
+        )])]));
+        assert!(!codex_input_box_holds_text(&[line(&[
+            ("\u{203a} ", false),
+            ("Ask Codex to do anything", true)
+        ])]));
+        assert!(!codex_input_box_holds_text(&[line(&[(
+            "\u{203a} ",
+            false
+        )])]));
+        // A box that takes no input, and no box.
+        assert!(!codex_input_box_holds_text(&[line(&[(
+            "\u{203a} queued",
+            true
+        )])]));
+        assert!(!codex_input_box_holds_text(&[]));
     }
 
     #[test]

@@ -899,6 +899,7 @@ impl SessionHandler {
                         let pane = Mux::get()
                             .get_pane(pane_id)
                             .ok_or_else(|| anyhow!("no such pane {}", pane_id))?;
+                        Mux::get().note_codex_steer(pane_id);
                         pane.writer().write_all(b"\r")?;
                         Ok(Pdu::SubmitTypedInputResponse(SubmitTypedInputResponse {
                             taken_back: None,

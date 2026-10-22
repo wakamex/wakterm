@@ -225,6 +225,9 @@ pub struct Mux {
     agent_input_by_pane: RwLock<HashMap<PaneId, AgentPaneInput>>,
     /// The process of each frozen agent pane.
     frozen_agents: Mutex<HashMap<PaneId, u32>>,
+    /// Steers typed into a running managed Codex turn, by pane, kept until
+    /// that turn ends.
+    codex_steers: Mutex<HashMap<PaneId, CodexSteer>>,
     /// The Claude menu each pane shows, and when it appeared.
     claude_menus: Mutex<HashMap<PaneId, (claude_menu::ClaudeMenu, DateTime<Utc>)>>,
     /// When the mux started freezing idle agents, which counts as their
@@ -1079,6 +1082,21 @@ pub enum AttentionQueueEnd {
     Oldest,
 }
 
+/// A message typed into a running managed Codex turn and submitted with
+/// Enter: the pane's input count right after it and the event store's
+/// latest sequence then.
+#[derive(Clone, Copy, Debug)]
+struct CodexSteer {
+    input_generation: u64,
+    event_sequence: u64,
+    at: Instant,
+}
+
+/// How long after a turn completes Codex has to draw a steer it put back in
+/// its composer, and how long a steer is followed at most.
+const CODEX_STEER_REDRAW: Duration = Duration::from_millis(1500);
+const CODEX_STEER_LIFETIME: Duration = Duration::from_secs(600);
+
 /// How long after the last input to a pane a draft in Claude's input box
 /// still counts as text the user is typing.
 const CLAUDE_DRAFT_IDLE: Duration = Duration::from_secs(60);
@@ -1400,6 +1418,7 @@ impl Mux {
             agent_input_by_pane: RwLock::new(HashMap::new()),
             frozen_agents: Mutex::new(HashMap::new()),
             claude_menus: Mutex::new(HashMap::new()),
+            codex_steers: Mutex::new(HashMap::new()),
             agent_freeze_started: Mutex::new(None),
             agent_attention_seen_at: RwLock::new(HashMap::new()),
             windows: RwLock::new(HashMap::new()),
@@ -3748,6 +3767,97 @@ impl Mux {
         self.thaw_agent_pane(pane_id);
         pane.writer().write_all(&key)?;
         Ok(())
+    }
+
+    /// Notes that Enter is about to submit typed input to the pane, so that
+    /// a steer into a running managed Codex turn can be followed: Codex can
+    /// end the turn without using it and put the text back in its composer.
+    pub fn note_codex_steer(&self, pane_id: PaneId) {
+        let steering = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .is_some_and(|runtime| {
+                runtime.harness == AgentHarness::Codex
+                    && runtime.transport == AgentTransport::CodexAppServerTui
+                    && runtime.turn_state == AgentTurnState::WaitingOnAgent
+            });
+        if steering {
+            self.codex_steers.lock().insert(
+                pane_id,
+                CodexSteer {
+                    input_generation: self.agent_input_generation(pane_id),
+                    event_sequence: self.agent_event_store.latest_sequence(),
+                    at: Instant::now(),
+                },
+            );
+        }
+    }
+
+    /// After a managed Codex turn in the pane completes, submits a steer
+    /// that Codex left unused in its composer as the next turn.
+    pub(crate) fn codex_turn_completed(&self, pane_id: PaneId) {
+        if !self.codex_steers.lock().contains_key(&pane_id) {
+            return;
+        }
+        promise::spawn::spawn_into_main_thread(async move {
+            smol::Timer::after(CODEX_STEER_REDRAW).await;
+            if let Some(mux) = Mux::try_get() {
+                mux.submit_codex_steer_left_in_composer(pane_id);
+            }
+        })
+        .detach();
+    }
+
+    /// Presses Enter for the steer noted for the pane when it is still
+    /// waiting in Codex's composer: Codex recorded no input since, nobody
+    /// has typed into the pane since, the agent waits for the user, and the
+    /// composer holds text.
+    fn submit_codex_steer_left_in_composer(&self, pane_id: PaneId) {
+        let Some(steer) = self.codex_steers.lock().remove(&pane_id) else {
+            return;
+        };
+        if steer.at.elapsed() > CODEX_STEER_LIFETIME
+            || self.agent_input_generation(pane_id) != steer.input_generation
+        {
+            return;
+        }
+        let Some(metadata) = self.get_agent_metadata_for_pane(pane_id) else {
+            return;
+        };
+        let idle = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .is_some_and(|runtime| runtime.turn_state == AgentTurnState::WaitingOnUser);
+        let recorded_input = self
+            .agent_event_store
+            .read_page(steer.event_sequence, 1000)
+            .map(|page| {
+                page.events.iter().any(|event| {
+                    event.agent_id == metadata.agent_id
+                        && matches!(
+                            event.kind,
+                            crate::agent_event::AgentEventKind::InputAccepted
+                                | crate::agent_event::AgentEventKind::TurnStarted
+                        )
+                })
+            })
+            .unwrap_or(true);
+        let Some(pane) = self.get_pane(pane_id) else {
+            return;
+        };
+        let dims = pane.get_dimensions();
+        let top = dims.physical_top;
+        let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
+        if !idle || recorded_input || !agent::codex_input_box_holds_text(&lines) {
+            return;
+        }
+        log::info!("submitting a steer that Codex left in its composer in pane {pane_id}");
+        let written = pane.writer().write_all(b"\r");
+        if let Err(err) = written {
+            log::warn!("submitting the steer left in pane {pane_id}: {err:#}");
+        }
     }
 
     /// Thaws the agent in the pane if it is frozen.
@@ -7358,6 +7468,11 @@ mod test {
 
     /// The title of a fake pane whose screen shows a Claude draft.
     const CLAUDE_DRAFT_TITLE: &str = "claude draft";
+    /// The title of a fake pane whose screen shows text in Codex's composer.
+    const CODEX_COMPOSER_TITLE: &str = "codex composer";
+    /// What fake panes were written, in order, for tests that hold the mux
+    /// test lock.
+    static FAKE_PANE_WRITES: Mutex<Vec<u8>> = parking_lot::const_mutex(Vec::new());
 
     struct FakePane {
         id: PaneId,
@@ -7612,6 +7727,12 @@ mod test {
                     ],
                 );
             }
+            if self.title == CODEX_COMPOSER_TITLE {
+                return (
+                    lines.start,
+                    vec![line("\u{203a} source locally any newfound literature")],
+                );
+            }
             // An empty Codex input box, which admission requires of a Codex
             // pane, and no Claude input box.
             (lines.start, vec![line("\u{203a} ")])
@@ -7685,7 +7806,9 @@ mod test {
         }
 
         fn writer(&self) -> MappedMutexGuard<'_, dyn std::io::Write> {
-            unimplemented!();
+            parking_lot::MutexGuard::map(FAKE_PANE_WRITES.lock(), |written| {
+                written as &mut dyn std::io::Write
+            })
         }
 
         fn resize(&self, size: TerminalSize) -> anyhow::Result<()> {
@@ -9058,6 +9181,70 @@ mod test {
         assert!(mux.tab_agents_working(tab.tab_id()));
         set_turn(&first, "first", AgentTurnState::Unknown);
         assert!(!mux.tab_agents_working(tab.tab_id()));
+    }
+
+    #[test]
+    fn a_steer_codex_left_in_its_composer_is_submitted_after_the_turn() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let pane = FakePane::new_detected(
+            160,
+            size,
+            domain.id,
+            CODEX_COMPOSER_TITLE,
+            "/tmp/codex-steer",
+            "codex",
+            &["codex"],
+        );
+        let pane_id = pane.pane_id();
+        let tab = Arc::new(Tab::new(&size));
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        mux.set_agent_metadata(pane_id, sample_agent_metadata("steered"))
+            .unwrap();
+        let set_turn = |turn_state| {
+            let mut runtimes = mux.agent_runtime_by_pane.write();
+            let runtime = runtimes.get_mut(&pane_id).unwrap();
+            runtime.alive = true;
+            runtime.harness = AgentHarness::Codex;
+            runtime.transport = AgentTransport::CodexAppServerTui;
+            runtime.turn_state = turn_state;
+        };
+        let steer_then_finish = |typed_meanwhile: bool| {
+            FAKE_PANE_WRITES.lock().clear();
+            set_turn(AgentTurnState::WaitingOnAgent);
+            mux.note_codex_steer(pane_id);
+            if typed_meanwhile {
+                mux.record_agent_input_generation(pane_id, "keyboard");
+            }
+            set_turn(AgentTurnState::WaitingOnUser);
+            mux.submit_codex_steer_left_in_composer(pane_id);
+            std::mem::take(&mut *FAKE_PANE_WRITES.lock())
+        };
+
+        // The turn ended without the steer, which waits in the composer.
+        assert_eq!(steer_then_finish(false), b"\r");
+        // Someone typed into the pane since, so the text may be theirs.
+        assert_eq!(steer_then_finish(true), b"");
+        // An idle agent is not being steered, so nothing is followed.
+        FAKE_PANE_WRITES.lock().clear();
+        set_turn(AgentTurnState::WaitingOnUser);
+        mux.note_codex_steer(pane_id);
+        mux.submit_codex_steer_left_in_composer(pane_id);
+        assert!(FAKE_PANE_WRITES.lock().is_empty());
     }
 
     #[test]

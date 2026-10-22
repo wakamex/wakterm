@@ -1612,6 +1612,9 @@ pub(crate) fn apply_notification_to_runtime(mux: &Mux, message: &Value) {
                 );
             }
         }
+        if method == "turn/completed" {
+            mux.codex_turn_completed(pane_id);
+        }
         if let Some((_, _, tab_id)) = mux.resolve_pane_id(pane_id) {
             mux.notify_tab_title_changed(tab_id);
         }
