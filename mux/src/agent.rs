@@ -7900,6 +7900,18 @@ mod test {
             .spawn()
             .unwrap();
         let pid = child.id();
+        // Spawning can return while the kernel is still finishing the exec,
+        // when the process already has its new name but no arguments yet.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !LocalProcessInfo::with_root_pid(pid)
+            .is_some_and(|process| process.argv.iter().any(|arg| arg == thread_id))
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the fake Codex TUI never showed its arguments"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         let start_time = LocalProcessInfo::with_root_pid(pid).unwrap().start_time;
         // What the observer sees of the process, for a failure message.
         let seen_process = || {
