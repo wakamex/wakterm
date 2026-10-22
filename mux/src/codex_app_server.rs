@@ -1376,6 +1376,7 @@ fn relay_websocket_frames(
 ) -> anyhow::Result<()> {
     let mut fragmented_payload = Vec::new();
     let mut fragmented_opcode = None;
+    let mut fragment_too_large = false;
     loop {
         let mut header = [0u8; 2];
         reader.read_exact(&mut header)?;
@@ -1394,15 +1395,37 @@ fn relay_websocket_frames(
             raw.extend_from_slice(&bytes);
             len = usize::try_from(u64::from_be_bytes(bytes))?;
         }
-        anyhow::ensure!(
-            len <= MAX_MESSAGE_SIZE,
-            "Codex app-server message exceeds {MAX_MESSAGE_SIZE} bytes"
-        );
         let masked = header[1] & 0x80 != 0;
         let mut mask = [0u8; 4];
         if masked {
             reader.read_exact(&mut mask)?;
             raw.extend_from_slice(&mask);
+        }
+        if len > MAX_MESSAGE_SIZE
+            || (opcode == 0
+                && (fragment_too_large || fragmented_payload.len() + len > MAX_MESSAGE_SIZE))
+        {
+            // Too large to inspect. Forward it unread, so the peers, whose own
+            // limits decide what they accept, still get it, and the
+            // connection stays up.
+            log::warn!(
+                "relaying a Codex app-server message over {MAX_MESSAGE_SIZE} bytes uninspected"
+            );
+            writer.write_all(&raw)?;
+            let copied = std::io::copy(&mut (&mut reader).take(len as u64), writer)?;
+            anyhow::ensure!(copied == len as u64, "WebSocket frame ended early");
+            writer.flush()?;
+            fragmented_payload.clear();
+            if opcode == 0 {
+                fragment_too_large = !finished;
+                if finished {
+                    fragmented_opcode = None;
+                }
+            } else if !finished && opcode < 8 {
+                fragmented_opcode = Some(opcode);
+                fragment_too_large = true;
+            }
+            continue;
         }
         let mut payload = vec![0u8; len];
         reader.read_exact(&mut payload)?;
@@ -1428,10 +1451,6 @@ fn relay_websocket_frames(
             let Some(fragmented_opcode_value) = fragmented_opcode else {
                 bail!("unexpected WebSocket continuation");
             };
-            anyhow::ensure!(
-                fragmented_payload.len() + payload.len() <= MAX_MESSAGE_SIZE,
-                "Codex app-server fragmented message exceeds {MAX_MESSAGE_SIZE} bytes"
-            );
             fragmented_payload.extend_from_slice(&payload);
             if finished {
                 if fragmented_opcode_value == 1 {
@@ -1882,6 +1901,39 @@ mod test {
         sender.join().unwrap();
 
         assert_eq!(ids, vec![json!(7)]);
+        assert!(receiver.join().unwrap() == frame);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relays_a_message_over_the_limit_uninspected() {
+        let mut frame = vec![0x82, 127];
+        frame.extend_from_slice(&((MAX_MESSAGE_SIZE + 1) as u64).to_be_bytes());
+        frame.resize(frame.len() + MAX_MESSAGE_SIZE + 1, b'a');
+        let small = br#"{"id":8,"result":{}}"#;
+        frame.extend_from_slice(&[0x81, small.len() as u8]);
+        frame.extend_from_slice(small);
+        frame.extend_from_slice(&[0x88, 0]);
+
+        let (mut server, upstream) = UnixStream::pair().unwrap();
+        let (mut proxy_out, mut client) = UnixStream::pair().unwrap();
+        let sent = frame.clone();
+        let sender = thread::spawn(move || server.write_all(&sent).unwrap());
+        let receiver = thread::spawn(move || {
+            let mut received = Vec::new();
+            client.read_to_end(&mut received).unwrap();
+            received
+        });
+        let mut ids = Vec::new();
+        relay_websocket_frames(upstream, &mut proxy_out, |message| {
+            ids.push(message["id"].clone())
+        })
+        .unwrap();
+        drop(proxy_out);
+        sender.join().unwrap();
+
+        // The connection stays up for the message after it.
+        assert_eq!(ids, vec![json!(8)]);
         assert!(receiver.join().unwrap() == frame);
     }
 
