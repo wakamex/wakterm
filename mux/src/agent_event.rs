@@ -108,6 +108,7 @@ enum ProviderCursor {
     Agy(JsonlCursor),
     Gemini(GeminiCursor),
     Opencode(OpencodeCursor),
+    Devin(DevinCursor),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -208,6 +209,16 @@ struct OpencodeCursor {
     last_part_rowid: i64,
     last_part_id: Option<String>,
     last_final_message_rowid: i64,
+}
+
+/// Where the Devin projection stopped: the session's highest message row it
+/// has read, and the turn its latest user input started.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct DevinCursor {
+    source_id: String,
+    last_row_id: i64,
+    current_turn_id: Option<String>,
+    turn_open: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1468,6 +1479,7 @@ fn project_provider_events(
         AgentHarness::Claude => project_claude(Path::new(session_path), cursor, metadata),
         AgentHarness::Gemini => project_gemini(Path::new(session_path), cursor),
         AgentHarness::Opencode | AgentHarness::Zcode => project_opencode(session_path, cursor),
+        AgentHarness::Devin => project_devin(session_path, cursor),
         AgentHarness::Unknown => bail!("unknown harness has no provider event projection"),
     }
 }
@@ -2449,6 +2461,137 @@ fn project_agy(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<Pr
     })
 }
 
+/// Projects a Devin session's conversation. Each user input starts a turn,
+/// or, while one runs, steers it; the reply that stops without tool calls
+/// ends it. Messages compaction copied from earlier rows are skipped.
+fn project_devin(
+    session_path: &str,
+    cursor: Option<ProviderCursor>,
+) -> anyhow::Result<ProjectedEvents> {
+    let (db_path, source_id) = crate::devin::parse_session_url(session_path)
+        .with_context(|| format!("{session_path} does not name a Devin session"))?;
+    let connection = crate::devin::open(&db_path)?;
+    let messages = crate::devin::conversation(&connection, &source_id)?;
+    let mut cursor = match cursor {
+        Some(ProviderCursor::Devin(cursor)) if cursor.source_id == source_id => cursor,
+        // A session observed for the first time starts from what it holds
+        // now, so its history is not reported again. A session with no
+        // messages yet is read from its first one.
+        _ => {
+            let input = messages.iter().rposition(|message| message.user_input);
+            return Ok(ProjectedEvents {
+                cursor: ProviderCursor::Devin(DevinCursor {
+                    source_id: source_id.clone(),
+                    last_row_id: messages
+                        .iter()
+                        .map(|message| message.row_id)
+                        .max()
+                        .unwrap_or(0),
+                    current_turn_id: input
+                        .map(|input| format!("{source_id}:{}", messages[input].node_id)),
+                    turn_open: input.is_some_and(|input| {
+                        !messages[input + 1..]
+                            .iter()
+                            .any(|message| message.ends_turn)
+                    }),
+                }),
+                events: Vec::new(),
+            });
+        }
+    };
+    let seen_through = cursor.last_row_id;
+    let mut events = Vec::new();
+    for message in &messages {
+        if message.row_id <= seen_through {
+            continue;
+        }
+        cursor.last_row_id = cursor.last_row_id.max(message.row_id);
+        if crate::devin::seen_before(&connection, &source_id, message, seen_through)? {
+            continue;
+        }
+        let record_key = format!("devin:{source_id}:{}", message.node_id);
+        let timestamp = message.created_at;
+        let text = message.content.trim();
+        if message.user_input {
+            let sha256 = crate::agent::message_sha256(&message.content);
+            if cursor.turn_open {
+                if let Some(turn_id) = cursor.current_turn_id.clone() {
+                    events.push(input_accepted(
+                        format!("{record_key}:input"),
+                        timestamp,
+                        Some(turn_id),
+                        sha256,
+                        false,
+                    ));
+                    continue;
+                }
+            }
+            let turn_id = format!("{source_id}:{}", message.node_id);
+            cursor.current_turn_id = Some(turn_id.clone());
+            cursor.turn_open = true;
+            let mut started = PendingEvent::new(
+                format!("{record_key}:started"),
+                AgentEventKind::TurnStarted,
+                timestamp,
+            );
+            started.turn_id = Some(turn_id.clone());
+            started.input_sha256 = Some(sha256.clone());
+            let accepted = input_accepted(
+                format!("{record_key}:input"),
+                timestamp,
+                Some(turn_id.clone()),
+                sha256,
+                false,
+            );
+            let mut state = PendingEvent::new(
+                format!("{record_key}:state"),
+                AgentEventKind::TurnStateChanged,
+                timestamp,
+            );
+            state.turn_id = Some(turn_id);
+            state.turn_state = Some("waiting_on_agent".to_string());
+            events.extend([started, accepted, state]);
+            continue;
+        }
+        let Some(turn_id) = cursor.current_turn_id.clone() else {
+            continue;
+        };
+        if !text.is_empty() {
+            let mut assistant = PendingEvent::new(
+                format!("{record_key}:message"),
+                AgentEventKind::AssistantMessage,
+                timestamp,
+            );
+            assistant.turn_id = Some(turn_id.clone());
+            assistant.text = Some(text.to_string());
+            events.push(assistant);
+        }
+        if message.ends_turn && cursor.turn_open {
+            let mut final_event = PendingEvent::new(
+                format!("{record_key}:final"),
+                AgentEventKind::TurnFinal,
+                timestamp,
+            );
+            final_event.turn_id = Some(turn_id.clone());
+            final_event.outcome = Some("completed".to_string());
+            final_event.text = (!text.is_empty()).then(|| text.to_string());
+            let mut state = PendingEvent::new(
+                format!("{record_key}:final-state"),
+                AgentEventKind::TurnStateChanged,
+                timestamp,
+            );
+            state.turn_id = Some(turn_id);
+            state.turn_state = Some("waiting_on_user".to_string());
+            events.extend([final_event, state]);
+            cursor.turn_open = false;
+        }
+    }
+    Ok(ProjectedEvents {
+        cursor: ProviderCursor::Devin(cursor),
+        events,
+    })
+}
+
 fn project_gemini(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<ProjectedEvents> {
     let conversation = read_gemini_conversation(path)?;
     let source_id = conversation
@@ -3165,6 +3308,111 @@ mod tests {
     /// Projects the complete message history of the newest session in a
     /// copy of a real ZCode database, whose schema belongs to ZCode:
     /// WAKTERM_TEST_ZCODE_DB=~/.zcode/cli/db/db.sqlite.
+    /// Projects a copy of a real Devin database from its start:
+    /// WAKTERM_TEST_DEVIN_DB names it and WAKTERM_TEST_DEVIN_SESSION a
+    /// session whose last turn ended. Each user input and final reply is
+    /// reported once, though Devin writes each message to several rows.
+    #[test]
+    fn devin_projection_reads_a_real_session_once() {
+        let (Some(db), Some(session)) = (
+            std::env::var_os("WAKTERM_TEST_DEVIN_DB"),
+            std::env::var("WAKTERM_TEST_DEVIN_SESSION").ok(),
+        ) else {
+            return;
+        };
+        let url = crate::devin::session_url(Path::new(&db), &session);
+        let start = ProviderCursor::Devin(DevinCursor {
+            source_id: session.clone(),
+            last_row_id: 0,
+            current_turn_id: None,
+            turn_open: false,
+        });
+        let events = project_devin(&url, Some(start)).unwrap().events;
+        let count = |kind: AgentEventKind| events.iter().filter(|event| event.kind == kind).count();
+        let inputs = count(AgentEventKind::TurnStarted);
+        assert!(inputs > 0);
+        assert_eq!(count(AgentEventKind::TurnFinal), inputs);
+        let hashes: std::collections::HashSet<_> = events
+            .iter()
+            .filter(|event| event.kind == AgentEventKind::InputAccepted)
+            .map(|event| event.input_sha256.clone())
+            .collect();
+        assert_eq!(hashes.len(), count(AgentEventKind::InputAccepted));
+    }
+
+    #[test]
+    fn devin_projection_reports_input_steers_and_the_final_reply() {
+        let temp = TempDir::new().unwrap();
+        let db = temp.path().join("sessions.db");
+        let session = crate::devin::session_url(&db, "almondine-continent");
+        let mut fixture =
+            crate::devin::fixture::Fixture::create(&db, "almondine-continent", "/code/concord");
+        // A session observed before its first message is read from it.
+        let mut cursor = Some(project_devin(&session, None).unwrap().cursor);
+        let mut project = |cursor: &mut Option<ProviderCursor>| {
+            let projected = project_devin(&session, cursor.take()).unwrap();
+            *cursor = Some(projected.cursor);
+            projected
+                .events
+                .into_iter()
+                .map(|event| (event.kind, event.turn_id, event.input_sha256, event.text))
+                .collect::<Vec<_>>()
+        };
+
+        let input = "Run `sleep 15; echo done` and reply done";
+        let first = fixture.user("u1", input);
+        let turn = Some(format!("almondine-continent:{first}"));
+        let sha = Some(crate::agent::message_sha256(input));
+        assert_eq!(
+            project(&mut cursor),
+            vec![
+                (AgentEventKind::TurnStarted, turn.clone(), sha.clone(), None),
+                (
+                    AgentEventKind::InputAccepted,
+                    turn.clone(),
+                    sha.clone(),
+                    None
+                ),
+                (AgentEventKind::TurnStateChanged, turn.clone(), None, None),
+            ]
+        );
+
+        // Input sent while the turn runs steers it.
+        fixture.tool_step("a1");
+        fixture.user("u2", "also say three");
+        assert_eq!(
+            project(&mut cursor),
+            vec![(
+                AgentEventKind::InputAccepted,
+                turn.clone(),
+                Some(crate::agent::message_sha256("also say three")),
+                None
+            )]
+        );
+
+        fixture.reply("a2", "done three");
+        // Compaction copies an earlier message into the chain again.
+        fixture.user("u1", input);
+        assert_eq!(
+            project(&mut cursor),
+            vec![
+                (
+                    AgentEventKind::AssistantMessage,
+                    turn.clone(),
+                    None,
+                    Some("done three".to_string())
+                ),
+                (
+                    AgentEventKind::TurnFinal,
+                    turn.clone(),
+                    None,
+                    Some("done three".to_string())
+                ),
+                (AgentEventKind::TurnStateChanged, turn, None, None),
+            ]
+        );
+    }
+
     #[test]
     #[ignore = "requires WAKTERM_TEST_ZCODE_DB pointing to a real ZCode database"]
     fn zcode_real_database_events() {

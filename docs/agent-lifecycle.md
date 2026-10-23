@@ -2,7 +2,7 @@
 
 ## Status
 
-Wakterm supports agent harnesses as terminal processes running in PTY panes. It detects supported harnesses (Agy, Claude, Codex, Gemini, OpenCode, ZCode), observes provider session state, and automatically adopts confirmed sessions into its persistent agent registry.
+Wakterm supports agent harnesses as terminal processes running in PTY panes. It detects supported harnesses (Agy, Claude, Codex, Devin, Gemini, OpenCode, ZCode), observes provider session state, and automatically adopts confirmed sessions into its persistent agent registry.
 
 Restorable Claude and Codex sessions are restored automatically across
 multiplexer restart and system reboot in their declared working directory,
@@ -127,6 +127,8 @@ Supervised Claude observation requires its process-owned session record and tran
 Claude can move a conversation to a background job run by its daemon, and a pane may then show that job: either the window that sent it there or `claude attach <job>`. Wakterm observes such a pane through the job's live worker and its session, and the pane keeps its agent identity. While the job runs, the pane's runtime reports `background_job` with a hint for moving the conversation back into the pane, because the worker runs outside the pane and a mux restart stops it. When the worker is gone, observation reports an error naming the job's saved session and the command that resumes it in the pane, rather than choosing a session from transcript timestamps.
 
 ZCode stores sessions in OpenCode's database schema in its own database. A ZCode pane started with `--resume sess_...`, as every restoration is, is observed as exactly that session. Otherwise, as for OpenCode, the observer selects the most recently updated session in the pane's working directory, so two ZCode sessions in one directory can be confused until one is resumed explicitly.
+
+[Devin](https://cli.devin.ai/docs), Cognition's coding CLI, keeps every session in one SQLite database, `~/.local/share/devin/cli/sessions.db`. A running Devin holds a lock file named after its session, which records the process ID of its worker, so a Devin pane is observed as exactly the session its own process holds. Devin writes each message as the turn runs: a turn starts with the user's input and ends with an assistant reply that calls no tools. A message sent while a turn runs steers that turn, as Devin's input box invites. A permission prompt or other menu that replaces the input box, or text in the box, blocks `agent send`. Devin panes are not restored after a mux restart yet: restoration reports that it is not implemented for Devin rather than starting a fresh session.
 
 Wakterm records the presence of a launch supervisor separately from the inner harness command. Automatic restoration currently retains that session intent and displays a diagnostic pane requesting an explicit supervised resume recipe. It does not execute the inner command without its supervisor. Run the offline native-TUI regression with `WAKTERM_TEST_CLAUDE=/path/to/claude cargo test --locked -p mux real_sandboxed_claude_process_and_session_are_observed --lib -- --ignored --nocapture`. It requires Python 3 and bubblewrap, uses private provider storage, resumes a local fixture without a model request, and checks mount, PID, IPC and UTS isolation plus absence of host control sockets.
 
@@ -298,6 +300,7 @@ The provider stance is:
 | Agy | Native observed and restorable PTY; investigate structured supervision | The interactive TUI exposes exact conversation presence and a persistent transcript; stream JSON and state callbacks apply to managed launches rather than attachment to an existing TUI |
 | Gemini | Native TUI; investigate same-session supervision | Direct ACP makes the client the UI unless Gemini supports concurrent native-TUI attachment |
 | OpenCode | Native TUI; investigate same-session supervision | Direct ACP is not sufficient if it replaces the provider TUI |
+| Devin | Native observed PTY; restoration to follow | Its session database records each message as the turn runs, and a lock file ties the running process to its session; Devin also runs an ACP worker whose attachment to its TUI is untested |
 | ZCode | Native observed and restorable PTY; investigate its app-server | Sessions use OpenCode's database schema, and `--resume` reopens an exact session; ZCode also ships a stdio app server whose attachment to the native TUI is untested |
 | Claude | Native observed and restorable PTY | Remote Control preserves the TUI but exposes no supported local observer; reverse-engineered `--sdk-url`, SDK, and ACP paths are headless, cloud-constrained, or infer state from a PTY |
 | Codex | Native app-server TUI | The mux and native TUI attach to the same exact app-server thread |

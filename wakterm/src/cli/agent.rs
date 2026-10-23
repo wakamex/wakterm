@@ -937,6 +937,7 @@ fn resolve_spawn_agent_name(
         AgentHarness::Gemini => "gemini",
         AgentHarness::Opencode => "opencode",
         AgentHarness::Zcode => "zcode",
+        AgentHarness::Devin => "devin",
         AgentHarness::Unknown => {
             bail!(
                 "agent start requires a recognized harness (currently: agy, claude, codex, gemini, opencode, zcode)"
@@ -3348,6 +3349,7 @@ fn harness_label(harness: &AgentHarness) -> String {
         AgentHarness::Gemini => "gemini",
         AgentHarness::Opencode => "opencode",
         AgentHarness::Zcode => "zcode",
+        AgentHarness::Devin => "devin",
     }
     .to_string()
 }

@@ -64,6 +64,7 @@ pub mod client;
 pub mod codex_app_server;
 pub mod codex_process_memory;
 pub mod connui;
+pub mod devin;
 pub mod domain;
 pub mod localpane;
 pub mod memory_report;
@@ -2444,6 +2445,7 @@ impl Mux {
             crate::agent::AgentHarness::Gemini => "gemini",
             crate::agent::AgentHarness::Opencode => "opencode",
             crate::agent::AgentHarness::Zcode => "zcode",
+            crate::agent::AgentHarness::Devin => "devin",
             crate::agent::AgentHarness::Unknown => "agent",
         }
     }

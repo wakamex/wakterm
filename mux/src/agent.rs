@@ -69,6 +69,8 @@ pub enum AgentHarness {
     Opencode,
     /// Z.ai's ZCode CLI, which stores sessions in OpenCode's schema.
     Zcode,
+    /// Cognition's Devin CLI.
+    Devin,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -318,6 +320,15 @@ pub fn infer_harness(launch_cmd: &str, foreground_process_name: Option<&str>) ->
         }) {
             return AgentHarness::Zcode;
         }
+        // Match the program name exactly: "devin" also appears in paths.
+        if candidate.split_whitespace().next().is_some_and(|program| {
+            Path::new(program)
+                .file_name()
+                .and_then(|name| name.to_str())
+                == Some("devin")
+        }) {
+            return AgentHarness::Devin;
+        }
         if candidate.contains("claude") {
             return AgentHarness::Claude;
         }
@@ -345,6 +356,7 @@ pub fn default_launch_cmd_for_harness(harness: &AgentHarness) -> Option<&'static
         AgentHarness::Gemini => Some("gemini"),
         AgentHarness::Opencode => Some("opencode"),
         AgentHarness::Zcode => Some("zcode"),
+        AgentHarness::Devin => Some("devin"),
         AgentHarness::Unknown => None,
     }
 }
@@ -357,6 +369,7 @@ fn infer_harness_from_process_info(process: &LocalProcessInfo) -> AgentHarness {
         AgentHarness::Gemini,
         AgentHarness::Opencode,
         AgentHarness::Zcode,
+        AgentHarness::Devin,
     ]
     .iter()
     .cloned()
@@ -479,6 +492,7 @@ fn is_harness_tui_program(harness: &AgentHarness, value: &str) -> bool {
                 }
                 AgentHarness::Opencode => matches!(name.as_str(), "opencode" | "opencode.exe"),
                 AgentHarness::Zcode => matches!(name.as_str(), "zcode" | "zcode.cjs"),
+                AgentHarness::Devin => name == "devin",
                 _ => false,
             }
         })
@@ -1189,6 +1203,13 @@ pub fn input_box_blocked(
             }
             Some(_) => None,
         },
+        AgentHarness::Devin => match crate::devin::input_box(lines) {
+            None => Some("Devin's input box is not on screen"),
+            Some(state) if !state.text.is_empty() => {
+                Some("the input box holds text the user is typing")
+            }
+            Some(_) => None,
+        },
         _ => None,
     }
 }
@@ -1479,6 +1500,12 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
             runtime.session_path.as_deref(),
             runtime.observer_started_at,
         ),
+        AgentHarness::Devin => observe_devin(
+            cwd,
+            runtime.session_path.as_deref(),
+            runtime.observer_started_at,
+            metadata.adopted_pid,
+        ),
         AgentHarness::Opencode | AgentHarness::Zcode => observe_opencode(
             &observing_harness,
             cwd,
@@ -1621,6 +1648,7 @@ pub fn pending_observer_detail(
                 .ok()
                 .flatten()
         }
+        AgentHarness::Devin => Some("devin session has not appeared yet".to_string()),
         AgentHarness::Unknown => None,
     }
 }
@@ -2126,7 +2154,7 @@ fn claude_reported_status(metadata: &AgentMetadata) -> Option<ClaudeReportedStat
 pub fn records_input_events(harness: &AgentHarness) -> bool {
     matches!(
         harness,
-        AgentHarness::Claude | AgentHarness::Codex | AgentHarness::Agy
+        AgentHarness::Claude | AgentHarness::Codex | AgentHarness::Agy | AgentHarness::Devin
     )
 }
 
@@ -3135,6 +3163,99 @@ fn observe_opencode(
     read_last_opencode_observation(&connection, &db_path, &session_id, updated_after)
 }
 
+/// Observes a Devin session: the one whose lock the pane's Devin process
+/// holds, else the session named by `preferred_session`, else the newest
+/// session started in `cwd` since `updated_after`. A session Devin has locked
+/// but written nothing to yet is observed as waiting for the user, so that
+/// events can be read from its first message.
+fn observe_devin(
+    cwd: &str,
+    preferred_session: Option<&str>,
+    updated_after: Option<DateTime<Utc>>,
+    adopted_pid: Option<u32>,
+) -> anyhow::Result<Option<HarnessObservation>> {
+    let Some(db_path) = crate::devin::db_path() else {
+        return Ok(None);
+    };
+    if !db_path.is_file() {
+        return Ok(None);
+    }
+    let connection = crate::devin::open(&db_path)?;
+    let session_id =
+        match adopted_pid.and_then(|pid| crate::devin::session_of_process(&db_path, pid)) {
+            Some(session_id) => session_id,
+            None => match preferred_session
+                .and_then(crate::devin::parse_session_url)
+                .filter(|(path, _)| *path == db_path)
+            {
+                Some((_, session_id)) => session_id,
+                None => match crate::devin::newest_session_in(&connection, cwd, updated_after)? {
+                    Some(session_id) => session_id,
+                    None => return Ok(None),
+                },
+            },
+        };
+    let messages = crate::devin::conversation(&connection, &session_id)?;
+    let session_path = Some(crate::devin::session_url(&db_path, &session_id));
+    let Some(input) = messages.iter().rposition(|message| message.user_input) else {
+        return Ok(Some(HarnessObservation {
+            session_path,
+            progress_summary: None,
+            harness_mode: None,
+            turn_phase: None,
+            updated_at: messages.last().map(|message| message.created_at),
+            turn_state: AgentTurnState::WaitingOnUser,
+            last_turn_completed_at: None,
+            observed_turn: None,
+        }));
+    };
+    let user = &messages[input];
+    let reply = messages[input + 1..]
+        .iter()
+        .find(|message| message.ends_turn);
+    let latest = messages.last().unwrap_or(user);
+    let final_message = reply
+        .map(|reply| reply.content.trim().to_string())
+        .filter(|text| !text.is_empty());
+    let (outcome, turn_state, completed_at, turn_phase) = match reply {
+        Some(reply) => (
+            AgentObservedTurnOutcome::Completed,
+            AgentTurnState::WaitingOnUser,
+            Some(reply.created_at),
+            "final_answer",
+        ),
+        None => (
+            AgentObservedTurnOutcome::Running,
+            AgentTurnState::WaitingOnAgent,
+            None,
+            "working",
+        ),
+    };
+    Ok(Some(HarnessObservation {
+        session_path,
+        progress_summary: final_message.as_deref().map(truncate_summary),
+        harness_mode: None,
+        turn_phase: Some(turn_phase.to_string()),
+        updated_at: Some(latest.created_at),
+        turn_state,
+        last_turn_completed_at: completed_at,
+        observed_turn: Some(AgentObservedTurn {
+            provider_turn_id: format!("{session_id}:{}", user.node_id),
+            outcome,
+            started_at: Some(user.created_at),
+            completed_at,
+            started_cursor: Some(user.row_id.max(0) as u64),
+            latest_cursor: Some(latest.row_id.max(0) as u64),
+            primary_user_message_sha256: Some(message_sha256(&user.content)),
+            user_message_count: messages[input..]
+                .iter()
+                .filter(|message| message.user_input)
+                .count() as u32,
+            final_message,
+        }),
+    }))
+}
+
 /// Claude names a project's transcript directory after its working
 /// directory, with every character other than an ASCII letter or digit
 /// replaced by `-`.
@@ -3471,6 +3592,8 @@ pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> V
         }),
         AgentHarness::Opencode | AgentHarness::Zcode => opencode_schema_db_path(harness)
             .and_then(|path| path.parent().map(|path| vec![path.to_path_buf()])),
+        AgentHarness::Devin => crate::devin::db_path()
+            .and_then(|path| path.parent().map(|path| vec![path.to_path_buf()])),
         AgentHarness::Unknown => None,
     };
 
@@ -3487,6 +3610,15 @@ pub(crate) fn agent_observer_artifact_paths(
 ) -> Vec<PathBuf> {
     match harness {
         AgentHarness::Opencode | AgentHarness::Zcode => parse_opencode_session_path(session_path)
+            .map(|(path, _)| {
+                let path = path.to_string_lossy();
+                ["", "-wal", "-shm", "-journal"]
+                    .iter()
+                    .map(|suffix| PathBuf::from(format!("{path}{suffix}")))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        AgentHarness::Devin => crate::devin::parse_session_url(session_path)
             .map(|(path, _)| {
                 let path = path.to_string_lossy();
                 ["", "-wal", "-shm", "-journal"]
@@ -6058,6 +6190,51 @@ mod test {
         );
         assert_eq!(claude_key_bytes("ctrl+m"), None);
         assert_eq!(claude_key_bytes("s"), None);
+    }
+
+    #[test]
+    fn observes_a_devin_turn_running_until_its_reply_stops_without_tools() {
+        let _env_lock = env_lock();
+        let temp = TempDir::new().unwrap();
+        let db = temp.path().join("sessions.db");
+        let mut fixture =
+            crate::devin::fixture::Fixture::create(&db, "almondine-continent", "/code/concord");
+        set_env_path("WAKTERM_AGENT_DEVIN_DB", &db);
+        let observe = || {
+            observe_devin("/code/concord", None, None, None)
+                .unwrap()
+                .unwrap()
+        };
+
+        // A session with no messages waits for the user.
+        let empty = observe();
+        assert_eq!(empty.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(
+            empty.session_path.as_deref(),
+            Some(crate::devin::session_url(&db, "almondine-continent").as_str())
+        );
+
+        let input = "Run `sleep 15; echo done` and reply done";
+        fixture.user("u1", input);
+        fixture.tool_step("a1");
+        let running = observe();
+        assert_eq!(running.turn_state, AgentTurnState::WaitingOnAgent);
+        let turn = running.observed_turn.unwrap();
+        assert_eq!(turn.outcome, AgentObservedTurnOutcome::Running);
+        assert_eq!(
+            turn.primary_user_message_sha256,
+            Some(message_sha256(input))
+        );
+
+        fixture.reply("a2", "done");
+        let done = observe();
+        remove_env_var("WAKTERM_AGENT_DEVIN_DB");
+        assert_eq!(done.turn_state, AgentTurnState::WaitingOnUser);
+        let turn = done.observed_turn.unwrap();
+        assert_eq!(turn.outcome, AgentObservedTurnOutcome::Completed);
+        assert_eq!(turn.final_message.as_deref(), Some("done"));
+        assert_eq!(infer_harness("devin", None), AgentHarness::Devin);
+        assert_eq!(infer_harness("", Some("devin")), AgentHarness::Devin);
     }
 
     #[test]
