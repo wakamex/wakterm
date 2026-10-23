@@ -1507,6 +1507,7 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
         ),
         AgentHarness::Gemini => observe_gemini(
             cwd,
+            metadata.adopted_pid,
             runtime.session_path.as_deref(),
             runtime.observer_started_at,
         ),
@@ -1518,6 +1519,7 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
         ),
         AgentHarness::Opencode | AgentHarness::Zcode => observe_opencode(
             &observing_harness,
+            metadata.adopted_pid,
             cwd,
             runtime.session_path.as_deref(),
             runtime.observer_started_at,
@@ -1654,14 +1656,19 @@ pub fn pending_observer_detail(
                 .ok()
                 .flatten()
         }
-        AgentHarness::Gemini => describe_pending_gemini_observer(cwd, updated_after)
-            .ok()
-            .flatten(),
-        AgentHarness::Opencode | AgentHarness::Zcode => {
-            describe_pending_opencode_observer(&runtime.harness, cwd, updated_after)
+        AgentHarness::Gemini => {
+            describe_pending_gemini_observer(cwd, metadata.adopted_pid, updated_after)
                 .ok()
                 .flatten()
         }
+        AgentHarness::Opencode | AgentHarness::Zcode => describe_pending_opencode_observer(
+            &runtime.harness,
+            metadata.adopted_pid,
+            cwd,
+            updated_after,
+        )
+        .ok()
+        .flatten(),
         AgentHarness::Devin => Some("devin session has not appeared yet".to_string()),
         AgentHarness::Unknown => None,
     }
@@ -3062,10 +3069,11 @@ fn observe_codex(
 
 fn observe_gemini(
     cwd: &str,
+    pid: Option<u32>,
     preferred_session: Option<&str>,
     updated_after: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Option<HarnessObservation>> {
-    let Some(root) = gemini_root() else {
+    let Some(root) = gemini_root_for(pid) else {
         return Ok(None);
     };
     let project_dirs = gemini_project_dirs(&root, cwd)?;
@@ -3134,12 +3142,13 @@ fn observe_gemini(
 
 fn observe_opencode(
     harness: &AgentHarness,
+    pid: Option<u32>,
     cwd: &str,
     preferred_session: Option<&str>,
     updated_after: Option<DateTime<Utc>>,
     exact_session: Option<&str>,
 ) -> anyhow::Result<Option<HarnessObservation>> {
-    let Some(db_path) = opencode_schema_db_path(harness) else {
+    let Some(db_path) = opencode_schema_db_path(harness, pid) else {
         return Ok(None);
     };
     if !db_path.is_file() {
@@ -3397,9 +3406,10 @@ fn describe_pending_codex_observer(
 
 fn describe_pending_gemini_observer(
     cwd: &str,
+    pid: Option<u32>,
     updated_after: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Option<String>> {
-    let Some(root) = gemini_root() else {
+    let Some(root) = gemini_root_for(pid) else {
         return Ok(None);
     };
     let project_dirs = gemini_project_dirs(&root, cwd)?;
@@ -3450,10 +3460,11 @@ fn describe_pending_gemini_observer(
 
 fn describe_pending_opencode_observer(
     harness: &AgentHarness,
+    pid: Option<u32>,
     cwd: &str,
     updated_after: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Option<String>> {
-    let Some(db_path) = opencode_schema_db_path(harness) else {
+    let Some(db_path) = opencode_schema_db_path(harness, pid) else {
         return Ok(None);
     };
     let name = default_launch_cmd_for_harness(harness).unwrap_or("agent");
@@ -3491,20 +3502,25 @@ fn claude_sessions_root_for(pid: Option<u32>) -> Option<PathBuf> {
     std::env::var_os("WAKTERM_AGENT_CLAUDE_DIR")
         .map(PathBuf::from)
         .or_else(|| {
-            harness_home(pid, "CLAUDE_CONFIG_DIR", ".claude").map(|home| home.join("projects"))
+            harness_dir(
+                pid,
+                "CLAUDE_CONFIG_DIR",
+                home_dir().map(|home| home.join(".claude")),
+            )
+            .map(|home| home.join("projects"))
         })
 }
 
-/// The home directory a harness process uses: the directory its
-/// environment's `variable` names, else `default` under the user's home.
-/// Without the process's environment, such as for no process or on a
-/// platform where it cannot be read, Wakterm's own environment decides.
-fn harness_home(pid: Option<u32>, variable: &str, default: &str) -> Option<PathBuf> {
+/// The directory a harness process's environment names in `variable`,
+/// else `default`. Without the process's environment, such as for no
+/// process or on a platform where it cannot be read, Wakterm's own
+/// environment decides.
+fn harness_dir(pid: Option<u32>, variable: &str, default: Option<PathBuf>) -> Option<PathBuf> {
     process_environment_value(pid, variable)
         .unwrap_or_else(|| std::env::var_os(variable))
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| home_dir().map(|home| home.join(default)))
+        .or(default)
 }
 
 /// `variable` in the environment process `pid` started with: `Some(None)`
@@ -3546,19 +3562,35 @@ fn codex_sessions_root() -> Option<PathBuf> {
 fn codex_sessions_root_for(pid: Option<u32>) -> Option<PathBuf> {
     std::env::var_os("WAKTERM_AGENT_CODEX_DIR")
         .map(PathBuf::from)
-        .or_else(|| harness_home(pid, "CODEX_HOME", ".codex").map(|home| home.join("sessions")))
+        .or_else(|| {
+            harness_dir(
+                pid,
+                "CODEX_HOME",
+                home_dir().map(|home| home.join(".codex")),
+            )
+            .map(|home| home.join("sessions"))
+        })
 }
 
 fn gemini_root() -> Option<PathBuf> {
+    gemini_root_for(None)
+}
+
+/// Where the Gemini CLI process `pid` keeps its files: `.gemini` under the
+/// directory its environment's GEMINI_CLI_HOME names, which stands in for
+/// the user's home, else under the home.
+fn gemini_root_for(pid: Option<u32>) -> Option<PathBuf> {
     std::env::var_os("WAKTERM_AGENT_GEMINI_DIR")
         .map(PathBuf::from)
-        .or_else(|| home_dir().map(|home| home.join(".gemini")))
+        .or_else(|| {
+            harness_dir(pid, "GEMINI_CLI_HOME", home_dir()).map(|home| home.join(".gemini"))
+        })
 }
 
 /// The session database for a harness that uses OpenCode's schema.
-fn opencode_schema_db_path(harness: &AgentHarness) -> Option<PathBuf> {
+fn opencode_schema_db_path(harness: &AgentHarness, pid: Option<u32>) -> Option<PathBuf> {
     match harness {
-        AgentHarness::Opencode => opencode_db_path(),
+        AgentHarness::Opencode => opencode_db_path(pid),
         AgentHarness::Zcode => zcode_db_path(),
         _ => None,
     }
@@ -3572,16 +3604,19 @@ fn zcode_db_path() -> Option<PathBuf> {
         })
 }
 
-fn opencode_db_path() -> Option<PathBuf> {
+/// Where the OpenCode process `pid` keeps its database: under the data
+/// directory its environment's XDG_DATA_HOME names, else
+/// `~/.local/share`.
+fn opencode_db_path(pid: Option<u32>) -> Option<PathBuf> {
     std::env::var_os("WAKTERM_AGENT_OPENCODE_DB")
         .map(PathBuf::from)
         .or_else(|| {
-            home_dir().map(|home| {
-                home.join(".local")
-                    .join("share")
-                    .join("opencode")
-                    .join("opencode.db")
-            })
+            harness_dir(
+                pid,
+                "XDG_DATA_HOME",
+                home_dir().map(|home| home.join(".local").join("share")),
+            )
+            .map(|data| data.join("opencode").join("opencode.db"))
         })
 }
 
@@ -3660,7 +3695,7 @@ pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> V
                 project_dirs
             }
         }),
-        AgentHarness::Opencode | AgentHarness::Zcode => opencode_schema_db_path(harness)
+        AgentHarness::Opencode | AgentHarness::Zcode => opencode_schema_db_path(harness, None)
             .and_then(|path| path.parent().map(|path| vec![path.to_path_buf()])),
         AgentHarness::Devin => crate::devin::db_path()
             .and_then(|path| path.parent().map(|path| vec![path.to_path_buf()])),
@@ -7603,11 +7638,19 @@ mod test {
     #[test]
     fn finds_sessions_under_the_home_a_harness_process_was_started_with() {
         let _env_lock = env_lock();
-        remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
-        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
+        for override_variable in [
+            "WAKTERM_AGENT_CLAUDE_DIR",
+            "WAKTERM_AGENT_CODEX_DIR",
+            "WAKTERM_AGENT_GEMINI_DIR",
+            "WAKTERM_AGENT_OPENCODE_DB",
+        ] {
+            remove_env_var(override_variable);
+        }
         let temp = tempfile::tempdir().unwrap();
         let claude_home = temp.path().join("claude-b");
         let codex_home = temp.path().join("codex-b");
+        let gemini_home = temp.path().join("gemini-b");
+        let data_home = temp.path().join("data-b");
         // A second account's Claude Code wrote its transcript under its own
         // config directory.
         let cwd = "/tmp/project-second-account";
@@ -7625,6 +7668,8 @@ mod test {
             .arg("30")
             .env("CLAUDE_CONFIG_DIR", &claude_home)
             .env("CODEX_HOME", &codex_home)
+            .env("GEMINI_CLI_HOME", &gemini_home)
+            .env("XDG_DATA_HOME", &data_home)
             .spawn()
             .unwrap();
         let pid = Some(harness.id());
@@ -7645,12 +7690,20 @@ mod test {
         let observed = observe_claude(cwd, pid, None, None, None).unwrap();
         let claude_root = claude_sessions_root_for(pid);
         let codex_root = codex_sessions_root_for(pid);
+        let gemini = gemini_root_for(pid);
+        let opencode = opencode_db_path(pid);
         harness.kill().unwrap();
         harness.wait().unwrap();
 
         assert_eq!(observed.unwrap().progress_summary.as_deref(), Some("done"));
         assert_eq!(claude_root, Some(claude_home.join("projects")));
         assert_eq!(codex_root, Some(codex_home.join("sessions")));
+        // GEMINI_CLI_HOME stands in for the home that holds .gemini.
+        assert_eq!(gemini, Some(gemini_home.join(".gemini")));
+        assert_eq!(
+            opencode,
+            Some(data_home.join("opencode").join("opencode.db"))
+        );
         // A process without the variables uses the default homes.
         let own = Some(std::process::id());
         if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() {
@@ -9053,7 +9106,7 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_GEMINI_DIR", temp.path());
-        let observed = observe_gemini(cwd, None, None).unwrap().unwrap();
+        let observed = observe_gemini(cwd, None, None, None).unwrap().unwrap();
         remove_env_var("WAKTERM_AGENT_GEMINI_DIR");
 
         assert_eq!(observed.progress_summary.as_deref(), Some("all good"));
@@ -9099,7 +9152,7 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_GEMINI_DIR", temp.path());
-        let observed = observe_gemini(cwd, None, None).unwrap().unwrap();
+        let observed = observe_gemini(cwd, None, None, None).unwrap().unwrap();
         remove_env_var("WAKTERM_AGENT_GEMINI_DIR");
 
         assert_eq!(
@@ -9173,7 +9226,7 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_GEMINI_DIR", temp.path());
-        let observed = observe_gemini("/tmp/project-e", None, None)
+        let observed = observe_gemini("/tmp/project-e", None, None, None)
             .unwrap()
             .unwrap();
         remove_env_var("WAKTERM_AGENT_GEMINI_DIR");
@@ -9247,10 +9300,16 @@ mod test {
         drop(connection);
 
         set_env_path("WAKTERM_AGENT_OPENCODE_DB", &db_path);
-        let observed =
-            observe_opencode(&AgentHarness::Opencode, "/tmp/project-j", None, None, None)
-                .unwrap()
-                .unwrap();
+        let observed = observe_opencode(
+            &AgentHarness::Opencode,
+            None,
+            "/tmp/project-j",
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
         remove_env_var("WAKTERM_AGENT_OPENCODE_DB");
 
         assert_eq!(observed.progress_summary.as_deref(), Some("all good"));
@@ -9366,12 +9425,19 @@ mod test {
         drop(connection);
 
         set_env_path("WAKTERM_AGENT_ZCODE_DB", &db_path);
-        let by_directory =
-            observe_opencode(&AgentHarness::Zcode, "/tmp/zcode-project", None, None, None)
-                .unwrap()
-                .unwrap();
+        let by_directory = observe_opencode(
+            &AgentHarness::Zcode,
+            None,
+            "/tmp/zcode-project",
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .unwrap();
         let resumed = observe_opencode(
             &AgentHarness::Zcode,
+            None,
             "/tmp/zcode-project",
             None,
             None,
@@ -9413,10 +9479,16 @@ mod test {
             .unwrap();
 
         set_env_path("WAKTERM_AGENT_ZCODE_DB", &db_path);
-        let observed =
-            observe_opencode(&AgentHarness::Zcode, &directory, None, None, Some(&session))
-                .unwrap()
-                .unwrap();
+        let observed = observe_opencode(
+            &AgentHarness::Zcode,
+            None,
+            &directory,
+            None,
+            None,
+            Some(&session),
+        )
+        .unwrap()
+        .unwrap();
         remove_env_var("WAKTERM_AGENT_ZCODE_DB");
 
         let session_path = observed.session_path.unwrap();
