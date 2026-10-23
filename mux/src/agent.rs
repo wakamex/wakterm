@@ -1194,13 +1194,16 @@ pub fn input_box_blocked(
             .then_some("Codex's input box is not empty or not on screen"),
         AgentHarness::Agy => match agy_input_box(lines) {
             None => Some("agy's input box is not on screen"),
-            Some(state) if state.working => Some(
-                "agy is working on a turn, and would queue the message to send with the user's \
-                 next input",
-            ),
             Some(state) if !state.text.is_empty() => {
                 Some("the input box holds text the user is typing")
             }
+            // agy queues a message submitted during a turn and can send it
+            // together with the user's next input. Only its idle hint shows
+            // that no turn runs.
+            Some(state) if !state.idle => Some(
+                "agy's footer does not show it waiting for input, so a turn may be running, and \
+                 agy would queue the message to send with the user's next input",
+            ),
             Some(_) => None,
         },
         AgentHarness::Devin => match crate::devin::input_box(lines) {
@@ -1223,6 +1226,13 @@ pub struct AgyInputBox {
     pub rows: usize,
     /// Whether the footer under the box says a turn is running.
     pub working: bool,
+    /// Whether the footer shows agy's idle hint, "? for shortcuts". agy
+    /// shows one hint at a time and "esc to cancel" has the lowest
+    /// priority: a queued message, a second-press prompt, bash or code
+    /// search mode, or a transient hint replaces it while the turn keeps
+    /// running. The idle hint appears only when no turn runs and no other
+    /// hint is shown.
+    pub idle: bool,
 }
 
 /// Reads agy's input box from the pane's visible lines: the lowest line that
@@ -1246,14 +1256,14 @@ pub fn agy_input_box(lines: &[wakterm_term::Line]) -> Option<AgyInputBox> {
     while content.last().is_some_and(String::is_empty) && content.len() > 1 {
         content.pop();
     }
-    let working = lines[end + 1..]
-        .iter()
-        .take(2)
-        .any(|line| line.contains("esc to cancel"));
+    let footer = || lines[end + 1..].iter().take(2);
+    let working = footer().any(|line| line.contains("esc to cancel"));
+    let idle = footer().any(|line| line.contains("? for shortcuts"));
     Some(AgyInputBox {
         rows: content.len(),
         text: content.join("\n").trim().to_string(),
         working,
+        idle,
     })
 }
 
@@ -6307,13 +6317,31 @@ mod test {
         let rule = "\u{2500}".repeat(20);
         let idle = screen(&["  earlier reply", &rule, ">", &rule, "? for shortcuts"]);
         let state = agy_input_box(&idle).unwrap();
-        assert_eq!((state.text.as_str(), state.working), ("", false));
+        assert_eq!(
+            (state.text.as_str(), state.working, state.idle),
+            ("", false, true)
+        );
         assert_eq!(input_box_blocked(&AgentHarness::Agy, &idle), None);
 
         let working = screen(&["  Running command...", &rule, ">", &rule, "esc to cancel"]);
-        assert!(agy_input_box(&working).unwrap().working);
+        let state = agy_input_box(&working).unwrap();
+        assert!(state.working && !state.idle);
         assert!(input_box_blocked(&AgentHarness::Agy, &working)
-            .is_some_and(|reason| reason.contains("working on a turn")));
+            .is_some_and(|reason| reason.contains("a turn may be running")));
+        // Hints agy shows instead of "esc to cancel" while a turn runs, such
+        // as for a message queued into it, are not its idle hint.
+        for hint in [
+            "  Press \u{2191} to edit queued messages",
+            "press ctrl+b again to send command to background",
+        ] {
+            let running = screen(&["  Running command...", &rule, ">", &rule, hint]);
+            let state = agy_input_box(&running).unwrap();
+            assert!(!state.working && !state.idle, "{hint}");
+            assert!(
+                input_box_blocked(&AgentHarness::Agy, &running).is_some(),
+                "{hint}"
+            );
+        }
 
         let draft = screen(&[
             &rule,

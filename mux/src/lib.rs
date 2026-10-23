@@ -3763,13 +3763,14 @@ impl Mux {
         Ok(true)
     }
 
-    /// Whether the agy pane shows its input box with no turn running.
+    /// Whether the agy pane shows its input box with its idle hint, which
+    /// agy shows only while no turn runs.
     fn agy_idle_on_screen(&self, pane_id: PaneId) -> bool {
         self.get_pane(pane_id).is_some_and(|pane| {
             let dims = pane.get_dimensions();
             let top = dims.physical_top;
             let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
-            agent::agy_input_box(&lines).is_some_and(|state| !state.working)
+            agent::agy_input_box(&lines).is_some_and(|state| state.idle)
         })
     }
 
@@ -7508,6 +7509,9 @@ mod test {
     /// the footer of a running turn.
     const AGY_IDLE_TITLE: &str = "agy idle";
     const AGY_WORKING_TITLE: &str = "agy working";
+    /// A running turn with a message queued into it, whose hint replaces
+    /// "esc to cancel".
+    const AGY_QUEUED_TITLE: &str = "agy queued";
     /// What fake panes were written, in order, for tests that hold the mux
     /// test lock.
     static FAKE_PANE_WRITES: Mutex<Vec<u8>> = parking_lot::const_mutex(Vec::new());
@@ -7765,12 +7769,13 @@ mod test {
                     ],
                 );
             }
-            if self.title == AGY_IDLE_TITLE || self.title == AGY_WORKING_TITLE {
+            if [AGY_IDLE_TITLE, AGY_WORKING_TITLE, AGY_QUEUED_TITLE].contains(&self.title.as_str())
+            {
                 let rule = "\u{2500}".repeat(8);
-                let footer = if self.title == AGY_WORKING_TITLE {
-                    "esc to cancel"
-                } else {
-                    "? for shortcuts"
+                let footer = match self.title.as_str() {
+                    AGY_WORKING_TITLE => "esc to cancel",
+                    AGY_QUEUED_TITLE => "  Press \u{2191} to edit queued messages",
+                    _ => "? for shortcuts",
                 };
                 return (
                     lines.start,
@@ -9324,7 +9329,11 @@ mod test {
         };
         let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
         let mut pane_ids = Vec::new();
-        for (id, title) in [(161, AGY_IDLE_TITLE), (162, AGY_WORKING_TITLE)] {
+        for (id, title) in [
+            (161, AGY_IDLE_TITLE),
+            (162, AGY_WORKING_TITLE),
+            (163, AGY_QUEUED_TITLE),
+        ] {
             let pane =
                 FakePane::new_detected(id, size, domain.id, title, "/tmp/agy", "agy", &["agy"]);
             let tab = Arc::new(Tab::new(&size));
@@ -9388,6 +9397,9 @@ mod test {
             working.turn_state,
             crate::agent::AgentTurnState::WaitingOnAgent
         );
+        // A hint that replaces "esc to cancel" mid-turn does not end it.
+        let queued = observe(pane_ids[2], 1);
+        assert_eq!(queued.status, crate::agent::AgentStatus::Busy);
     }
 
     #[test]
