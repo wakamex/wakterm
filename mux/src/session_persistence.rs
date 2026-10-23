@@ -939,7 +939,14 @@ fn prepare_agent_restore(
     intent: &SavedAgentRestoreIntent,
     prepare_managed: impl FnOnce(PrepareCodexLaunch) -> anyhow::Result<PreparedCodexLaunch>,
 ) -> anyhow::Result<PreparedAgentRestore> {
-    if let Some(supervisor) = &intent.metadata.launch_supervisor {
+    // Records saved before Wakterm's own CLI stopped counting as a
+    // supervisor still name it; it adds nothing to restore.
+    if let Some(supervisor) = intent
+        .metadata
+        .launch_supervisor
+        .as_ref()
+        .filter(|supervisor| !crate::agent::is_wakterm_cli(supervisor))
+    {
         #[cfg(unix)]
         return Ok(PreparedAgentRestore {
             command: CommandBuilder::from_argv(vec![
@@ -1698,6 +1705,44 @@ mod test {
             launch_supervisor: None,
             codex_app_server: None,
         }
+    }
+
+    #[test]
+    fn an_agent_launched_by_the_wakterm_cli_is_restored_by_its_own_resume() {
+        // A managed Codex run by `wakterm agent launch codex` as a pane's
+        // root process was saved with Wakterm's CLI as its supervisor.
+        let thread_id = "01a16633-8975-7241-9222-e5eb11a3fe8f";
+        let mut metadata = sample_agent_metadata("con-sol");
+        metadata.launch_cmd = "/usr/local/sbin/codex".to_string();
+        metadata.launch_supervisor = Some("/home/mihai/.local/bin/wakterm".to_string());
+        let intent = SavedAgentRestoreIntent {
+            pane_id: 73,
+            harness: AgentHarness::Codex,
+            metadata,
+            session_id: thread_id.to_string(),
+            attention_seen_at: None,
+        };
+        let mut requested = None;
+        let restored = prepare_agent_restore(&intent, |request| {
+            requested = request.resume_thread_id.clone();
+            Ok(PreparedCodexLaunch {
+                argv: vec!["codex".into(), "resume".into(), thread_id.into()],
+                session: CodexAppServerSession {
+                    thread_id: thread_id.to_string(),
+                    session_id: thread_id.to_string(),
+                    executable: "codex".to_string(),
+                    version: "codex-cli latest".to_string(),
+                    tui_args: vec![],
+                },
+            })
+        })
+        .unwrap();
+        assert_eq!(requested.as_deref(), Some(thread_id));
+        assert_eq!(restored.command.get_argv()[0], "codex");
+        assert!(crate::agent::is_wakterm_cli(
+            "/home/mihai/.local/bin/wakterm"
+        ));
+        assert!(!crate::agent::is_wakterm_cli("/usr/bin/bwrap"));
     }
 
     #[test]

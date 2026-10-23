@@ -446,6 +446,19 @@ fn foreground_harness_process(process: &LocalProcessInfo) -> Option<&LocalProces
     (matches.len() == 1).then(|| matches[0])
 }
 
+/// Whether `executable` is Wakterm's own CLI, which runs a harness it
+/// launches, such as `wakterm agent launch codex`, as its child without
+/// isolating it. It is not a launch supervisor: restoring such an agent
+/// needs no recipe beyond the harness's own resume.
+pub(crate) fn is_wakterm_cli(executable: &str) -> bool {
+    matches!(
+        Path::new(executable)
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("wakterm" | "wakterm.exe")
+    )
+}
+
 pub fn detect_harness_process<'a>(
     process: Option<&'a LocalProcessInfo>,
     foreground_process_name: Option<&str>,
@@ -456,8 +469,8 @@ pub fn detect_harness_process<'a>(
             harness: infer_harness_from_process_info(selected),
             launch_cmd: format_process_command(selected)?,
             process: Some(selected),
-            launch_supervisor: (selected.pid != process.pid)
-                .then(|| process.executable.to_string_lossy().into_owned()),
+            launch_supervisor: Some(process.executable.to_string_lossy().into_owned())
+                .filter(|executable| selected.pid != process.pid && !is_wakterm_cli(executable)),
         });
     }
 
