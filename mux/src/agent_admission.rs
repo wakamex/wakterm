@@ -688,6 +688,20 @@ pub struct AgentCaller {
     pub schema: String,
     pub resolved_by: AgentCallerSource,
     pub agent: AgentCatalogEntry,
+    /// The tab the agent's pane is in, or null when the pane is in no tab.
+    pub tab: Option<AgentCallerTab>,
+}
+
+/// The tab a calling agent's pane is in. The tab keeps its id and title
+/// when its agent is replaced, so it outlives the agent that read it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentCallerTab {
+    pub tab_id: u64,
+    pub window_id: u64,
+    /// The tab's effective title, which `wakterm cli list` reports as
+    /// `effective_title`: its explicit title, else one derived from its
+    /// agents' folder.
+    pub title: String,
 }
 
 /// Identifies the live registered agent a command runs for, from the
@@ -752,6 +766,7 @@ pub fn resolve_agent_caller(
         schema: AGENT_API_SCHEMA.to_string(),
         resolved_by,
         agent: catalog_entry(agent.clone()),
+        tab: None,
     })
 }
 

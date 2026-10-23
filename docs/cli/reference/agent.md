@@ -18,7 +18,7 @@ Supported harnesses include Agy, Claude, Codex, Devin, Gemini, OpenCode, and ZCo
 - `wakterm agent events`: read durable normalized Agent API v1 events
 - `wakterm agent capabilities`: print versioned Wakterm Agent API capabilities
 - `wakterm agent catalog`: print the narrow Agent API catalog
-- `wakterm agent caller`: print the catalog entry of the agent this command runs for
+- `wakterm agent caller`: print the catalog entry of the agent this command runs for, and the tab its pane is in
 - `wakterm agent admit`: atomically admit and submit an agent prompt
 - `wakterm agent approval`: resolve an exact pending agent approval or question form
 - `wakterm agent send`: send a prompt to an agent pane with optional return correlation

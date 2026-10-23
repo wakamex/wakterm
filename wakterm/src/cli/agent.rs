@@ -1611,12 +1611,46 @@ impl AgentCallerCommand {
             (pane, std::env::var("CODEX_THREAD_ID").ok())
         };
         let agents = client.list_agents().await?.agents;
-        write_json(&mux::agent_admission::resolve_agent_caller(
+        let mut caller = mux::agent_admission::resolve_agent_caller(
             agents,
             wakterm_pane,
             codex_thread_id.as_deref(),
-        )?)
+        )?;
+        caller.tab = caller_tab(&client.list_panes().await?, caller.agent.pane_id as PaneId);
+        write_json(&caller)
     }
+}
+
+/// The tab that holds `pane_id`, with the effective title `wakterm cli list`
+/// reports for it.
+fn caller_tab(
+    panes: &codec::ListPanesResponse,
+    pane_id: PaneId,
+) -> Option<mux::agent_admission::AgentCallerTab> {
+    let (index, tab_id, window_id) = panes.tabs.iter().enumerate().find_map(|(index, tab)| {
+        let mut cursor = tab.clone().into_tree().cursor();
+        loop {
+            if let Some(entry) = cursor.leaf_mut() {
+                if entry.pane_id == pane_id {
+                    return Some((index, entry.tab_id, entry.window_id));
+                }
+            }
+            match cursor.preorder_next() {
+                Ok(next) => cursor = next,
+                Err(_) => return None,
+            }
+        }
+    })?;
+    Some(mux::agent_admission::AgentCallerTab {
+        tab_id: tab_id as u64,
+        window_id: window_id as u64,
+        title: panes
+            .effective_tab_titles
+            .get(index)
+            .or_else(|| panes.tab_titles.get(index))
+            .cloned()
+            .unwrap_or_default(),
+    })
 }
 
 #[derive(Debug, Parser, Clone)]
@@ -3907,6 +3941,34 @@ mod test {
             left_col: 0,
             tty_name: None,
         })
+    }
+
+    #[test]
+    fn caller_tab_is_the_tab_holding_the_pane_with_its_effective_title() {
+        let both = SplitDirectionAndSize {
+            direction: SplitDirection::Horizontal,
+            first: size(40, 24),
+            second: size(40, 24),
+        };
+        let mut panes = panes_response(vec![
+            split(leaf(1, 3, 30), leaf(1, 3, 31), both),
+            leaf(2, 4, 40),
+        ]);
+        // The first tab's title is derived; the second's is explicit.
+        panes.tab_titles = vec![String::new(), "jobs".to_string()];
+        panes.effective_tab_titles = vec!["personal".to_string(), "jobs".to_string()];
+
+        let tab = caller_tab(&panes, 31).unwrap();
+        assert_eq!(
+            (tab.tab_id, tab.window_id, tab.title.as_str()),
+            (3, 1, "personal")
+        );
+        let tab = caller_tab(&panes, 40).unwrap();
+        assert_eq!(
+            (tab.tab_id, tab.window_id, tab.title.as_str()),
+            (4, 2, "jobs")
+        );
+        assert_eq!(caller_tab(&panes, 99), None);
     }
 
     fn split(left: PaneNode, right: PaneNode, node: SplitDirectionAndSize) -> PaneNode {
