@@ -1634,12 +1634,16 @@ pub fn pending_observer_detail(
         AgentHarness::Agy => describe_pending_agy_observer(cwd, updated_after)
             .ok()
             .flatten(),
-        AgentHarness::Claude => describe_pending_claude_observer(cwd, updated_after)
-            .ok()
-            .flatten(),
-        AgentHarness::Codex => describe_pending_codex_observer(cwd, updated_after)
-            .ok()
-            .flatten(),
+        AgentHarness::Claude => {
+            describe_pending_claude_observer(cwd, metadata.adopted_pid, updated_after)
+                .ok()
+                .flatten()
+        }
+        AgentHarness::Codex => {
+            describe_pending_codex_observer(cwd, metadata.adopted_pid, updated_after)
+                .ok()
+                .flatten()
+        }
         AgentHarness::Gemini => describe_pending_gemini_observer(cwd, updated_after)
             .ok()
             .flatten(),
@@ -2054,6 +2058,7 @@ fn observe_claude_process(
         });
     let mut observation = observe_claude(
         cwd,
+        metadata.adopted_pid,
         runtime.session_path.as_deref(),
         runtime.observer_started_at,
         owned
@@ -2818,7 +2823,7 @@ fn claude_session_owned_by_process(
     let (Some(pid), Some(start_time)) = (pid, start_time) else {
         return Ok(ClaudeOwnership::Unknown);
     };
-    let Some(root) = claude_sessions_root() else {
+    let Some(root) = claude_sessions_root_for(Some(pid)) else {
         return Ok(ClaudeOwnership::Unknown);
     };
     let sessions_dir = root
@@ -2856,11 +2861,12 @@ fn claude_session_owned_by_process(
 
 fn observe_claude(
     cwd: &str,
+    pid: Option<u32>,
     preferred_session: Option<&str>,
     updated_after: Option<DateTime<Utc>>,
     expected_session_id: Option<&str>,
 ) -> anyhow::Result<Option<HarnessObservation>> {
-    let Some(root) = claude_sessions_root() else {
+    let Some(root) = claude_sessions_root_for(pid) else {
         return Ok(None);
     };
     let project_dir = root.join(claude_project_dir_name(cwd));
@@ -2978,7 +2984,7 @@ fn observe_codex(
         )));
     }
 
-    let Some(root) = codex_sessions_root() else {
+    let Some(root) = codex_sessions_root_for(process_id) else {
         return Ok(None);
     };
 
@@ -3267,9 +3273,10 @@ fn claude_project_dir_name(cwd: &str) -> String {
 
 fn describe_pending_claude_observer(
     cwd: &str,
+    pid: Option<u32>,
     updated_after: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Option<String>> {
-    let Some(root) = claude_sessions_root() else {
+    let Some(root) = claude_sessions_root_for(pid) else {
         return Ok(None);
     };
     let project_dir = root.join(claude_project_dir_name(cwd));
@@ -3327,9 +3334,10 @@ fn describe_pending_agy_observer(
 
 fn describe_pending_codex_observer(
     cwd: &str,
+    pid: Option<u32>,
     updated_after: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Option<String>> {
-    let Some(root) = codex_sessions_root() else {
+    let Some(root) = codex_sessions_root_for(pid) else {
         return Ok(None);
     };
     if !root.is_dir() {
@@ -3462,9 +3470,54 @@ fn describe_pending_opencode_observer(
 }
 
 fn claude_sessions_root() -> Option<PathBuf> {
+    claude_sessions_root_for(None)
+}
+
+/// Where the Claude Code process `pid` keeps its transcripts: the
+/// `projects` directory of the config directory its environment's
+/// CLAUDE_CONFIG_DIR names, `~/.claude` by default. A second account runs
+/// with its own config directory, so this can differ between panes.
+fn claude_sessions_root_for(pid: Option<u32>) -> Option<PathBuf> {
     std::env::var_os("WAKTERM_AGENT_CLAUDE_DIR")
         .map(PathBuf::from)
-        .or_else(|| home_dir().map(|home| home.join(".claude").join("projects")))
+        .or_else(|| {
+            harness_home(pid, "CLAUDE_CONFIG_DIR", ".claude").map(|home| home.join("projects"))
+        })
+}
+
+/// The home directory a harness process uses: the directory its
+/// environment's `variable` names, else `default` under the user's home.
+/// Without the process's environment, such as for no process or on a
+/// platform where it cannot be read, Wakterm's own environment decides.
+fn harness_home(pid: Option<u32>, variable: &str, default: &str) -> Option<PathBuf> {
+    process_environment_value(pid, variable)
+        .unwrap_or_else(|| std::env::var_os(variable))
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|home| home.join(default)))
+}
+
+/// `variable` in the environment process `pid` started with: `Some(None)`
+/// when the environment was read and lacks it, `None` when it could not be
+/// read.
+fn process_environment_value(pid: Option<u32>, variable: &str) -> Option<Option<OsString>> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let environ = fs::read(format!("/proc/{}/environ", pid?)).ok()?;
+        let prefix = format!("{variable}=");
+        Some(
+            environ
+                .split(|byte| *byte == 0)
+                .find_map(|entry| entry.strip_prefix(prefix.as_bytes()))
+                .map(|value| std::ffi::OsStr::from_bytes(value).to_os_string()),
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (pid, variable);
+        None
+    }
 }
 
 fn agy_root() -> Option<PathBuf> {
@@ -3474,9 +3527,16 @@ fn agy_root() -> Option<PathBuf> {
 }
 
 fn codex_sessions_root() -> Option<PathBuf> {
+    codex_sessions_root_for(None)
+}
+
+/// Where the Codex process `pid` keeps its rollouts: the `sessions`
+/// directory of the home its environment's CODEX_HOME names, `~/.codex` by
+/// default.
+fn codex_sessions_root_for(pid: Option<u32>) -> Option<PathBuf> {
     std::env::var_os("WAKTERM_AGENT_CODEX_DIR")
         .map(PathBuf::from)
-        .or_else(|| home_dir().map(|home| home.join(".codex").join("sessions")))
+        .or_else(|| harness_home(pid, "CODEX_HOME", ".codex").map(|home| home.join("sessions")))
 }
 
 fn gemini_root() -> Option<PathBuf> {
@@ -3889,7 +3949,7 @@ fn remote_codex_tui_session(
     if expected_session_id.is_some_and(|expected| expected != remote.thread_id) {
         return Ok(None);
     }
-    let Some(root) = codex_sessions_root() else {
+    let Some(root) = codex_sessions_root_for(Some(process_id)) else {
         return Ok(None);
     };
     let suffix = format!("-{}.jsonl", remote.thread_id);
@@ -7511,6 +7571,68 @@ mod test {
         assert_eq!(pending_observer_detail(&metadata, &runtime), None);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn finds_sessions_under_the_home_a_harness_process_was_started_with() {
+        let _env_lock = env_lock();
+        remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
+        remove_env_var("WAKTERM_AGENT_CODEX_DIR");
+        let temp = tempfile::tempdir().unwrap();
+        let claude_home = temp.path().join("claude-b");
+        let codex_home = temp.path().join("codex-b");
+        // A second account's Claude Code wrote its transcript under its own
+        // config directory.
+        let cwd = "/tmp/project-second-account";
+        let project_dir = claude_home.join("projects").join(cwd.replace('/', "-"));
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            project_dir.join("session.jsonl"),
+            concat!(
+                "{\"type\":\"user\",\"timestamp\":\"2026-03-17T12:00:00Z\"}\n",
+                "{\"type\":\"assistant\",\"timestamp\":\"2026-03-17T12:00:02Z\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n"
+            ),
+        )
+        .unwrap();
+        let mut harness = std::process::Command::new("sleep")
+            .arg("30")
+            .env("CLAUDE_CONFIG_DIR", &claude_home)
+            .env("CODEX_HOME", &codex_home)
+            .spawn()
+            .unwrap();
+        let pid = Some(harness.id());
+        // Spawning can return before the exec, while the process still has
+        // this test's environment.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while process_environment_value(pid, "CLAUDE_CONFIG_DIR")
+            .flatten()
+            .is_none()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the harness never showed its environment"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        let observed = observe_claude(cwd, pid, None, None, None).unwrap();
+        let claude_root = claude_sessions_root_for(pid);
+        let codex_root = codex_sessions_root_for(pid);
+        harness.kill().unwrap();
+        harness.wait().unwrap();
+
+        assert_eq!(observed.unwrap().progress_summary.as_deref(), Some("done"));
+        assert_eq!(claude_root, Some(claude_home.join("projects")));
+        assert_eq!(codex_root, Some(codex_home.join("sessions")));
+        // A process without the variables uses the default homes.
+        let own = Some(std::process::id());
+        if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() {
+            assert_eq!(
+                claude_sessions_root_for(own),
+                home_dir().map(|home| home.join(".claude").join("projects"))
+            );
+        }
+    }
+
     #[test]
     fn observes_latest_claude_session_summary() {
         let _env_lock = env_lock();
@@ -7529,7 +7651,9 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_CLAUDE_DIR", temp.path());
-        let observed = observe_claude(cwd, None, None, None).unwrap().unwrap();
+        let observed = observe_claude(cwd, None, None, None, None)
+            .unwrap()
+            .unwrap();
         remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
 
         assert_eq!(observed.progress_summary.as_deref(), Some("done"));
@@ -7777,7 +7901,7 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_CLAUDE_DIR", temp.path());
-        let observed = observe_claude(cwd, None, Some(Utc::now()), Some(expected_id))
+        let observed = observe_claude(cwd, None, None, Some(Utc::now()), Some(expected_id))
             .unwrap()
             .unwrap();
         remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
@@ -8704,13 +8828,14 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_CODEX_DIR", temp.path());
-        let detail = describe_pending_codex_observer("/tmp/project-live-pending", None)
+        let detail = describe_pending_codex_observer("/tmp/project-live-pending", None, None)
             .unwrap()
             .unwrap();
         // An observer still waiting well after its process started points at
         // Codex's background daemon.
         let waited = describe_pending_codex_observer(
             "/tmp/project-live-pending",
+            None,
             Some(Utc::now() - Duration::seconds(30)),
         )
         .unwrap()
