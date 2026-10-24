@@ -21,19 +21,32 @@ use std::path::{Path, PathBuf};
 use url::Url;
 
 pub(crate) fn db_path() -> Option<PathBuf> {
+    db_path_for(None)
+}
+
+/// The session database the Devin process `pid` uses, from its
+/// environment: CHISEL_SESSION_DB names the file, DEVIN_SESSIONS_DIR a
+/// directory holding cli/sessions.db, and otherwise it is
+/// devin/cli/sessions.db under XDG_DATA_HOME, `~/.local/share` by default.
+pub(crate) fn db_path_for(pid: Option<u32>) -> Option<PathBuf> {
+    use crate::agent::harness_dir;
     std::env::var_os("WAKTERM_AGENT_DEVIN_DB")
         .map(PathBuf::from)
+        .or_else(|| harness_dir(pid, "CHISEL_SESSION_DB", None))
         .or_else(|| {
-            std::env::var_os("HOME")
+            harness_dir(pid, "DEVIN_SESSIONS_DIR", None)
+                .map(|sessions| sessions.join("cli").join("sessions.db"))
+        })
+        .or_else(|| {
+            let home = std::env::var_os("HOME")
                 .filter(|home| !home.is_empty())
-                .map(PathBuf::from)
-                .map(|home| {
-                    home.join(".local")
-                        .join("share")
-                        .join("devin")
-                        .join("cli")
-                        .join("sessions.db")
-                })
+                .map(PathBuf::from);
+            harness_dir(
+                pid,
+                "XDG_DATA_HOME",
+                home.map(|home| home.join(".local").join("share")),
+            )
+            .map(|data| data.join("devin").join("cli").join("sessions.db"))
         })
 }
 

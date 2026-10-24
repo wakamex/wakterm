@@ -3282,7 +3282,7 @@ fn observe_devin(
     adopted_pid: Option<u32>,
     expected_session: Option<&str>,
 ) -> anyhow::Result<Option<HarnessObservation>> {
-    let Some(db_path) = crate::devin::db_path() else {
+    let Some(db_path) = crate::devin::db_path_for(adopted_pid) else {
         return Ok(None);
     };
     if !db_path.is_file() {
@@ -3607,7 +3607,11 @@ fn claude_sessions_root_for(pid: Option<u32>) -> Option<PathBuf> {
 /// else `default`. Without the process's environment, such as for no
 /// process or on a platform where it cannot be read, Wakterm's own
 /// environment decides.
-fn harness_dir(pid: Option<u32>, variable: &str, default: Option<PathBuf>) -> Option<PathBuf> {
+pub(crate) fn harness_dir(
+    pid: Option<u32>,
+    variable: &str,
+    default: Option<PathBuf>,
+) -> Option<PathBuf> {
     process_environment_value(pid, variable)
         .unwrap_or_else(|| std::env::var_os(variable))
         .filter(|value| !value.is_empty())
@@ -7814,6 +7818,7 @@ mod test {
             "WAKTERM_AGENT_CODEX_DIR",
             "WAKTERM_AGENT_GEMINI_DIR",
             "WAKTERM_AGENT_OPENCODE_DB",
+            "WAKTERM_AGENT_DEVIN_DB",
         ] {
             remove_env_var(override_variable);
         }
@@ -7863,6 +7868,7 @@ mod test {
         let codex_root = codex_sessions_root_for(pid);
         let gemini = gemini_root_for(pid);
         let opencode = opencode_db_path(pid);
+        let devin = crate::devin::db_path_for(pid);
         harness.kill().unwrap();
         harness.wait().unwrap();
 
@@ -7874,6 +7880,50 @@ mod test {
         assert_eq!(
             opencode,
             Some(data_home.join("opencode").join("opencode.db"))
+        );
+        // Devin keeps its data under XDG_DATA_HOME too.
+        assert_eq!(
+            devin,
+            Some(data_home.join("devin").join("cli").join("sessions.db"))
+        );
+        // DEVIN_SESSIONS_DIR moves Devin's database, and CHISEL_SESSION_DB
+        // names the file itself, ahead of both.
+        let devin_db_with = |variables: &[(&str, &Path)]| {
+            let mut process = std::process::Command::new("sleep");
+            process.arg("30");
+            for (variable, value) in variables {
+                process.env(variable, value);
+            }
+            let mut process = process.spawn().unwrap();
+            let pid = Some(process.id());
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while process_environment_value(pid, variables[0].0)
+                .flatten()
+                .is_none()
+            {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let db = crate::devin::db_path_for(pid);
+            process.kill().unwrap();
+            process.wait().unwrap();
+            db
+        };
+        let sessions = temp.path().join("devin-sessions");
+        let file = temp.path().join("chisel.db");
+        assert_eq!(
+            devin_db_with(&[
+                ("DEVIN_SESSIONS_DIR", &sessions),
+                ("XDG_DATA_HOME", &data_home)
+            ]),
+            Some(sessions.join("cli").join("sessions.db"))
+        );
+        assert_eq!(
+            devin_db_with(&[
+                ("CHISEL_SESSION_DB", &file),
+                ("DEVIN_SESSIONS_DIR", &sessions)
+            ]),
+            Some(file)
         );
         // A process without the variables uses the default homes.
         let own = Some(std::process::id());
