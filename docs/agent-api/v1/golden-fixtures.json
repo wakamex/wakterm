@@ -14,6 +14,7 @@
       "input_accepted_events.v1",
       "claude_refusal_menu.v1",
       "claude_menu.v1",
+      "devin_permission.v1",
       "codex_output_shadow.experimental.v1"
     ]
   },
@@ -31,6 +32,7 @@
       "input_accepted_events.v1",
       "claude_refusal_menu.v1",
       "claude_menu.v1",
+      "devin_permission.v1",
       "codex_output_shadow.experimental.v1"
     ]
   },

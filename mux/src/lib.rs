@@ -65,6 +65,7 @@ pub mod codex_app_server;
 pub mod codex_process_memory;
 pub mod connui;
 pub mod devin;
+pub mod devin_prompt;
 pub mod domain;
 pub mod localpane;
 pub mod memory_report;
@@ -231,6 +232,7 @@ pub struct Mux {
     codex_steers: Mutex<HashMap<PaneId, CodexSteer>>,
     /// The Claude menu each pane shows, and when it appeared.
     claude_menus: Mutex<HashMap<PaneId, (claude_menu::ClaudeMenu, DateTime<Utc>)>>,
+    devin_prompts: Mutex<HashMap<PaneId, (devin_prompt::DevinPrompt, DateTime<Utc>)>>,
     /// When the mux started freezing idle agents, which counts as their
     /// latest input until they get some.
     agent_freeze_started: Mutex<Option<Instant>>,
@@ -681,6 +683,11 @@ enum AgentObserverCommand {
         metadata: AgentMetadata,
         shown_at: DateTime<Utc>,
         menu: claude_menu::ClaudeMenu,
+    },
+    DevinPrompt {
+        metadata: AgentMetadata,
+        shown_at: DateTime<Utc>,
+        prompt: devin_prompt::DevinPrompt,
     },
     Unavailable {
         metadata: AgentMetadata,
@@ -1212,6 +1219,18 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                     }
                 }
             }
+            AgentObserverCommand::DevinPrompt {
+                metadata,
+                shown_at,
+                prompt,
+            } => {
+                if let Some(writer) = event_writer.as_mut() {
+                    if let Err(err) = writer.record_devin_prompt(&metadata, shown_at, &prompt) {
+                        log::error!("failed to persist Devin's permission prompt: {err:#}");
+                        writer_failed = true;
+                    }
+                }
+            }
             AgentObserverCommand::CodexAppServerNotification {
                 metadata,
                 runtime,
@@ -1422,6 +1441,7 @@ impl Mux {
             agent_input_by_pane: RwLock::new(HashMap::new()),
             frozen_agents: Mutex::new(HashMap::new()),
             claude_menus: Mutex::new(HashMap::new()),
+            devin_prompts: Mutex::new(HashMap::new()),
             codex_steers: Mutex::new(HashMap::new()),
             agent_freeze_started: Mutex::new(None),
             agent_attention_seen_at: RwLock::new(HashMap::new()),
@@ -3507,6 +3527,7 @@ impl Mux {
         counter!("mux.agent_observer.refresh.applied.rate").increment(1);
 
         self.report_claude_menu(update.pane_id);
+        self.report_devin_prompt(update.pane_id);
 
         if schedule_trailing_refresh {
             self.schedule_trailing_agent_observer_refresh(update.pane_id);
@@ -3655,6 +3676,50 @@ impl Mux {
         input.generation += 1;
         input.last_kind = kind;
         input.at = Some(Instant::now());
+    }
+
+    /// Reports Devin's permission prompt as an approval request when the
+    /// agent in the pane is a Devin in a running turn and its screen shows
+    /// the prompt. Devin records nothing about the prompt while it is up.
+    fn report_devin_prompt(&self, pane_id: PaneId) {
+        let running = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .is_some_and(|runtime| {
+                runtime.harness == AgentHarness::Devin
+                    && runtime.turn_state == crate::agent::AgentTurnState::WaitingOnAgent
+            });
+        let (true, Some(metadata), Some(pane)) = (
+            running,
+            self.get_agent_metadata_for_pane(pane_id),
+            self.get_pane(pane_id),
+        ) else {
+            self.devin_prompts.lock().remove(&pane_id);
+            return;
+        };
+        let Some(prompt) = devin_prompt::parse(&devin_prompt::screen(&pane)) else {
+            self.devin_prompts.lock().remove(&pane_id);
+            return;
+        };
+        let shown_at = {
+            let mut prompts = self.devin_prompts.lock();
+            match prompts.get(&pane_id) {
+                Some((shown, shown_at)) if shown.same_prompt(&prompt) => *shown_at,
+                _ => {
+                    let now = Utc::now();
+                    prompts.insert(pane_id, (prompt.clone(), now));
+                    now
+                }
+            }
+        };
+        let _ = self
+            .agent_observer_tx
+            .send(AgentObserverCommand::DevinPrompt {
+                metadata: (*metadata).clone(),
+                shown_at,
+                prompt,
+            });
     }
 
     /// Reports a Claude confirmation menu as an approval request when the

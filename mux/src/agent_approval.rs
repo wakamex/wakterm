@@ -114,6 +114,8 @@ pub enum AgentApprovalWork {
     ClaudeQuestion(ClaudeQuestionKeys),
     /// Keys that answer a Claude confirmation menu, with screen checks.
     ClaudeMenu(crate::claude_menu::MenuKeys),
+    /// Keys that answer Devin's permission prompt, with screen checks.
+    DevinPrompt(crate::devin_prompt::PromptKeys),
 }
 
 impl AgentApprovalWork {
@@ -129,6 +131,7 @@ impl AgentApprovalWork {
             Self::Resolved(resolution) => Ok(resolution),
             Self::ClaudeQuestion(keys) => keys.run(),
             Self::ClaudeMenu(keys) => keys.run(),
+            Self::DevinPrompt(keys) => keys.run(),
         }
     }
 }
@@ -265,6 +268,9 @@ impl Mux {
             crate::claude_menu::MENU_KIND | crate::claude_menu::REFUSAL_MENU_KIND
         ) {
             return self.resolve_claude_menu(request, resolution);
+        }
+        if request.kind == crate::devin_prompt::PROMPT_KIND {
+            return self.resolve_devin_prompt(request, resolution);
         }
         anyhow::ensure!(
             matches!(
@@ -431,6 +437,58 @@ impl Mux {
         );
         Ok(AgentApprovalWork::ClaudeMenu(
             crate::claude_menu::MenuKeys {
+                pane,
+                request,
+                choice_id: resolution.choice_id,
+            },
+        ))
+    }
+
+    /// Checks a resolution of Devin's permission prompt against the agent
+    /// and its screen, and returns the keys that answer it.
+    fn resolve_devin_prompt(
+        &self,
+        request: AgentApprovalRequest,
+        resolution: AgentApprovalResolutionRequest,
+    ) -> anyhow::Result<AgentApprovalWork> {
+        anyhow::ensure!(
+            request.agent_id == resolution.agent_id
+                && request.incarnation_id == resolution.incarnation_id,
+            "approval target identity changed"
+        );
+        anyhow::ensure!(
+            resolution.answers.is_empty(),
+            "this approval takes a choice, not answers"
+        );
+        anyhow::ensure!(
+            request
+                .choices
+                .iter()
+                .any(|choice| choice.id == resolution.choice_id),
+            "approval choice is not available"
+        );
+        let (pane_id, metadata) = self
+            .agent_metadata_by_pane
+            .read()
+            .iter()
+            .find(|(_, metadata)| metadata.agent_id == resolution.agent_id)
+            .map(|(pane_id, metadata)| (*pane_id, metadata.clone()))
+            .context("approval target is no longer available")?;
+        anyhow::ensure!(
+            incarnation_id(&metadata).as_deref() == Some(resolution.incarnation_id.as_str()),
+            "approval target incarnation changed"
+        );
+        let pane = self
+            .get_pane(pane_id)
+            .context("approval target pane disappeared")?;
+        let shown = crate::devin_prompt::parse(&crate::devin_prompt::screen(&pane))
+            .context("approval request is no longer pending")?;
+        anyhow::ensure!(
+            shown.command == request.command,
+            "approval request is no longer pending"
+        );
+        Ok(AgentApprovalWork::DevinPrompt(
+            crate::devin_prompt::PromptKeys {
                 pane,
                 request,
                 choice_id: resolution.choice_id,

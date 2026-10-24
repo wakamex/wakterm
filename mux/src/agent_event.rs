@@ -1034,6 +1034,48 @@ impl AgentEventWriter {
     }
 }
 
+impl AgentEventWriter {
+    /// Records Devin's permission prompt, read from the agent's pane, as an
+    /// approval request in the agent's current turn. The same prompt read
+    /// again is the same event.
+    pub(crate) fn record_devin_prompt(
+        &mut self,
+        metadata: &AgentMetadata,
+        shown_at: DateTime<Utc>,
+        prompt: &crate::devin_prompt::DevinPrompt,
+    ) -> anyhow::Result<()> {
+        let Some(incarnation) = incarnation_id(metadata) else {
+            return Ok(());
+        };
+        let turn_id =
+            match load_projection(&self.conn, &metadata.agent_id)?.and_then(|state| state.cursor) {
+                Some(ProviderCursor::Devin(cursor)) => cursor.current_turn_id,
+                _ => None,
+            };
+        let Some(approval) = crate::devin_prompt::approval_request(
+            prompt,
+            metadata,
+            turn_id.as_deref().unwrap_or_default(),
+            shown_at,
+        ) else {
+            return Ok(());
+        };
+        let mut event = PendingEvent::new(
+            format!("devin-permission:{}", approval.request_id),
+            AgentEventKind::ApprovalRequested,
+            shown_at,
+        );
+        event.turn_id = turn_id;
+        event.approval = Some(approval);
+        let tx = self.conn.transaction()?;
+        insert_event(&tx, &metadata.agent_id, &incarnation, event)?;
+        tx.commit()?;
+        let latest = latest_sequence(&self.conn)?;
+        self.store.publish_latest_sequence(latest);
+        Ok(())
+    }
+}
+
 fn provider_runtime_update(events: &[PendingEvent]) -> Option<AgentEventRuntimeUpdate> {
     let mut update = None;
     for event in events {
@@ -3354,6 +3396,18 @@ mod tests {
             })
             .collect();
         assert_eq!(finals, vec![(turn, Some("aborted".to_string()), None)]);
+
+        // Denying a permission ends the turn the same way.
+        let cursor = project_devin(&session, None).unwrap().cursor;
+        let second = fixture.user("u2", "Run `mkdir d1`");
+        fixture.tool_step("a2");
+        fixture.reject("r1");
+        let events = project_devin(&session, Some(cursor)).unwrap().events;
+        assert!(events
+            .iter()
+            .any(|event| event.kind == AgentEventKind::TurnFinal
+                && event.turn_id == Some(format!("almondine-continent:{second}"))
+                && event.outcome.as_deref() == Some("aborted")));
     }
 
     /// Projects a copy of a real Devin database from its start:
@@ -5069,6 +5123,61 @@ mod tests {
             ["retry_fallback", "edit_prompt"]
         );
         // A resolution finds the request by its ID.
+        assert_eq!(
+            store.find_approval(&approval.request_id).unwrap(),
+            Some(approval)
+        );
+    }
+
+    #[test]
+    fn devin_permission_prompt_is_one_approval_request_in_the_current_turn() {
+        let temp = TempDir::new().unwrap();
+        let db = temp.path().join("sessions.db");
+        let mut fixture =
+            crate::devin::fixture::Fixture::create(&db, "almondine-continent", "/code/concord");
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("devin");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Devin,
+            crate::devin::session_url(&db, "almondine-continent"),
+        );
+        let mut writer = store.writer().unwrap();
+        writer.observe_agent(&metadata, &runtime).unwrap();
+        let input = fixture.user("u1", "Run `mkdir d1`");
+        writer.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+
+        let prompt = crate::devin_prompt::DevinPrompt {
+            command: Some("mkdir d1".to_string()),
+            labels: vec!["Allow".into(), "Bypass mode".into(), "Deny".into()],
+            focused: 0,
+            scope: Some("Once".into()),
+        };
+        // The screen is read on every observation while the prompt is up.
+        let shown_at = Utc::now();
+        for _ in 0..3 {
+            writer
+                .record_devin_prompt(&metadata, shown_at, &prompt)
+                .unwrap();
+        }
+
+        let events = store.read_page(after, 100).unwrap().events;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, AgentEventKind::ApprovalRequested);
+        let turn = format!("almondine-continent:{input}");
+        assert_eq!(events[0].turn_id.as_deref(), Some(turn.as_str()));
+        let approval = events[0].approval.clone().unwrap();
+        assert_eq!(approval.kind, crate::devin_prompt::PROMPT_KIND);
+        assert_eq!(approval.command.as_deref(), Some("mkdir d1"));
+        assert_eq!(
+            approval
+                .choices
+                .iter()
+                .map(|choice| choice.id.as_str())
+                .collect::<Vec<_>>(),
+            ["allow_once", "deny"]
+        );
         assert_eq!(
             store.find_approval(&approval.request_id).unwrap(),
             Some(approval)

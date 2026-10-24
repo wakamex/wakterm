@@ -166,8 +166,9 @@ pub(crate) struct Message {
     /// An assistant message that ends its turn: it stopped and calls no
     /// tools.
     pub ends_turn: bool,
-    /// The result Devin records for a tool call the user interrupted, which
-    /// ends the turn without a reply.
+    /// The result Devin records for a tool call the user interrupted or
+    /// rejected at its permission prompt, either of which ends the turn
+    /// without a reply.
     pub interrupted: bool,
 }
 
@@ -229,7 +230,9 @@ fn parse_message(
     let message: Value = serde_json::from_str(chat_message).ok()?;
     let role = message.get("role")?.as_str()?;
     let content = message.get("content").and_then(Value::as_str).unwrap_or("");
-    let interrupted = role == "tool" && content.starts_with("Canceled due to user interrupt");
+    let interrupted = role == "tool"
+        && (content.starts_with("Canceled due to user interrupt")
+            || content.starts_with("Tool execution was rejected by the user"));
     if !matches!(role, "user" | "assistant") && !interrupted {
         return None;
     }
@@ -432,6 +435,14 @@ pub(crate) mod fixture {
             self.push(json!({
                 "message_id": id, "role": "tool", "content": "Canceled due to user interrupt",
                 "tool_call_id": "call"
+            }))
+        }
+
+        /// The result Devin records when the user denies a permission.
+        pub(crate) fn reject(&mut self, id: &str) -> i64 {
+            self.push(json!({
+                "message_id": id, "role": "tool",
+                "content": "Tool execution was rejected by the user", "tool_call_id": "call"
             }))
         }
 
