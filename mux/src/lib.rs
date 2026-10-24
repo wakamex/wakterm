@@ -2934,13 +2934,13 @@ impl Mux {
             return AgentRestoreOutcome::Pending;
         };
 
+        // The candidate can describe a process the pane no longer runs, such
+        // as one detected from cached process information before the
+        // restored harness replaced it. The next detection describes the
+        // current process, and the harness and session checks below decide
+        // whether it is the expected agent.
         if !self.candidate_matches_current_process(&candidate) {
-            self.fail_pending_agent_restore(
-                pane_id,
-                &candidate,
-                "Its process changed before Wakterm confirmed the session.".to_string(),
-            );
-            return AgentRestoreOutcome::Failed;
+            return AgentRestoreOutcome::Pending;
         }
 
         if candidate.harness != pending.harness || runtime.harness != pending.harness {
@@ -11084,6 +11084,25 @@ mod test {
         mux.agent_adoption_candidates
             .write()
             .insert(matching_pane_id, matching_candidate.clone());
+
+        // A candidate detected from a process the pane no longer runs keeps
+        // the restore pending for the next detection.
+        let stale_candidate = AgentAdoptionCandidate {
+            foreground_pid: Some(2),
+            ..matching_candidate.clone()
+        };
+        assert_eq!(
+            mux.complete_pending_agent_restore(
+                matching_pane_id,
+                stale_candidate,
+                matching_runtime.clone(),
+            ),
+            AgentRestoreOutcome::Pending
+        );
+        assert!(mux
+            .pending_agent_restores
+            .read()
+            .contains_key(&matching_pane_id));
 
         assert_eq!(
             mux.complete_pending_agent_restore(
