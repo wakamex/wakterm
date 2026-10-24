@@ -3763,14 +3763,15 @@ impl Mux {
         Ok(true)
     }
 
-    /// Whether the agy pane shows its input box with its idle hint, which
-    /// agy shows only while no turn runs.
+    /// Whether the agy pane shows that no turn runs: its input box with its
+    /// idle hint, or the feedback survey agy shows after a turn ends.
     fn agy_idle_on_screen(&self, pane_id: PaneId) -> bool {
         self.get_pane(pane_id).is_some_and(|pane| {
             let dims = pane.get_dimensions();
             let top = dims.physical_top;
             let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
             agent::agy_input_box(&lines).is_some_and(|state| state.idle)
+                || agent::agy_feedback_survey(&lines)
         })
     }
 
@@ -7512,6 +7513,8 @@ mod test {
     /// A running turn with a message queued into it, whose hint replaces
     /// "esc to cancel".
     const AGY_QUEUED_TITLE: &str = "agy queued";
+    /// agy's feedback survey after a quota error ended the turn.
+    const AGY_SURVEY_TITLE: &str = "agy survey";
     /// What fake panes were written, in order, for tests that hold the mux
     /// test lock.
     static FAKE_PANE_WRITES: Mutex<Vec<u8>> = parking_lot::const_mutex(Vec::new());
@@ -7766,6 +7769,18 @@ mod test {
                         line(&rule),
                         line("\u{276f}\u{a0}half a thought"),
                         line(&rule),
+                    ],
+                );
+            }
+            if self.title == AGY_SURVEY_TITLE {
+                return (
+                    lines.start,
+                    vec![
+                        line("\u{26a0} Individual quota reached. Resets in 17h8m17s."),
+                        line(" How's the CLI experience so far? Help us improve:"),
+                        line(" [1] Good  [2] Fine  [3] Bad  [0] Skip"),
+                        line(""),
+                        line("? for shortcuts"),
                     ],
                 );
             }
@@ -9333,6 +9348,7 @@ mod test {
             (161, AGY_IDLE_TITLE),
             (162, AGY_WORKING_TITLE),
             (163, AGY_QUEUED_TITLE),
+            (164, AGY_SURVEY_TITLE),
         ] {
             let pane =
                 FakePane::new_detected(id, size, domain.id, title, "/tmp/agy", "agy", &["agy"]);
@@ -9400,6 +9416,13 @@ mod test {
         // A hint that replaces "esc to cancel" mid-turn does not end it.
         let queued = observe(pane_ids[2], 1);
         assert_eq!(queued.status, crate::agent::AgentStatus::Busy);
+        // agy's feedback survey replaces the input box after a turn ends.
+        let survey = observe(pane_ids[3], 1);
+        assert_eq!(survey.status, crate::agent::AgentStatus::Idle);
+        assert_eq!(
+            survey.turn_state,
+            crate::agent::AgentTurnState::WaitingOnUser
+        );
     }
 
     #[test]

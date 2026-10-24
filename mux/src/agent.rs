@@ -1206,6 +1206,9 @@ pub fn input_box_blocked(
         AgentHarness::Codex => (!codex_input_box_empty(lines))
             .then_some("Codex's input box is not empty or not on screen"),
         AgentHarness::Agy => match agy_input_box(lines) {
+            None if agy_feedback_survey(lines) => {
+                Some("agy's feedback survey has the keyboard and would take the message as answers")
+            }
             None => Some("agy's input box is not on screen"),
             Some(state) if !state.text.is_empty() => {
                 Some("the input box holds text the user is typing")
@@ -1228,6 +1231,29 @@ pub fn input_box_blocked(
         },
         _ => None,
     }
+}
+
+/// Whether the pane shows agy's feedback survey, "How's the CLI experience
+/// so far?" with its numbered choices, above agy's idle hint. agy shows it
+/// in place of the input box once a turn has ended, and the digit keys
+/// answer it.
+pub fn agy_feedback_survey(lines: &[wakterm_term::Line]) -> bool {
+    let lines: Vec<String> = lines
+        .iter()
+        .map(|line| line.as_str().trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let Some(question) = lines
+        .iter()
+        .rposition(|line| line.starts_with("How's the CLI experience so far?"))
+    else {
+        return false;
+    };
+    // The question, its choices and the footer close the screen.
+    matches!(
+        &lines[question + 1..],
+        [choices, footer] if choices.contains("[0] Skip") && footer == "? for shortcuts"
+    )
 }
 
 /// agy's input box as its pane shows it.
@@ -6412,6 +6438,26 @@ mod test {
             input_box_blocked(&AgentHarness::Agy, &[]),
             Some("agy's input box is not on screen")
         );
+        let survey = screen(&[
+            "\u{26a0} Individual quota reached. Resets in 17h8m17s.",
+            " How's the CLI experience so far? Help us improve:",
+            " [1] Good  [2] Fine  [3] Bad  [0] Skip",
+            "",
+            "? for shortcuts",
+        ]);
+        assert!(agy_feedback_survey(&survey));
+        assert!(input_box_blocked(&AgentHarness::Agy, &survey)
+            .is_some_and(|reason| reason.contains("feedback survey")));
+        // An earlier survey scrolled above a later input box is not shown.
+        let answered = screen(&[
+            " How's the CLI experience so far? Help us improve:",
+            " [1] Good  [2] Fine  [3] Bad  [0] Skip",
+            &rule,
+            ">",
+            &rule,
+            "? for shortcuts",
+        ]);
+        assert!(!agy_feedback_survey(&answered));
     }
 
     #[test]
