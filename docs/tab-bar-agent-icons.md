@@ -13,6 +13,7 @@ Initial targets:
 - Gemini
 - OpenCode
 - ZCode
+- Devin
 
 This is a tab bar feature, not a tab title string feature.
 
@@ -189,7 +190,7 @@ It is intentionally narrow:
 That matches the problem we actually solved. Trace output is a bootstrap tool,
 not the final asset.
 
-The Agy and ZCode icons were traced from the official monochrome mark with [vtracer](https://github.com/visioncortex/vtracer) (`cargo install vtracer`):
+The Agy, ZCode and Devin icons were traced from the official monochrome mark with [vtracer](https://github.com/visioncortex/vtracer) (`cargo install vtracer`):
 
 ```bash
 magick -background none -density 1200 official.svg -fill '#000000' \
@@ -410,7 +411,7 @@ Use the existing GUI image/sprite atlas infrastructure.
 
 ## Done When
 
-- Tabs with active Agy/Claude/Codex/Gemini/OpenCode/ZCode panes show a small icon beside
+- Tabs with active Agy/Claude/Codex/Gemini/OpenCode/ZCode/Devin panes show a small icon beside
   the title in the fancy tab bar.
 - Switching panes in a split tab updates the icon correctly.
 - Reconnect/attach restores icons correctly.

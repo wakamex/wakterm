@@ -626,6 +626,7 @@ impl NavigatorState {
                 TabHarnessIcon::Gemini => 4,
                 TabHarnessIcon::OpenCode => 8,
                 TabHarnessIcon::ZCode => 32,
+                TabHarnessIcon::Devin => 64,
             }
         });
         match harness_icon_stack_glyph(mask) {

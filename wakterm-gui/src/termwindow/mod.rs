@@ -3,8 +3,8 @@ use super::renderstate::*;
 use super::utilsprites::RenderMetrics;
 use crate::colorease::ColorEase;
 use crate::customglyph::{
-    HARNESS_ICON_AGY, HARNESS_ICON_CLAUDE, HARNESS_ICON_CODEX, HARNESS_ICON_GEMINI,
-    HARNESS_ICON_OPENCODE, HARNESS_ICON_ZCODE,
+    HARNESS_ICON_AGY, HARNESS_ICON_CLAUDE, HARNESS_ICON_CODEX, HARNESS_ICON_DEVIN,
+    HARNESS_ICON_GEMINI, HARNESS_ICON_OPENCODE, HARNESS_ICON_ZCODE,
 };
 use crate::frontend::{front_end, try_front_end};
 use crate::inputmap::InputMap;
@@ -251,6 +251,7 @@ pub enum TabHarnessIcon {
     Gemini,
     OpenCode,
     ZCode,
+    Devin,
 }
 
 impl TabHarnessIcon {
@@ -262,7 +263,8 @@ impl TabHarnessIcon {
             AgentHarness::Gemini => Some(Self::Gemini),
             AgentHarness::Opencode => Some(Self::OpenCode),
             AgentHarness::Zcode => Some(Self::ZCode),
-            AgentHarness::Devin | AgentHarness::Unknown => None,
+            AgentHarness::Devin => Some(Self::Devin),
+            AgentHarness::Unknown => None,
         }
     }
 
@@ -274,6 +276,7 @@ impl TabHarnessIcon {
             Self::Gemini => "gemini",
             Self::OpenCode => "opencode",
             Self::ZCode => "zcode",
+            Self::Devin => "devin",
         }
     }
 
@@ -285,6 +288,7 @@ impl TabHarnessIcon {
             Self::Gemini => HARNESS_ICON_GEMINI,
             Self::OpenCode => HARNESS_ICON_OPENCODE,
             Self::ZCode => HARNESS_ICON_ZCODE,
+            Self::Devin => HARNESS_ICON_DEVIN,
         }
     }
 }
