@@ -1112,6 +1112,9 @@ pub enum AgentInputBox {
     /// A draft in Claude's box that nobody has typed into for a while.
     /// Claude can stash it and restore it after the message is submitted.
     IdleClaudeDraft,
+    /// agy's feedback survey in place of its input box, which shows that no
+    /// turn runs. Its Skip choice closes it and brings the box back.
+    AgySurvey,
 }
 
 fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: AgentEventStore) {
@@ -3712,6 +3715,9 @@ impl Mux {
         let dims = pane.get_dimensions();
         let top = dims.physical_top;
         let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
+        if harness == AgentHarness::Agy && agent::agy_feedback_survey(&lines) {
+            return AgentInputBox::AgySurvey;
+        }
         let Some(reason) = agent::input_box_blocked(&harness, &lines) else {
             return AgentInputBox::Ready;
         };
@@ -3783,6 +3789,17 @@ impl Mux {
             let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
             agent::agy_input_box(&lines).is_some_and(|state| state.text.is_empty())
         })
+    }
+
+    /// Answers agy's feedback survey with its Skip choice, `0`, which closes
+    /// it without rating anything.
+    pub fn skip_agy_feedback_survey(&self, pane_id: PaneId) -> anyhow::Result<()> {
+        let pane = self
+            .get_pane(pane_id)
+            .with_context(|| format!("pane {pane_id} disappeared"))?;
+        self.thaw_agent_pane(pane_id);
+        pane.writer().write_all(b"0")?;
+        Ok(())
     }
 
     /// Presses the key of Claude's stash action in the pane, Ctrl+S unless
@@ -9423,6 +9440,12 @@ mod test {
             survey.turn_state,
             crate::agent::AgentTurnState::WaitingOnUser
         );
+        // A send skips the survey first.
+        assert_eq!(mux.agent_input_box(pane_ids[3]), AgentInputBox::AgySurvey);
+        FAKE_PANE_WRITES.lock().clear();
+        mux.skip_agy_feedback_survey(pane_ids[3]).unwrap();
+        assert_eq!(std::mem::take(&mut *FAKE_PANE_WRITES.lock()), b"0");
+        assert_eq!(mux.agent_input_box(pane_ids[0]), AgentInputBox::Ready);
     }
 
     #[test]

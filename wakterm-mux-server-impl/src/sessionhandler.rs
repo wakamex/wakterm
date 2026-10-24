@@ -2466,8 +2466,9 @@ async fn admit_agent_prompt(
 /// How long a pane's output must stay unchanged after typed input before
 /// Enter is pressed, and how long to wait at most.
 /// Makes an agent's input box ready for a message: reports why nothing may
-/// be written, or sets aside a draft in Claude's box that nobody is typing
-/// and confirms on the screen that the box is then empty.
+/// be written, sets aside a draft in Claude's box that nobody is typing, or
+/// skips agy's feedback survey, and confirms on the screen that the box is
+/// then empty.
 pub(crate) async fn prepare_agent_input_box(
     pane_id: mux::pane::PaneId,
 ) -> anyhow::Result<PrepareAgentInputBoxResponse> {
@@ -2486,6 +2487,17 @@ pub(crate) async fn prepare_agent_input_box(
                 AgentInputBox::Ready => response(None, true),
                 _ => response(
                     Some("the input box holds a draft that Claude did not set aside".to_string()),
+                    false,
+                ),
+            })
+        }
+        AgentInputBox::AgySurvey => {
+            Mux::get().skip_agy_feedback_survey(pane_id)?;
+            wait_for_redraw(pane_id).await;
+            Ok(match Mux::get().agent_input_box(pane_id) {
+                AgentInputBox::Ready => response(None, false),
+                _ => response(
+                    Some("agy's feedback survey did not close when skipped".to_string()),
                     false,
                 ),
             })
