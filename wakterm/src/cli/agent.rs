@@ -206,6 +206,7 @@ enum AgentStartHarness {
     Gemini,
     Opencode,
     Zcode,
+    Devin,
 }
 
 impl AgentStartHarness {
@@ -217,6 +218,7 @@ impl AgentStartHarness {
             Self::Gemini => AgentHarness::Gemini,
             Self::Opencode => AgentHarness::Opencode,
             Self::Zcode => AgentHarness::Zcode,
+            Self::Devin => AgentHarness::Devin,
         }
     }
 
@@ -228,6 +230,7 @@ impl AgentStartHarness {
             Self::Gemini => "gemini",
             Self::Opencode => "opencode",
             Self::Zcode => "zcode",
+            Self::Devin => "devin",
         }
     }
 }
@@ -331,7 +334,7 @@ impl SpawnAgentCommand {
         let harness = infer_harness(launch_cmd, None);
         anyhow::ensure!(
             !matches!(harness, AgentHarness::Unknown),
-            "agent start requires a recognized harness (currently: agy, claude, codex, gemini, opencode); if you are using a wrapper command, specify the harness positionally and pass the wrapper via --cmd"
+            "agent start requires a recognized harness (currently: agy, claude, codex, devin, gemini, opencode, zcode); if you are using a wrapper command, specify the harness positionally and pass the wrapper via --cmd"
         );
         Ok(harness)
     }
@@ -940,7 +943,7 @@ fn resolve_spawn_agent_name(
         AgentHarness::Devin => "devin",
         AgentHarness::Unknown => {
             bail!(
-                "agent start requires a recognized harness (currently: agy, claude, codex, gemini, opencode, zcode)"
+                "agent start requires a recognized harness (currently: agy, claude, codex, devin, gemini, opencode, zcode)"
             )
         }
     };
@@ -6024,6 +6027,12 @@ mod test {
         };
         assert_eq!(command.harness, Some(AgentStartHarness::Gemini));
         assert_eq!(command.cmd, None);
+        let parsed = AgentCommand::try_parse_from(["agent", "start", "devin"]).unwrap();
+        let AgentSubCommand::Start(command) = parsed.sub else {
+            panic!("expected start command");
+        };
+        assert_eq!(command.harness, Some(AgentStartHarness::Devin));
+        assert_eq!(command.harness.unwrap().default_command(), "devin");
     }
 
     #[test]
