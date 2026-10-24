@@ -12,7 +12,7 @@ wakterm keeps the core WezTerm terminal foundation, with extra focus on multiple
 - [Pane-local shell history](shell-integration.md#pane-local-history) that survives mux restarts, with shell integration loaded automatically into bash, zsh, fish, and Wsh
 - First-class [agent harness panes](agent-lifecycle.md) for Agy, Claude, Codex, Devin, Gemini, OpenCode, and ZCode
 - Automatic agent detection and cached session adoption
-- Exact-session restoration for Agy, Claude, Codex, and ZCode across mux restarts and system reboot
+- Exact-session restoration for Agy, Claude, Codex, Devin, and ZCode across mux restarts and system reboot
 - Supervised Codex app-server TUI via `wakterm agent launch codex`
 - [Measured idle overhead](headless-mux-benchmark.md): 34.44 MiB PSS to restore and hold 20 workspace tabs and 7 shell splits, with 0.0016% of one core
 - [Shared Codex app-server benchmark](codex-app-server-benchmark.md): 46.4% less PSS and 89.2% less idle CPU across 20 Codex TUIs

@@ -877,6 +877,44 @@ fn normalize_zcode_argv(argv: &mut Vec<String>) {
     }
 }
 
+/// A Devin session ID: lowercase words joined by hyphens, such as
+/// `almondine-continent`.
+fn is_devin_session_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('-').all(|word| {
+            !word.is_empty()
+                && word
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        })
+}
+
+/// Keep a devin command's options and drop its session selectors, one-shot
+/// prompt options and prompt, which would start a new turn on restore.
+fn normalize_devin_argv(argv: &mut Vec<String>) {
+    let original = std::mem::take(argv);
+    let mut args = original.into_iter().peekable();
+    argv.extend(args.next());
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            // A prompt follows, which would start a turn.
+            "--" => break,
+            "-c" | "--continue" | "-p" | "--print" => {}
+            // The session ID is optional; without it Devin asks for one.
+            "-r" | "--resume" => {
+                if args.peek().is_some_and(|next| !next.starts_with('-')) {
+                    args.next();
+                }
+            }
+            "--prompt-file" => {
+                args.next();
+            }
+            _ if arg.starts_with("--resume=") || arg.starts_with("--prompt-file=") => {}
+            _ => argv.push(arg),
+        }
+    }
+}
+
 fn normalize_agy_argv(argv: &mut Vec<String>) {
     let original = std::mem::take(argv);
     let Some(program) = original.first() else {
@@ -957,6 +995,7 @@ fn remove_native_resume_selector(harness: &AgentHarness, argv: &mut Vec<String>)
             }
         }
         AgentHarness::Zcode => normalize_zcode_argv(argv),
+        AgentHarness::Devin => normalize_devin_argv(argv),
         _ => return false,
     }
     true
@@ -1555,6 +1594,9 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
             runtime.session_path.as_deref(),
             runtime.observer_started_at,
             metadata.adopted_pid,
+            expected_session
+                .filter(|expected| expected.harness == AgentHarness::Devin)
+                .map(|expected| expected.session_id.as_str()),
         ),
         AgentHarness::Opencode | AgentHarness::Zcode => observe_opencode(
             &observing_harness,
@@ -3228,8 +3270,9 @@ fn observe_opencode(
 }
 
 /// Observes a Devin session: the one whose lock the pane's Devin process
-/// holds, else the session named by `preferred_session`, else the newest
-/// session started in `cwd` since `updated_after`. A session Devin has locked
+/// holds, else the session a restore expects, else the session named by
+/// `preferred_session`, else the newest session started in `cwd` since
+/// `updated_after`. A session Devin has locked
 /// but written nothing to yet is observed as waiting for the user, so that
 /// events can be read from its first message.
 fn observe_devin(
@@ -3237,6 +3280,7 @@ fn observe_devin(
     preferred_session: Option<&str>,
     updated_after: Option<DateTime<Utc>>,
     adopted_pid: Option<u32>,
+    expected_session: Option<&str>,
 ) -> anyhow::Result<Option<HarnessObservation>> {
     let Some(db_path) = crate::devin::db_path() else {
         return Ok(None);
@@ -3245,20 +3289,22 @@ fn observe_devin(
         return Ok(None);
     }
     let connection = crate::devin::open(&db_path)?;
-    let session_id =
-        match adopted_pid.and_then(|pid| crate::devin::session_of_process(&db_path, pid)) {
-            Some(session_id) => session_id,
-            None => match preferred_session
-                .and_then(crate::devin::parse_session_url)
-                .filter(|(path, _)| *path == db_path)
-            {
-                Some((_, session_id)) => session_id,
-                None => match crate::devin::newest_session_in(&connection, cwd, updated_after)? {
-                    Some(session_id) => session_id,
-                    None => return Ok(None),
-                },
+    let session_id = match adopted_pid
+        .and_then(|pid| crate::devin::session_of_process(&db_path, pid))
+        .or_else(|| expected_session.map(str::to_string))
+    {
+        Some(session_id) => session_id,
+        None => match preferred_session
+            .and_then(crate::devin::parse_session_url)
+            .filter(|(path, _)| *path == db_path)
+        {
+            Some((_, session_id)) => session_id,
+            None => match crate::devin::newest_session_in(&connection, cwd, updated_after)? {
+                Some(session_id) => session_id,
+                None => return Ok(None),
             },
-        };
+        },
+    };
     let messages = crate::devin::conversation(&connection, &session_id)?;
     let session_path = Some(crate::devin::session_url(&db_path, &session_id));
     let Some(input) = messages.iter().rposition(|message| message.user_input) else {
@@ -3681,6 +3727,12 @@ pub fn native_resume_command(
             "zcode restore requires an exact sess_ session ID"
         );
     }
+    if harness == &AgentHarness::Devin {
+        anyhow::ensure!(
+            is_devin_session_id(session_id.trim()),
+            "devin restore requires an exact session ID"
+        );
+    }
     let mut argv = shell_words::split(launch_cmd).context("parsing agent launch command")?;
     anyhow::ensure!(!argv.is_empty(), "agent launch command must not be empty");
     anyhow::ensure!(
@@ -3696,7 +3748,7 @@ pub fn native_resume_command(
     argv.push(
         match harness {
             AgentHarness::Agy => "--conversation",
-            AgentHarness::Claude | AgentHarness::Zcode => "--resume",
+            AgentHarness::Claude | AgentHarness::Zcode | AgentHarness::Devin => "--resume",
             AgentHarness::Codex => "resume",
             _ => unreachable!(),
         }
@@ -3889,6 +3941,11 @@ pub fn restorable_session_id(
             .and_then(parse_opencode_session_path)
             .map(|(_, session_id)| session_id)
             .filter(|session_id| is_zcode_session_id(session_id))),
+        AgentHarness::Devin => Ok(path
+            .to_str()
+            .and_then(crate::devin::parse_session_url)
+            .map(|(_, session_id)| session_id)
+            .filter(|session_id| is_devin_session_id(session_id))),
         _ => Ok(None),
     }
 }
@@ -6345,7 +6402,7 @@ mod test {
             crate::devin::fixture::Fixture::create(&db, "almondine-continent", "/code/concord");
         set_env_path("WAKTERM_AGENT_DEVIN_DB", &db);
         let observe = || {
-            observe_devin("/code/concord", None, None, None)
+            observe_devin("/code/concord", None, None, None, None)
                 .unwrap()
                 .unwrap()
         };
@@ -6379,6 +6436,39 @@ mod test {
         assert_eq!(turn.final_message.as_deref(), Some("done"));
         assert_eq!(infer_harness("devin", None), AgentHarness::Devin);
         assert_eq!(infer_harness("", Some("devin")), AgentHarness::Devin);
+
+        // A restore observes the session it expects over a newer one in the
+        // same directory.
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute(
+                "insert into sessions (id, working_directory, created_at, last_activity_at) \
+                 values ('scarce-plow', '/code/concord', 1792789400, 1792799999)",
+                [],
+            )
+            .unwrap();
+        set_env_path("WAKTERM_AGENT_DEVIN_DB", &db);
+        let newest = observe_devin("/code/concord", None, None, None, None)
+            .unwrap()
+            .unwrap();
+        let expected = observe_devin(
+            "/code/concord",
+            None,
+            None,
+            None,
+            Some("almondine-continent"),
+        )
+        .unwrap()
+        .unwrap();
+        remove_env_var("WAKTERM_AGENT_DEVIN_DB");
+        assert_eq!(
+            newest.session_path,
+            Some(crate::devin::session_url(&db, "scarce-plow"))
+        );
+        assert_eq!(
+            expected.session_path,
+            Some(crate::devin::session_url(&db, "almondine-continent"))
+        );
     }
 
     #[test]
@@ -9434,6 +9524,34 @@ mod test {
         let url = format!("opencode://session?db=/tmp/db.sqlite&id={session}");
         assert_eq!(
             restorable_session_id(&AgentHarness::Zcode, Path::new(&url)).unwrap(),
+            Some(session.to_string())
+        );
+    }
+
+    #[test]
+    fn devin_restore_resumes_the_exact_session_with_the_panes_options() {
+        let session = "almondine-continent";
+        let argv = |launch_cmd: &str| {
+            native_resume_command(&AgentHarness::Devin, launch_cmd, session)
+                .unwrap()
+                .get_argv()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            argv("devin --permission-mode smart -r scarce-plow --model opus --prompt-file x -- do it"),
+            ["devin", "--permission-mode", "smart", "--model", "opus", "--resume", session]
+        );
+        // -r without an ID asks for a session; -c continues the newest.
+        assert_eq!(
+            argv("devin -c -r --sandbox"),
+            ["devin", "--sandbox", "--resume", session]
+        );
+        assert!(native_resume_command(&AgentHarness::Devin, "devin", "Not A Session").is_err());
+        let url = crate::devin::session_url(Path::new("/tmp/sessions.db"), session);
+        assert_eq!(
+            restorable_session_id(&AgentHarness::Devin, Path::new(&url)).unwrap(),
             Some(session.to_string())
         );
     }

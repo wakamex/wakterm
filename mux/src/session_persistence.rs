@@ -963,7 +963,7 @@ fn prepare_agent_restore(
     let harness = intent.harness();
     if matches!(
         harness,
-        AgentHarness::Agy | AgentHarness::Claude | AgentHarness::Zcode
+        AgentHarness::Agy | AgentHarness::Claude | AgentHarness::Zcode | AgentHarness::Devin
     ) {
         return Ok(PreparedAgentRestore {
             command: native_resume_command(

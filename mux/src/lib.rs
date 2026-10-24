@@ -1860,6 +1860,7 @@ impl Mux {
                     | AgentHarness::Claude
                     | AgentHarness::Codex
                     | AgentHarness::Zcode
+                    | AgentHarness::Devin
             ),
             "automatic restore is not implemented for {:?}",
             harness
@@ -1904,7 +1905,11 @@ impl Mux {
         let harness = runtime.harness;
         if !matches!(
             harness,
-            AgentHarness::Agy | AgentHarness::Claude | AgentHarness::Codex | AgentHarness::Zcode
+            AgentHarness::Agy
+                | AgentHarness::Claude
+                | AgentHarness::Codex
+                | AgentHarness::Zcode
+                | AgentHarness::Devin
         ) {
             return None;
         }
