@@ -2492,7 +2492,7 @@ fn project_devin(
                     turn_open: input.is_some_and(|input| {
                         !messages[input + 1..]
                             .iter()
-                            .any(|message| message.ends_turn)
+                            .any(|message| message.ends_turn || message.interrupted)
                     }),
                 }),
                 events: Vec::new(),
@@ -2556,6 +2556,27 @@ fn project_devin(
         let Some(turn_id) = cursor.current_turn_id.clone() else {
             continue;
         };
+        if message.interrupted {
+            if cursor.turn_open {
+                let mut final_event = PendingEvent::new(
+                    format!("{record_key}:final"),
+                    AgentEventKind::TurnFinal,
+                    timestamp,
+                );
+                final_event.turn_id = Some(turn_id.clone());
+                final_event.outcome = Some("aborted".to_string());
+                let mut state = PendingEvent::new(
+                    format!("{record_key}:final-state"),
+                    AgentEventKind::TurnStateChanged,
+                    timestamp,
+                );
+                state.turn_id = Some(turn_id);
+                state.turn_state = Some("waiting_on_user".to_string());
+                events.extend([final_event, state]);
+                cursor.turn_open = false;
+            }
+            continue;
+        }
         if !text.is_empty() {
             let mut assistant = PendingEvent::new(
                 format!("{record_key}:message"),
@@ -3308,6 +3329,33 @@ mod tests {
     /// Projects the complete message history of the newest session in a
     /// copy of a real ZCode database, whose schema belongs to ZCode:
     /// WAKTERM_TEST_ZCODE_DB=~/.zcode/cli/db/db.sqlite.
+    #[test]
+    fn devin_projection_ends_an_interrupted_turn_as_aborted() {
+        let temp = TempDir::new().unwrap();
+        let db = temp.path().join("sessions.db");
+        let session = crate::devin::session_url(&db, "almondine-continent");
+        let mut fixture =
+            crate::devin::fixture::Fixture::create(&db, "almondine-continent", "/code/concord");
+        let cursor = project_devin(&session, None).unwrap().cursor;
+        let first = fixture.user("u1", "Run `sleep 60; echo done` and reply done");
+        fixture.tool_step("a1");
+        fixture.interrupt("i1");
+        let turn = Some(format!("almondine-continent:{first}"));
+        let events = project_devin(&session, Some(cursor)).unwrap().events;
+        let finals: Vec<_> = events
+            .iter()
+            .filter(|event| event.kind == AgentEventKind::TurnFinal)
+            .map(|event| {
+                (
+                    event.turn_id.clone(),
+                    event.outcome.clone(),
+                    event.text.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(finals, vec![(turn, Some("aborted".to_string()), None)]);
+    }
+
     /// Projects a copy of a real Devin database from its start:
     /// WAKTERM_TEST_DEVIN_DB names it and WAKTERM_TEST_DEVIN_SESSION a
     /// session whose last turn ended. Each user input and final reply is

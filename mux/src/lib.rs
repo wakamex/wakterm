@@ -3444,18 +3444,18 @@ impl Mux {
             return;
         }
 
-        // agy records no end for a turn it stops on an error it only shows
-        // in the pane, such as a quota or safety-filter block, or for a turn
-        // a restart interrupted. Its footer then no longer says a turn runs.
-        // Read before locking runtimes, which reading the pane must not
-        // nest inside.
-        let agy_idle_on_screen = update.runtime.harness == AgentHarness::Agy
-            && update
-                .runtime
-                .observed_turn
-                .as_ref()
-                .is_some_and(|turn| turn.outcome == AgentObservedTurnOutcome::Running)
-            && self.agy_idle_on_screen(update.pane_id);
+        // A harness can stop a turn without recording its end: agy on an
+        // error it only shows in the pane, such as a quota or safety-filter
+        // block, or a turn a restart interrupted, and Devin when the user
+        // interrupts it while it generates. Its screen then shows it waiting
+        // for input. Read before locking runtimes, which reading the pane
+        // must not nest inside.
+        let idle_on_screen = update
+            .runtime
+            .observed_turn
+            .as_ref()
+            .is_some_and(|turn| turn.outcome == AgentObservedTurnOutcome::Running)
+            && self.harness_idle_on_screen(&update.runtime.harness, update.pane_id);
 
         let (before_title, after_title, session_identity_changed) = {
             let mut runtime_by_pane = self.agent_runtime_by_pane.write();
@@ -3490,7 +3490,7 @@ impl Mux {
             runtime.last_progress_at = runtime
                 .last_progress_at
                 .max(update.runtime.last_progress_at);
-            if agy_idle_on_screen {
+            if idle_on_screen {
                 agent::end_turn_stopped_on_screen(runtime, previous_turn.as_ref(), Utc::now());
             }
             finalize_runtime_snapshot(runtime);
@@ -3774,15 +3774,26 @@ impl Mux {
         Ok(true)
     }
 
-    /// Whether the agy pane shows that no turn runs: its input box with its
-    /// idle hint, or the feedback survey agy shows after a turn ends.
-    fn agy_idle_on_screen(&self, pane_id: PaneId) -> bool {
+    /// Whether the pane shows that no turn runs. agy shows its input box
+    /// with its idle hint, or the feedback survey it shows after a turn
+    /// ends; Devin shows its empty input box with the placeholder it uses
+    /// between turns. Other harnesses are not read.
+    fn harness_idle_on_screen(&self, harness: &AgentHarness, pane_id: PaneId) -> bool {
+        if !matches!(harness, AgentHarness::Agy | AgentHarness::Devin) {
+            return false;
+        }
         self.get_pane(pane_id).is_some_and(|pane| {
             let dims = pane.get_dimensions();
             let top = dims.physical_top;
             let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
-            agent::agy_input_box(&lines).is_some_and(|state| state.idle)
-                || agent::agy_feedback_survey(&lines)
+            match harness {
+                AgentHarness::Agy => {
+                    agent::agy_input_box(&lines).is_some_and(|state| state.idle)
+                        || agent::agy_feedback_survey(&lines)
+                }
+                _ => crate::devin::input_box(&lines)
+                    .is_some_and(|state| state.text.is_empty() && !state.working),
+            }
         })
     }
 
@@ -7537,6 +7548,10 @@ mod test {
     const AGY_QUEUED_TITLE: &str = "agy queued";
     /// agy's feedback survey after a quota error ended the turn.
     const AGY_SURVEY_TITLE: &str = "agy survey";
+    /// Devin's empty input box with its placeholder between turns and
+    /// during one.
+    const DEVIN_IDLE_TITLE: &str = "devin idle";
+    const DEVIN_WORKING_TITLE: &str = "devin working";
     /// What fake panes were written, in order, for tests that hold the mux
     /// test lock.
     static FAKE_PANE_WRITES: Mutex<Vec<u8>> = parking_lot::const_mutex(Vec::new());
@@ -7791,6 +7806,24 @@ mod test {
                         line(&rule),
                         line("\u{276f}\u{a0}half a thought"),
                         line(&rule),
+                    ],
+                );
+            }
+            if self.title == DEVIN_IDLE_TITLE || self.title == DEVIN_WORKING_TITLE {
+                let rule = "\u{2500}".repeat(8);
+                let placeholder = if self.title == DEVIN_WORKING_TITLE {
+                    "\u{276d} Guide Devin while it works"
+                } else {
+                    "\u{276d} Ask Devin to build features, fix bugs, or work on your code"
+                };
+                return (
+                    lines.start,
+                    vec![
+                        line(" \u{2731} Canceled. What should Devin do?"),
+                        line(&rule),
+                        line(placeholder),
+                        line(&rule),
+                        line("SWE-2 High"),
                     ],
                 );
             }
@@ -9451,6 +9484,83 @@ mod test {
         mux.skip_agy_feedback_survey(pane_ids[3]).unwrap();
         assert_eq!(std::mem::take(&mut *FAKE_PANE_WRITES.lock()), b"0");
         assert_eq!(mux.agent_input_box(pane_ids[0]), AgentInputBox::Ready);
+    }
+
+    #[test]
+    fn a_devin_turn_its_screen_shows_stopped_is_waiting_on_the_user() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let mut pane_ids = Vec::new();
+        for (id, title) in [(171, DEVIN_IDLE_TITLE), (172, DEVIN_WORKING_TITLE)] {
+            let pane = FakePane::new_detected(
+                id,
+                size,
+                domain.id,
+                title,
+                "/tmp/devin",
+                "devin",
+                &["devin"],
+            );
+            let tab = Arc::new(Tab::new(&size));
+            tab.assign_pane(&pane);
+            mux.add_tab_and_active_pane(&tab).unwrap();
+            mux.add_tab_to_window(&tab, window_id).unwrap();
+            let mut metadata = sample_agent_metadata(title);
+            metadata.launch_cmd = "devin".to_string();
+            mux.set_agent_metadata(pane.pane_id(), metadata).unwrap();
+            pane_ids.push(pane.pane_id());
+        }
+        // The session's last message is the user's input: Devin wrote no end
+        // for a turn interrupted while it generated.
+        let observe = |pane_id: PaneId| {
+            let mut runtime = mux.agent_runtime_by_pane.read()[&pane_id].clone();
+            runtime.harness = crate::agent::AgentHarness::Devin;
+            runtime.turn_state = crate::agent::AgentTurnState::WaitingOnAgent;
+            runtime.turn_phase = Some("working".to_string());
+            runtime.last_turn_completed_at = None;
+            runtime.observed_turn = Some(crate::agent::AgentObservedTurn {
+                provider_turn_id: "almondine-continent:129".to_string(),
+                outcome: AgentObservedTurnOutcome::Running,
+                started_at: Some(Utc::now()),
+                completed_at: None,
+                started_cursor: Some(203),
+                latest_cursor: Some(203),
+                primary_user_message_sha256: None,
+                user_message_count: 1,
+                final_message: None,
+            });
+            mux.agent_observer_state_by_pane
+                .write()
+                .entry(pane_id)
+                .or_default();
+            mux.apply_agent_observer_update(AgentObserverUpdate {
+                pane_id,
+                generation: 1,
+                process: mux.observed_process(pane_id),
+                runtime,
+                queue_delay: Duration::ZERO,
+                refresh_elapsed: Duration::ZERO,
+                schedule_trailing_refresh: false,
+            });
+            mux.agent_runtime_by_pane.read()[&pane_id].clone()
+        };
+        let idle = observe(pane_ids[0]);
+        assert_eq!(idle.status, crate::agent::AgentStatus::Idle);
+        assert_eq!(idle.turn_state, crate::agent::AgentTurnState::WaitingOnUser);
+        let working = observe(pane_ids[1]);
+        assert_eq!(working.status, crate::agent::AgentStatus::Busy);
     }
 
     #[test]

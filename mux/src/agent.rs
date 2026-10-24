@@ -3322,12 +3322,19 @@ fn observe_devin(
     let user = &messages[input];
     let reply = messages[input + 1..]
         .iter()
-        .find(|message| message.ends_turn);
+        .find(|message| message.ends_turn || message.interrupted);
     let latest = messages.last().unwrap_or(user);
     let final_message = reply
+        .filter(|reply| reply.ends_turn)
         .map(|reply| reply.content.trim().to_string())
         .filter(|text| !text.is_empty());
     let (outcome, turn_state, completed_at, turn_phase) = match reply {
+        Some(reply) if reply.interrupted => (
+            AgentObservedTurnOutcome::Aborted,
+            AgentTurnState::WaitingOnUser,
+            Some(reply.created_at),
+            "aborted",
+        ),
         Some(reply) => (
             AgentObservedTurnOutcome::Completed,
             AgentTurnState::WaitingOnUser,
@@ -6436,6 +6443,21 @@ mod test {
         assert_eq!(turn.final_message.as_deref(), Some("done"));
         assert_eq!(infer_harness("devin", None), AgentHarness::Devin);
         assert_eq!(infer_harness("", Some("devin")), AgentHarness::Devin);
+
+        // An interrupted tool call ends the next turn without a reply.
+        set_env_path("WAKTERM_AGENT_DEVIN_DB", &db);
+        fixture.user("u2", "Run `sleep 60; echo done` and reply done");
+        fixture.tool_step("a3");
+        fixture.interrupt("i1");
+        let interrupted = observe_devin("/code/concord", None, None, None, None)
+            .unwrap()
+            .unwrap();
+        remove_env_var("WAKTERM_AGENT_DEVIN_DB");
+        assert_eq!(interrupted.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(interrupted.turn_phase.as_deref(), Some("aborted"));
+        let turn = interrupted.observed_turn.unwrap();
+        assert_eq!(turn.outcome, AgentObservedTurnOutcome::Aborted);
+        assert_eq!(turn.final_message, None);
 
         // A restore observes the session it expects over a newer one in the
         // same directory.

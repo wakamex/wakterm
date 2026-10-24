@@ -153,10 +153,13 @@ pub(crate) struct Message {
     /// An assistant message that ends its turn: it stopped and calls no
     /// tools.
     pub ends_turn: bool,
+    /// The result Devin records for a tool call the user interrupted, which
+    /// ends the turn without a reply.
+    pub interrupted: bool,
 }
 
 /// The session's conversation, oldest first, without system messages and
-/// tool results. Empty for a session that has no messages yet.
+/// tool results other than an interrupted tool call's. Empty for a session that has no messages yet.
 pub(crate) fn conversation(
     connection: &Connection,
     session_id: &str,
@@ -212,7 +215,9 @@ fn parse_message(
 ) -> Option<Message> {
     let message: Value = serde_json::from_str(chat_message).ok()?;
     let role = message.get("role")?.as_str()?;
-    if !matches!(role, "user" | "assistant") {
+    let content = message.get("content").and_then(Value::as_str).unwrap_or("");
+    let interrupted = role == "tool" && content.starts_with("Canceled due to user interrupt");
+    if !matches!(role, "user" | "assistant") && !interrupted {
         return None;
     }
     let metadata = message.get("metadata");
@@ -239,17 +244,14 @@ fn parse_message(
             .map(str::to_string),
         created_at,
         role: role.to_string(),
-        content: message
-            .get("content")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+        content: content.to_string(),
         user_input: role == "user"
             && metadata
                 .and_then(|metadata| metadata.get("is_user_input"))
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
         ends_turn: role == "assistant" && finish_reason == Some("stop") && !calls_tools,
+        interrupted,
     })
 }
 
@@ -408,6 +410,14 @@ pub(crate) mod fixture {
             }));
             self.push(json!({
                 "message_id": format!("{id}-result"), "role": "tool", "content": "done",
+                "tool_call_id": "call"
+            }))
+        }
+
+        /// The result Devin records when the user interrupts a running tool.
+        pub(crate) fn interrupt(&mut self, id: &str) -> i64 {
+            self.push(json!({
+                "message_id": id, "role": "tool", "content": "Canceled due to user interrupt",
                 "tool_call_id": "call"
             }))
         }
