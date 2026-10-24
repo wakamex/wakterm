@@ -24,15 +24,20 @@ pub(crate) fn db_path() -> Option<PathBuf> {
     db_path_for(None)
 }
 
-/// The session database the Devin process `pid` uses, from its
-/// environment: CHISEL_SESSION_DB names the file, DEVIN_SESSIONS_DIR a
-/// directory holding cli/sessions.db, and otherwise it is
-/// devin/cli/sessions.db under XDG_DATA_HOME, `~/.local/share` by default.
+/// The session database the Devin process `pid` uses. Devin works it out
+/// at startup and passes it to its `devin acp` worker as
+/// CHISEL_SESSION_DB, ignoring a value set for itself, so the worker's
+/// environment names it exactly. Before the worker starts, it follows from
+/// Devin's environment: DEVIN_SESSIONS_DIR names a directory holding
+/// cli/sessions.db, and otherwise it is devin/cli/sessions.db under
+/// XDG_DATA_HOME, `~/.local/share` by default.
 pub(crate) fn db_path_for(pid: Option<u32>) -> Option<PathBuf> {
     use crate::agent::harness_dir;
     std::env::var_os("WAKTERM_AGENT_DEVIN_DB")
         .map(PathBuf::from)
-        .or_else(|| harness_dir(pid, "CHISEL_SESSION_DB", None))
+        .or_else(|| {
+            worker_of(pid?).and_then(|worker| harness_dir(Some(worker), "CHISEL_SESSION_DB", None))
+        })
         .or_else(|| {
             harness_dir(pid, "DEVIN_SESSIONS_DIR", None)
                 .map(|sessions| sessions.join("cli").join("sessions.db"))
@@ -48,6 +53,34 @@ pub(crate) fn db_path_for(pid: Option<u32>) -> Option<PathBuf> {
             )
             .map(|data| data.join("devin").join("cli").join("sessions.db"))
         })
+}
+
+/// The `devin acp` worker that the Devin process `pid` started.
+#[cfg(target_os = "linux")]
+fn worker_of(pid: u32) -> Option<u32> {
+    let tasks = std::fs::read_dir(format!("/proc/{pid}/task")).ok()?;
+    tasks
+        .flatten()
+        .filter_map(|task| std::fs::read_to_string(task.path().join("children")).ok())
+        .flat_map(|children| {
+            children
+                .split_whitespace()
+                .filter_map(|child| child.parse().ok())
+                .collect::<Vec<u32>>()
+        })
+        .find(|child| {
+            std::fs::read(format!("/proc/{child}/cmdline")).is_ok_and(|cmdline| {
+                cmdline
+                    .split(|byte| *byte == 0)
+                    .skip(1)
+                    .any(|arg| arg == b"acp")
+            })
+        })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn worker_of(_pid: u32) -> Option<u32> {
+    None
 }
 
 pub(crate) fn open(db_path: &Path) -> anyhow::Result<Connection> {

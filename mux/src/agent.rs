@@ -7886,8 +7886,8 @@ mod test {
             devin,
             Some(data_home.join("devin").join("cli").join("sessions.db"))
         );
-        // DEVIN_SESSIONS_DIR moves Devin's database, and CHISEL_SESSION_DB
-        // names the file itself, ahead of both.
+        // DEVIN_SESSIONS_DIR moves Devin's database; Devin ignores a
+        // CHISEL_SESSION_DB set for itself.
         let devin_db_with = |variables: &[(&str, &Path)]| {
             let mut process = std::process::Command::new("sleep");
             process.arg("30");
@@ -7923,8 +7923,31 @@ mod test {
                 ("CHISEL_SESSION_DB", &file),
                 ("DEVIN_SESSIONS_DIR", &sessions)
             ]),
-            Some(file)
+            Some(sessions.join("cli").join("sessions.db"))
         );
+        // The database Devin's acp worker was started with is the one in use.
+        let mut devin = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(r#"CHISEL_SESSION_DB="$0" sh -c 'sleep 30; true' acp & wait"#)
+            .arg(&file)
+            .spawn()
+            .unwrap();
+        let pid = Some(devin.id());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut found = None;
+        while std::time::Instant::now() < deadline {
+            found = crate::devin::db_path_for(pid);
+            if found.as_deref() == Some(file.as_path()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let _ = std::process::Command::new("pkill")
+            .args(["-P", &devin.id().to_string()])
+            .status();
+        devin.kill().unwrap();
+        devin.wait().unwrap();
+        assert_eq!(found, Some(file));
         // A process without the variables uses the default homes.
         let own = Some(std::process::id());
         if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() {
