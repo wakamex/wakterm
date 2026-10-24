@@ -74,21 +74,27 @@ fn row(line: &str) -> Option<(String, Option<String>)> {
         .then(|| (label.to_string(), Some(scope.to_string())))
 }
 
-/// Reads the prompt from a pane's visible lines: the rows right above the
-/// lowest footer that ends in "esc cancel", with the cursor on exactly one.
+/// Reads the prompt from a pane's visible lines: the rows above the lowest
+/// footer that ends in "esc cancel", past the blank line between them, with
+/// the cursor on exactly one.
 pub fn parse(lines: &[String]) -> Option<DevinPrompt> {
     let footer = lines.iter().rposition(|line| {
         let line = line.trim();
         line.contains("\u{21b5} confirm") && line.ends_with("esc cancel")
     })?;
-    let first = (0..footer)
+    // A blank line separates the rows from the footer.
+    let end = (0..footer)
+        .rev()
+        .find(|&index| !lines[index].trim().is_empty())?
+        + 1;
+    let first = (0..end)
         .rev()
         .take_while(|&index| row(&lines[index]).is_some())
         .last()?;
     let mut labels = Vec::new();
     let mut focused = None;
     let mut scope = None;
-    for (index, line) in lines[first..footer].iter().enumerate() {
+    for (index, line) in lines[first..end].iter().enumerate() {
         let (label, row_scope) = row(line)?;
         if line.trim_start().starts_with(CURSOR) {
             if focused.replace(index).is_some() {
@@ -288,23 +294,51 @@ mod test {
     }
 
     /// The prompt for a command that can be granted by prefix.
+    /// As Devin draws it, with a blank line above and below the rows.
     const SCOPED: &str = "\
  ⏺ Running command
  └ $ mkdir d1
+
 ❭ Allow       ← ◼◼◼◼ → Session
   Bypass mode
   Deny
+
 ↑↓ select · ←→ scope · e edit · ↵ confirm · esc cancel";
 
     /// The prompt for a command that cannot, with an extra row.
     const UNSCOPED: &str = "\
  ⏺ Running command
  └ $ echo x > f.txt && cat f.txt
+
 ❭ Allow
   Accept edits mode
   Bypass mode
   Deny
+
 ↑↓ select · e edit · ↵ confirm · esc cancel";
+
+    /// The bottom of a live Devin 3000.11.205 pane showing the prompt.
+    const LIVE: &str = r#" ✗ Read shell 000ddf Canceled due to user interrupt
+
+❭ Wakterm's mux server restarted to deploy an update, which interrupted your turn. Continue where you left off.
+
+ ⏺ Running command
+ └ $ sleep 60; echo done
+
+❭ Allow       ← ◼◼◼◼ → Once
+  Bypass mode
+  Deny
+
+↑↓ select · ←→ scope · e edit · ↵ confirm · esc cancel"#;
+
+    #[test]
+    fn parses_the_prompt_on_a_live_screen() {
+        let prompt = parse(&lines(LIVE)).unwrap();
+        assert_eq!(prompt.command.as_deref(), Some("sleep 60; echo done"));
+        assert_eq!(prompt.labels, ["Allow", "Bypass mode", "Deny"]);
+        assert_eq!(prompt.focused, 0);
+        assert_eq!(prompt.scope.as_deref(), Some("Once"));
+    }
 
     #[test]
     fn parses_the_rows_cursor_scope_and_command() {
@@ -350,6 +384,7 @@ mod test {
                 };
                 out.push(format!("{mark}{label}{scope}"));
             }
+            out.push(String::new());
             out.push("\u{2191}\u{2193} select \u{b7} \u{21b5} confirm \u{b7} esc cancel".into());
             out
         };
