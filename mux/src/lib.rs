@@ -15293,39 +15293,55 @@ mod test {
                 dpi: 96,
             };
 
-            let (_first_tab, first_pane, _) = mux
-                .spawn_tab_or_window(
-                    Some(window_id),
-                    config::keyassignment::SpawnTabDomain::DefaultDomain,
-                    None,
-                    None,
-                    desired,
-                    Some(source_pane.pane_id()),
-                    DEFAULT_WORKSPACE.to_string(),
-                    None,
+            // Pane IDs come from a process-wide counter, so a test running
+            // alongside can take one between the two spawns. Adoption taking
+            // an ID would skip one every time; one consecutive pair in a few
+            // tries shows it takes none.
+            let mut source_pane_id = source_pane.pane_id();
+            let mut pairs = Vec::new();
+            for attempt in 0..5 {
+                let (_first_tab, first_pane, _) = mux
+                    .spawn_tab_or_window(
+                        Some(window_id),
+                        config::keyassignment::SpawnTabDomain::DefaultDomain,
+                        None,
+                        None,
+                        desired,
+                        Some(source_pane_id),
+                        DEFAULT_WORKSPACE.to_string(),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+
+                let first_pane_id = first_pane.pane_id();
+                mux.set_agent_metadata(
+                    first_pane_id,
+                    sample_agent_metadata(&format!("adopted-{attempt}")),
                 )
-                .await
                 .unwrap();
 
-            let first_pane_id = first_pane.pane_id();
-            mux.set_agent_metadata(first_pane_id, sample_agent_metadata("adopted"))
-                .unwrap();
+                let (_second_tab, second_pane, _) = mux
+                    .spawn_tab_or_window(
+                        Some(window_id),
+                        config::keyassignment::SpawnTabDomain::DefaultDomain,
+                        None,
+                        None,
+                        desired,
+                        Some(first_pane_id),
+                        DEFAULT_WORKSPACE.to_string(),
+                        None,
+                    )
+                    .await
+                    .unwrap();
 
-            let (_second_tab, second_pane, _) = mux
-                .spawn_tab_or_window(
-                    Some(window_id),
-                    config::keyassignment::SpawnTabDomain::DefaultDomain,
-                    None,
-                    None,
-                    desired,
-                    Some(first_pane_id),
-                    DEFAULT_WORKSPACE.to_string(),
-                    None,
-                )
-                .await
-                .unwrap();
-
-            assert_eq!(second_pane.pane_id(), first_pane_id + 1);
+                pairs.push((first_pane_id, second_pane.pane_id()));
+                if second_pane.pane_id() == first_pane_id + 1 {
+                    return;
+                }
+                source_pane_id = second_pane.pane_id();
+            }
+            panic!("adopting a pane took a pane ID in every try: {:?}", pairs);
         });
     }
 
