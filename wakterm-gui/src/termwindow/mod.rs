@@ -4,7 +4,7 @@ use super::utilsprites::RenderMetrics;
 use crate::colorease::ColorEase;
 use crate::customglyph::{
     HARNESS_ICON_AGY, HARNESS_ICON_CLAUDE, HARNESS_ICON_CODEX, HARNESS_ICON_DEVIN,
-    HARNESS_ICON_GEMINI, HARNESS_ICON_OPENCODE, HARNESS_ICON_ZCODE,
+    HARNESS_ICON_GEMINI, HARNESS_ICON_MUSE, HARNESS_ICON_OPENCODE, HARNESS_ICON_ZCODE,
 };
 use crate::frontend::{front_end, try_front_end};
 use crate::inputmap::InputMap;
@@ -252,6 +252,7 @@ pub enum TabHarnessIcon {
     OpenCode,
     ZCode,
     Devin,
+    Muse,
 }
 
 impl TabHarnessIcon {
@@ -264,7 +265,8 @@ impl TabHarnessIcon {
             AgentHarness::Opencode => Some(Self::OpenCode),
             AgentHarness::Zcode => Some(Self::ZCode),
             AgentHarness::Devin => Some(Self::Devin),
-            AgentHarness::Muse | AgentHarness::Unknown => None,
+            AgentHarness::Muse => Some(Self::Muse),
+            AgentHarness::Unknown => None,
         }
     }
 
@@ -277,6 +279,7 @@ impl TabHarnessIcon {
             Self::OpenCode => "opencode",
             Self::ZCode => "zcode",
             Self::Devin => "devin",
+            Self::Muse => "muse",
         }
     }
 
@@ -289,6 +292,7 @@ impl TabHarnessIcon {
             Self::OpenCode => HARNESS_ICON_OPENCODE,
             Self::ZCode => HARNESS_ICON_ZCODE,
             Self::Devin => HARNESS_ICON_DEVIN,
+            Self::Muse => HARNESS_ICON_MUSE,
         }
     }
 }

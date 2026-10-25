@@ -14,6 +14,7 @@ Initial targets:
 - OpenCode
 - ZCode
 - Devin
+- Muse
 
 This is a tab bar feature, not a tab title string feature.
 
@@ -190,7 +191,7 @@ It is intentionally narrow:
 That matches the problem we actually solved. Trace output is a bootstrap tool,
 not the final asset.
 
-The Agy, ZCode and Devin icons were traced from the official monochrome mark with [vtracer](https://github.com/visioncortex/vtracer) (`cargo install vtracer`):
+The Agy, ZCode, Devin and Muse icons were traced from the official monochrome mark with [vtracer](https://github.com/visioncortex/vtracer) (`cargo install vtracer`):
 
 ```bash
 magick -background none -density 1200 official.svg -fill '#000000' \
@@ -201,6 +202,8 @@ vtracer --input mask.png --output traced.svg --colormode bw \
 ```
 
 Keep only the black `fill="#000000"` paths, apply each path's `translate` transform, and write them as one absolute `M`/`L`/`Z` path with the trace's `width`/`height` as the viewBox; that stripped SVG is the review script's input. Candidates are then reviewed at 12, 16 and 20 px and beside the shipped icons on dark and light tab bars.
+
+Muse Code has no mark of its own and its site, dev.meta.ai, uses Meta's infinity mark, so Muse's icon is that mark, cut from the gradient and blue paths of `dev.meta.ai/logo/meta-logo-with-text.svg`. The mark is built from adjoining pieces whose antialiased edges leave seams, so its mask is thresholded and closed (`-alpha extract -threshold 20% -morphology Close Disk:2 -negate`) before tracing. Its two loops are holes: the glyph renderer fills with the nonzero rule, so each hole keeps the opposite winding to the outline, and candidates are reviewed with holes rendered, which `icon_simplify_review.py` does not do.
 
 Simplification is optional. If the original or traced source already reads best
 at tab size, ship that instead of forcing a lower-complexity version.
@@ -411,7 +414,7 @@ Use the existing GUI image/sprite atlas infrastructure.
 
 ## Done When
 
-- Tabs with active Agy/Claude/Codex/Gemini/OpenCode/ZCode/Devin panes show a small icon beside
+- Tabs with active Agy/Claude/Codex/Gemini/OpenCode/ZCode/Devin/Muse panes show a small icon beside
   the title in the fancy tab bar.
 - Switching panes in a split tab updates the icon correctly.
 - Reconnect/attach restores icons correctly.
