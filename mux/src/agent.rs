@@ -1296,6 +1296,12 @@ pub fn input_box_blocked(
             }
             Some(_) => None,
         },
+        // Muse queues a message sent during a turn and hands it to the turn.
+        AgentHarness::Muse => match crate::muse::input_box(lines) {
+            None => Some("Muse's input box is not on screen"),
+            Some(text) if !text.is_empty() => Some("the input box holds text the user is typing"),
+            Some(_) => None,
+        },
         _ => None,
     }
 }

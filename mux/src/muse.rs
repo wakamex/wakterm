@@ -13,6 +13,12 @@
 //!   reply's text;
 //! - `runtime.session` with a `run` event `terminal`: the end of the run,
 //!   `terminal: "completed"` or another outcome;
+//! - `runtime.session` with `run` events `inbox_item_queued`, source
+//!   `user_steer`, and `inbox_item_drained`, linked by the queued record's
+//!   `source_run_record_id` and the drained one's `item_id`: input sent while
+//!   a run works, which Muse queues and later hands to a run, either the one
+//!   working or, when that ends first, a new run answering it under the
+//!   input's `intent_id`;
 //! - `runtime.session` with `approval` events `requested` and
 //!   `decision_applied`, sharing a `pending_action_id`: a permission request
 //!   and its answer, which Muse's automated reviewer can also give.
@@ -127,11 +133,36 @@ pub(crate) fn session_id_of(log: &Path) -> Option<String> {
 /// A record of a Muse session log that a turn consists of.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Record {
-    Input { intent_id: String, text: String },
-    Assistant { run_id: String, text: String },
-    Terminal { run_id: String, completed: bool },
-    ApprovalRequested { run_id: String, action_id: String },
-    ApprovalDecided { run_id: String, action_id: String },
+    Input {
+        intent_id: String,
+        text: String,
+    },
+    Assistant {
+        run_id: String,
+        text: String,
+    },
+    Terminal {
+        run_id: String,
+        completed: bool,
+    },
+    /// Input queued for the working run `run_id` as item `item_id`.
+    SteerQueued {
+        run_id: String,
+        item_id: String,
+    },
+    /// Queued item `item_id` handed to run `run_id`.
+    SteerDrained {
+        run_id: String,
+        item_id: String,
+    },
+    ApprovalRequested {
+        run_id: String,
+        action_id: String,
+    },
+    ApprovalDecided {
+        run_id: String,
+        action_id: String,
+    },
 }
 
 /// When a record was written: `recorded_at`, in microseconds.
@@ -180,6 +211,22 @@ pub(crate) fn parse(record: &Value) -> Option<Record> {
                     run_id,
                     completed: event.get("terminal").and_then(Value::as_str) == Some("completed"),
                 }),
+                ("run", "inbox_item_queued")
+                    if event.pointer("/source/source").and_then(Value::as_str)
+                        == Some("user_steer") =>
+                {
+                    Some(Record::SteerQueued {
+                        run_id,
+                        item_id: text(payload.get("source_run_record_id")?)?,
+                    })
+                }
+                ("run", "inbox_item_drained") => Some(Record::SteerDrained {
+                    run_id: event
+                        .pointer("/drain_target_run_stream/id")
+                        .and_then(Value::as_str)
+                        .map_or(run_id, str::to_string),
+                    item_id: text(event.get("item_id")?)?,
+                }),
                 ("approval", "requested") => Some(Record::ApprovalRequested {
                     run_id,
                     action_id: text(event.get("pending_action_id")?)?,
@@ -208,6 +255,10 @@ pub(crate) struct TurnView {
     pub started_at: Option<DateTime<Utc>>,
     /// Further input the user sent while that turn ran.
     pub inputs: u32,
+    /// Runs answering that input, and the queued items not yet handed to
+    /// one. The turn ends with a run of its own once nothing is queued.
+    pub steer_runs: Vec<String>,
+    pub queued_steers: Vec<String>,
     pub reply: Option<String>,
     /// Whether the turn ended, and whether it completed.
     pub ended: Option<bool>,
@@ -215,6 +266,12 @@ pub(crate) struct TurnView {
     /// Permission requests of the turn without a decision.
     pub pending_approvals: Vec<String>,
     pub updated_at: Option<DateTime<Utc>>,
+}
+
+impl TurnView {
+    fn owns(&self, run_id: &str) -> bool {
+        self.turn_id.as_deref() == Some(run_id) || self.steer_runs.iter().any(|run| run == run_id)
+    }
 }
 
 /// Reads a session log into the view of its latest turn.
@@ -243,19 +300,28 @@ pub(crate) fn read_turn(log: &Path) -> anyhow::Result<TurnView> {
                     };
                 }
             }
-            Some(Record::Assistant { run_id, text }) if view.turn_id.as_ref() == Some(&run_id) => {
+            Some(Record::Assistant { run_id, text }) if view.owns(&run_id) => {
                 view.reply = Some(text);
             }
+            Some(Record::SteerQueued { run_id, item_id }) if view.owns(&run_id) => {
+                view.queued_steers.push(item_id);
+            }
+            Some(Record::SteerDrained { run_id, item_id })
+                if view.queued_steers.contains(&item_id) =>
+            {
+                view.queued_steers.retain(|queued| *queued != item_id);
+                if !view.owns(&run_id) {
+                    view.steer_runs.push(run_id);
+                }
+            }
             Some(Record::Terminal { run_id, completed })
-                if view.turn_id.as_ref() == Some(&run_id) =>
+                if view.owns(&run_id) && view.queued_steers.is_empty() =>
             {
                 view.ended = Some(completed);
                 view.ended_at = at;
                 view.pending_approvals.clear();
             }
-            Some(Record::ApprovalRequested { run_id, action_id })
-                if view.turn_id.as_ref() == Some(&run_id) =>
-            {
+            Some(Record::ApprovalRequested { run_id, action_id }) if view.owns(&run_id) => {
                 view.pending_approvals.push(action_id);
             }
             Some(Record::ApprovalDecided { action_id, .. }) => {
@@ -266,6 +332,31 @@ pub(crate) fn read_turn(log: &Path) -> anyhow::Result<TurnView> {
         }
     }
     Ok(view)
+}
+
+/// The text in Muse's input box, read from the pane's visible lines: the
+/// lines between the two lowest rules, the first starting with `❯`. A draft
+/// longer than one line continues on lines indented by two spaces. A
+/// permission prompt or other menu replaces the box.
+pub fn input_box(lines: &[wakterm_term::Line]) -> Option<String> {
+    let lines: Vec<String> = lines
+        .iter()
+        .map(|line| line.as_str().trim_end().to_string())
+        .collect();
+    let is_rule = |line: &String| line.starts_with('\u{2500}');
+    let bottom = lines.iter().rposition(is_rule)?;
+    let top = lines[..bottom].iter().rposition(is_rule)?;
+    let (first, rest) = lines[top + 1..bottom].split_first()?;
+    let first = first.strip_prefix('\u{276f}')?;
+    Some(
+        std::iter::once(first)
+            .chain(rest.iter().map(String::as_str))
+            .map(str::trim)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -322,6 +413,25 @@ pub(crate) mod fixture {
             );
         }
 
+        /// Input queued for `run` as `item`, then handed to `target`.
+        pub(crate) fn steer(&mut self, run: &str, item: &str) {
+            self.write(
+                "runtime.session",
+                json!({"kind": "run", "run_id": run, "source_run_record_id": item,
+                    "event": {"kind": "inbox_item_queued", "disposition": "steer",
+                        "source": {"source": "user_steer"}}}),
+            );
+        }
+
+        pub(crate) fn drain(&mut self, target: &str, item: &str) {
+            self.write(
+                "runtime.session",
+                json!({"kind": "run", "run_id": target,
+                    "event": {"kind": "inbox_item_drained", "item_id": item,
+                        "drain_target_run_stream": {"kind": "run", "id": target}}}),
+            );
+        }
+
         pub(crate) fn approval(&mut self, run: &str, action: &str, decided: bool) {
             let kind = if decided {
                 "decision_applied"
@@ -340,6 +450,30 @@ pub(crate) mod fixture {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn input_box_is_the_text_between_the_two_lowest_rules() {
+        let rule = "\u{2500}".repeat(20);
+        let screen = |rows: &[&str]| {
+            let mut screen = vec!["\u{25c6} echo: first", "\u{2514} queued", &rule];
+            screen.extend_from_slice(rows);
+            screen.extend([
+                rule.as_str(),
+                "  echo \u{b7} /code/x \u{b7} Auto-review",
+                "",
+            ]);
+            screen
+                .iter()
+                .map(|line| wakterm_term::Line::from_text(line, &Default::default(), 0, None))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(input_box(&screen(&["\u{276f} "])).as_deref(), Some(""));
+        assert_eq!(
+            input_box(&screen(&["\u{276f} third", "  steer then esc"])).as_deref(),
+            Some("third\nsteer then esc")
+        );
+        assert_eq!(input_box(&screen(&["  Allow once"])), None);
+    }
 
     #[test]
     fn reads_the_latest_turn_with_its_input_reply_end_and_approvals() {
@@ -369,6 +503,34 @@ mod test {
         assert_eq!(view.inputs, 2);
         assert_eq!(view.reply.as_deref(), Some("done"));
         assert_eq!(view.ended, Some(false));
+
+        // Input sent mid-turn that the working run did not take before it
+        // ended is answered by a run of its own, which the turn waits for.
+        log.input("r3", "first");
+        log.input("r4", "second");
+        log.steer("r3", "q1");
+        log.reply("r3", "one");
+        log.end("r3", "completed");
+        let view = read_turn(&path).unwrap();
+        assert_eq!((view.ended, view.inputs), (None, 2));
+        log.drain("r4", "q1");
+        log.reply("r4", "two");
+        let view = read_turn(&path).unwrap();
+        assert_eq!((view.ended, view.reply.as_deref()), (None, Some("two")));
+        log.end("r4", "completed");
+        let view = read_turn(&path).unwrap();
+        assert_eq!(
+            (view.turn_id.as_deref(), view.ended),
+            (Some("r3"), Some(true))
+        );
+
+        // Interrupting hands queued input to the working run, which ends.
+        log.input("r5", "third");
+        log.input("r6", "steer");
+        log.steer("r5", "q2");
+        log.drain("r5", "q2");
+        log.end("r5", "cancelled");
+        assert_eq!(read_turn(&path).unwrap().ended, Some(false));
 
         assert_eq!(
             resumed_session("muse resume 01a1738a-c72f-7c81-909d-36e0e636494d"),

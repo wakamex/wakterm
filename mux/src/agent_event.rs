@@ -152,6 +152,12 @@ struct JsonlCursor {
     /// The newest time of a record this cursor has read.
     #[serde(default)]
     last_record_at: Option<DateTime<Utc>>,
+    /// Muse runs answering input sent during the open turn, and the queued
+    /// items of such input not yet handed to a run.
+    #[serde(default)]
+    steer_runs: Vec<String>,
+    #[serde(default)]
+    queued_steers: Vec<String>,
 }
 
 impl JsonlCursor {
@@ -1631,6 +1637,8 @@ fn initial_jsonl_cursor(
         turn_error: None,
         armed_at: None,
         last_record_at: None,
+        steer_runs: Vec::new(),
+        queued_steers: Vec::new(),
     })
 }
 
@@ -2536,6 +2544,10 @@ fn project_muse(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<P
             .unwrap_or_else(|| format!("offset-{offset}"));
         let record_key = format!("muse:{}:{id}", cursor.source_id);
         let open_turn = cursor.current_turn_id.clone().filter(|_| cursor.turn_open);
+        let owns = |cursor: &JsonlCursor, run_id: &str| {
+            open_turn.as_deref() == Some(run_id)
+                || cursor.steer_runs.iter().any(|run| run == run_id)
+        };
         Ok(match crate::muse::parse(record) {
             Some(crate::muse::Record::Input { intent_id, text }) => {
                 let sha256 = crate::agent::message_sha256(&text);
@@ -2551,6 +2563,8 @@ fn project_muse(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<P
                     cursor.current_turn_id = Some(intent_id.clone());
                     cursor.last_assistant_text = None;
                     cursor.turn_open = true;
+                    cursor.steer_runs.clear();
+                    cursor.queued_steers.clear();
                     let mut started = PendingEvent::new(
                         format!("{record_key}:started"),
                         AgentEventKind::TurnStarted,
@@ -2575,9 +2589,20 @@ fn project_muse(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<P
                     vec![started, accepted, state]
                 }
             }
-            Some(crate::muse::Record::Assistant { run_id, text })
-                if open_turn.as_deref() == Some(run_id.as_str()) =>
+            Some(crate::muse::Record::SteerQueued { run_id, item_id }) if owns(cursor, &run_id) => {
+                cursor.queued_steers.push(item_id);
+                Vec::new()
+            }
+            Some(crate::muse::Record::SteerDrained { run_id, item_id })
+                if cursor.queued_steers.contains(&item_id) =>
             {
+                cursor.queued_steers.retain(|queued| *queued != item_id);
+                if !owns(cursor, &run_id) {
+                    cursor.steer_runs.push(run_id);
+                }
+                Vec::new()
+            }
+            Some(crate::muse::Record::Assistant { run_id, text }) if owns(cursor, &run_id) => {
                 let text = text.trim().to_string();
                 if text.is_empty() {
                     Vec::new()
@@ -2588,20 +2613,20 @@ fn project_muse(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<P
                         AgentEventKind::AssistantMessage,
                         timestamp,
                     );
-                    message.turn_id = Some(run_id);
+                    message.turn_id = open_turn;
                     message.text = Some(text);
                     vec![message]
                 }
             }
             Some(crate::muse::Record::Terminal { run_id, completed })
-                if open_turn.as_deref() == Some(run_id.as_str()) =>
+                if owns(cursor, &run_id) && cursor.queued_steers.is_empty() =>
             {
                 let mut final_event = PendingEvent::new(
                     format!("{record_key}:final"),
                     AgentEventKind::TurnFinal,
                     timestamp,
                 );
-                final_event.turn_id = Some(run_id.clone());
+                final_event.turn_id = open_turn.clone();
                 final_event.outcome =
                     Some(if completed { "completed" } else { "aborted" }.to_string());
                 final_event.text = completed
@@ -2612,7 +2637,7 @@ fn project_muse(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<P
                     AgentEventKind::TurnStateChanged,
                     timestamp,
                 );
-                state.turn_id = Some(run_id);
+                state.turn_id = open_turn;
                 state.turn_state = Some("waiting_on_user".to_string());
                 cursor.turn_open = false;
                 vec![final_event, state]
@@ -3630,6 +3655,55 @@ mod tests {
                     Some("All pass.".into())
                 ),
                 (AgentEventKind::TurnStateChanged, turn, None, None),
+            ]
+        );
+
+        // Input the working run did not take before it ended is answered by
+        // a run of its own, and the turn ends with that run.
+        log.input("r2", "first");
+        log.input("r3", "second");
+        log.steer("r2", "q1");
+        log.reply("r2", "one");
+        log.end("r2", "completed");
+        let turn = Some("r2".to_string());
+        let kinds = |events: Vec<(
+            AgentEventKind,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )>| {
+            events
+                .into_iter()
+                .map(|(kind, turn_id, _, text)| (kind, turn_id, text))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            kinds(project(&mut cursor)),
+            vec![
+                (AgentEventKind::TurnStarted, turn.clone(), None),
+                (AgentEventKind::InputAccepted, turn.clone(), None),
+                (AgentEventKind::TurnStateChanged, turn.clone(), None),
+                (AgentEventKind::InputAccepted, turn.clone(), None),
+                (
+                    AgentEventKind::AssistantMessage,
+                    turn.clone(),
+                    Some("one".into())
+                ),
+            ]
+        );
+        log.drain("r3", "q1");
+        log.reply("r3", "two");
+        log.end("r3", "completed");
+        assert_eq!(
+            kinds(project(&mut cursor)),
+            vec![
+                (
+                    AgentEventKind::AssistantMessage,
+                    turn.clone(),
+                    Some("two".into())
+                ),
+                (AgentEventKind::TurnFinal, turn.clone(), Some("two".into())),
+                (AgentEventKind::TurnStateChanged, turn, None),
             ]
         );
     }
