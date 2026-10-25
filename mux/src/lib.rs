@@ -70,6 +70,7 @@ pub mod domain;
 pub mod localpane;
 pub mod memory_report;
 pub mod muse;
+pub mod muse_prompt;
 pub mod pane;
 pub mod renderable;
 pub mod session_persistence;

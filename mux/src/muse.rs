@@ -155,9 +155,13 @@ pub(crate) enum Record {
         run_id: String,
         item_id: String,
     },
+    /// A permission request. `command` is set for a request Wakterm can
+    /// answer: a one-stage shell command waiting on the user, with the
+    /// choices to allow it once and to abort it.
     ApprovalRequested {
         run_id: String,
         action_id: String,
+        command: Option<String>,
     },
     ApprovalDecided {
         run_id: String,
@@ -230,6 +234,7 @@ pub(crate) fn parse(record: &Value) -> Option<Record> {
                 ("approval", "requested") => Some(Record::ApprovalRequested {
                     run_id,
                     action_id: text(event.get("pending_action_id")?)?,
+                    command: answerable_command(event),
                 }),
                 ("approval", "decision_applied") => Some(Record::ApprovalDecided {
                     run_id,
@@ -240,6 +245,32 @@ pub(crate) fn parse(record: &Value) -> Option<Record> {
         }
         _ => None,
     }
+}
+
+fn answerable_command(event: &Value) -> Option<String> {
+    let subject = event.get("approval_subject")?;
+    let choices: Vec<&str> = event
+        .get("available_choices")?
+        .as_array()?
+        .iter()
+        .filter_map(|choice| choice.get("choice_id")?.as_str())
+        .collect();
+    (event.get("presentation_phase")?.as_str()? == "human_pending"
+        && subject.get("kind")?.as_str()? == "shell_command"
+        && subject.get("stages")?.as_array()?.len() == 1
+        && choices.contains(&"allow_once")
+        && choices.contains(&"abort"))
+    .then(|| subject.get("raw_command")?.as_str().map(str::to_string))
+    .flatten()
+}
+
+/// Whether the session log `log` shows permission request `action_id` of
+/// its latest turn still waiting for a decision.
+pub(crate) fn approval_pending(log: &Path, action_id: &str) -> anyhow::Result<bool> {
+    Ok(read_turn(log)?
+        .pending_approvals
+        .iter()
+        .any(|pending| pending == action_id))
 }
 
 fn text_or_none(value: Option<&Value>) -> Option<String> {
@@ -321,7 +352,9 @@ pub(crate) fn read_turn(log: &Path) -> anyhow::Result<TurnView> {
                 view.ended_at = at;
                 view.pending_approvals.clear();
             }
-            Some(Record::ApprovalRequested { run_id, action_id }) if view.owns(&run_id) => {
+            Some(Record::ApprovalRequested {
+                run_id, action_id, ..
+            }) if view.owns(&run_id) => {
                 view.pending_approvals.push(action_id);
             }
             Some(Record::ApprovalDecided { action_id, .. }) => {
@@ -441,16 +474,23 @@ pub(crate) mod fixture {
             );
         }
 
+        /// A request to run `ls` that waits on the user, or its decision.
         pub(crate) fn approval(&mut self, run: &str, action: &str, decided: bool) {
-            let kind = if decided {
-                "decision_applied"
+            let event = if decided {
+                json!({"kind": "decision_applied", "pending_action_id": action})
             } else {
-                "requested"
+                json!({"kind": "requested", "pending_action_id": action,
+                    "presentation_phase": "human_pending", "tool_name": "bash",
+                    "approval_subject": {"kind": "shell_command", "raw_command": "ls",
+                        "stages": [{"argv": ["ls"]}]},
+                    "available_choices": [
+                        {"choice_id": "allow_once", "label": "Allow once"},
+                        {"choice_id": "allow_local_prefix", "label": "Always allow"},
+                        {"choice_id": "abort", "label": "Reject"}]})
             };
             self.write(
                 "runtime.session",
-                json!({"kind": "approval", "run_id": run,
-                    "event": {"kind": kind, "pending_action_id": action}}),
+                json!({"kind": "approval", "run_id": run, "event": event}),
             );
         }
     }

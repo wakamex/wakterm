@@ -1529,7 +1529,7 @@ fn project_provider_events(
         AgentHarness::Gemini => project_gemini(Path::new(session_path), cursor),
         AgentHarness::Opencode | AgentHarness::Zcode => project_opencode(session_path, cursor),
         AgentHarness::Devin => project_devin(session_path, cursor),
-        AgentHarness::Muse => project_muse(Path::new(session_path), cursor),
+        AgentHarness::Muse => project_muse(Path::new(session_path), cursor, metadata),
         AgentHarness::Unknown => bail!("unknown harness has no provider event projection"),
     }
 }
@@ -2517,7 +2517,11 @@ fn project_agy(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<Pr
 /// while one runs, is input to it; a committed reply is an assistant
 /// message, and the run's terminal record ends the turn, completed with its
 /// last reply or aborted.
-fn project_muse(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<ProjectedEvents> {
+fn project_muse(
+    path: &Path,
+    cursor: Option<ProviderCursor>,
+    metadata: &AgentMetadata,
+) -> anyhow::Result<ProjectedEvents> {
     let source_id = crate::muse::session_id_of(path)
         .context("Muse session log is outside a session directory")?;
     let mut cursor = match cursor {
@@ -2525,7 +2529,7 @@ fn project_muse(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<P
         Some(previous) => {
             return continue_after_reset(
                 reset_jsonl_projection(path, "muse", source_id, jsonl_cursor(&previous))?,
-                |cursor| project_muse(path, Some(cursor)),
+                |cursor| project_muse(path, Some(cursor), metadata),
             )
         }
         None => {
@@ -2601,6 +2605,27 @@ fn project_muse(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<P
                     cursor.steer_runs.push(run_id);
                 }
                 Vec::new()
+            }
+            Some(crate::muse::Record::ApprovalRequested {
+                run_id,
+                action_id,
+                command: Some(command),
+            }) if owns(cursor, &run_id) => {
+                let turn_id = open_turn.clone().unwrap_or_default();
+                crate::muse_prompt::approval_request(
+                    metadata, &turn_id, &action_id, &command, timestamp,
+                )
+                .map(|approval| {
+                    let mut event = PendingEvent::new(
+                        format!("{record_key}:approval"),
+                        AgentEventKind::ApprovalRequested,
+                        timestamp,
+                    );
+                    event.turn_id = open_turn.clone();
+                    event.approval = Some(approval);
+                    vec![event]
+                })
+                .unwrap_or_default()
             }
             Some(crate::muse::Record::Assistant { run_id, text }) if owns(cursor, &run_id) => {
                 let text = text.trim().to_string();
@@ -3605,9 +3630,9 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("session.jsonl");
         fs::write(&path, "").unwrap();
-        let mut cursor = Some(project_muse(&path, None).unwrap().cursor);
+        let mut cursor = Some(project_muse(&path, None, &metadata("muse")).unwrap().cursor);
         let mut project = |cursor: &mut Option<ProviderCursor>| {
-            let projected = project_muse(&path, cursor.take()).unwrap();
+            let projected = project_muse(&path, cursor.take(), &metadata("muse")).unwrap();
             *cursor = Some(projected.cursor);
             projected
                 .events
@@ -3708,6 +3733,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn muse_permission_request_is_an_approval_in_its_turn() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().join("01a1738a-c72f-7c81-909d-36e0e636494d");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        fs::write(&path, "").unwrap();
+        let metadata = metadata("muse");
+        let cursor = project_muse(&path, None, &metadata).unwrap().cursor;
+        let mut log = crate::muse::fixture::Log {
+            path: &path,
+            at: 1_792_939_838_000_000,
+        };
+        log.input("r1", "List the files");
+        log.approval("r1", "01a17523-2b2f-7991-bbd7-b9cc04e06d7a", false);
+        let events = project_muse(&path, Some(cursor), &metadata).unwrap().events;
+        let approval = events
+            .iter()
+            .find(|event| event.kind == AgentEventKind::ApprovalRequested)
+            .and_then(|event| event.approval.clone())
+            .unwrap();
+        assert_eq!(approval.kind, crate::muse_prompt::PROMPT_KIND);
+        assert_eq!(approval.request_id, "01a17523-2b2f-7991-bbd7-b9cc04e06d7a");
+        assert_eq!(approval.turn_id, "r1");
+        assert_eq!(approval.command.as_deref(), Some("ls"));
+        assert_eq!(approval.prompt.as_deref(), Some("Muse asks to run: ls"));
+        assert_eq!(
+            approval
+                .choices
+                .iter()
+                .map(|choice| choice.id.as_str())
+                .collect::<Vec<_>>(),
+            ["allow_once", "deny"]
+        );
+    }
+
     /// Projects a real Muse session log from its start:
     /// WAKTERM_TEST_MUSE_LOG names it. Every turn started ends.
     #[test]
@@ -3722,14 +3783,17 @@ mod tests {
             ..initial_jsonl_cursor(&path, "muse", crate::muse::session_id_of(&path).unwrap())
                 .unwrap()
         });
-        let events = project_muse(&path, Some(start)).unwrap().events;
+        let events = project_muse(&path, Some(start), &metadata("muse"))
+            .unwrap()
+            .events;
         let count = |kind: AgentEventKind| events.iter().filter(|event| event.kind == kind).count();
         assert!(count(AgentEventKind::TurnStarted) > 0);
         eprintln!(
-            "turns {} finals {} replies {}",
+            "turns {} finals {} replies {} approvals {}",
             count(AgentEventKind::TurnStarted),
             count(AgentEventKind::TurnFinal),
-            count(AgentEventKind::AssistantMessage)
+            count(AgentEventKind::AssistantMessage),
+            count(AgentEventKind::ApprovalRequested)
         );
     }
 

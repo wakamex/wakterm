@@ -116,6 +116,9 @@ pub enum AgentApprovalWork {
     ClaudeMenu(crate::claude_menu::MenuKeys),
     /// Keys that answer Devin's permission prompt, with screen checks.
     DevinPrompt(crate::devin_prompt::PromptKeys),
+    /// The key that answers Muse's permission prompt, then a wait for Muse
+    /// to log the decision.
+    MusePrompt(crate::muse_prompt::PromptKeys),
 }
 
 impl AgentApprovalWork {
@@ -132,6 +135,7 @@ impl AgentApprovalWork {
             Self::ClaudeQuestion(keys) => keys.run(),
             Self::ClaudeMenu(keys) => keys.run(),
             Self::DevinPrompt(keys) => keys.run(),
+            Self::MusePrompt(keys) => keys.run(),
         }
     }
 }
@@ -271,6 +275,9 @@ impl Mux {
         }
         if request.kind == crate::devin_prompt::PROMPT_KIND {
             return self.resolve_devin_prompt(request, resolution);
+        }
+        if request.kind == crate::muse_prompt::PROMPT_KIND {
+            return self.resolve_muse_prompt(request, resolution);
         }
         anyhow::ensure!(
             matches!(
@@ -490,6 +497,81 @@ impl Mux {
         Ok(AgentApprovalWork::DevinPrompt(
             crate::devin_prompt::PromptKeys {
                 pane,
+                request,
+                choice_id: resolution.choice_id,
+            },
+        ))
+    }
+
+    /// Checks a resolution of Muse's permission prompt against the agent,
+    /// its session log and its screen, and returns the key that answers it.
+    fn resolve_muse_prompt(
+        &self,
+        request: AgentApprovalRequest,
+        resolution: AgentApprovalResolutionRequest,
+    ) -> anyhow::Result<AgentApprovalWork> {
+        anyhow::ensure!(
+            request.agent_id == resolution.agent_id
+                && request.incarnation_id == resolution.incarnation_id,
+            "approval target identity changed"
+        );
+        anyhow::ensure!(
+            resolution.answers.is_empty(),
+            "this approval takes a choice, not answers"
+        );
+        anyhow::ensure!(
+            request
+                .choices
+                .iter()
+                .any(|choice| choice.id == resolution.choice_id),
+            "approval choice is not available"
+        );
+        let (pane_id, metadata) = self
+            .agent_metadata_by_pane
+            .read()
+            .iter()
+            .find(|(_, metadata)| metadata.agent_id == resolution.agent_id)
+            .map(|(pane_id, metadata)| (*pane_id, metadata.clone()))
+            .context("approval target is no longer available")?;
+        anyhow::ensure!(
+            incarnation_id(&metadata).as_deref() == Some(resolution.incarnation_id.as_str()),
+            "approval target incarnation changed"
+        );
+        let runtime = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .context("approval target runtime is unavailable")?;
+        anyhow::ensure!(
+            runtime.alive && runtime.harness == crate::agent::AgentHarness::Muse,
+            "approval target is not a live Muse session"
+        );
+        let log = PathBuf::from(
+            runtime
+                .session_path
+                .as_deref()
+                .context("approval target has no exact Muse session")?,
+        );
+        anyhow::ensure!(
+            crate::muse::approval_pending(&log, &request.item_id)?,
+            "approval request is no longer pending"
+        );
+        let pane = self
+            .get_pane(pane_id)
+            .context("approval target pane disappeared")?;
+        anyhow::ensure!(!pane.is_dead(), "approval target pane exited");
+        anyhow::ensure!(
+            crate::muse_prompt::shows_prompt(
+                &crate::claude_menu::screen(&pane),
+                request.command.as_deref().unwrap_or_default()
+            ),
+            "the pane does not show Muse's prompt for this command"
+        );
+        Ok(AgentApprovalWork::MusePrompt(
+            crate::muse_prompt::PromptKeys {
+                pane,
+                log,
                 request,
                 choice_id: resolution.choice_id,
             },

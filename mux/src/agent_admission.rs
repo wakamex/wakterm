@@ -38,6 +38,7 @@ impl AgentApiCapabilities {
                 "claude_refusal_menu.v1".to_string(),
                 "claude_menu.v1".to_string(),
                 "devin_permission.v1".to_string(),
+                "muse_permission.v1".to_string(),
                 "codex_output_shadow.experimental.v1".to_string(),
             ],
         }
