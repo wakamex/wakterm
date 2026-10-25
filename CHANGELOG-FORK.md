@@ -2,6 +2,41 @@
 
 All changes relative to upstream wakterm/wakterm main at 05343b387.
 
+## Changes from 2026-10-16 through 2026-10-25 (commits bdcaca827 through d70428695)
+
+### Agent Harnesses and Agent API
+
+- Devin as an agent harness: detection, exact binding to the session its process holds a lock on, busy and idle from its session database, `turn_started`, `input_accepted`, assistant and `turn_final` events (a message sent mid-turn is `input_accepted` on that turn), send admission from its input box, exact restore with `devin --resume`, `wakterm agent start devin`, and the database read from its `devin acp` worker's environment, with `DEVIN_SESSIONS_DIR` and `XDG_DATA_HOME` before the worker starts ([a4fbc9b](https://github.com/wakamex/wakterm/commit/a4fbc9b97), [c2c8cd5](https://github.com/wakamex/wakterm/commit/c2c8cd556), [ec21d47](https://github.com/wakamex/wakterm/commit/ec21d4730), [0c39f38](https://github.com/wakamex/wakterm/commit/0c39f38ee), [d21d6fe](https://github.com/wakamex/wakterm/commit/d21d6fef8))
+- Devin permission prompts as `devin_permission` approvals (capability `devin_permission.v1`) with `allow_once` and `deny`, answered by keys checked against the screen; interrupted, denied and errored Devin turns end instead of staying busy ([575ea96](https://github.com/wakamex/wakterm/commit/575ea966e), [ba4a1ef](https://github.com/wakamex/wakterm/commit/ba4a1ef13), [f669795](https://github.com/wakamex/wakterm/commit/f669795a5))
+- `agent send` acknowledges a send only by the agent's recorded input for harnesses that record it, reading the event stream after its oldest events were dropped, and reports a steer agy's input box took back as an `input_blocked` refusal ([666d131](https://github.com/wakamex/wakterm/commit/666d13139), [f85a060](https://github.com/wakamex/wakterm/commit/f85a060ef))
+- agy is treated as idle only while its footer shows "? for shortcuts", since a queued message or other hint replaces "esc to cancel" mid-turn; a turn agy stops on an on-screen error or its feedback survey is reported waiting, and a send skips the survey with its Skip choice ([3a1ea62](https://github.com/wakamex/wakterm/commit/3a1ea620b), [c150032](https://github.com/wakamex/wakterm/commit/c15003268), [3382dcd](https://github.com/wakamex/wakterm/commit/3382dcdc1), [9354ec3](https://github.com/wakamex/wakterm/commit/9354ec380), [f2e36d1](https://github.com/wakamex/wakterm/commit/f2e36d1ee))
+- Claude Code, Codex, Gemini CLI and OpenCode sessions are found under the home or data directory the harness process's own environment names (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`, `XDG_DATA_HOME`) ([86ed147](https://github.com/wakamex/wakterm/commit/86ed147ca), [7a81015](https://github.com/wakamex/wakterm/commit/7a81015fc))
+- `wakterm agent caller` reports the caller's tab, with the effective title Panetone routes by ([c9f1bb5](https://github.com/wakamex/wakterm/commit/c9f1bb537))
+- Codex: a steer left in the composer when its turn ended is submitted as the next turn, and the TUI proxy relays app-server messages up to the TUI client's 128 MiB limit and forwards larger ones uninspected instead of closing, which had put every Codex TUI into a reconnect loop on a 17.7 MB `plugin/list` response ([9185061](https://github.com/wakamex/wakterm/commit/91850619b), [6f3a63a](https://github.com/wakamex/wakterm/commit/6f3a63a92), [46c2e7a](https://github.com/wakamex/wakterm/commit/46c2e7af7))
+- Claude: confirming a `/clear` from the new session file, choosing a menu row by its number, not reporting history copied into a new session, and following a parked job's status and a window's own conversation after its job finished ([3062035](https://github.com/wakamex/wakterm/commit/306203568), [00cb71a](https://github.com/wakamex/wakterm/commit/00cb71aac), [bd8a339](https://github.com/wakamex/wakterm/commit/bd8a339f1), [627f35c](https://github.com/wakamex/wakterm/commit/627f35c37), [4c9d057](https://github.com/wakamex/wakterm/commit/4c9d0576e), [64b7efa](https://github.com/wakamex/wakterm/commit/64b7efa68))
+- OpenCode replies are reported once their streamed text part is finished ([980f50a](https://github.com/wakamex/wakterm/commit/980f50acf))
+- Restore: an agent the Wakterm CLI launched is restored by its own resume rather than refused as supervised, and a restore whose candidate describes a replaced process stays pending instead of failing, which had re-adopted agents under new IDs ([95fc6b9](https://github.com/wakamex/wakterm/commit/95fc6b9f1), [2f543be](https://github.com/wakamex/wakterm/commit/2f543bef3))
+
+### Tabs and Tab Navigator
+
+- `ActivateOldestTabNeedingAttention` reviews the attention queue from its other end, and `ActivateNextTabNeedingAttention` skips hidden tabs ([083f22e](https://github.com/wakamex/wakterm/commit/083f22e8a), [434610d](https://github.com/wakamex/wakterm/commit/434610d3b), [74b9e1b](https://github.com/wakamex/wakterm/commit/74b9e1bbb))
+- Closing a tab passes focus to its neighbor in activity order, and a working agy tab keeps its place in the activity order ([4362110](https://github.com/wakamex/wakterm/commit/436211055), [1feccb7](https://github.com/wakamex/wakterm/commit/1feccb767))
+- The working marker blinks, and shows only where a dimmed tab does not already say it ([99a55a3](https://github.com/wakamex/wakterm/commit/99a55a3bb), [ce70a76](https://github.com/wakamex/wakterm/commit/ce70a764f))
+- A Devin tab icon, traced from Devin's official mark; stacked harness icons grow to seven ([3db8d82](https://github.com/wakamex/wakterm/commit/3db8d82cb))
+
+### Fonts, Multiplexer, and Platform Portability
+
+- A deadlock between installing an agent and reading a tab badge, which hung the mux server after a restart, is gone ([7c9f73d](https://github.com/wakamex/wakterm/commit/7c9f73db4))
+- A second mux server is refused on the same saved session ([d291c0a](https://github.com/wakamex/wakterm/commit/d291c0a56))
+- Upstream wezterm fixes and selected enhancements through 86d223ec8 ([b97adbf](https://github.com/wakamex/wakterm/commit/b97adbf68))
+
+### Docs, Packaging, and Tooling
+
+- v0.1.0 release, with bundled third-party crate and Windows licenses and the LGPL xcb-imdkit source ([031c14b](https://github.com/wakamex/wakterm/commit/031c14b7f), [b6215ba](https://github.com/wakamex/wakterm/commit/b6215ba19), [a2a46b7](https://github.com/wakamex/wakterm/commit/a2a46b794), [2aa174b](https://github.com/wakamex/wakterm/commit/2aa174b3d), [e2ce5fc](https://github.com/wakamex/wakterm/commit/e2ce5fce8))
+- Windows `OSTYPE` matching in `deploy.sh`, and no tar SIGPIPE in `validation.yml` ([ba51b74](https://github.com/wakamex/wakterm/commit/ba51b7443))
+- Test fixes for a spawn race in a Codex observer test and for pane IDs taken by concurrent tests ([d05a082](https://github.com/wakamex/wakterm/commit/d05a08251), [d704286](https://github.com/wakamex/wakterm/commit/d70428695))
+- The periodic changelog and docs sweep is documented in AGENTS.md ([bdcaca8](https://github.com/wakamex/wakterm/commit/bdcaca827), [e4fcbae](https://github.com/wakamex/wakterm/commit/e4fcbae1a))
+
 ## Changes from 2026-09-27 through 2026-10-16 (commits 3d0a6cdb8 through bfe9f4e72)
 
 ### Agent Harnesses and Agent API
