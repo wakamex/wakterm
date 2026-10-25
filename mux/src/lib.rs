@@ -2627,8 +2627,7 @@ impl Mux {
         metadata.adopted_start_time = selected.map(|process| process.start_time);
         metadata.launch_supervisor = process_info
             .zip(selected)
-            .filter(|(root, child)| root.pid != child.pid)
-            .map(|(root, _)| root.executable.to_string_lossy().into_owned());
+            .and_then(|(root, child)| crate::agent::launch_supervisor(root, child));
     }
 
     fn detect_agent_state_for_pane(&self, pane_id: PaneId) -> Option<DetectedAgentState> {

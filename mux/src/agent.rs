@@ -467,6 +467,24 @@ pub(crate) fn is_wakterm_cli(executable: &str) -> bool {
     )
 }
 
+/// The launch supervisor of `harness`, a process in the job that `root`
+/// starts: the executable of `root` when it is another process. Neither
+/// Wakterm's CLI nor a launcher script the harness is started by name as,
+/// such as a `muse` on PATH that runs Muse in a sandbox and execs it under
+/// its own path, is a supervisor: running the harness's own command again
+/// runs it the same way.
+pub(crate) fn launch_supervisor(
+    root: &LocalProcessInfo,
+    harness: &LocalProcessInfo,
+) -> Option<String> {
+    let executable = root.executable.to_string_lossy().into_owned();
+    let script = root.argv.iter().skip(1).find(|arg| !arg.starts_with('-'));
+    let launcher = script.is_some_and(|script| {
+        Path::new(script).is_absolute() && Some(script) == harness.argv.first()
+    });
+    (root.pid != harness.pid && !is_wakterm_cli(&executable) && !launcher).then_some(executable)
+}
+
 pub fn detect_harness_process<'a>(
     process: Option<&'a LocalProcessInfo>,
     foreground_process_name: Option<&str>,
@@ -477,8 +495,7 @@ pub fn detect_harness_process<'a>(
             harness: infer_harness_from_process_info(selected),
             launch_cmd: format_process_command(selected)?,
             process: Some(selected),
-            launch_supervisor: Some(process.executable.to_string_lossy().into_owned())
-                .filter(|executable| selected.pid != process.pid && !is_wakterm_cli(executable)),
+            launch_supervisor: launch_supervisor(process, selected),
         });
     }
 
@@ -6952,6 +6969,40 @@ mod test {
             )
             .unwrap();
         connection
+    }
+
+    #[test]
+    fn a_launcher_script_the_harness_runs_under_is_not_a_supervisor() {
+        let muse = |argv0: &str| proc_info("muse", "/opt/muse/muse", &[argv0, "resume"], 4, vec![]);
+        // `muse` on PATH is a script that runs Muse in a sandbox under the
+        // script's own path, so running that path again restores it.
+        let job = |argv0: &str| {
+            proc_info(
+                "bash",
+                "/usr/bin/bash",
+                &["bash", "/home/u/.local/bin/muse", "resume"],
+                2,
+                vec![proc_info(
+                    "bwrap",
+                    "/usr/bin/bwrap",
+                    &["bwrap", "--unshare-all"],
+                    3,
+                    vec![muse(argv0)],
+                )],
+            )
+        };
+        let supervisor = |root: &LocalProcessInfo| {
+            detect_harness_process(Some(root), None)
+                .unwrap()
+                .launch_supervisor
+        };
+        assert_eq!(supervisor(&job("/home/u/.local/bin/muse")), None);
+        assert_eq!(
+            supervisor(&job("/opt/muse/muse")).as_deref(),
+            Some("/usr/bin/bash")
+        );
+        let direct = muse("/home/u/.local/bin/muse");
+        assert_eq!(launch_supervisor(&direct, &direct), None);
     }
 
     #[test]
