@@ -69,6 +69,7 @@ pub mod devin_prompt;
 pub mod domain;
 pub mod localpane;
 pub mod memory_report;
+pub mod muse;
 pub mod pane;
 pub mod renderable;
 pub mod session_persistence;
@@ -1881,6 +1882,7 @@ impl Mux {
                     | AgentHarness::Codex
                     | AgentHarness::Zcode
                     | AgentHarness::Devin
+                    | AgentHarness::Muse
             ),
             "automatic restore is not implemented for {:?}",
             harness
@@ -1930,6 +1932,7 @@ impl Mux {
                 | AgentHarness::Codex
                 | AgentHarness::Zcode
                 | AgentHarness::Devin
+                | AgentHarness::Muse
         ) {
             return None;
         }
@@ -2474,6 +2477,7 @@ impl Mux {
             crate::agent::AgentHarness::Opencode => "opencode",
             crate::agent::AgentHarness::Zcode => "zcode",
             crate::agent::AgentHarness::Devin => "devin",
+            crate::agent::AgentHarness::Muse => "muse",
             crate::agent::AgentHarness::Unknown => "agent",
         }
     }

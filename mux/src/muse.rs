@@ -1,0 +1,385 @@
+//! Meta's Muse Code CLI, which keeps each session as an event log.
+//!
+//! A session lives at `<data>/muse/sessions/YYYY/MM/DD/<session uuid>/
+//! session.jsonl`, under `XDG_DATA_HOME` or `~/.local/share`, and
+//! `<data>/muse/session-index.db` lists every session with its log and
+//! workspace root. Each log line is one record with a `payload_type`; the
+//! ones a turn consists of are:
+//!
+//! - `runtime.user_intent.accepted`: the user's input, with its text in
+//!   `model_messages` and an `intent_id` that a top-level turn's run takes as
+//!   its `run_id`;
+//! - `runtime.session` with a `run` event `assistant_message_committed`: a
+//!   reply's text;
+//! - `runtime.session` with a `run` event `terminal`: the end of the run,
+//!   `terminal: "completed"` or another outcome;
+//! - `runtime.session` with `approval` events `requested` and
+//!   `decision_applied`, sharing a `pending_action_id`: a permission request
+//!   and its answer, which Muse's automated reviewer can also give.
+//!
+//! Wrapped records with `children` repeat records written elsewhere and are
+//! skipped.
+
+use chrono::{DateTime, TimeZone, Utc};
+use rusqlite::{Connection, OptionalExtension};
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+
+/// Muse's data directory for the Muse process `pid`: `muse` under its
+/// environment's XDG_DATA_HOME, `~/.local/share` by default.
+pub(crate) fn data_dir_for(pid: Option<u32>) -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("WAKTERM_AGENT_MUSE_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    let home = std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from);
+    crate::agent::harness_dir(
+        pid,
+        "XDG_DATA_HOME",
+        home.map(|home| home.join(".local").join("share")),
+    )
+    .map(|data| data.join("muse"))
+}
+
+fn open_index(data_dir: &Path) -> anyhow::Result<Option<Connection>> {
+    let path = data_dir.join("session-index.db");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let connection =
+        Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.busy_timeout(std::time::Duration::from_secs(2))?;
+    Ok(Some(connection))
+}
+
+/// The log of the session `session_id`, from the index.
+pub(crate) fn session_log(data_dir: &Path, session_id: &str) -> anyhow::Result<Option<PathBuf>> {
+    let Some(index) = open_index(data_dir)? else {
+        return Ok(None);
+    };
+    Ok(index
+        .query_row(
+            "select session_log_path from sessions where session_id = ?1",
+            [session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(PathBuf::from))
+}
+
+/// The log of the most recently updated session whose workspace root is
+/// `cwd` and that was updated at or after `updated_after`.
+pub(crate) fn newest_session_log_in(
+    data_dir: &Path,
+    cwd: &str,
+    updated_after: Option<DateTime<Utc>>,
+) -> anyhow::Result<Option<PathBuf>> {
+    let Some(index) = open_index(data_dir)? else {
+        return Ok(None);
+    };
+    Ok(index
+        .query_row(
+            "select session_log_path from sessions where workspace_root = ?1 \
+             and coalesce(updated_at_us, created_at_us, 0) >= ?2 \
+             order by coalesce(updated_at_us, created_at_us, 0) desc limit 1",
+            rusqlite::params![
+                cwd,
+                updated_after
+                    .map(|at| at.timestamp_micros())
+                    .unwrap_or(i64::MIN)
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(PathBuf::from))
+}
+
+/// The session a launch command resumes: `muse resume UUID`, or
+/// `--session-id UUID`.
+pub(crate) fn resumed_session(launch_cmd: &str) -> Option<String> {
+    let argv = shell_words::split(launch_cmd).ok()?;
+    let mut args = argv.iter().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "resume" | "--session-id" => {
+                return args.next().filter(|id| crate::agent::is_uuid(id)).cloned()
+            }
+            _ => {
+                if let Some(id) = arg.strip_prefix("--session-id=") {
+                    return crate::agent::is_uuid(id).then(|| id.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The session ID a log belongs to: the name of its directory.
+pub(crate) fn session_id_of(log: &Path) -> Option<String> {
+    log.parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .filter(|name| crate::agent::is_uuid(name))
+        .map(str::to_string)
+}
+
+/// A record of a Muse session log that a turn consists of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Record {
+    Input { intent_id: String, text: String },
+    Assistant { run_id: String, text: String },
+    Terminal { run_id: String, completed: bool },
+    ApprovalRequested { run_id: String, action_id: String },
+    ApprovalDecided { run_id: String, action_id: String },
+}
+
+/// When a record was written: `recorded_at`, in microseconds.
+pub(crate) fn recorded_at(record: &Value) -> Option<DateTime<Utc>> {
+    let micros = record.get("recorded_at")?.as_i64()?;
+    Utc.timestamp_micros(micros).single()
+}
+
+pub(crate) fn parse(record: &Value) -> Option<Record> {
+    if record.get("children").is_some() {
+        return None;
+    }
+    let payload = record.get("payload")?;
+    let text = |value: &Value| value.as_str().map(str::to_string);
+    match record.get("payload_type")?.as_str()? {
+        "runtime.user_intent.accepted" => {
+            let text = payload
+                .get("model_messages")?
+                .as_array()?
+                .iter()
+                .filter_map(|message| message.get("content")?.as_array().cloned())
+                .flatten()
+                .filter(|block| block.get("kind").and_then(Value::as_str) == Some("text"))
+                .filter_map(|block| {
+                    block
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            Some(Record::Input {
+                intent_id: text_or_none(payload.get("intent_id"))?,
+                text,
+            })
+        }
+        "runtime.session" => {
+            let event = payload.get("event")?;
+            let run_id = text(payload.get("run_id")?)?;
+            match (payload.get("kind")?.as_str()?, event.get("kind")?.as_str()?) {
+                ("run", "assistant_message_committed") => Some(Record::Assistant {
+                    run_id,
+                    text: text(event.get("text")?)?,
+                }),
+                ("run", "terminal") => Some(Record::Terminal {
+                    run_id,
+                    completed: event.get("terminal").and_then(Value::as_str) == Some("completed"),
+                }),
+                ("approval", "requested") => Some(Record::ApprovalRequested {
+                    run_id,
+                    action_id: text(event.get("pending_action_id")?)?,
+                }),
+                ("approval", "decision_applied") => Some(Record::ApprovalDecided {
+                    run_id,
+                    action_id: text(event.get("pending_action_id")?)?,
+                }),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn text_or_none(value: Option<&Value>) -> Option<String> {
+    value?.as_str().map(str::to_string)
+}
+
+/// What a session log says about its latest turn.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TurnView {
+    /// The latest top-level turn's run ID and input, if any.
+    pub turn_id: Option<String>,
+    pub input: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    /// Further input the user sent while that turn ran.
+    pub inputs: u32,
+    pub reply: Option<String>,
+    /// Whether the turn ended, and whether it completed.
+    pub ended: Option<bool>,
+    pub ended_at: Option<DateTime<Utc>>,
+    /// Permission requests of the turn without a decision.
+    pub pending_approvals: Vec<String>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+/// Reads a session log into the view of its latest turn.
+pub(crate) fn read_turn(log: &Path) -> anyhow::Result<TurnView> {
+    let mut view = TurnView::default();
+    for line in std::fs::read_to_string(log)?.lines() {
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let at = recorded_at(&record);
+        if at.is_some() {
+            view.updated_at = at;
+        }
+        match parse(&record) {
+            Some(Record::Input { intent_id, text }) => {
+                if view.turn_id.is_some() && view.ended.is_none() {
+                    view.inputs += 1;
+                } else {
+                    view = TurnView {
+                        turn_id: Some(intent_id),
+                        input: Some(text),
+                        started_at: at,
+                        inputs: 1,
+                        updated_at: at,
+                        ..TurnView::default()
+                    };
+                }
+            }
+            Some(Record::Assistant { run_id, text }) if view.turn_id.as_ref() == Some(&run_id) => {
+                view.reply = Some(text);
+            }
+            Some(Record::Terminal { run_id, completed })
+                if view.turn_id.as_ref() == Some(&run_id) =>
+            {
+                view.ended = Some(completed);
+                view.ended_at = at;
+                view.pending_approvals.clear();
+            }
+            Some(Record::ApprovalRequested { run_id, action_id })
+                if view.turn_id.as_ref() == Some(&run_id) =>
+            {
+                view.pending_approvals.push(action_id);
+            }
+            Some(Record::ApprovalDecided { action_id, .. }) => {
+                view.pending_approvals
+                    .retain(|pending| *pending != action_id);
+            }
+            _ => {}
+        }
+    }
+    Ok(view)
+}
+
+#[cfg(test)]
+pub(crate) mod fixture {
+    use serde_json::json;
+    use std::io::Write;
+    use std::path::Path;
+
+    /// Appends records shaped as Muse 1.4.12 writes them to a session log.
+    pub(crate) struct Log<'a> {
+        pub path: &'a Path,
+        pub at: i64,
+    }
+
+    impl Log<'_> {
+        fn write(&mut self, payload_type: &str, payload: serde_json::Value) {
+            self.at += 1_000_000;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.path)
+                .unwrap();
+            writeln!(
+                file,
+                "{}",
+                json!({"schema_version": 1, "stream": {"kind": "session", "id": "s"},
+                    "recorded_at": self.at, "record_type": "event",
+                    "payload_type": payload_type, "payload": payload})
+            )
+            .unwrap();
+        }
+
+        pub(crate) fn input(&mut self, intent: &str, text: &str) {
+            self.write(
+                "runtime.user_intent.accepted",
+                json!({"intent_id": intent, "delivery_policy": "session_current",
+                    "model_messages": [{"content": [{"kind": "text", "text": text}]}]}),
+            );
+        }
+
+        pub(crate) fn reply(&mut self, run: &str, text: &str) {
+            self.write(
+                "runtime.session",
+                json!({"kind": "run", "run_id": run,
+                    "event": {"kind": "assistant_message_committed", "text": text}}),
+            );
+        }
+
+        pub(crate) fn end(&mut self, run: &str, terminal: &str) {
+            self.write(
+                "runtime.session",
+                json!({"kind": "run", "run_id": run,
+                    "event": {"kind": "terminal", "terminal": terminal, "reason": null}}),
+            );
+        }
+
+        pub(crate) fn approval(&mut self, run: &str, action: &str, decided: bool) {
+            let kind = if decided {
+                "decision_applied"
+            } else {
+                "requested"
+            };
+            self.write(
+                "runtime.session",
+                json!({"kind": "approval", "run_id": run,
+                    "event": {"kind": kind, "pending_action_id": action}}),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn reads_the_latest_turn_with_its_input_reply_end_and_approvals() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("session.jsonl");
+        let mut log = fixture::Log {
+            path: &path,
+            at: 1_792_939_838_000_000,
+        };
+        log.input("r1", "first");
+        log.reply("r1", "one");
+        log.end("r1", "completed");
+        log.input("r2", "Run the tests");
+        log.approval("r2", "a1", false);
+        let view = read_turn(&path).unwrap();
+        assert_eq!(view.turn_id.as_deref(), Some("r2"));
+        assert_eq!(view.input.as_deref(), Some("Run the tests"));
+        assert_eq!(view.ended, None);
+        assert_eq!(view.pending_approvals, ["a1"]);
+
+        log.approval("r2", "a1", true);
+        log.input("steer", "also lint");
+        log.reply("r2", "done");
+        log.end("r2", "failed");
+        let view = read_turn(&path).unwrap();
+        assert!(view.pending_approvals.is_empty());
+        assert_eq!(view.inputs, 2);
+        assert_eq!(view.reply.as_deref(), Some("done"));
+        assert_eq!(view.ended, Some(false));
+
+        assert_eq!(
+            resumed_session("muse resume 01a1738a-c72f-7c81-909d-36e0e636494d"),
+            Some("01a1738a-c72f-7c81-909d-36e0e636494d".to_string())
+        );
+        assert_eq!(resumed_session("muse"), None);
+        assert_eq!(
+            session_id_of(Path::new(
+                "/x/sessions/2026/10/25/01a1738a-c72f-7c81-909d-36e0e636494d/session.jsonl"
+            )),
+            Some("01a1738a-c72f-7c81-909d-36e0e636494d".to_string())
+        );
+    }
+}

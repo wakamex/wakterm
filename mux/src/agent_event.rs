@@ -109,6 +109,7 @@ enum ProviderCursor {
     Gemini(GeminiCursor),
     Opencode(OpencodeCursor),
     Devin(DevinCursor),
+    Muse(JsonlCursor),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1522,6 +1523,7 @@ fn project_provider_events(
         AgentHarness::Gemini => project_gemini(Path::new(session_path), cursor),
         AgentHarness::Opencode | AgentHarness::Zcode => project_opencode(session_path, cursor),
         AgentHarness::Devin => project_devin(session_path, cursor),
+        AgentHarness::Muse => project_muse(Path::new(session_path), cursor),
         AgentHarness::Unknown => bail!("unknown harness has no provider event projection"),
     }
 }
@@ -2503,6 +2505,133 @@ fn project_agy(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<Pr
     })
 }
 
+/// Projects a Muse session's event log. Each user input starts a turn, or,
+/// while one runs, is input to it; a committed reply is an assistant
+/// message, and the run's terminal record ends the turn, completed with its
+/// last reply or aborted.
+fn project_muse(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<ProjectedEvents> {
+    let source_id = crate::muse::session_id_of(path)
+        .context("Muse session log is outside a session directory")?;
+    let mut cursor = match cursor {
+        Some(ProviderCursor::Muse(cursor)) if cursor.source_id == source_id => cursor,
+        Some(previous) => {
+            return continue_after_reset(
+                reset_jsonl_projection(path, "muse", source_id, jsonl_cursor(&previous))?,
+                |cursor| project_muse(path, Some(cursor)),
+            )
+        }
+        None => {
+            return Ok(ProjectedEvents {
+                cursor: ProviderCursor::Muse(initial_jsonl_cursor(path, "muse", source_id)?),
+                events: Vec::new(),
+            })
+        }
+    };
+    let events = match read_new_jsonl(path, &mut cursor, |offset, record, cursor| {
+        let timestamp = crate::muse::recorded_at(record).unwrap_or_else(Utc::now);
+        let id = record
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("offset-{offset}"));
+        let record_key = format!("muse:{}:{id}", cursor.source_id);
+        let open_turn = cursor.current_turn_id.clone().filter(|_| cursor.turn_open);
+        Ok(match crate::muse::parse(record) {
+            Some(crate::muse::Record::Input { intent_id, text }) => {
+                let sha256 = crate::agent::message_sha256(&text);
+                if let Some(turn_id) = open_turn {
+                    vec![input_accepted(
+                        format!("{record_key}:input"),
+                        timestamp,
+                        Some(turn_id),
+                        sha256,
+                        false,
+                    )]
+                } else {
+                    cursor.current_turn_id = Some(intent_id.clone());
+                    cursor.last_assistant_text = None;
+                    cursor.turn_open = true;
+                    let mut started = PendingEvent::new(
+                        format!("{record_key}:started"),
+                        AgentEventKind::TurnStarted,
+                        timestamp,
+                    );
+                    started.turn_id = Some(intent_id.clone());
+                    started.input_sha256 = Some(sha256.clone());
+                    let accepted = input_accepted(
+                        format!("{record_key}:input"),
+                        timestamp,
+                        Some(intent_id.clone()),
+                        sha256,
+                        false,
+                    );
+                    let mut state = PendingEvent::new(
+                        format!("{record_key}:state"),
+                        AgentEventKind::TurnStateChanged,
+                        timestamp,
+                    );
+                    state.turn_id = Some(intent_id);
+                    state.turn_state = Some("waiting_on_agent".to_string());
+                    vec![started, accepted, state]
+                }
+            }
+            Some(crate::muse::Record::Assistant { run_id, text })
+                if open_turn.as_deref() == Some(run_id.as_str()) =>
+            {
+                let text = text.trim().to_string();
+                if text.is_empty() {
+                    Vec::new()
+                } else {
+                    cursor.last_assistant_text = Some(text.clone());
+                    let mut message = PendingEvent::new(
+                        format!("{record_key}:message"),
+                        AgentEventKind::AssistantMessage,
+                        timestamp,
+                    );
+                    message.turn_id = Some(run_id);
+                    message.text = Some(text);
+                    vec![message]
+                }
+            }
+            Some(crate::muse::Record::Terminal { run_id, completed })
+                if open_turn.as_deref() == Some(run_id.as_str()) =>
+            {
+                let mut final_event = PendingEvent::new(
+                    format!("{record_key}:final"),
+                    AgentEventKind::TurnFinal,
+                    timestamp,
+                );
+                final_event.turn_id = Some(run_id.clone());
+                final_event.outcome =
+                    Some(if completed { "completed" } else { "aborted" }.to_string());
+                final_event.text = completed
+                    .then(|| cursor.last_assistant_text.clone())
+                    .flatten();
+                let mut state = PendingEvent::new(
+                    format!("{record_key}:final-state"),
+                    AgentEventKind::TurnStateChanged,
+                    timestamp,
+                );
+                state.turn_id = Some(run_id);
+                state.turn_state = Some("waiting_on_user".to_string());
+                cursor.turn_open = false;
+                vec![final_event, state]
+            }
+            _ => Vec::new(),
+        })
+    }) {
+        Ok(events) => events,
+        Err(err) if err.to_string().contains("truncated or rewritten") => {
+            return reset_jsonl_projection(path, "muse", source_id, None);
+        }
+        Err(err) => return Err(err),
+    };
+    Ok(ProjectedEvents {
+        cursor: ProviderCursor::Muse(cursor),
+        events,
+    })
+}
+
 /// Projects a Devin session's conversation. Each user input starts a turn,
 /// or, while one runs, steers it; the reply that stops without tool calls
 /// ends it. Messages compaction copied from earlier rows are skipped.
@@ -2854,7 +2983,8 @@ fn jsonl_cursor(cursor: &ProviderCursor) -> Option<&JsonlCursor> {
     match cursor {
         ProviderCursor::Codex(cursor)
         | ProviderCursor::Claude(cursor)
-        | ProviderCursor::Agy(cursor) => Some(cursor),
+        | ProviderCursor::Agy(cursor)
+        | ProviderCursor::Muse(cursor) => Some(cursor),
         _ => None,
     }
 }
@@ -2913,6 +3043,7 @@ fn reset_jsonl_projection(
             "codex" => ProviderCursor::Codex(cursor),
             "claude" => ProviderCursor::Claude(cursor),
             "agy" => ProviderCursor::Agy(cursor),
+            "muse" => ProviderCursor::Muse(cursor),
             _ => unreachable!(),
         },
         events: vec![event],
@@ -3440,6 +3571,92 @@ mod tests {
             .map(|event| event.input_sha256.clone())
             .collect();
         assert_eq!(hashes.len(), count(AgentEventKind::InputAccepted));
+    }
+
+    #[test]
+    fn muse_projection_reports_input_further_input_and_the_final_reply() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().join("01a1738a-c72f-7c81-909d-36e0e636494d");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        fs::write(&path, "").unwrap();
+        let mut cursor = Some(project_muse(&path, None).unwrap().cursor);
+        let mut project = |cursor: &mut Option<ProviderCursor>| {
+            let projected = project_muse(&path, cursor.take()).unwrap();
+            *cursor = Some(projected.cursor);
+            projected
+                .events
+                .into_iter()
+                .map(|event| (event.kind, event.turn_id, event.input_sha256, event.text))
+                .collect::<Vec<_>>()
+        };
+        let mut log = crate::muse::fixture::Log {
+            path: &path,
+            at: 1_792_939_838_000_000,
+        };
+        log.input("r1", "Run the tests");
+        let turn = Some("r1".to_string());
+        let sha = Some(crate::agent::message_sha256("Run the tests"));
+        assert_eq!(
+            project(&mut cursor),
+            vec![
+                (AgentEventKind::TurnStarted, turn.clone(), sha.clone(), None),
+                (AgentEventKind::InputAccepted, turn.clone(), sha, None),
+                (AgentEventKind::TurnStateChanged, turn.clone(), None, None),
+            ]
+        );
+        log.input("steer", "also lint");
+        log.reply("r1", "All pass.");
+        log.end("r1", "completed");
+        assert_eq!(
+            project(&mut cursor),
+            vec![
+                (
+                    AgentEventKind::InputAccepted,
+                    turn.clone(),
+                    Some(crate::agent::message_sha256("also lint")),
+                    None
+                ),
+                (
+                    AgentEventKind::AssistantMessage,
+                    turn.clone(),
+                    None,
+                    Some("All pass.".into())
+                ),
+                (
+                    AgentEventKind::TurnFinal,
+                    turn.clone(),
+                    None,
+                    Some("All pass.".into())
+                ),
+                (AgentEventKind::TurnStateChanged, turn, None, None),
+            ]
+        );
+    }
+
+    /// Projects a real Muse session log from its start:
+    /// WAKTERM_TEST_MUSE_LOG names it. Every turn started ends.
+    #[test]
+    fn muse_projection_reads_a_real_session() {
+        let Some(path) = std::env::var_os("WAKTERM_TEST_MUSE_LOG") else {
+            return;
+        };
+        let path = PathBuf::from(path);
+        let start = ProviderCursor::Muse(JsonlCursor {
+            offset: 0,
+            checkpoint_sha256: checkpoint_sha256(&path, 0).unwrap(),
+            ..initial_jsonl_cursor(&path, "muse", crate::muse::session_id_of(&path).unwrap())
+                .unwrap()
+        });
+        let events = project_muse(&path, Some(start)).unwrap().events;
+        let count = |kind: AgentEventKind| events.iter().filter(|event| event.kind == kind).count();
+        assert!(count(AgentEventKind::TurnStarted) > 0);
+        eprintln!(
+            "turns {} finals {} replies {}",
+            count(AgentEventKind::TurnStarted),
+            count(AgentEventKind::TurnFinal),
+            count(AgentEventKind::AssistantMessage)
+        );
     }
 
     #[test]

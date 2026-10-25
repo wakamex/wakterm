@@ -71,6 +71,8 @@ pub enum AgentHarness {
     Zcode,
     /// Cognition's Devin CLI.
     Devin,
+    /// Meta's Muse Code CLI.
+    Muse,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -320,14 +322,18 @@ pub fn infer_harness(launch_cmd: &str, foreground_process_name: Option<&str>) ->
         }) {
             return AgentHarness::Zcode;
         }
-        // Match the program name exactly: "devin" also appears in paths.
-        if candidate.split_whitespace().next().is_some_and(|program| {
-            Path::new(program)
-                .file_name()
-                .and_then(|name| name.to_str())
-                == Some("devin")
-        }) {
+        // Match the program name exactly: "devin" and "muse" also appear
+        // in paths.
+        let program = candidate
+            .split_whitespace()
+            .next()
+            .and_then(|program| Path::new(program).file_name())
+            .and_then(|name| name.to_str());
+        if program == Some("devin") {
             return AgentHarness::Devin;
+        }
+        if program == Some("muse") {
+            return AgentHarness::Muse;
         }
         if candidate.contains("claude") {
             return AgentHarness::Claude;
@@ -357,6 +363,7 @@ pub fn default_launch_cmd_for_harness(harness: &AgentHarness) -> Option<&'static
         AgentHarness::Opencode => Some("opencode"),
         AgentHarness::Zcode => Some("zcode"),
         AgentHarness::Devin => Some("devin"),
+        AgentHarness::Muse => Some("muse"),
         AgentHarness::Unknown => None,
     }
 }
@@ -370,6 +377,7 @@ fn infer_harness_from_process_info(process: &LocalProcessInfo) -> AgentHarness {
         AgentHarness::Opencode,
         AgentHarness::Zcode,
         AgentHarness::Devin,
+        AgentHarness::Muse,
     ]
     .iter()
     .cloned()
@@ -506,6 +514,7 @@ fn is_harness_tui_program(harness: &AgentHarness, value: &str) -> bool {
                 AgentHarness::Opencode => matches!(name.as_str(), "opencode" | "opencode.exe"),
                 AgentHarness::Zcode => matches!(name.as_str(), "zcode" | "zcode.cjs"),
                 AgentHarness::Devin => name == "devin",
+                AgentHarness::Muse => name == "muse",
                 _ => false,
             }
         })
@@ -889,6 +898,24 @@ fn is_devin_session_id(value: &str) -> bool {
         })
 }
 
+/// Keep a muse command's options and drop its session selectors and any
+/// subcommand, which would start a new turn or another mode on restore.
+fn normalize_muse_argv(argv: &mut Vec<String>) {
+    let original = std::mem::take(argv);
+    let mut args = original.into_iter();
+    argv.extend(args.next());
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "resume" | "exec" | "--" => break,
+            "--session-id" | "--prompt-file" | "--prompt" | "-p" => {
+                args.next();
+            }
+            _ if arg.starts_with("--session-id=") || arg.starts_with("--prompt") => {}
+            _ => argv.push(arg),
+        }
+    }
+}
+
 /// Keep a devin command's options and drop its session selectors, one-shot
 /// prompt options and prompt, which would start a new turn on restore.
 fn normalize_devin_argv(argv: &mut Vec<String>) {
@@ -996,6 +1023,7 @@ fn remove_native_resume_selector(harness: &AgentHarness, argv: &mut Vec<String>)
         }
         AgentHarness::Zcode => normalize_zcode_argv(argv),
         AgentHarness::Devin => normalize_devin_argv(argv),
+        AgentHarness::Muse => normalize_muse_argv(argv),
         _ => return false,
     }
     true
@@ -1589,6 +1617,17 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
             runtime.session_path.as_deref(),
             runtime.observer_started_at,
         ),
+        AgentHarness::Muse => observe_muse(
+            cwd,
+            metadata.adopted_pid,
+            runtime.session_path.as_deref(),
+            runtime.observer_started_at,
+            expected_session
+                .filter(|expected| expected.harness == AgentHarness::Muse)
+                .map(|expected| expected.session_id.clone())
+                .or_else(|| crate::muse::resumed_session(&metadata.launch_cmd))
+                .as_deref(),
+        ),
         AgentHarness::Devin => observe_devin(
             cwd,
             runtime.session_path.as_deref(),
@@ -1751,6 +1790,7 @@ pub fn pending_observer_detail(
         .ok()
         .flatten(),
         AgentHarness::Devin => Some("devin session has not appeared yet".to_string()),
+        AgentHarness::Muse => Some("muse session has not appeared yet".to_string()),
         AgentHarness::Unknown => None,
     }
 }
@@ -2080,7 +2120,7 @@ fn read_last_agy_observation(path: &Path) -> anyhow::Result<HarnessObservationDe
     })
 }
 
-fn is_uuid(value: &str) -> bool {
+pub(crate) fn is_uuid(value: &str) -> bool {
     value.len() == 36
         && value.bytes().enumerate().all(|(index, byte)| match index {
             8 | 13 | 18 | 23 => byte == b'-',
@@ -2257,7 +2297,11 @@ fn claude_reported_status(metadata: &AgentMetadata) -> Option<ClaudeReportedStat
 pub fn records_input_events(harness: &AgentHarness) -> bool {
     matches!(
         harness,
-        AgentHarness::Claude | AgentHarness::Codex | AgentHarness::Agy | AgentHarness::Devin
+        AgentHarness::Claude
+            | AgentHarness::Codex
+            | AgentHarness::Agy
+            | AgentHarness::Devin
+            | AgentHarness::Muse
     )
 }
 
@@ -3269,6 +3313,97 @@ fn observe_opencode(
     read_last_opencode_observation(&connection, &db_path, &session_id, updated_after)
 }
 
+/// Observes a Muse session: the one a restore or `muse resume` names, else
+/// the one already observed, else the most recently updated session whose
+/// workspace root is `cwd` since `updated_after`. A permission request Muse
+/// waits on is reported as the agent waiting for a permission decision.
+fn observe_muse(
+    cwd: &str,
+    pid: Option<u32>,
+    preferred_session: Option<&str>,
+    updated_after: Option<DateTime<Utc>>,
+    exact_session: Option<&str>,
+) -> anyhow::Result<Option<HarnessObservation>> {
+    let Some(data_dir) = crate::muse::data_dir_for(pid) else {
+        return Ok(None);
+    };
+    let log = match exact_session {
+        Some(session_id) => crate::muse::session_log(&data_dir, session_id)?,
+        None => match preferred_session
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+        {
+            Some(path) => Some(path),
+            None => crate::muse::newest_session_log_in(&data_dir, cwd, updated_after)?,
+        },
+    };
+    let Some(log) = log.filter(|log| log.is_file()) else {
+        return Ok(None);
+    };
+    let view = crate::muse::read_turn(&log)?;
+    let session_path = Some(log.to_string_lossy().into_owned());
+    let Some(turn_id) = view.turn_id.clone() else {
+        return Ok(Some(HarnessObservation {
+            session_path,
+            progress_summary: None,
+            harness_mode: None,
+            turn_phase: None,
+            updated_at: view.updated_at,
+            turn_state: AgentTurnState::WaitingOnUser,
+            last_turn_completed_at: None,
+            observed_turn: None,
+        }));
+    };
+    let final_message = view
+        .ended
+        .filter(|completed| *completed)
+        .and(view.reply.clone())
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    let (outcome, turn_state, turn_phase) = match view.ended {
+        Some(true) => (
+            AgentObservedTurnOutcome::Completed,
+            AgentTurnState::WaitingOnUser,
+            "final_answer".to_string(),
+        ),
+        Some(false) => (
+            AgentObservedTurnOutcome::Aborted,
+            AgentTurnState::WaitingOnUser,
+            "aborted".to_string(),
+        ),
+        None if !view.pending_approvals.is_empty() => (
+            AgentObservedTurnOutcome::Running,
+            AgentTurnState::WaitingOnUser,
+            format!("{CLAUDE_WAITING_PHASE_PREFIX}a permission decision"),
+        ),
+        None => (
+            AgentObservedTurnOutcome::Running,
+            AgentTurnState::WaitingOnAgent,
+            "working".to_string(),
+        ),
+    };
+    Ok(Some(HarnessObservation {
+        session_path,
+        progress_summary: final_message.as_deref().map(truncate_summary),
+        harness_mode: None,
+        turn_phase: Some(turn_phase),
+        updated_at: view.updated_at,
+        turn_state,
+        last_turn_completed_at: view.ended_at,
+        observed_turn: Some(AgentObservedTurn {
+            provider_turn_id: turn_id,
+            outcome,
+            started_at: view.started_at,
+            completed_at: view.ended_at,
+            started_cursor: None,
+            latest_cursor: None,
+            primary_user_message_sha256: view.input.as_deref().map(message_sha256),
+            user_message_count: view.inputs,
+            final_message,
+        }),
+    }))
+}
+
 /// Observes a Devin session: the one whose lock the pane's Devin process
 /// holds, else the session a restore expects, else the session named by
 /// `preferred_session`, else the newest session started in `cwd` since
@@ -3725,7 +3860,10 @@ pub fn native_resume_command(
         !session_id.trim().is_empty(),
         "agent session ID must not be empty"
     );
-    if matches!(harness, AgentHarness::Agy | AgentHarness::Claude) {
+    if matches!(
+        harness,
+        AgentHarness::Agy | AgentHarness::Claude | AgentHarness::Muse
+    ) {
         anyhow::ensure!(
             is_uuid(session_id.trim()),
             "{:?} restore requires an exact session UUID",
@@ -3760,7 +3898,7 @@ pub fn native_resume_command(
         match harness {
             AgentHarness::Agy => "--conversation",
             AgentHarness::Claude | AgentHarness::Zcode | AgentHarness::Devin => "--resume",
-            AgentHarness::Codex => "resume",
+            AgentHarness::Codex | AgentHarness::Muse => "resume",
             _ => unreachable!(),
         }
         .to_string(),
@@ -3801,6 +3939,9 @@ pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> V
             .and_then(|path| path.parent().map(|path| vec![path.to_path_buf()])),
         AgentHarness::Devin => crate::devin::db_path()
             .and_then(|path| path.parent().map(|path| vec![path.to_path_buf()])),
+        AgentHarness::Muse => {
+            crate::muse::data_dir_for(None).map(|data| vec![data.join("sessions")])
+        }
         AgentHarness::Unknown => None,
     };
 
@@ -3952,6 +4093,7 @@ pub fn restorable_session_id(
             .and_then(parse_opencode_session_path)
             .map(|(_, session_id)| session_id)
             .filter(|session_id| is_zcode_session_id(session_id))),
+        AgentHarness::Muse => Ok(crate::muse::session_id_of(path)),
         AgentHarness::Devin => Ok(path
             .to_str()
             .and_then(crate::devin::parse_session_url)
@@ -9619,6 +9761,116 @@ mod test {
         let url = format!("opencode://session?db=/tmp/db.sqlite&id={session}");
         assert_eq!(
             restorable_session_id(&AgentHarness::Zcode, Path::new(&url)).unwrap(),
+            Some(session.to_string())
+        );
+    }
+
+    #[test]
+    fn observes_a_muse_turn_through_a_permission_wait_to_its_end() {
+        let _env_lock = env_lock();
+        let temp = TempDir::new().unwrap();
+        let session = "01a1738a-c72f-7c81-909d-36e0e636494d";
+        let dir = temp.path().join("sessions/2026/10/25").join(session);
+        fs::create_dir_all(&dir).unwrap();
+        let log_path = dir.join("session.jsonl");
+        let index = rusqlite::Connection::open(temp.path().join("session-index.db")).unwrap();
+        index
+            .execute_batch(
+                "create table sessions (session_id text primary key, session_log_path text, \
+                 workspace_root text, created_at_us integer, updated_at_us integer)",
+            )
+            .unwrap();
+        index
+            .execute(
+                "insert into sessions values (?1, ?2, '/code/demo', 1, 2)",
+                rusqlite::params![session, log_path.to_string_lossy()],
+            )
+            .unwrap();
+        set_env_path("WAKTERM_AGENT_MUSE_DIR", temp.path());
+        let mut log = crate::muse::fixture::Log {
+            path: &log_path,
+            at: 1_792_939_838_000_000,
+        };
+        log.input("r1", "Run the tests");
+        let observe = || {
+            observe_muse("/code/demo", None, None, None, None)
+                .unwrap()
+                .unwrap()
+        };
+        let running = observe();
+        assert_eq!(running.turn_state, AgentTurnState::WaitingOnAgent);
+        assert_eq!(
+            running.session_path.as_deref(),
+            Some(log_path.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            running.observed_turn.unwrap().primary_user_message_sha256,
+            Some(message_sha256("Run the tests"))
+        );
+
+        // A permission request blocks input until it is decided.
+        log.approval("r1", "a1", false);
+        let waiting = observe();
+        assert_eq!(waiting.turn_state, AgentTurnState::WaitingOnUser);
+        let mut runtime = AgentRuntimeSnapshot::new(&AgentMetadata {
+            agent_id: "muse".to_string(),
+            name: "muse".to_string(),
+            launch_cmd: "muse".to_string(),
+            declared_cwd: "/code/demo".to_string(),
+            adopted_pid: None,
+            adopted_start_time: None,
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+            launch_supervisor: None,
+            codex_app_server: None,
+        });
+        runtime.harness = AgentHarness::Muse;
+        runtime.turn_state = waiting.turn_state.clone();
+        runtime.turn_phase = waiting.turn_phase.clone();
+        assert!(input_blocked_reason(&runtime).is_some());
+
+        log.approval("r1", "a1", true);
+        log.reply("r1", "All 12 pass.");
+        log.end("r1", "completed");
+        let done = observe();
+        let exact = observe_muse("/elsewhere", None, None, None, Some(session))
+            .unwrap()
+            .unwrap();
+        remove_env_var("WAKTERM_AGENT_MUSE_DIR");
+        assert_eq!(done.turn_state, AgentTurnState::WaitingOnUser);
+        let turn = done.observed_turn.unwrap();
+        assert_eq!(turn.outcome, AgentObservedTurnOutcome::Completed);
+        assert_eq!(turn.final_message.as_deref(), Some("All 12 pass."));
+        // A session named by restore or `muse resume` is observed exactly.
+        assert_eq!(exact.session_path, done.session_path);
+        assert_eq!(infer_harness("muse", None), AgentHarness::Muse);
+        assert_eq!(infer_harness("", Some("muse")), AgentHarness::Muse);
+    }
+
+    #[test]
+    fn muse_restore_resumes_the_exact_session_with_the_panes_options() {
+        let session = "01a1738a-c72f-7c81-909d-36e0e636494d";
+        let argv = native_resume_command(
+            &AgentHarness::Muse,
+            "muse --model muse-spark-1.3 resume 01a1739f-bb34-77f0-9b2e-da90bb50ef93",
+            session,
+        )
+        .unwrap()
+        .get_argv()
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+        assert_eq!(
+            argv,
+            ["muse", "--model", "muse-spark-1.3", "resume", session]
+        );
+        assert!(native_resume_command(&AgentHarness::Muse, "muse", "not-a-uuid").is_err());
+        let path = format!("/x/sessions/2026/10/25/{session}/session.jsonl");
+        assert_eq!(
+            restorable_session_id(&AgentHarness::Muse, Path::new(&path)).unwrap(),
             Some(session.to_string())
         );
     }

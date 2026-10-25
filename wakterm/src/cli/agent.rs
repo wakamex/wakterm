@@ -207,6 +207,7 @@ enum AgentStartHarness {
     Opencode,
     Zcode,
     Devin,
+    Muse,
 }
 
 impl AgentStartHarness {
@@ -219,6 +220,7 @@ impl AgentStartHarness {
             Self::Opencode => AgentHarness::Opencode,
             Self::Zcode => AgentHarness::Zcode,
             Self::Devin => AgentHarness::Devin,
+            Self::Muse => AgentHarness::Muse,
         }
     }
 
@@ -231,6 +233,7 @@ impl AgentStartHarness {
             Self::Opencode => "opencode",
             Self::Zcode => "zcode",
             Self::Devin => "devin",
+            Self::Muse => "muse",
         }
     }
 }
@@ -334,7 +337,7 @@ impl SpawnAgentCommand {
         let harness = infer_harness(launch_cmd, None);
         anyhow::ensure!(
             !matches!(harness, AgentHarness::Unknown),
-            "agent start requires a recognized harness (currently: agy, claude, codex, devin, gemini, opencode, zcode); if you are using a wrapper command, specify the harness positionally and pass the wrapper via --cmd"
+            "agent start requires a recognized harness (currently: agy, claude, codex, devin, gemini, muse, opencode, zcode); if you are using a wrapper command, specify the harness positionally and pass the wrapper via --cmd"
         );
         Ok(harness)
     }
@@ -941,9 +944,10 @@ fn resolve_spawn_agent_name(
         AgentHarness::Opencode => "opencode",
         AgentHarness::Zcode => "zcode",
         AgentHarness::Devin => "devin",
+        AgentHarness::Muse => "muse",
         AgentHarness::Unknown => {
             bail!(
-                "agent start requires a recognized harness (currently: agy, claude, codex, devin, gemini, opencode, zcode)"
+                "agent start requires a recognized harness (currently: agy, claude, codex, devin, gemini, muse, opencode, zcode)"
             )
         }
     };
@@ -3387,6 +3391,7 @@ fn harness_label(harness: &AgentHarness) -> String {
         AgentHarness::Opencode => "opencode",
         AgentHarness::Zcode => "zcode",
         AgentHarness::Devin => "devin",
+        AgentHarness::Muse => "muse",
     }
     .to_string()
 }

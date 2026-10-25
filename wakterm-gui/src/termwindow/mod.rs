@@ -264,7 +264,7 @@ impl TabHarnessIcon {
             AgentHarness::Opencode => Some(Self::OpenCode),
             AgentHarness::Zcode => Some(Self::ZCode),
             AgentHarness::Devin => Some(Self::Devin),
-            AgentHarness::Unknown => None,
+            AgentHarness::Muse | AgentHarness::Unknown => None,
         }
     }
 
