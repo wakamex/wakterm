@@ -336,22 +336,31 @@ pub(crate) fn read_turn(log: &Path) -> anyhow::Result<TurnView> {
 
 /// The text in Muse's input box, read from the pane's visible lines: the
 /// lines between the two lowest rules, the first starting with `❯`. A draft
-/// longer than one line continues on lines indented by two spaces. A
+/// longer than one line continues on lines indented by two spaces. An empty
+/// box can show a tip, such as "Type @ to search and insert workspace file
+/// paths", drawn in the rules' color, which is not text in the box. A
 /// permission prompt or other menu replaces the box.
 pub fn input_box(lines: &[wakterm_term::Line]) -> Option<String> {
-    let lines: Vec<String> = lines
-        .iter()
-        .map(|line| line.as_str().trim_end().to_string())
-        .collect();
-    let is_rule = |line: &String| line.starts_with('\u{2500}');
+    let is_rule = |line: &wakterm_term::Line| line.as_str().starts_with('\u{2500}');
     let bottom = lines.iter().rposition(is_rule)?;
     let top = lines[..bottom].iter().rposition(is_rule)?;
+    let muted = lines[bottom].visible_cells().next()?.attrs().foreground();
     let (first, rest) = lines[top + 1..bottom].split_first()?;
-    let first = first.strip_prefix('\u{276f}')?;
+    if !first.as_str().starts_with('\u{276f}') {
+        return None;
+    }
+    let text = |line: &wakterm_term::Line, skip: usize| {
+        line.visible_cells()
+            .skip(skip)
+            .filter(|cell| cell.attrs().foreground() != muted)
+            .map(|cell| cell.str().to_string())
+            .collect::<String>()
+            .trim()
+            .to_string()
+    };
     Some(
-        std::iter::once(first)
-            .chain(rest.iter().map(String::as_str))
-            .map(str::trim)
+        std::iter::once(text(first, 1))
+            .chain(rest.iter().map(|line| text(line, 0)))
             .collect::<Vec<_>>()
             .join("\n")
             .trim()
@@ -453,26 +462,60 @@ mod test {
 
     #[test]
     fn input_box_is_the_text_between_the_two_lowest_rules() {
-        let rule = "\u{2500}".repeat(20);
-        let screen = |rows: &[&str]| {
-            let mut screen = vec!["\u{25c6} echo: first", "\u{2514} queued", &rule];
-            screen.extend_from_slice(rows);
-            screen.extend([
-                rule.as_str(),
-                "  echo \u{b7} /code/x \u{b7} Auto-review",
-                "",
-            ]);
-            screen
-                .iter()
-                .map(|line| wakterm_term::Line::from_text(line, &Default::default(), 0, None))
-                .collect::<Vec<_>>()
+        use wakterm_term::{CellAttributes, Line};
+        let normal = CellAttributes::default();
+        let mut muted = CellAttributes::default();
+        muted.set_foreground(wakterm_term::color::AnsiColor::Grey);
+        // A line of text segments, each in the normal or the muted color.
+        let line = |parts: &[(&str, bool)]| {
+            let mut cells = Vec::new();
+            for (text, is_muted) in parts {
+                let attrs = if *is_muted { &muted } else { &normal };
+                cells.extend(
+                    Line::from_text(text, attrs, 0, None)
+                        .visible_cells()
+                        .map(|cell| cell.as_cell()),
+                );
+            }
+            Line::from_cells(cells, 0)
         };
-        assert_eq!(input_box(&screen(&["\u{276f} "])).as_deref(), Some(""));
+        let rule = "\u{2500}".repeat(20);
+        let screen = |rows: &[&[(&str, bool)]]| {
+            let mut screen = vec![
+                line(&[("\u{25c6} echo: first", false)]),
+                line(&[("\u{2514} queued", false)]),
+                line(&[(&rule, true)]),
+            ];
+            screen.extend(rows.iter().map(|row| line(row)));
+            screen.push(line(&[(&rule, true)]));
+            screen.push(line(&[("  echo \u{b7} /code/x \u{b7} Auto-review", false)]));
+            screen.push(line(&[("", false)]));
+            screen
+        };
         assert_eq!(
-            input_box(&screen(&["\u{276f} third", "  steer then esc"])).as_deref(),
+            input_box(&screen(&[&[("\u{276f} ", false)]])).as_deref(),
+            Some("")
+        );
+        let tip = "Type @ to search and insert workspace file paths";
+        assert_eq!(
+            input_box(&screen(&[&[("\u{276f} ", false), (tip, true)]])).as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            input_box(&screen(&[
+                &[("\u{276f} third", false)],
+                &[("  steer then esc", false)]
+            ]))
+            .as_deref(),
             Some("third\nsteer then esc")
         );
-        assert_eq!(input_box(&screen(&["  Allow once"])), None);
+        assert_eq!(
+            input_box(&screen(&[
+                &[("Would you like to run the following command?", false)],
+                &[("\u{27e9} 1. Allow this stage once (y)", false)]
+            ])),
+            None
+        );
     }
 
     #[test]
