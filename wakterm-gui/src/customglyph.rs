@@ -7189,6 +7189,7 @@ impl GlyphCache {
                     (16, HARNESS_ICON_AGY_POLY),
                     (32, HARNESS_ICON_ZCODE_POLY),
                     (64, HARNESS_ICON_DEVIN_POLY),
+                    (128, HARNESS_ICON_MUSE_POLY),
                 ];
                 let mut icon_index = 0;
                 for (bit, polys) in icon_polys {
