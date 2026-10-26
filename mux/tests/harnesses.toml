@@ -62,9 +62,9 @@ readers = ["sch"]
 
 [devin]
 name = "Devin CLI"
-home = "~/.local/share/devin/cli"
+home = "${XDG_DATA_HOME:-~/.local/share}/devin/cli"
 sessions = ["sessions.db", "session_locks/<name>.lock"]
-format = "SQLite with sessions and message_nodes tables. message_nodes is a tree of conversation versions: a resumed or retried turn copies earlier messages into new nodes with the same message_id, so dedupe by message_id. thinking is an object {thinking, signature}. User messages with metadata.is_user_input false are injected context. A lock file marks a live session."
+format = "SQLite with sessions and message_nodes tables. message_nodes is a tree of conversation versions: a resumed or retried turn copies earlier messages into new nodes with the same message_id, so dedupe by message_id. thinking is an object {thinking, signature}. User messages with metadata.is_user_input false are injected context. A lock file marks a live session. DEVIN_SESSIONS_DIR=S moves only sessions.db and session_locks/, to S/cli/; logs and credentials stay in the home."
 readers = ["sch", "wakterm"]
 
 [grok]

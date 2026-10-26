@@ -7016,7 +7016,7 @@ mod test {
     }
 
     /// `harnesses.toml` from [agent-spec-sheet](https://github.com/wakamex/agent-spec-sheet)
-    /// at commit 7d51d15, byte for byte. Replace it with a newer commit's copy when the
+    /// at commit 55725a0, byte for byte. Replace it with a newer commit's copy when the
     /// spec changes; this test then fails until Wakterm's path resolvers agree.
     const HARNESS_SPEC: &str = include_str!("../tests/harnesses.toml");
 
