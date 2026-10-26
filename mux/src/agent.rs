@@ -2470,6 +2470,16 @@ pub fn claude_dialog_open(runtime: &AgentRuntimeSnapshot) -> bool {
         == Some("dialog open")
 }
 
+/// Whether the observed Claude reports it is waiting for the user's answer
+/// to a question, which it labels `input needed`.
+pub fn claude_waiting_for_input(runtime: &AgentRuntimeSnapshot) -> bool {
+    runtime
+        .turn_phase
+        .as_deref()
+        .and_then(|phase| phase.strip_prefix(CLAUDE_WAITING_PHASE_PREFIX))
+        == Some("input needed")
+}
+
 /// Whether Claude reports the agent's exact process waiting for the user's
 /// answer to a question, the only dialog it labels `input needed` that a
 /// model turn can open.

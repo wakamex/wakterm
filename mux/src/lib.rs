@@ -60,6 +60,7 @@ pub mod agent_request;
 pub mod agent_service;
 pub mod claude_menu;
 pub mod claude_question_keys;
+pub mod claude_question_screen;
 pub mod client;
 pub mod codex_app_server;
 pub mod codex_process_memory;
@@ -235,6 +236,8 @@ pub struct Mux {
     /// The Claude menu each pane shows, and when it appeared.
     claude_menus: Mutex<HashMap<PaneId, (claude_menu::ClaudeMenu, DateTime<Utc>)>>,
     devin_prompts: Mutex<HashMap<PaneId, (devin_prompt::DevinPrompt, DateTime<Utc>)>>,
+    /// The Claude question each pane last showed, reported once.
+    claude_screen_questions: Mutex<HashMap<PaneId, claude_question_screen::ScreenQuestion>>,
     /// When the mux started freezing idle agents, which counts as their
     /// latest input until they get some.
     agent_freeze_started: Mutex<Option<Instant>>,
@@ -690,6 +693,11 @@ enum AgentObserverCommand {
         metadata: AgentMetadata,
         shown_at: DateTime<Utc>,
         prompt: devin_prompt::DevinPrompt,
+    },
+    ClaudeScreenQuestion {
+        metadata: AgentMetadata,
+        shown_at: DateTime<Utc>,
+        question: claude_question_screen::ScreenQuestion,
     },
     Unavailable {
         metadata: AgentMetadata,
@@ -1221,6 +1229,20 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                     }
                 }
             }
+            AgentObserverCommand::ClaudeScreenQuestion {
+                metadata,
+                shown_at,
+                question,
+            } => {
+                if let Some(writer) = event_writer.as_mut() {
+                    if let Err(err) =
+                        writer.record_claude_screen_question(&metadata, shown_at, &question)
+                    {
+                        log::error!("failed to persist Claude's question: {err:#}");
+                        writer_failed = true;
+                    }
+                }
+            }
             AgentObserverCommand::DevinPrompt {
                 metadata,
                 shown_at,
@@ -1444,6 +1466,7 @@ impl Mux {
             frozen_agents: Mutex::new(HashMap::new()),
             claude_menus: Mutex::new(HashMap::new()),
             devin_prompts: Mutex::new(HashMap::new()),
+            claude_screen_questions: Mutex::new(HashMap::new()),
             codex_steers: Mutex::new(HashMap::new()),
             agent_freeze_started: Mutex::new(None),
             agent_attention_seen_at: RwLock::new(HashMap::new()),
@@ -3531,6 +3554,7 @@ impl Mux {
         counter!("mux.agent_observer.refresh.applied.rate").increment(1);
 
         self.report_claude_menu(update.pane_id);
+        self.report_claude_screen_question(update.pane_id);
         self.report_devin_prompt(update.pane_id);
 
         if schedule_trailing_refresh {
@@ -3723,6 +3747,47 @@ impl Mux {
                 metadata: (*metadata).clone(),
                 shown_at,
                 prompt,
+            });
+    }
+
+    /// Reports the question Claude's screen shows while Claude reports it is
+    /// waiting for the user's answer. The writer requests it unless the
+    /// turn's transcript already asked it, which the writer reads first.
+    fn report_claude_screen_question(&self, pane_id: PaneId) {
+        let waiting = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .is_some_and(|runtime| {
+                runtime.harness == AgentHarness::Claude && agent::claude_waiting_for_input(runtime)
+            });
+        if !waiting {
+            self.claude_screen_questions.lock().remove(&pane_id);
+            return;
+        }
+        let (Some(metadata), Some(pane)) = (
+            self.get_agent_metadata_for_pane(pane_id),
+            self.get_pane(pane_id),
+        ) else {
+            return;
+        };
+        let Some(question) = claude_question_screen::parse(&claude_menu::screen(&pane)) else {
+            return;
+        };
+        if self
+            .claude_screen_questions
+            .lock()
+            .insert(pane_id, question.clone())
+            .is_some_and(|shown| shown == question)
+        {
+            return;
+        }
+        let _ = self
+            .agent_observer_tx
+            .send(AgentObserverCommand::ClaudeScreenQuestion {
+                metadata: (*metadata).clone(),
+                shown_at: Utc::now(),
+                question,
             });
     }
 

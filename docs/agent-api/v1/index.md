@@ -60,6 +60,8 @@ wakterm agent approval \
 
 Wakterm answers Codex through the original app-server request, causing the native TUI to dismiss the same modal. Claude has no equivalent control API, so Wakterm validates that the exact tool call is still pending in the exact live session and submits the selected label to that pane's native question UI. Resolution requires the exact live agent incarnation and a choice from that request. A repeated response, a provider-side response, a replaced agent, or a completed request is rejected as stale. Pending interactions are provider state, not a second durable authority; the durable event exists so a transport can notify the user and recover exact identity.
 
+Claude can write a question to its transcript only once it is answered. While Claude reports that it is waiting for the user's answer and its transcript has not asked the question, Wakterm reads a single single-choice question from the pane's screen and reports it as the same `user_question` request: its `prompt` and `questions` hold the question as the screen shows it, its `item_id` starts with `claude-screen:`, and resolving it requires that Claude still waits for an answer and the screen still shows that question with the same options. Each question is requested once per turn, from whichever source shows it first, and a question that the transcript shows only together with its answer is not requested.
+
 `approval_control.v1` covers these single-choice requests.
 
 ### Claude question forms

@@ -314,14 +314,25 @@ impl Mux {
                 .as_deref()
                 .context("approval target has no exact Claude session")?,
         );
-        anyhow::ensure!(
-            claude_question_is_pending(&session_path, &request.item_id)?,
-            "approval request is no longer pending"
-        );
         let pane = self
             .get_pane(pane_id)
             .context("approval target pane disappeared")?;
         anyhow::ensure!(!pane.is_dead(), "approval target pane exited");
+        // A question read from the screen is pending while Claude waits for
+        // an answer and the screen still shows it.
+        let pending = if request
+            .item_id
+            .starts_with(crate::claude_question_screen::SCREEN_ITEM_PREFIX)
+        {
+            crate::agent::claude_waiting_for_answer(&metadata)
+                && crate::claude_question_screen::shows_request(
+                    &crate::claude_menu::screen(&pane),
+                    &request,
+                )
+        } else {
+            claude_question_is_pending(&session_path, &request.item_id)?
+        };
+        anyhow::ensure!(pending, "approval request is no longer pending");
         let resolved = AgentApprovalResolution {
             schema: AGENT_APPROVAL_SCHEMA.to_string(),
             request_id: resolution.request_id.clone(),

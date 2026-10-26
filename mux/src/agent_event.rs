@@ -158,6 +158,10 @@ struct JsonlCursor {
     steer_runs: Vec<String>,
     #[serde(default)]
     queued_steers: Vec<String>,
+    /// The keys of the questions Claude asked in the open turn, reported
+    /// from its transcript or its screen, so that each is requested once.
+    #[serde(default)]
+    asked_questions: Vec<String>,
 }
 
 impl JsonlCursor {
@@ -1042,6 +1046,55 @@ impl AgentEventWriter {
 }
 
 impl AgentEventWriter {
+    /// Records a Claude question read from the agent's pane as an approval
+    /// request in the agent's open turn, unless that turn already asked it,
+    /// from the transcript or an earlier read of the screen.
+    pub(crate) fn record_claude_screen_question(
+        &mut self,
+        metadata: &AgentMetadata,
+        shown_at: DateTime<Utc>,
+        question: &crate::claude_question_screen::ScreenQuestion,
+    ) -> anyhow::Result<()> {
+        let Some(incarnation) = incarnation_id(metadata) else {
+            return Ok(());
+        };
+        let Some(mut state) = load_projection(&self.conn, &metadata.agent_id)? else {
+            return Ok(());
+        };
+        let Some(ProviderCursor::Claude(cursor)) = state.cursor.as_mut() else {
+            return Ok(());
+        };
+        let Some(turn_id) = cursor.current_turn_id.clone().filter(|_| cursor.turn_open) else {
+            return Ok(());
+        };
+        let key = crate::claude_question_screen::question_key(&question.question);
+        if cursor.asked_questions.contains(&key) {
+            return Ok(());
+        }
+        let Some(approval) =
+            crate::claude_question_screen::approval_request(question, metadata, &turn_id, shown_at)
+        else {
+            return Ok(());
+        };
+        cursor.asked_questions.push(key);
+        let mut event = PendingEvent::new(
+            format!("claude-screen-question:{}", approval.request_id),
+            AgentEventKind::ApprovalRequested,
+            shown_at,
+        );
+        event.turn_id = Some(turn_id);
+        event.approval = Some(approval);
+        let tx = self.conn.transaction()?;
+        insert_event(&tx, &metadata.agent_id, &incarnation, event)?;
+        save_projection(&tx, &metadata.agent_id, &state)?;
+        tx.commit()?;
+        let latest = latest_sequence(&self.conn)?;
+        self.store.publish_latest_sequence(latest);
+        Ok(())
+    }
+}
+
+impl AgentEventWriter {
     /// Records Devin's permission prompt, read from the agent's pane, as an
     /// approval request in the agent's current turn. The same prompt read
     /// again is the same event.
@@ -1639,6 +1692,7 @@ fn initial_jsonl_cursor(
         last_record_at: None,
         steer_runs: Vec::new(),
         queued_steers: Vec::new(),
+        asked_questions: Vec::new(),
     })
 }
 
@@ -2069,6 +2123,9 @@ fn project_claude(
             })
         }
     };
+    // The tool calls this read shows answered. Claude can write a question
+    // only together with its answer, which needs no approval.
+    let mut answered = std::collections::HashSet::<String>::new();
     let events = match read_new_jsonl(path, &mut cursor, |offset, record, cursor| {
         let timestamp = event_time(record);
         let uuid = record
@@ -2098,6 +2155,7 @@ fn project_claude(
             cursor.turn_before_gap = None;
             cursor.turn_error = None;
             cursor.last_assistant_text = None;
+            cursor.asked_questions.clear();
             cursor.turn_open = true;
             let mut started = PendingEvent::new(
                 format!("{record_key}:started"),
@@ -2198,6 +2256,20 @@ fn project_claude(
                 detail,
             )]);
         }
+        if record.get("type").and_then(Value::as_str) == Some("user") {
+            answered.extend(
+                record
+                    .pointer("/message/content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|block| {
+                        block.get("type").and_then(Value::as_str) == Some("tool_result")
+                    })
+                    .filter_map(|block| block.get("tool_use_id").and_then(Value::as_str))
+                    .map(str::to_string),
+            );
+        }
         if record.get("type").and_then(Value::as_str) != Some("assistant") {
             return Ok(Vec::new());
         }
@@ -2275,6 +2347,18 @@ fn project_claude(
                     Some("tool_use")
                         if block.get("name").and_then(Value::as_str) == Some("AskUserQuestion") =>
                     {
+                        // A question already reported from the screen is
+                        // not requested again.
+                        let key = block
+                            .pointer("/input/questions/0/question")
+                            .and_then(Value::as_str)
+                            .map(crate::claude_question_screen::question_key);
+                        if let Some(key) = &key {
+                            if cursor.asked_questions.contains(key) {
+                                continue;
+                            }
+                            cursor.asked_questions.push(key.clone());
+                        }
                         if let Some(approval) = crate::agent_approval::claude_question_from_block(
                             block, metadata, &turn_id, timestamp,
                         ) {
@@ -2341,6 +2425,13 @@ fn project_claude(
         }
         Err(err) => return Err(err),
     };
+    let mut events = events;
+    events.retain(|event| {
+        !event
+            .approval
+            .as_ref()
+            .is_some_and(|approval| answered.contains(&approval.item_id))
+    });
     Ok(ProjectedEvents {
         cursor: ProviderCursor::Claude(cursor),
         events,
@@ -5783,6 +5874,102 @@ mod tests {
             store.find_approval(&approval.request_id).unwrap().unwrap(),
             *approval
         );
+    }
+
+    #[test]
+    fn claude_question_is_requested_once_from_the_screen_or_the_transcript() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude-question.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"mode\",\"sessionId\":\"session-claude\"}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("claude-question");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let user = |uuid: &str| serde_json::json!({"type": "user", "uuid": uuid, "message": {"content": "work"}});
+        let question = |uuid: &str, tool: &str| {
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": uuid,
+                "message": {"model": "claude", "stop_reason": "tool_use", "content": [{
+                    "type": "tool_use", "id": tool, "name": "AskUserQuestion",
+                    "input": {"questions": [{
+                        "header": "Promotion",
+                        "question": "How should I promote the `build`?",
+                        "multiSelect": false,
+                        "options": [{"label": "Build and activate"}, {"label": "Hold off"}]
+                    }]}
+                }]}
+            })
+        };
+        let answer = |uuid: &str, tool: &str| {
+            serde_json::json!({"type": "user", "uuid": uuid, "message": {"content": [
+                {"type": "tool_result", "tool_use_id": tool, "content": "Build and activate"}
+            ]}})
+        };
+        let approvals = |after: u64| {
+            store
+                .read_page(after, 100)
+                .unwrap()
+                .events
+                .into_iter()
+                .filter_map(|event| event.approval)
+                .collect::<Vec<_>>()
+        };
+        append(&session, &format!("{}\n", user("turn-1")));
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+
+        // Claude shows the question before writing it, so the screen asks it,
+        // once however often the screen is read.
+        let shown = crate::claude_question_screen::ScreenQuestion {
+            header: Some("Promotion".to_string()),
+            question: "How should I promote the build?".to_string(),
+            options: vec![
+                ("Build and activate".to_string(), None),
+                ("Hold off".to_string(), None),
+            ],
+        };
+        let mut writer = store.writer().unwrap();
+        for _ in 0..2 {
+            writer
+                .record_claude_screen_question(&metadata, Utc::now(), &shown)
+                .unwrap();
+        }
+        let requested = approvals(after);
+        assert_eq!(requested.len(), 1);
+        assert_eq!(requested[0].kind, "user_question");
+        assert_eq!(requested[0].turn_id, "turn-1");
+        assert!(requested[0]
+            .item_id
+            .starts_with(crate::claude_question_screen::SCREEN_ITEM_PREFIX));
+        assert_eq!(requested[0].choices[1].label, "Hold off");
+
+        // The transcript's copy of the same question is not asked again.
+        append(&session, &format!("{}\n", question("ask-1", "tool-1")));
+        store.observe_agent(&metadata, &runtime).unwrap();
+        assert_eq!(approvals(after).len(), 1);
+
+        // A question Claude writes only together with its answer is not
+        // asked at all.
+        append(
+            &session,
+            &format!(
+                "{}\n{}\n{}\n",
+                user("turn-2"),
+                question("ask-2", "tool-2"),
+                answer("answer-2", "tool-2")
+            ),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        assert_eq!(approvals(after).len(), 1);
     }
 
     #[test]
