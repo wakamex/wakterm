@@ -162,6 +162,10 @@ struct JsonlCursor {
     /// from its transcript or its screen, so that each is requested once.
     #[serde(default)]
     asked_questions: Vec<String>,
+    /// Whether the open Claude turn's latest record is a tool call or its
+    /// result, after which Claude still owes the model's reply.
+    #[serde(default)]
+    owes_reply: bool,
 }
 
 impl JsonlCursor {
@@ -1639,6 +1643,13 @@ fn close_unanswered_claude_turn(
     if !crate::agent::claude_idle_settled(path, crate::agent::claude_status_changed_at(metadata)) {
         return None;
     }
+    // Claude can report idle before its transcript has the turn's reply,
+    // which it may write many minutes later. A turn whose transcript ends
+    // at a tool call or its result is still owed that reply, unless Claude
+    // recorded a provider error that stopped it.
+    if cursor.owes_reply && cursor.turn_error.is_none() {
+        return None;
+    }
     let turn_id = cursor.current_turn_id.clone()?;
     cursor.turn_open = false;
     let key = format!("claude:{}:{turn_id}:no-reply", cursor.source_id);
@@ -1693,6 +1704,7 @@ fn initial_jsonl_cursor(
         steer_runs: Vec::new(),
         queued_steers: Vec::new(),
         asked_questions: Vec::new(),
+        owes_reply: false,
     })
 }
 
@@ -2156,6 +2168,7 @@ fn project_claude(
             cursor.turn_error = None;
             cursor.last_assistant_text = None;
             cursor.asked_questions.clear();
+            cursor.owes_reply = false;
             cursor.turn_open = true;
             let mut started = PendingEvent::new(
                 format!("{record_key}:started"),
@@ -2255,6 +2268,22 @@ fn project_claude(
                 cursor.current_turn_id.clone(),
                 detail,
             )]);
+        }
+        let blocks_of = |kind: &str| {
+            record
+                .pointer("/message/content")
+                .and_then(Value::as_array)
+                .is_some_and(|content| {
+                    content
+                        .iter()
+                        .any(|block| block.get("type").and_then(Value::as_str) == Some(kind))
+                })
+        };
+        match record.get("type").and_then(Value::as_str) {
+            Some("user") if blocks_of("tool_result") => cursor.owes_reply = true,
+            Some("assistant") if blocks_of("tool_use") => cursor.owes_reply = true,
+            Some("assistant") if blocks_of("text") => cursor.owes_reply = false,
+            _ => {}
         }
         if record.get("type").and_then(Value::as_str) == Some("user") {
             answered.extend(
@@ -5710,6 +5739,85 @@ mod tests {
                     some("Claude went idle without replying.")
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn claude_turn_owed_a_reply_stays_open_until_the_reply_is_written() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"mode\",\"sessionId\":\"session-claude\"}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("claude");
+        let mut runtime = runtime(
+            &metadata,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        let set_age = |seconds: u64| {
+            fs::File::options()
+                .write(true)
+                .open(&session)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - Duration::from_secs(seconds))
+                .unwrap();
+        };
+        let finals = || {
+            store
+                .read_page(after, 100)
+                .unwrap()
+                .events
+                .into_iter()
+                .filter(|event| event.kind == AgentEventKind::TurnFinal)
+                .map(|event| (event.outcome, event.text))
+                .collect::<Vec<_>>()
+        };
+        // The transcript stops at a tool's result while Claude, which has
+        // replied on screen, already reports idle.
+        append(
+            &session,
+            &format!(
+                "{}\n{}\n{}\n",
+                serde_json::json!({"type": "user", "uuid": "turn-1", "message": {"content": "work"}}),
+                serde_json::json!({"type": "assistant", "uuid": "a1", "message": {
+                    "model": "claude", "stop_reason": "tool_use",
+                    "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]}}),
+                serde_json::json!({"type": "user", "uuid": "r1", "message": {"content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}),
+            ),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        runtime.turn_phase = Some("idle".to_string());
+        set_age(60);
+        store.observe_agent(&metadata, &runtime).unwrap();
+        store.observe_agent(&metadata, &runtime).unwrap();
+        assert!(finals().is_empty());
+
+        // The reply written late is the turn's only final.
+        append(
+            &session,
+            &format!(
+                "{}\n",
+                serde_json::json!({"type": "assistant", "uuid": "a2", "message": {
+                    "model": "claude", "stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": "The run has started."}]}})
+            ),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        set_age(60);
+        store.observe_agent(&metadata, &runtime).unwrap();
+        assert_eq!(
+            finals(),
+            [(
+                Some("completed".to_string()),
+                Some("The run has started.".to_string())
+            )]
         );
     }
 
