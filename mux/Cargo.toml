@@ -71,6 +71,7 @@ winapi = { workspace=true, features = [
 [dev-dependencies]
 criterion.workspace = true
 k9.workspace = true
+toml.workspace = true
 
 [[bench]]
 name = "pane_output"

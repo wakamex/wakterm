@@ -1,0 +1,111 @@
+# Where each coding-agent harness keeps its home and session history, and which tools read it.
+#
+# home: the harness's home directory. "${VAR:-default}" means the value of VAR when set, else default,
+#   as in the shell; "~" is the user's home directory.
+# sessions: where session history lives, relative to home.
+# readers: the tools on this host that read the history. Each reader's tests check its own path
+#   constants against this file. Check this file and those readers' code before deciding a harness's
+#   history cannot be read.
+
+[claude]
+name = "Claude Code"
+home = "${CLAUDE_CONFIG_DIR:-~/.claude}"
+sessions = ["projects/<project>/<session>.jsonl", "projects/<project>/<session>/subagents/agent-*.jsonl"]
+format = "JSON Lines, one message per line"
+readers = ["sch", "clanker-analytics", "wakterm"]
+
+[codex]
+name = "Codex"
+home = "${CODEX_HOME:-~/.codex}"
+sessions = ["sessions/YYYY/MM/DD/rollout-*.jsonl", "archived_sessions/rollout-*.jsonl"]
+format = "JSON Lines; reasoning is encrypted except for summaries some models write. Archiving a conversation moves its file from sessions/ to archived_sessions/."
+readers = ["sch", "clanker-analytics", "wakterm"]
+
+[agy]
+name = "Antigravity CLI (agy)"
+home = "~/.gemini/antigravity-cli"
+sessions = [
+  "brain/<id>/.system_generated/logs/transcript_full.jsonl",
+  "brain/<id>/.system_generated/logs/transcript.jsonl",
+  "conversations/<id>.db",
+]
+format = "JSON Lines with type, content, thinking, tool_calls and created_at. The model is not in the transcript; it is in conversations/<id>.db and cache/conversation_metadata.json. conversations/<id>.db holds the same steps as undocumented protobuf; prefer the transcript. Workspaces are in conversation_summaries.db (workspace_uris)."
+readers = ["sch", "clanker-analytics", "wakterm"]
+
+[gemini]
+name = "Gemini CLI"
+home = "${GEMINI_CLI_HOME:-~}/.gemini"
+sessions = ["tmp/<project>/chats/*.jsonl", "tmp/<project>/chats/*.json"]
+format = "Newer chats are JSON Lines: a metadata line, then messages, with $set lines for updates; a rewritten message is appended again with the same id, so keep the last version. Older chats are JSON, one file per chat, whose timestamp has more than one type. <project> is the name projects.json gives the project path, or the SHA-256 of the path in older homes."
+readers = ["sch", "clanker-analytics", "wakterm"]
+
+[opencode]
+name = "OpenCode"
+home = "${XDG_DATA_HOME:-~/.local/share}/opencode"
+sessions = ["opencode.db"]
+format = "SQLite: session, message and part tables with JSON data"
+readers = ["sch", "wakterm"]
+
+[zcode]
+name = "Zcode"
+home = "~/.zcode"
+sessions = ["cli/db/db.sqlite"]
+format = "SQLite in OpenCode's schema, with part, model_usage, turn_usage and tool_usage tables; read the write-ahead log too. The path is fixed: ZCODE_DATA_BASE_DIR moves only provider config and telemetry state."
+readers = ["sch", "clanker-analytics", "wakterm"]
+
+[hermes]
+name = "Hermes"
+home = "${HERMES_HOME:-~/.hermes}"
+sessions = ["state.db"]
+format = "SQLite: sessions and messages tables, with a reasoning column in newer databases; message ids are integers since 0.22"
+readers = ["sch"]
+
+[devin]
+name = "Devin CLI"
+home = "~/.local/share/devin/cli"
+sessions = ["sessions.db", "session_locks/<name>.lock"]
+format = "SQLite with sessions and message_nodes tables. message_nodes is a tree of conversation versions: a resumed or retried turn copies earlier messages into new nodes with the same message_id, so dedupe by message_id. thinking is an object {thinking, signature}. User messages with metadata.is_user_input false are injected context. A lock file marks a live session."
+readers = ["sch", "wakterm"]
+
+[grok]
+name = "Grok Build"
+home = "${GROK_HOME:-~/.grok}"
+sessions = [
+  "sessions/<URL-encoded working directory>/<id>/chat_history.jsonl",
+  "sessions/<URL-encoded working directory>/<id>/summary.json",
+  "sessions/<URL-encoded working directory>/<id>/events.jsonl",
+]
+format = "JSON Lines without timestamps; summary.json has the session's created_at and events.jsonl has ts per turn event. User lines with synthetic_reason are injected reminders. Reasoning lines carry a readable summary next to encrypted_content."
+readers = ["sch"]
+
+[dsh]
+name = "DeepSeek Harness"
+home = "${DSH_HOME:-~/.dsh}"
+sessions = ["sessions/-<cwd with / as ->-/session-<id>/session.v<N>.jsonl.zstd"]
+format = "JSON Lines compressed with Zstandard; the format version N varies (v3 and v4 seen). Records are events with type, time (ms) and data. user/message (source.kind user for prompts, other kinds are injected context), assistant/message (content blocks: reasoning, text, tool-call) and tool/result hold the conversation; tool/result keeps a tool's output either as plain text blocks in data.message.content ({type: text, text}, as dsh 0.2.1-rc.2 writes) or nested in tool-result blocks, so accept both. Reasoning blocks have empty text unless the model's config sets reasoningEffort, which the headless profile's default does not, so a session with no readable reasoning usually has empty blocks rather than a missing field. assistant/chunk is the raw stream."
+readers = ["sch"]
+
+[cursor]
+name = "Cursor Agent"
+home = "~/.cursor"
+sessions = ["chats/<MD5 of workspace path>/<id>/store.db"]
+format = "SQLite, one database per chat, with blobs (id, data) and meta tables. Messages are JSON blobs with role and content, beside binary tree records, in insertion order with no per-message time. meta key '0' is hex-encoded JSON with createdAt (ms). The first string user message names the workspace in a <user_info> block. Reasoning is stored redacted and cannot be read."
+readers = ["sch"]
+
+[muse]
+name = "Muse Code"
+home = "${XDG_DATA_HOME:-~/.local/share}/muse"
+sessions = [
+  "sessions/YYYY/MM/DD/<session id>/session.jsonl",
+  "sessions/YYYY/MM/DD/<session id>/subagent/<id>/session.jsonl",
+  "session-index.db",
+]
+format = "JSON Lines of records with payload_type, stream {kind, id}, recorded_at (microseconds) and payload; session ids are UUIDv7. Most of a turn is payload_type runtime.session with payload.kind run and payload.event.kind naming the step: model_completed carries usage (input_tokens, cached_tokens, cache_read_tokens, cache_write_tokens, output_tokens, reasoning_tokens) and model, assistant_message_committed holds replies, assistant_tool_calls_committed tool calls (tool_calls name and args) and tool_result_batch_committed their results (results[].text). reasoning_committed keeps only encrypted_content with empty text; the readable reasoning is in reasoning_summary_committed. The user's prompt is runtime.user_intent.accepted with semantic_kind chat (model_messages), and the workspace is workspace_root in runtime.session.metadata. Settings and the login are under ${XDG_CONFIG_HOME:-~/.config}/muse. Checked against 1.4.12."
+readers = ["sch", "clanker-analytics", "wakterm"]
+
+[antigravity-editor]
+name = "Antigravity editor"
+home = "~/.gemini/antigravity"
+sessions = ["conversations/*.pb"]
+format = "Protobuf, no decoder"
+readers = []

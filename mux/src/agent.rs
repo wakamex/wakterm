@@ -7015,6 +7015,157 @@ mod test {
         assert_eq!(launch_supervisor(&direct, &direct), None);
     }
 
+    /// `harnesses.toml` from [agent-spec-sheet](https://github.com/wakamex/agent-spec-sheet)
+    /// at commit 7d51d15, byte for byte. Replace it with a newer commit's copy when the
+    /// spec changes; this test then fails until Wakterm's path resolvers agree.
+    const HARNESS_SPEC: &str = include_str!("../tests/harnesses.toml");
+
+    #[test]
+    fn path_resolvers_give_the_agent_spec_sheet_locations() {
+        let _env = env_lock();
+        let spec: toml::Table = HARNESS_SPEC.parse().unwrap();
+        // Each harness Wakterm reads, under its key in the spec, and the
+        // location Wakterm reads for a harness process.
+        let resolvers: [(&str, fn(Option<u32>) -> Option<PathBuf>); 8] = [
+            ("agy", |_| agy_root()),
+            ("claude", claude_sessions_root_for),
+            ("codex", codex_sessions_root_for),
+            ("devin", crate::devin::db_path_for),
+            ("gemini", gemini_root_for),
+            ("muse", crate::muse::data_dir_for),
+            ("opencode", opencode_db_path),
+            ("zcode", |_| zcode_db_path()),
+        ];
+        let read_by_wakterm: std::collections::BTreeSet<&str> = spec
+            .iter()
+            .filter(|(_, entry)| {
+                entry["readers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|reader| reader.as_str() == Some("wakterm"))
+            })
+            .map(|(key, _)| key.as_str())
+            .collect();
+        assert_eq!(
+            read_by_wakterm,
+            resolvers.iter().map(|(key, _)| *key).collect(),
+            "the harnesses that list wakterm as a reader"
+        );
+        // Every harness Wakterm detects has a resolver; a new harness does
+        // not compile here until it has a spec key.
+        let spec_key = |harness: AgentHarness| match harness {
+            AgentHarness::Agy => "agy",
+            AgentHarness::Claude => "claude",
+            AgentHarness::Codex => "codex",
+            AgentHarness::Devin => "devin",
+            AgentHarness::Gemini => "gemini",
+            AgentHarness::Muse => "muse",
+            AgentHarness::Opencode => "opencode",
+            AgentHarness::Zcode => "zcode",
+            AgentHarness::Unknown => unreachable!(),
+        };
+        for harness in [
+            AgentHarness::Agy,
+            AgentHarness::Claude,
+            AgentHarness::Codex,
+            AgentHarness::Devin,
+            AgentHarness::Gemini,
+            AgentHarness::Muse,
+            AgentHarness::Opencode,
+            AgentHarness::Zcode,
+        ] {
+            assert!(read_by_wakterm.contains(spec_key(harness)));
+        }
+
+        let home = home_dir().unwrap();
+        let expand = |path: &str| match path.strip_prefix('~') {
+            Some(rest) => PathBuf::from(format!("{}{rest}", home.display())),
+            None => PathBuf::from(path),
+        };
+        let temp = tempfile::TempDir::new().unwrap();
+        for (key, resolve) in resolvers {
+            let entry = &spec[key];
+            let home_spec = entry["home"].as_str().unwrap();
+            // `${VAR:-default}rest`, or a fixed path.
+            let (variable, default, rest) = match home_spec
+                .strip_prefix("${")
+                .and_then(|spec| spec.split_once('}'))
+            {
+                Some((inner, rest)) => {
+                    let (variable, default) = inner.split_once(":-").unwrap();
+                    (Some(variable), default, rest)
+                }
+                None => (None, home_spec, ""),
+            };
+            // The fixed leading part of each session location.
+            let sessions: Vec<PathBuf> = entry["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|location| {
+                    location
+                        .as_str()
+                        .unwrap()
+                        .split('/')
+                        .take_while(|part| !part.contains(['<', '*']) && !part.starts_with("YYYY"))
+                        .collect()
+                })
+                .collect();
+            let set = temp.path().join(key);
+            let cases = std::iter::once((None, expand(&format!("{default}{rest}")))).chain(
+                variable.map(|variable| {
+                    (
+                        Some((variable, set.clone())),
+                        PathBuf::from(format!("{}{rest}", set.display())),
+                    )
+                }),
+            );
+            for (value, expected_home) in cases {
+                let mut process = std::process::Command::new("sleep");
+                process.arg("30").env("WAKTERM_SPEC_TEST", "1");
+                match (&value, variable) {
+                    (Some((variable, value)), _) => {
+                        process.env(variable, value);
+                    }
+                    (None, Some(variable)) => {
+                        process.env_remove(variable);
+                    }
+                    (None, None) => {}
+                }
+                let mut process = process.spawn().unwrap();
+                let pid = Some(process.id());
+                // Spawning can return before the exec.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while process_environment_value(pid, "WAKTERM_SPEC_TEST")
+                    .flatten()
+                    .is_none()
+                {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                let resolved = resolve(pid);
+                process.kill().unwrap();
+                process.wait().unwrap();
+                let resolved = resolved.unwrap();
+                let shown = |variable: Option<&(&str, PathBuf)>| match variable {
+                    Some((variable, _)) => format!("with {variable} set"),
+                    None => "with its home variable unset".to_string(),
+                };
+                assert!(
+                    resolved == expected_home
+                        || sessions
+                            .iter()
+                            .any(|session| expected_home.join(session) == resolved),
+                    "{key} {}: Wakterm reads {}, which is not {} or a session location under it",
+                    shown(value.as_ref()),
+                    resolved.display(),
+                    expected_home.display()
+                );
+            }
+        }
+    }
+
     #[test]
     fn infers_harness_from_launch_command_or_foreground_process() {
         assert_eq!(infer_harness("agy", None), AgentHarness::Agy);
