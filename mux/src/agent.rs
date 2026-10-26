@@ -3360,9 +3360,14 @@ fn observe_muse(
     let Some(data_dir) = crate::muse::data_dir_for(pid) else {
         return Ok(None);
     };
-    let log = match exact_session {
-        Some(session_id) => crate::muse::session_log(&data_dir, session_id)?,
-        None => match preferred_session
+    // The session whose lock the process holds is exact; Muse indexes a new
+    // session only some seconds after starting it, so the newest indexed
+    // session can be an earlier one in the same workspace.
+    let live = pid.and_then(|pid| crate::muse::live_session_log(pid, &data_dir));
+    let log = match (live, exact_session) {
+        (Some(live), _) => Some(live),
+        (None, Some(session_id)) => crate::muse::session_log(&data_dir, session_id)?,
+        (None, None) => match preferred_session
             .map(PathBuf::from)
             .filter(|path| path.is_file())
         {

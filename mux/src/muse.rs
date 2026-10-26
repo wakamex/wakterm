@@ -74,6 +74,36 @@ pub(crate) fn session_log(data_dir: &Path, session_id: &str) -> anyhow::Result<O
         .map(PathBuf::from))
 }
 
+/// The log of the session the Muse process `pid` runs: Muse holds its
+/// session directory's `.session.lock` open for as long as it runs the
+/// session, while it adds the session to its index only some seconds after
+/// starting. Subagents' sessions, under `subagent/`, are not the process's
+/// own.
+#[cfg(target_os = "linux")]
+pub(crate) fn live_session_log(pid: u32, data_dir: &Path) -> Option<PathBuf> {
+    let sessions = data_dir.join("sessions");
+    std::fs::read_dir(format!("/proc/{pid}/fd"))
+        .ok()?
+        .flatten()
+        .filter_map(|fd| std::fs::read_link(fd.path()).ok())
+        .filter(|target| {
+            target
+                .file_name()
+                .is_some_and(|name| name == ".session.lock")
+                && target.starts_with(&sessions)
+                && !target
+                    .components()
+                    .any(|part| part.as_os_str() == "subagent")
+        })
+        .filter_map(|lock| Some(lock.parent()?.join("session.jsonl")))
+        .find(|log| session_id_of(log).is_some())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn live_session_log(_pid: u32, _data_dir: &Path) -> Option<PathBuf> {
+    None
+}
+
 /// The log of the most recently updated session whose workspace root is
 /// `cwd` and that was updated at or after `updated_after`.
 pub(crate) fn newest_session_log_in(
@@ -556,6 +586,35 @@ mod test {
             ])),
             None
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_live_session_is_the_one_whose_lock_the_process_holds() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let session = |id: &str| {
+            let dir = temp.path().join("sessions/2026/10/26").join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(".session.lock"), "").unwrap();
+            dir
+        };
+        let own = session("01a179b4-cd9b-7ad1-bdaa-202d2932c340");
+        let subagent = session(
+            "01a179b4-cd9b-7ad1-bdaa-202d2932c340/subagent/01a179b5-0000-7000-8000-000000000000",
+        );
+        let open = |dir: &Path| std::fs::File::open(dir.join(".session.lock")).unwrap();
+        // The process holds a subagent's lock on stdin and its own on stdout.
+        let mut process = std::process::Command::new("sleep")
+            .arg("30")
+            .stdin(open(&subagent))
+            .stdout(open(&own))
+            .spawn()
+            .unwrap();
+        let found = live_session_log(process.id(), temp.path());
+        process.kill().unwrap();
+        process.wait().unwrap();
+        assert_eq!(found, Some(own.join("session.jsonl")));
+        assert_eq!(live_session_log(std::process::id(), temp.path()), None);
     }
 
     #[test]
