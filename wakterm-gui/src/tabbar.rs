@@ -103,7 +103,13 @@ fn call_format_tab_title(
     tab_max_width: usize,
 ) -> Option<TitleText> {
     match config::run_immediate_with_lua_config(|lua| {
-        if let Some(lua) = lua {
+        // The event's arguments hold every tab and the whole configuration,
+        // and the tab bar computes every tab's title, so building them with
+        // no handler to receive them costs as much as the square of the tab
+        // count on every redraw.
+        if let Some(lua) = lua
+            .filter(|lua| config::lua::has_event_handler(lua, "format-tab-title").unwrap_or(true))
+        {
             let tabs = lua.create_sequence_from(tab_info.iter().cloned())?;
             let panes = lua.create_sequence_from(pane_info.iter().cloned())?;
 

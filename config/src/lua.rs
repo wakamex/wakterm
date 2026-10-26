@@ -792,6 +792,16 @@ pub async fn emit_event<'lua>(
     }
 }
 
+/// Whether a handler for the event `name` is registered with `wakterm.on`.
+/// Callers can skip building costly event arguments when none is.
+pub fn has_event_handler(lua: &Lua, name: &str) -> mlua::Result<bool> {
+    let tbl: mlua::Value = lua.named_registry_value(&format!("wakterm-event-{name}"))?;
+    Ok(match tbl {
+        mlua::Value::Table(tbl) => tbl.raw_len() > 0,
+        _ => false,
+    })
+}
+
 pub fn emit_sync_callback<'lua, A>(
     lua: &'lua Lua,
     (name, args): (String, A),
@@ -866,6 +876,17 @@ pub fn add_to_config_reload_watch_list<'lua>(
 mod test {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn reports_whether_an_event_has_a_handler() -> anyhow::Result<()> {
+        let lua = make_lua_context(Path::new("testing"))?;
+        assert!(!has_event_handler(&lua, "format-tab-title")?);
+        let handler = lua.create_function(|_lua: &mlua::Lua, ()| Ok(()))?;
+        register_event(&lua, ("format-tab-title".to_string(), handler))?;
+        assert!(has_event_handler(&lua, "format-tab-title")?);
+        assert!(!has_event_handler(&lua, "format-window-title")?);
+        Ok(())
+    }
 
     #[test]
     fn can_register_and_emit_multiple_events() -> anyhow::Result<()> {
