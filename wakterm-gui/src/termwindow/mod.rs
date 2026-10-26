@@ -557,6 +557,8 @@ pub struct TermWindow {
     /// to its neighbor in that order.
     displayed_tab_ids: Vec<TabId>,
     displayed_active_tab: Option<TabId>,
+    /// Whether a rebuild of the tab bar and window title is queued.
+    title_update_scheduled: bool,
     os_parameters: Option<parameters::Parameters>,
     /// When we most recently received keyboard focus
     pub focused: Option<Instant>,
@@ -927,6 +929,7 @@ impl TermWindow {
             tab_activity_order: false,
             displayed_tab_ids: vec![],
             displayed_active_tab: None,
+            title_update_scheduled: false,
             palette: None,
             focused: None,
             mux_window_id,
@@ -2270,7 +2273,26 @@ impl TermWindow {
     /// to update the right-status.
     fn update_title(&mut self) {
         self.schedule_status_update();
-        self.update_title_impl();
+        self.schedule_title_update();
+    }
+
+    /// Queues one rebuild of the tab bar and window title behind the events
+    /// already waiting. Every request made before it runs is served by it:
+    /// a rebuild formats every tab, and title and agent changes in a window
+    /// of many tabs can arrive faster than rebuilds made one per change.
+    fn schedule_title_update(&mut self) {
+        if self.title_update_scheduled {
+            return;
+        }
+        let Some(window) = self.window.clone() else {
+            self.update_title_impl();
+            return;
+        };
+        self.title_update_scheduled = true;
+        window.notify(TermWindowNotif::Apply(Box::new(|term_window| {
+            term_window.title_update_scheduled = false;
+            term_window.update_title_impl();
+        })));
     }
 
     fn window_contains_pane(&mut self, pane_id: PaneId) -> bool {
@@ -2330,7 +2352,7 @@ impl TermWindow {
     /// Called by window:set_right_status after the status has
     /// been updated; let's update the bar
     pub fn update_title_post_status(&mut self) {
-        self.update_title_impl();
+        self.schedule_title_update();
     }
 
     fn update_title_impl(&mut self) {
@@ -2395,7 +2417,9 @@ impl TermWindow {
         }
 
         let title = match config::run_immediate_with_lua_config(|lua| {
-            if let Some(lua) = lua {
+            if let Some(lua) = lua.filter(|lua| {
+                config::lua::has_event_handler(lua, "format-window-title").unwrap_or(true)
+            }) {
                 let tabs = lua.create_sequence_from(tabs.clone().into_iter())?;
                 let panes = lua.create_sequence_from(panes.clone().into_iter())?;
 
