@@ -230,6 +230,8 @@ pub struct Mux {
     agent_input_by_pane: RwLock<HashMap<PaneId, AgentPaneInput>>,
     /// The process of each frozen agent pane.
     frozen_agents: Mutex<HashMap<PaneId, u32>>,
+    /// When each pane's agent was last thawed, which restarts its idle time.
+    agent_thawed_at: Mutex<HashMap<PaneId, Instant>>,
     /// Steers typed into a running managed Codex turn, by pane, kept until
     /// that turn ends.
     codex_steers: Mutex<HashMap<PaneId, CodexSteer>>,
@@ -1464,6 +1466,7 @@ impl Mux {
             agent_output_reader,
             agent_input_by_pane: RwLock::new(HashMap::new()),
             frozen_agents: Mutex::new(HashMap::new()),
+            agent_thawed_at: Mutex::new(HashMap::new()),
             claude_menus: Mutex::new(HashMap::new()),
             devin_prompts: Mutex::new(HashMap::new()),
             claude_screen_questions: Mutex::new(HashMap::new()),
@@ -4058,15 +4061,18 @@ impl Mux {
         }
     }
 
-    /// Thaws the agent in the pane if it is frozen.
-    pub fn thaw_agent_pane(&self, pane_id: PaneId) {
+    /// Thaws the agent in the pane if it is frozen, and returns whether it
+    /// was. A thawed agent is not frozen again for `AGENT_FREEZE_AFTER`.
+    pub fn thaw_agent_pane(&self, pane_id: PaneId) -> bool {
         let Some(pid) = self.frozen_agents.lock().remove(&pane_id) else {
-            return;
+            return false;
         };
+        self.agent_thawed_at.lock().insert(pane_id, Instant::now());
         match agent_freeze::thaw(pid) {
             Ok(()) => log::debug!("thawed agent process {pid} in pane {pane_id}"),
             Err(err) => log::warn!("thawing agent process {pid} in pane {pane_id}: {err:#}"),
         }
+        true
     }
 
     /// Freezes the idle Claude agents that are safe to freeze and had no
@@ -4098,7 +4104,19 @@ impl Mux {
                 .get(&pane_id)
                 .and_then(|input| input.at)
                 .unwrap_or(started);
-            if last_input.elapsed() < AGENT_FREEZE_AFTER {
+            let thawed = self.agent_thawed_at.lock().get(&pane_id).copied();
+            if last_input.max(thawed.unwrap_or(started)).elapsed() < AGENT_FREEZE_AFTER {
+                continue;
+            }
+            // Text in the input box, such as a prompt Claude did not submit,
+            // waits for an Enter that a frozen Claude would not take.
+            let draft = self.get_pane(pane_id).is_some_and(|pane| {
+                let dims = pane.get_dimensions();
+                let top = dims.physical_top;
+                let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
+                agent::claude_draft(&lines).is_some()
+            });
+            if draft {
                 continue;
             }
             let Some(metadata) = self.get_agent_metadata_for_pane(pane_id) else {

@@ -2036,6 +2036,9 @@ const ADMISSION_TURN_CONFIRMATION: std::time::Duration = std::time::Duration::fr
 /// How long a Claude admission waits for Claude to take the prompt before
 /// pressing Enter again. It does so until the confirmation window ends.
 const CLAUDE_RESUBMIT_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a thawed agent runs before a prompt is typed into it. A frozen
+/// Claude can drop an Enter that arrives the moment it is thawed.
+const AGENT_THAW_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// How long a Claude admission waits after its turn starts for Claude's own
 /// status to record the change.
@@ -2264,6 +2267,9 @@ async fn admit_agent_prompt(
         return Ok(receipt);
     }
 
+    if Mux::get().thaw_agent_pane(candidate.pane_id) {
+        smol::Timer::after(AGENT_THAW_SETTLE).await;
+    }
     let event_store = Mux::get().agent_service().event_store();
     let events_before_write = event_store.latest_sequence();
     let written_at = std::time::SystemTime::now();
