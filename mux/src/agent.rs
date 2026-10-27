@@ -2448,6 +2448,12 @@ fn claude_timers_disabled(cwd: &Path) -> bool {
     cron_disabled && wakeup_denied
 }
 
+/// Whether Claude reports the agent's exact process idle at its prompt.
+pub fn claude_reports_idle(metadata: &AgentMetadata) -> bool {
+    claude_reported_status(metadata)
+        .is_some_and(|status| matches!(status.status.as_str(), "idle" | "shell"))
+}
+
 /// Whether Claude still reports the agent's exact process idle, with no
 /// status change since `since`. After a submitted prompt, this means Claude
 /// neither started on it nor opened a dialog, so the prompt is still in its

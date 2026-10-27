@@ -304,8 +304,15 @@ impl<'a> AgentService<'a> {
         &self,
         candidate: &AgentAdmissionCandidate,
         written_at: std::time::SystemTime,
+        inputs_seen: u64,
     ) -> anyhow::Result<bool> {
-        self.mux.resubmit_admitted_prompt(candidate, written_at)
+        self.mux
+            .resubmit_admitted_prompt(candidate, written_at, inputs_seen)
+    }
+
+    /// The count of writes to the pane, which grows with every input.
+    pub fn agent_input_generation(&self, pane_id: crate::pane::PaneId) -> u64 {
+        self.mux.agent_input_generation(pane_id)
     }
 
     pub fn admitted_prompt_in_input_box(&self, candidate: &AgentAdmissionCandidate) -> bool {

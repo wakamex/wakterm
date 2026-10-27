@@ -559,13 +559,18 @@ impl Mux {
 
     /// Presses Enter again for an admitted prompt that Claude left in its
     /// input box. Claude can drop the Enter that follows typed input, for
-    /// example while it is still starting. Returns whether Enter was sent:
-    /// only while the admitted process is still the target and Claude reports
-    /// it idle with no status change since the prompt was written.
+    /// example while it is still starting, and ignores Enter while it
+    /// compacts its conversation, which it does without reporting itself
+    /// busy. Returns whether Enter was sent: only while the admitted process
+    /// is still the target, nobody else has written to the pane since
+    /// `inputs_seen`, its input generation, and Claude reports it idle,
+    /// either with no status change since the prompt was written or with
+    /// the prompt still in its input box.
     pub(crate) fn resubmit_admitted_prompt(
         &self,
         candidate: &AgentAdmissionCandidate,
         written_at: std::time::SystemTime,
+        inputs_seen: u64,
     ) -> anyhow::Result<bool> {
         let Some(metadata) = self.get_agent_metadata_for_pane(candidate.pane_id) else {
             return Ok(false);
@@ -573,8 +578,14 @@ impl Mux {
         if metadata.agent_id != candidate.request.agent_id
             || incarnation_id(&metadata).as_deref()
                 != Some(candidate.request.incarnation_id.as_str())
-            || !crate::agent::claude_idle_since(&metadata, written_at)
+            || self.agent_input_generation(candidate.pane_id) != inputs_seen
         {
+            return Ok(false);
+        }
+        let untaken = crate::agent::claude_idle_since(&metadata, written_at)
+            || (crate::agent::claude_reports_idle(&metadata)
+                && self.admitted_prompt_in_input_box(candidate));
+        if !untaken {
             return Ok(false);
         }
         let pane = self

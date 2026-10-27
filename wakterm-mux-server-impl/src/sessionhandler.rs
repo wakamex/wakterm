@@ -2036,6 +2036,12 @@ const ADMISSION_TURN_CONFIRMATION: std::time::Duration = std::time::Duration::fr
 /// How long a Claude admission waits for Claude to take the prompt before
 /// pressing Enter again. It does so until the confirmation window ends.
 const CLAUDE_RESUBMIT_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a Claude admission keeps pressing Enter, less often after the
+/// confirmation window, while the prompt is still in Claude's input box.
+/// Claude ignores Enter while it compacts its conversation, which can take
+/// a minute and which nothing outside Claude can see, not even its screen.
+const CLAUDE_SUBMIT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(180);
+const CLAUDE_RESUBMIT_LATER: std::time::Duration = std::time::Duration::from_secs(5);
 /// How long a thawed agent runs before a prompt is typed into it. A frozen
 /// Claude can drop an Enter that arrives the moment it is thawed.
 const AGENT_THAW_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
@@ -2398,11 +2404,9 @@ async fn admit_agent_prompt(
                             .agent_service()
                             .admitted_prompt_in_input_box(&candidate)
                         {
-                            format!(
-                                "prompt was written and is still in the agent's input box, \
-                                 unsubmitted after {} s; Enter submits it",
-                                ADMISSION_TURN_CONFIRMATION.as_secs()
-                            )
+                            "prompt was written but is still in the agent's input box: Claude did not take \
+                             it, and Wakterm stopped pressing Enter"
+                                .to_string()
                         } else {
                             format!(
                                 "prompt was written, but the agent did not record it within {} s",
@@ -2578,8 +2582,11 @@ enum AdmittedInput {
 /// Waits for the agent to record an admitted prompt. Harnesses that record
 /// input hashes must record this exact prompt; for the others, a new turn
 /// confirms it. Claude can leave a prompt in its input box, dropping the
-/// Enter that followed it, so while Claude reports itself idle and unchanged
-/// since the write, Enter is pressed again.
+/// Enter that followed it or ignoring it while it compacts, so while Claude
+/// reports itself idle and either unchanged since the write or still
+/// showing the prompt in its input box, Enter is pressed again, for up to
+/// `CLAUDE_SUBMIT_PATIENCE` while the prompt stays in the box. Anyone else's
+/// input to the pane stops it.
 async fn confirm_admitted_input(
     candidate: &mux::agent_admission::AgentAdmissionCandidate,
     event_store: &mux::agent_event::AgentEventStore,
@@ -2593,14 +2600,20 @@ async fn confirm_admitted_input(
         .then(|| mux::agent::message_sha256(&request.prompt));
     let claude = matches!(harness, mux::agent::AgentHarness::Claude);
     let command = claude && mux::agent::is_claude_command(&request.prompt);
-    let deadline = std::time::Instant::now() + ADMISSION_TURN_CONFIRMATION;
+    let started = std::time::Instant::now();
+    let mut deadline = started + ADMISSION_TURN_CONFIRMATION;
     let mut other_input = false;
+    let mut inputs_seen = Mux::get()
+        .agent_service()
+        .agent_input_generation(candidate.pane_id);
     loop {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        let window = if claude {
+        let window = if !claude {
+            remaining
+        } else if std::time::Instant::now() < started + ADMISSION_TURN_CONFIRMATION {
             remaining.min(CLAUDE_RESUBMIT_AFTER)
         } else {
-            remaining
+            remaining.min(CLAUDE_RESUBMIT_LATER)
         };
         match event_store
             .wait_for_input(
@@ -2624,12 +2637,29 @@ async fn confirm_admitted_input(
             }
         }
         if std::time::Instant::now() >= deadline {
-            return Ok(AdmittedInput::NotRecorded { other_input });
+            // A prompt still in Claude's input box, with nobody else typing,
+            // has not been taken yet.
+            let waiting = claude
+                && !other_input
+                && deadline < started + CLAUDE_SUBMIT_PATIENCE
+                && Mux::get()
+                    .agent_service()
+                    .agent_input_generation(candidate.pane_id)
+                    == inputs_seen
+                && Mux::get()
+                    .agent_service()
+                    .admitted_prompt_in_input_box(candidate);
+            if !waiting {
+                return Ok(AdmittedInput::NotRecorded { other_input });
+            }
+            deadline = started + CLAUDE_SUBMIT_PATIENCE;
         }
         if claude && !other_input {
-            Mux::get()
-                .agent_service()
-                .resubmit_admitted_prompt(candidate, written_at)?;
+            let mux = Mux::get();
+            let service = mux.agent_service();
+            if service.resubmit_admitted_prompt(candidate, written_at, inputs_seen)? {
+                inputs_seen = service.agent_input_generation(candidate.pane_id);
+            }
         }
     }
 }
