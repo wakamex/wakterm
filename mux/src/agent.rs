@@ -6992,6 +6992,8 @@ mod test {
         connection
     }
 
+    // A launcher script names its harness by an absolute Unix path.
+    #[cfg(unix)]
     #[test]
     fn a_launcher_script_the_harness_runs_under_is_not_a_supervisor() {
         let muse = |argv0: &str| proc_info("muse", "/opt/muse/muse", &[argv0, "resume"], 4, vec![]);
@@ -7029,8 +7031,12 @@ mod test {
     /// `harnesses.toml` from [agent-spec-sheet](https://github.com/wakamex/agent-spec-sheet)
     /// at commit 55725a0, byte for byte. Replace it with a newer commit's copy when the
     /// spec changes; this test then fails until Wakterm's path resolvers agree.
+    #[cfg(target_os = "linux")]
     const HARNESS_SPEC: &str = include_str!("../tests/harnesses.toml");
 
+    // Wakterm reads a harness process's home from its environment only on
+    // Linux, through /proc; elsewhere the resolvers use its own.
+    #[cfg(target_os = "linux")]
     #[test]
     fn path_resolvers_give_the_agent_spec_sheet_locations() {
         let _env = env_lock();
