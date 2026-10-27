@@ -996,6 +996,38 @@ fn admission_fingerprint(request: &AgentPromptAdmissionRequest) -> String {
     format!("{:x}", digest.finalize())
 }
 
+/// The request IDs this server process is admitting. A repeated admission
+/// of an ID still being admitted, such as a client's retry after its own
+/// deadline passed, waits for the first attempt instead of finding its claim
+/// unfinished and calling the outcome indeterminate. A claim left unfinished
+/// by an earlier server process has no entry here.
+static IN_FLIGHT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// The admission of one request ID in this process, held until dropped.
+pub struct AdmissionInFlight(String);
+
+impl AdmissionInFlight {
+    /// Starts admitting `request_id`, or None while another admission of it
+    /// runs in this process.
+    pub fn enter(request_id: &str) -> Option<Self> {
+        IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(request_id.to_string())
+            .then(|| Self(request_id.to_string()))
+    }
+}
+
+impl Drop for AdmissionInFlight {
+    fn drop(&mut self) {
+        IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.0);
+    }
+}
+
 pub fn reconcile_written_request_after_failure(
     mut request: AgentRequest,
     detail: &str,
@@ -1098,6 +1130,45 @@ mod tests {
         metadata.agent_id = agent_id.to_string();
         metadata.name = name.to_string();
         snapshot(metadata, pane_id)
+    }
+
+    #[test]
+    fn a_request_id_is_admitted_by_one_attempt_at_a_time() {
+        let first = AdmissionInFlight::enter("req-in-flight").unwrap();
+        assert!(AdmissionInFlight::enter("req-in-flight").is_none());
+        assert!(AdmissionInFlight::enter("req-other").is_some());
+        drop(first);
+        assert!(AdmissionInFlight::enter("req-in-flight").is_some());
+    }
+
+    #[test]
+    fn a_claim_released_without_writing_is_claimed_anew() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let store = AgentAdmissionStore::new(temp.path().join("admission.sqlite3"));
+        let request = AgentPromptAdmissionRequest {
+            request_id: "req-released".to_string(),
+            agent_id: "agent".to_string(),
+            incarnation_id: "incarnation".to_string(),
+            prompt: "hello".to_string(),
+            paste: false,
+            return_final: false,
+            timeout_ms: 0,
+        };
+        assert!(matches!(
+            store.claim(&request).unwrap(),
+            OneWayAdmissionClaim::New
+        ));
+        store.release_unwritten(&request.request_id).unwrap();
+        assert!(matches!(
+            store.claim(&request).unwrap(),
+            OneWayAdmissionClaim::New
+        ));
+        let accepted = AgentAdmissionReceipt::accepted(&request, None);
+        store.finish(&accepted).unwrap();
+        match store.claim(&request).unwrap() {
+            OneWayAdmissionClaim::Existing(receipt) => assert_eq!(receipt, accepted),
+            _ => panic!("a finished admission is returned, not claimed again"),
+        }
     }
 
     #[test]

@@ -2050,6 +2050,10 @@ const AGENT_THAW_SETTLE: std::time::Duration = std::time::Duration::from_secs(1)
 /// status to record the change.
 const CLAUDE_STATUS_CONFIRMATION: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// How long a repeated admission waits for the attempt with its request_id
+/// that is still running.
+const ADMISSION_IN_FLIGHT_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+
 async fn admit_agent_prompt(
     request: mux::agent_admission::AgentPromptAdmissionRequest,
 ) -> anyhow::Result<mux::agent_admission::AgentAdmissionReceipt> {
@@ -2058,6 +2062,26 @@ async fn admit_agent_prompt(
         AgentAdmissionStatus, OneWayAdmissionClaim,
     };
     use mux::agent_request::AgentRequestState;
+
+    // A client that gave up waiting, such as while the host pages, retries
+    // with the same request_id. That retry waits here for the attempt still
+    // running and then finds its outcome below, so the prompt is written at
+    // most once and an unfinished claim is never taken for a lost one.
+    let started = std::time::Instant::now();
+    let _in_flight = loop {
+        if let Some(in_flight) = mux::agent_admission::AdmissionInFlight::enter(&request.request_id)
+        {
+            break in_flight;
+        }
+        if started.elapsed() >= ADMISSION_IN_FLIGHT_WAIT {
+            return Ok(AgentAdmissionReceipt::indeterminate(
+                &request,
+                None,
+                "an earlier admission with this request_id is still running; retry with the same request_id",
+            ));
+        }
+        smol::Timer::after(std::time::Duration::from_millis(100)).await;
+    };
 
     let (request_store, admission_store) = {
         let mux = Mux::get();
