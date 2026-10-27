@@ -30,6 +30,16 @@ signal-hook.workspace = true
 serde_json.workspace = true
 wakterm-term.workspace = true
 
+[target.'cfg(not(windows))'.dependencies]
+tikv-jemalloc-ctl = { workspace = true, optional = true }
+tikv-jemallocator = { workspace = true, optional = true }
+
+[features]
+default = ["jemalloc"]
+# jemalloc returns pages its threads freed to the system, where glibc keeps
+# them in a per-thread arena; build without it to compare against glibc.
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
+
 [target."cfg(windows)".dependencies]
 winapi = { workspace=true, features = [ "winuser", "fileapi", "minwinbase", "winerror" ]}
 

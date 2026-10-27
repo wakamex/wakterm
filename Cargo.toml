@@ -78,6 +78,8 @@ crossbeam = "0.8"
 csscolorparser = "0.6"
 deltae = "0.3"
 dhat = "0.3"
+tikv-jemalloc-ctl = { version = "0.7", features = ["stats"] }
+tikv-jemallocator = "0.7"
 dirs-next = "2.0"
 dns-lookup = "2.0"
 downcast-rs = "1.0"

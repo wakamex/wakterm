@@ -4,10 +4,12 @@
 //! (scrollback size, action buffer depth) to help diagnose memory growth in
 //! long-running sessions.
 //!
-//! With glibc, every report also returns free heap pages to the system with
-//! `malloc_trim`. glibc gives threads their own arenas, up to eight per CPU,
-//! and keeps the pages they free: on 2026-10-27 the server's 256 arenas held
-//! 4.3 GB with 325 MB in use, and one `malloc_trim` returned 2.4 GB.
+//! The heap line comes from the binary's allocator, which installs its own
+//! reporter with [`set_heap_reporter`]. Without one, it reads glibc's heap
+//! and then returns free heap pages to the system with `malloc_trim`: glibc
+//! gives threads their own arenas, up to eight per CPU, and keeps the pages
+//! they free, and on 2026-10-27 the server's 256 arenas held 4.3 GB with
+//! 325 MB in use.
 
 use crate::pane::PaneId;
 use crate::Mux;
@@ -53,6 +55,21 @@ fn read_swap() -> usize {
         .map_or(0, |kib| kib * 1024)
 }
 
+static HEAP_REPORTER: std::sync::OnceLock<fn() -> Option<String>> = std::sync::OnceLock::new();
+
+/// Installs the reporter of the binary's global allocator, which the memory
+/// report calls in place of reading glibc's heap.
+pub fn set_heap_reporter(reporter: fn() -> Option<String>) {
+    let _ = HEAP_REPORTER.set(reporter);
+}
+
+fn heap_line() -> Option<String> {
+    match HEAP_REPORTER.get() {
+        Some(reporter) => reporter(),
+        None => heap_report(),
+    }
+}
+
 /// glibc's heap: bytes in use, free bytes it keeps, and bytes in mmapped
 /// chunks, summed over every arena; then the RSS and swap that
 /// `malloc_trim` returned. None with another allocator.
@@ -84,7 +101,7 @@ fn page_size() -> usize {
     unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
 }
 
-fn format_bytes(bytes: usize) -> String {
+pub fn format_bytes(bytes: usize) -> String {
     if bytes >= 1024 * 1024 * 1024 {
         format!("{:.1}G", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     } else if bytes >= 1024 * 1024 {
@@ -160,7 +177,7 @@ pub fn log_memory_report() {
         return;
     }
 
-    let heap = heap_report().map_or(String::new(), |heap| format!(" | {heap}"));
+    let heap = heap_line().map_or(String::new(), |heap| format!(" | {heap}"));
     log::info!(
         "memory: RSS {}, swap {}{heap} | {} panes, {} total scrollback rows, {} buffered{}",
         format_bytes(rss),
@@ -187,7 +204,10 @@ mod test {
         drop((0..64).map(|_| vec![1u8; 64 * 1024]).collect::<Vec<_>>());
         let report = heap_report().unwrap();
         assert!(report.starts_with("heap "), "{report}");
-        assert!(report.contains(" in use, ") && report.contains("trim returned"), "{report}");
+        assert!(
+            report.contains(" in use, ") && report.contains("trim returned"),
+            "{report}"
+        );
         assert!(read_rss() > 0);
     }
 }

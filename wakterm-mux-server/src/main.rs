@@ -15,6 +15,27 @@ use std::thread;
 use wakterm_gui_subcommands::*;
 use wakterm_mux_server_impl::update_mux_domains_for_server;
 
+#[cfg(all(feature = "jemalloc", not(windows)))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+/// jemalloc's heap: bytes the program holds, bytes in active pages, bytes
+/// in resident pages, and bytes of address space kept mapped for reuse but
+/// returned to the system.
+#[cfg(all(feature = "jemalloc", not(windows)))]
+fn jemalloc_report() -> Option<String> {
+    use tikv_jemalloc_ctl::{epoch, stats};
+    epoch::advance().ok()?;
+    let size = mux::memory_report::format_bytes;
+    Some(format!(
+        "jemalloc {} allocated, {} active, {} resident, {} retained",
+        size(stats::allocated::read().ok()?),
+        size(stats::active::read().ok()?),
+        size(stats::resident::read().ok()?),
+        size(stats::retained::read().ok()?)
+    ))
+}
+
 mod daemonize;
 mod session_lock;
 
@@ -266,6 +287,8 @@ fn run() -> anyhow::Result<()> {
 
     // Periodic memory diagnostics. Session persistence has its own coalescing
     // worker, started only after initial restoration is complete.
+    #[cfg(all(feature = "jemalloc", not(windows)))]
+    mux::memory_report::set_heap_reporter(jemalloc_report);
     thread::spawn(|| loop {
         thread::sleep(std::time::Duration::from_secs(60));
         if SHUTDOWN_FLAG.load(std::sync::atomic::Ordering::Relaxed) {
