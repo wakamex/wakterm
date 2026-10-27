@@ -1,7 +1,13 @@
 //! Periodic memory reporting for the mux server.
 //!
-//! Logs process RSS and per-pane metrics (scrollback size, action buffer depth)
-//! to help diagnose memory growth in long-running sessions.
+//! Logs process RSS and swap, the allocator's heap, and per-pane metrics
+//! (scrollback size, action buffer depth) to help diagnose memory growth in
+//! long-running sessions.
+//!
+//! With glibc, every report also returns free heap pages to the system with
+//! `malloc_trim`. glibc gives threads their own arenas, up to eight per CPU,
+//! and keeps the pages they free: on 2026-10-27 the server's 256 arenas held
+//! 4.3 GB with 325 MB in use, and one `malloc_trim` returned 2.4 GB.
 
 use crate::pane::PaneId;
 use crate::Mux;
@@ -25,6 +31,51 @@ fn read_rss() -> usize {
     {
         0
     }
+}
+
+/// The process's swapped-out memory, from /proc/self/status.
+fn read_swap() -> usize {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix("VmSwap:"))
+                .and_then(|value| {
+                    value
+                        .trim()
+                        .trim_end_matches("kB")
+                        .trim()
+                        .parse::<usize>()
+                        .ok()
+                })
+        })
+        .map_or(0, |kib| kib * 1024)
+}
+
+/// glibc's heap: bytes in use, free bytes it keeps, and bytes in mmapped
+/// chunks, summed over every arena; then the RSS and swap that
+/// `malloc_trim` returned. None with another allocator.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn heap_report() -> Option<String> {
+    // SAFETY: mallinfo2 and malloc_trim take no pointers and lock the
+    // arenas they read.
+    let info = unsafe { libc::mallinfo2() };
+    let before = read_rss() + read_swap();
+    unsafe { libc::malloc_trim(0) };
+    let returned = before.saturating_sub(read_rss() + read_swap());
+    Some(format!(
+        "heap {} in use, {} free, {} mmapped, trim returned {}",
+        format_bytes(info.uordblks),
+        format_bytes(info.fordblks),
+        format_bytes(info.hblkhd),
+        format_bytes(returned)
+    ))
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn heap_report() -> Option<String> {
+    None
 }
 
 #[cfg(target_os = "linux")]
@@ -109,9 +160,11 @@ pub fn log_memory_report() {
         return;
     }
 
+    let heap = heap_report().map_or(String::new(), |heap| format!(" | {heap}"));
     log::info!(
-        "memory: RSS {} | {} panes, {} total scrollback rows, {} buffered{}",
+        "memory: RSS {}, swap {}{heap} | {} panes, {} total scrollback rows, {} buffered{}",
         format_bytes(rss),
+        format_bytes(read_swap()),
         panes.len(),
         total_scrollback,
         format_bytes(total_action_bytes),
@@ -121,4 +174,20 @@ pub fn log_memory_report() {
             format!(" | {}", pane_details)
         }
     );
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    fn heap_report_reads_glibc_and_trims() {
+        // Free a few megabytes the allocator could keep.
+        drop((0..64).map(|_| vec![1u8; 64 * 1024]).collect::<Vec<_>>());
+        let report = heap_report().unwrap();
+        assert!(report.starts_with("heap "), "{report}");
+        assert!(report.contains(" in use, ") && report.contains("trim returned"), "{report}");
+        assert!(read_rss() > 0);
+    }
 }
