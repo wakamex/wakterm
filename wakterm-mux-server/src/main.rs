@@ -28,11 +28,16 @@ fn jemalloc_report() -> Option<String> {
     epoch::advance().ok()?;
     let size = mux::memory_report::format_bytes;
     Some(format!(
-        "jemalloc {} allocated, {} active, {} resident, {} retained",
+        "jemalloc {} allocated, {} active, {} resident, {} retained, background threads {}",
         size(stats::allocated::read().ok()?),
         size(stats::active::read().ok()?),
         size(stats::resident::read().ok()?),
-        size(stats::retained::read().ok()?)
+        size(stats::retained::read().ok()?),
+        if tikv_jemalloc_ctl::background_thread::read().ok()? {
+            "on"
+        } else {
+            "off"
+        }
     ))
 }
 
@@ -288,7 +293,18 @@ fn run() -> anyhow::Result<()> {
     // Periodic memory diagnostics. Session persistence has its own coalescing
     // worker, started only after initial restoration is complete.
     #[cfg(all(feature = "jemalloc", not(windows)))]
-    mux::memory_report::set_heap_reporter(jemalloc_report);
+    {
+        // jemalloc otherwise returns an arena's unused pages only when that
+        // arena allocates again, so the arenas of threads that went idle
+        // after a burst, such as restoring every agent at startup, keep
+        // theirs: after a restart with 109 agents the server held 1.9 GB of
+        // pages for 330 MB of live heap. Background threads purge every
+        // arena on a timer.
+        if let Err(err) = tikv_jemalloc_ctl::background_thread::write(true) {
+            log::warn!("could not start jemalloc's background threads: {err}");
+        }
+        mux::memory_report::set_heap_reporter(jemalloc_report);
+    }
     thread::spawn(|| loop {
         thread::sleep(std::time::Duration::from_secs(60));
         if SHUTDOWN_FLAG.load(std::sync::atomic::Ordering::Relaxed) {
