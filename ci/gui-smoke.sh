@@ -1,7 +1,7 @@
 #!/bin/bash
 # Starts wakterm-gui on a virtual X display with a throwaway config and
-# state, and fails unless it opens a window with two tabs and is still
-# running a few seconds later without a panic.
+# state, and fails unless it opens a window with two tabs within 60 s and is
+# still running 5 s later without a panic.
 #
 # Usage: ci/gui-smoke.sh [BIN_DIR]   (default: target/release)
 # Needs xvfb-run.
@@ -32,22 +32,31 @@ end)
 return config
 EOF
 
-# The GUI runs until the timeout ends it; exit 124 means it was still up.
-set +e
-env -u SSH_AUTH_SOCK WAKTERM_CONFIG_FILE="$WORK/config/wakterm.lua" \
+# The GUI runs in its own process group, so that stopping it also stops
+# the virtual display. A slow machine can take well over ten seconds to start
+# it, so the test waits for the window instead of a fixed time.
+setsid env -u SSH_AUTH_SOCK WAKTERM_CONFIG_FILE="$WORK/config/wakterm.lua" \
     XDG_CONFIG_HOME="$WORK/config" XDG_DATA_HOME="$WORK/data" \
     XDG_CACHE_HOME="$WORK/cache" XDG_RUNTIME_DIR="$WORK/runtime" \
-    timeout 10 xvfb-run -a "$GUI" start --always-new-process --no-auto-connect \
-    >"$WORK/gui.log" 2>&1
-status=$?
-set -e
+    xvfb-run -a "$GUI" start --always-new-process --no-auto-connect \
+    >"$WORK/gui.log" 2>&1 &
+gui=$!
+stop() { kill -TERM -- "-$gui" 2>/dev/null || true; wait "$gui" 2>/dev/null || true; }
 
 fail() {
+    stop
     echo "gui-smoke: $*" >&2
     sed 's/^/  | /' "$WORK/gui.log" >&2
     exit 1
 }
-[ "$status" -eq 124 ] || fail "wakterm-gui exited with status $status before the timeout"
+for _ in $(seq 600); do
+    [ "$(cat "$MARKER" 2>/dev/null)" = 2 ] && break
+    kill -0 "$gui" 2>/dev/null || fail "wakterm-gui exited before opening its window"
+    sleep 0.1
+done
+[ "$(cat "$MARKER" 2>/dev/null)" = 2 ] || fail "gui-startup did not open a window with two tabs within 60 s"
+sleep 5
+kill -0 "$gui" 2>/dev/null || fail "wakterm-gui exited within 5 s of opening its window"
+stop
 ! grep -q "panic" "$WORK/gui.log" || fail "wakterm-gui logged a panic"
-[ "$(cat "$MARKER" 2>/dev/null)" = 2 ] || fail "gui-startup did not open a window with two tabs"
 echo "gui-smoke: wakterm-gui started a window with two tabs and kept running"
