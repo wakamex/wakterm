@@ -271,6 +271,8 @@ pub trait Pane: Downcast + Send + Sync {
     }
     fn mouse_event(&self, event: MouseEvent) -> anyhow::Result<()>;
     fn perform_actions(&self, _actions: Vec<termwiz::escape::Action>) {}
+    /// Applies a resize that waited for the output read before it.
+    fn apply_pending_resize(&self) {}
     fn is_dead(&self) -> bool;
     fn kill(&self) {}
     fn palette(&self) -> ColorPalette;

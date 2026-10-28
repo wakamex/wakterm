@@ -36,7 +36,7 @@ use std::io::{Read, Write};
 #[cfg(windows)]
 use std::os::raw::c_int;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Weak};
 use std::thread;
@@ -730,6 +730,31 @@ struct AgentObserverState {
 
 /// This function applies parsed actions to the pane and notifies any
 /// mux subscribers about the output event
+/// How many bytes of a pane's output have been read from its pty and how
+/// many applied to its terminal. A resize applies to the terminal only after
+/// the output read before it, which the program wrote for the old size.
+pub(crate) struct PaneOutputProgress {
+    read: AtomicU64,
+    applied: AtomicU64,
+}
+
+impl PaneOutputProgress {
+    pub(crate) fn read(&self) -> u64 {
+        self.read.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn applied(&self) -> u64 {
+        self.applied.load(Ordering::Acquire)
+    }
+}
+
+static PANE_OUTPUT_PROGRESS: std::sync::LazyLock<RwLock<HashMap<PaneId, Arc<PaneOutputProgress>>>> =
+    std::sync::LazyLock::new(Default::default);
+
+pub(crate) fn pane_output_progress(pane_id: PaneId) -> Option<Arc<PaneOutputProgress>> {
+    PANE_OUTPUT_PROGRESS.read().get(&pane_id).cloned()
+}
+
 fn send_actions_to_mux(pane: &Weak<dyn Pane>, dead: &Arc<AtomicBool>, actions: Vec<Action>) {
     let start = Instant::now();
     match pane.upgrade() {
@@ -748,7 +773,13 @@ fn send_actions_to_mux(pane: &Weak<dyn Pane>, dead: &Arc<AtomicBool>, actions: V
     histogram!("send_actions_to_mux.rate").record(1.);
 }
 
-fn parse_buffered_data(pane: Weak<dyn Pane>, dead: &Arc<AtomicBool>, mut rx: FileDescriptor) {
+fn parse_buffered_data(
+    pane: Weak<dyn Pane>,
+    dead: &Arc<AtomicBool>,
+    mut rx: FileDescriptor,
+    progress: Arc<PaneOutputProgress>,
+) {
+    let mut parsed: u64 = 0;
     let mut buf = vec![0; configuration().mux_output_parser_buffer_size];
     let mut parser = termwiz::escape::parser::Parser::new();
     let mut actions = vec![];
@@ -811,6 +842,7 @@ fn parse_buffered_data(pane: Weak<dyn Pane>, dead: &Arc<AtomicBool>, mut rx: Fil
                     }
                 });
                 action_size += size;
+                parsed += size as u64;
                 action_buf_gauge.store(action_size, Ordering::Relaxed);
 
                 // Safety valve: if SynchronizedOutput is held open and the
@@ -863,6 +895,13 @@ fn parse_buffered_data(pane: Weak<dyn Pane>, dead: &Arc<AtomicBool>, mut rx: Fil
                     action_size = 0;
                 }
 
+                if actions.is_empty() {
+                    progress.applied.store(parsed, Ordering::Release);
+                    if let Some(pane) = pane.upgrade() {
+                        pane.apply_pending_resize();
+                    }
+                }
+
                 let config = configuration();
                 buf.resize(config.mux_output_parser_buffer_size, 0);
                 delay = Duration::from_millis(config.mux_output_parser_coalesce_delay_ms);
@@ -881,6 +920,7 @@ fn parse_buffered_data(pane: Weak<dyn Pane>, dead: &Arc<AtomicBool>, mut rx: Fil
     // Clean up gauge
     if let Some(id) = pane_id {
         ACTION_BUFFER_SIZES.write().remove(&id);
+        PANE_OUTPUT_PROGRESS.write().remove(&id);
     }
 }
 
@@ -949,13 +989,26 @@ fn read_from_pane_pty(
         }
     };
 
+    let progress = Arc::new(PaneOutputProgress {
+        read: AtomicU64::new(0),
+        applied: AtomicU64::new(0),
+    });
+    PANE_OUTPUT_PROGRESS
+        .write()
+        .insert(pane_id, Arc::clone(&progress));
+
     std::thread::spawn({
         let dead = Arc::clone(&dead);
-        move || parse_buffered_data(pane, &dead, rx)
+        let progress = Arc::clone(&progress);
+        move || parse_buffered_data(pane, &dead, rx, progress)
     });
 
     if let Some(banner) = banner {
-        tx.write_all(banner.as_bytes()).ok();
+        if tx.write_all(banner.as_bytes()).is_ok() {
+            progress
+                .read
+                .fetch_add(banner.len() as u64, Ordering::Release);
+        }
     }
 
     while !dead.load(Ordering::Relaxed) {
@@ -978,6 +1031,7 @@ fn read_from_pane_pty(
                     );
                     break;
                 }
+                progress.read.fetch_add(size as u64, Ordering::Release);
             }
         }
     }
@@ -15736,8 +15790,12 @@ mod test {
         let (tx, rx) = filedescriptor::socketpair().expect("socketpair");
         let dead = Arc::new(AtomicBool::new(false));
 
+        let progress = Arc::new(PaneOutputProgress {
+            read: AtomicU64::new(0),
+            applied: AtomicU64::new(0),
+        });
         std::thread::spawn(move || {
-            parse_buffered_data(weak, &dead, rx);
+            parse_buffered_data(weak, &dead, rx, progress);
         });
 
         (tx, pane)

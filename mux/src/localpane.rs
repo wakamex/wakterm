@@ -153,6 +153,10 @@ pub struct LocalPane {
     #[cfg(unix)]
     leader: Arc<Mutex<Option<CachedLeaderInfo>>>,
     command_description: String,
+    /// A size the terminal takes once the output read from the pty before
+    /// the resize, at the old size, has been applied: the read count it waits
+    /// for, and the size.
+    pending_resize: Mutex<Option<(u64, TerminalSize)>>,
 }
 
 #[async_trait(?Send)]
@@ -441,15 +445,43 @@ impl Pane for LocalPane {
 
     fn resize(&self, size: TerminalSize) -> Result<(), Error> {
         // A frozen agent would keep showing its old layout.
-        Mux::get().thaw_agent_pane(self.pane_id);
+        if let Some(mux) = Mux::try_get() {
+            mux.thaw_agent_pane(self.pane_id);
+        }
         self.pty.lock().resize(PtySize {
             rows: size.rows.try_into()?,
             cols: size.cols.try_into()?,
             pixel_width: size.pixel_width.try_into()?,
             pixel_height: size.pixel_height.try_into()?,
         })?;
-        self.terminal.lock().resize(size);
+        // The program may have written output for the old size that is read
+        // but not yet applied; applied after a resize, a full-screen
+        // program's frame would wrap at the new width, and its later
+        // partial redraws would never clear what wrapped.
+        match crate::pane_output_progress(self.pane_id) {
+            Some(progress) if progress.applied() < progress.read() => {
+                self.pending_resize.lock().replace((progress.read(), size));
+                self.apply_pending_resize();
+            }
+            _ => {
+                self.pending_resize.lock().take();
+                self.terminal.lock().resize(size);
+            }
+        }
         Ok(())
+    }
+
+    fn apply_pending_resize(&self) {
+        let Some(progress) = crate::pane_output_progress(self.pane_id) else {
+            return;
+        };
+        let mut pending = self.pending_resize.lock();
+        if let Some((target, size)) = *pending {
+            if progress.applied() >= target {
+                pending.take();
+                self.terminal.lock().resize(size);
+            }
+        }
     }
 
     fn writer(&self) -> MappedMutexGuard<'_, dyn std::io::Write> {
@@ -1112,6 +1144,7 @@ impl LocalPane {
             #[cfg(unix)]
             leader: Arc::new(Mutex::new(None)),
             command_description,
+            pending_resize: Mutex::new(None),
         }
     }
 
@@ -1287,5 +1320,108 @@ mod mouse_input_test {
         // With mouse reporting on, every event reaches the program.
         terminal.advance_bytes(b"\x1b[?1049l\x1b[?1003h");
         assert!(mouse_event_reaches_program(&terminal, &moved));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod resize_test {
+    use super::*;
+    use portable_pty::native_pty_system;
+    use std::sync::atomic::Ordering;
+
+    /// A child that never exits, so its waiter thread never schedules the
+    /// mux's dead-pane pruning, which this test has no scheduler for.
+    #[derive(Debug)]
+    struct Waiting;
+
+    impl ChildKiller for Waiting {
+        fn kill(&mut self) -> IoResult<()> {
+            Ok(())
+        }
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(Waiting)
+        }
+    }
+
+    impl Child for Waiting {
+        fn try_wait(&mut self) -> IoResult<Option<ExitStatus>> {
+            Ok(None)
+        }
+        fn wait(&mut self) -> IoResult<ExitStatus> {
+            loop {
+                std::thread::park();
+            }
+        }
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+    }
+
+    fn size(cols: usize) -> TerminalSize {
+        TerminalSize {
+            rows: 5,
+            cols,
+            pixel_width: cols * 8,
+            pixel_height: 80,
+            dpi: 96,
+        }
+    }
+
+    #[test]
+    fn a_resize_waits_for_the_output_read_before_it() {
+        let pane_id = 900_001;
+        let pair = native_pty_system()
+            .openpty(crate::terminal_size_to_pty_size(size(99)).unwrap())
+            .unwrap();
+        let writer = pair.master.take_writer().unwrap();
+        let terminal = Terminal::new(
+            size(99),
+            Arc::new(config::TermConfig::new()),
+            "wakterm",
+            "test",
+            Box::new(Vec::new()),
+        );
+        let pane = LocalPane::new(
+            pane_id,
+            terminal,
+            Box::new(Waiting),
+            pair.master,
+            writer,
+            0,
+            "test".into(),
+        );
+        let progress = Arc::new(crate::PaneOutputProgress {
+            read: std::sync::atomic::AtomicU64::new(100),
+            applied: std::sync::atomic::AtomicU64::new(0),
+        });
+        crate::PANE_OUTPUT_PROGRESS
+            .write()
+            .insert(pane_id, Arc::clone(&progress));
+
+        // Output read before the resize is still to be applied, so the
+        // terminal keeps its size and takes that output at the old width.
+        pane.resize(size(86)).unwrap();
+        assert_eq!(pane.get_dimensions().cols, 99);
+        // A full-screen program's frame, on the alternate screen, which a
+        // resize truncates rather than rewraps. It goes straight to the
+        // terminal: perform_actions would also notify the mux.
+        pane.terminal
+            .lock()
+            .advance_bytes(format!("\x1b[?1049h{}X", "-".repeat(98)));
+        progress.applied.store(100, Ordering::Release);
+        pane.apply_pending_resize();
+        assert_eq!(pane.get_dimensions().cols, 86);
+        let (_, lines) = pane.get_lines(0..2);
+        assert_eq!(lines[0].as_str().trim_end(), "-".repeat(86));
+        assert_eq!(
+            lines[1].as_str().trim_end(),
+            "",
+            "nothing wrapped onto the next row"
+        );
+
+        // With every read byte applied, a resize applies at once.
+        pane.resize(size(70)).unwrap();
+        assert_eq!(pane.get_dimensions().cols, 70);
+        crate::PANE_OUTPUT_PROGRESS.write().remove(&pane_id);
     }
 }
