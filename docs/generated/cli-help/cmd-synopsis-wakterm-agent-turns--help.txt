@@ -1,0 +1,12 @@
+list finished agent turns since a time or since a named reader last looked
+
+Usage: wakterm agent turns [OPTIONS]
+
+Options:
+      --since <SINCE>    List turns that finished since this time: a duration ago such as 90s, 30m, 2h or 1d; a clock time such as 5am, 5:30pm or 17:00, its most recent occurrence; or an RFC 3339 timestamp
+      --reader <READER>  List turns after this reader's saved position and save the new one, so that readers with different names never take each other's place. A reader's first look covers the last 24 hours unless --since is given
+      --peek             With --reader, list without saving the new position
+      --agent <AGENTS>   Only these agents, by name or agent ID; repeatable
+      --full             Every turn's full final message instead of the latest one's opening
+      --format <FORMAT>  Output format: "table" or "json" [default: table] [possible values: table, json]
+  -h, --help             Print help

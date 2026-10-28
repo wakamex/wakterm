@@ -124,6 +124,9 @@ _wakterm() {
             wakterm__agent,start)
                 cmd="wakterm__agent__start"
                 ;;
+            wakterm__agent,turns)
+                cmd="wakterm__agent__turns"
+                ;;
             wakterm__agent,watch)
                 cmd="wakterm__agent__watch"
                 ;;
@@ -189,6 +192,9 @@ _wakterm() {
                 ;;
             wakterm__agent__help,start)
                 cmd="wakterm__agent__help__start"
+                ;;
+            wakterm__agent__help,turns)
+                cmd="wakterm__agent__help__turns"
                 ;;
             wakterm__agent__help,watch)
                 cmd="wakterm__agent__help__watch"
@@ -406,6 +412,9 @@ _wakterm() {
             wakterm__cli__agent,start)
                 cmd="wakterm__cli__agent__start"
                 ;;
+            wakterm__cli__agent,turns)
+                cmd="wakterm__cli__agent__turns"
+                ;;
             wakterm__cli__agent,watch)
                 cmd="wakterm__cli__agent__watch"
                 ;;
@@ -471,6 +480,9 @@ _wakterm() {
                 ;;
             wakterm__cli__agent__help,start)
                 cmd="wakterm__cli__agent__help__start"
+                ;;
+            wakterm__cli__agent__help,turns)
+                cmd="wakterm__cli__agent__help__turns"
                 ;;
             wakterm__cli__agent__help,watch)
                 cmd="wakterm__cli__agent__help__watch"
@@ -685,6 +697,9 @@ _wakterm() {
             wakterm__cli__help__agent,start)
                 cmd="wakterm__cli__help__agent__start"
                 ;;
+            wakterm__cli__help__agent,turns)
+                cmd="wakterm__cli__help__agent__turns"
+                ;;
             wakterm__cli__help__agent,watch)
                 cmd="wakterm__cli__help__agent__watch"
                 ;;
@@ -813,6 +828,9 @@ _wakterm() {
                 ;;
             wakterm__help__agent,start)
                 cmd="wakterm__help__agent__start"
+                ;;
+            wakterm__help__agent,turns)
+                cmd="wakterm__help__agent__turns"
                 ;;
             wakterm__help__agent,watch)
                 cmd="wakterm__help__agent__watch"
@@ -964,6 +982,9 @@ _wakterm() {
             wakterm__help__cli__agent,start)
                 cmd="wakterm__help__cli__agent__start"
                 ;;
+            wakterm__help__cli__agent,turns)
+                cmd="wakterm__help__cli__agent__turns"
+                ;;
             wakterm__help__cli__agent,watch)
                 cmd="wakterm__help__cli__agent__watch"
                 ;;
@@ -1028,7 +1049,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__agent)
-            opts="-h --help start launch adopt adopt-detected promote-codex list watch inspect output events capabilities catalog caller admit approval send request remind interrupt set clear help"
+            opts="-h --help start launch adopt adopt-detected promote-codex list watch inspect output events turns capabilities catalog caller admit approval send request remind interrupt set clear help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1256,7 +1277,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__agent__help)
-            opts="start launch adopt adopt-detected promote-codex list watch inspect output events capabilities catalog caller admit approval send request remind interrupt set clear help"
+            opts="start launch adopt adopt-detected promote-codex list watch inspect output events turns capabilities catalog caller admit approval send request remind interrupt set clear help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1648,6 +1669,20 @@ _wakterm() {
             return 0
             ;;
         wakterm__agent__help__start)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        wakterm__agent__help__turns)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -2262,6 +2297,36 @@ _wakterm() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        wakterm__agent__turns)
+            opts="-h --since --reader --peek --agent --full --format --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --since)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --reader)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --agent)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --format)
+                    COMPREPLY=($(compgen -W "table json" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         wakterm__agent__watch)
             opts="-h --format --poll-ms --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
@@ -2428,7 +2493,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__agent)
-            opts="-h --help start launch adopt adopt-detected promote-codex list watch inspect output events capabilities catalog caller admit approval send request remind interrupt set clear help"
+            opts="-h --help start launch adopt adopt-detected promote-codex list watch inspect output events turns capabilities catalog caller admit approval send request remind interrupt set clear help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2656,7 +2721,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__agent__help)
-            opts="start launch adopt adopt-detected promote-codex list watch inspect output events capabilities catalog caller admit approval send request remind interrupt set clear help"
+            opts="start launch adopt adopt-detected promote-codex list watch inspect output events turns capabilities catalog caller admit approval send request remind interrupt set clear help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3048,6 +3113,20 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__agent__help__start)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        wakterm__cli__agent__help__turns)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -3662,6 +3741,36 @@ _wakterm() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        wakterm__cli__agent__turns)
+            opts="-h --since --reader --peek --agent --full --format --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --since)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --reader)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --agent)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --format)
+                    COMPREPLY=($(compgen -W "table json" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         wakterm__cli__agent__watch)
             opts="-h --format --poll-ms --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
@@ -3799,7 +3908,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__help__agent)
-            opts="start launch adopt adopt-detected promote-codex list watch inspect output events capabilities catalog caller admit approval send request remind interrupt set clear"
+            opts="start launch adopt adopt-detected promote-codex list watch inspect output events turns capabilities catalog caller admit approval send request remind interrupt set clear"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4177,6 +4286,20 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__help__agent__start)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        wakterm__cli__help__agent__turns)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -4809,7 +4932,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__help__agent)
-            opts="start launch adopt adopt-detected promote-codex list watch inspect output events capabilities catalog caller admit approval send request remind interrupt set clear"
+            opts="start launch adopt adopt-detected promote-codex list watch inspect output events turns capabilities catalog caller admit approval send request remind interrupt set clear"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5200,6 +5323,20 @@ _wakterm() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        wakterm__help__agent__turns)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         wakterm__help__agent__watch)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
@@ -5299,7 +5436,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__help__cli__agent)
-            opts="start launch adopt adopt-detected promote-codex list watch inspect output events capabilities catalog caller admit approval send request remind interrupt set clear"
+            opts="start launch adopt adopt-detected promote-codex list watch inspect output events turns capabilities catalog caller admit approval send request remind interrupt set clear"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5677,6 +5814,20 @@ _wakterm() {
             return 0
             ;;
         wakterm__help__cli__agent__start)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        wakterm__help__cli__agent__turns)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )

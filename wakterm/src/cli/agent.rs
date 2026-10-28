@@ -97,6 +97,12 @@ enum AgentSubCommand {
     Events(AgentEventsCommand),
 
     #[command(
+        name = "turns",
+        about = "list finished agent turns since a time or since a named reader last looked"
+    )]
+    Turns(super::agent_turns::AgentTurnsCommand),
+
+    #[command(
         name = "capabilities",
         about = "print the versioned Wakterm Agent API capabilities"
     )]
@@ -157,6 +163,7 @@ impl AgentCommand {
             AgentSubCommand::Inspect(cmd) => cmd.run(client).await,
             AgentSubCommand::Output(cmd) => cmd.run(client).await,
             AgentSubCommand::Events(cmd) => cmd.run(client).await,
+            AgentSubCommand::Turns(cmd) => cmd.run(client).await,
             AgentSubCommand::Capabilities(cmd) => cmd.run(client).await,
             AgentSubCommand::Catalog(cmd) => cmd.run(client).await,
             AgentSubCommand::Caller(cmd) => cmd.run(client).await,

@@ -313,6 +313,18 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(turns)
+_arguments "${_arguments_options[@]}" : \
+'--since=[List turns that finished since this time\: a duration ago such as 90s, 30m, 2h or 1d; a clock time such as 5am, 5\:30pm or 17\:00, its most recent occurrence; or an RFC 3339 timestamp]:SINCE:_default' \
+'--reader=[List turns after this reader'\''s saved position and save the new one, so that readers with different names never take each other'\''s place. A reader'\''s first look covers the last 24 hours unless --since is given]:READER:_default' \
+'*--agent=[Only these agents, by name or agent ID; repeatable]:AGENTS:_default' \
+'--format=[Output format\: "table" or "json"]:FORMAT:(table json)' \
+'--peek[With --reader, list without saving the new position]' \
+'--full[Every turn'\''s full final message instead of the latest one'\''s opening]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
 (capabilities)
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
@@ -616,6 +628,10 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (events)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(turns)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -989,6 +1005,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(turns)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (capabilities)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -1345,6 +1365,18 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help]' \
 && ret=0
 ;;
+(turns)
+_arguments "${_arguments_options[@]}" : \
+'--since=[List turns that finished since this time\: a duration ago such as 90s, 30m, 2h or 1d; a clock time such as 5am, 5\:30pm or 17\:00, its most recent occurrence; or an RFC 3339 timestamp]:SINCE:_default' \
+'--reader=[List turns after this reader'\''s saved position and save the new one, so that readers with different names never take each other'\''s place. A reader'\''s first look covers the last 24 hours unless --since is given]:READER:_default' \
+'*--agent=[Only these agents, by name or agent ID; repeatable]:AGENTS:_default' \
+'--format=[Output format\: "table" or "json"]:FORMAT:(table json)' \
+'--peek[With --reader, list without saving the new position]' \
+'--full[Every turn'\''s full final message instead of the latest one'\''s opening]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
 (capabilities)
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
@@ -1651,6 +1683,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(turns)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (capabilities)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -1934,6 +1970,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(turns)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (capabilities)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -2182,6 +2222,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(turns)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (capabilities)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -2345,6 +2389,7 @@ _wakterm__agent_commands() {
 'inspect:inspect a single registered or detected agent by name or id' \
 'output:read experimental normalized agent output for shadow comparison' \
 'events:read durable normalized Agent API events' \
+'turns:list finished agent turns since a time or since a named reader last looked' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
 'caller:print the catalog entry of the agent this command runs for' \
@@ -2418,6 +2463,7 @@ _wakterm__agent__help_commands() {
 'inspect:inspect a single registered or detected agent by name or id' \
 'output:read experimental normalized agent output for shadow comparison' \
 'events:read durable normalized Agent API events' \
+'turns:list finished agent turns since a time or since a named reader last looked' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
 'caller:print the catalog entry of the agent this command runs for' \
@@ -2582,6 +2628,11 @@ _wakterm__agent__help__set_commands() {
 _wakterm__agent__help__start_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm agent help start commands' commands "$@"
+}
+(( $+functions[_wakterm__agent__help__turns_commands] )) ||
+_wakterm__agent__help__turns_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent help turns commands' commands "$@"
 }
 (( $+functions[_wakterm__agent__help__watch_commands] )) ||
 _wakterm__agent__help__watch_commands() {
@@ -2769,6 +2820,11 @@ _wakterm__agent__start_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm agent start commands' commands "$@"
 }
+(( $+functions[_wakterm__agent__turns_commands] )) ||
+_wakterm__agent__turns_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm agent turns commands' commands "$@"
+}
 (( $+functions[_wakterm__agent__watch_commands] )) ||
 _wakterm__agent__watch_commands() {
     local commands; commands=()
@@ -2841,6 +2897,7 @@ _wakterm__cli__agent_commands() {
 'inspect:inspect a single registered or detected agent by name or id' \
 'output:read experimental normalized agent output for shadow comparison' \
 'events:read durable normalized Agent API events' \
+'turns:list finished agent turns since a time or since a named reader last looked' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
 'caller:print the catalog entry of the agent this command runs for' \
@@ -2914,6 +2971,7 @@ _wakterm__cli__agent__help_commands() {
 'inspect:inspect a single registered or detected agent by name or id' \
 'output:read experimental normalized agent output for shadow comparison' \
 'events:read durable normalized Agent API events' \
+'turns:list finished agent turns since a time or since a named reader last looked' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
 'caller:print the catalog entry of the agent this command runs for' \
@@ -3078,6 +3136,11 @@ _wakterm__cli__agent__help__set_commands() {
 _wakterm__cli__agent__help__start_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli agent help start commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__agent__help__turns_commands] )) ||
+_wakterm__cli__agent__help__turns_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent help turns commands' commands "$@"
 }
 (( $+functions[_wakterm__cli__agent__help__watch_commands] )) ||
 _wakterm__cli__agent__help__watch_commands() {
@@ -3265,6 +3328,11 @@ _wakterm__cli__agent__start_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli agent start commands' commands "$@"
 }
+(( $+functions[_wakterm__cli__agent__turns_commands] )) ||
+_wakterm__cli__agent__turns_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli agent turns commands' commands "$@"
+}
 (( $+functions[_wakterm__cli__agent__watch_commands] )) ||
 _wakterm__cli__agent__watch_commands() {
     local commands; commands=()
@@ -3342,6 +3410,7 @@ _wakterm__cli__help__agent_commands() {
 'inspect:inspect a single registered or detected agent by name or id' \
 'output:read experimental normalized agent output for shadow comparison' \
 'events:read durable normalized Agent API events' \
+'turns:list finished agent turns since a time or since a named reader last looked' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
 'caller:print the catalog entry of the agent this command runs for' \
@@ -3500,6 +3569,11 @@ _wakterm__cli__help__agent__set_commands() {
 _wakterm__cli__help__agent__start_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm cli help agent start commands' commands "$@"
+}
+(( $+functions[_wakterm__cli__help__agent__turns_commands] )) ||
+_wakterm__cli__help__agent__turns_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm cli help agent turns commands' commands "$@"
 }
 (( $+functions[_wakterm__cli__help__agent__watch_commands] )) ||
 _wakterm__cli__help__agent__watch_commands() {
@@ -3710,6 +3784,7 @@ _wakterm__help__agent_commands() {
 'inspect:inspect a single registered or detected agent by name or id' \
 'output:read experimental normalized agent output for shadow comparison' \
 'events:read durable normalized Agent API events' \
+'turns:list finished agent turns since a time or since a named reader last looked' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
 'caller:print the catalog entry of the agent this command runs for' \
@@ -3869,6 +3944,11 @@ _wakterm__help__agent__start_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help agent start commands' commands "$@"
 }
+(( $+functions[_wakterm__help__agent__turns_commands] )) ||
+_wakterm__help__agent__turns_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help agent turns commands' commands "$@"
+}
 (( $+functions[_wakterm__help__agent__watch_commands] )) ||
 _wakterm__help__agent__watch_commands() {
     local commands; commands=()
@@ -3940,6 +4020,7 @@ _wakterm__help__cli__agent_commands() {
 'inspect:inspect a single registered or detected agent by name or id' \
 'output:read experimental normalized agent output for shadow comparison' \
 'events:read durable normalized Agent API events' \
+'turns:list finished agent turns since a time or since a named reader last looked' \
 'capabilities:print the versioned Wakterm Agent API capabilities' \
 'catalog:print the narrow Wakterm Agent API catalog' \
 'caller:print the catalog entry of the agent this command runs for' \
@@ -4098,6 +4179,11 @@ _wakterm__help__cli__agent__set_commands() {
 _wakterm__help__cli__agent__start_commands() {
     local commands; commands=()
     _describe -t commands 'wakterm help cli agent start commands' commands "$@"
+}
+(( $+functions[_wakterm__help__cli__agent__turns_commands] )) ||
+_wakterm__help__cli__agent__turns_commands() {
+    local commands; commands=()
+    _describe -t commands 'wakterm help cli agent turns commands' commands "$@"
 }
 (( $+functions[_wakterm__help__cli__agent__watch_commands] )) ||
 _wakterm__help__cli__agent__watch_commands() {

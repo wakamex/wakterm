@@ -160,6 +160,7 @@ synopsis_commands=(
   "agent watch"
   "agent inspect"
   "agent events"
+  "agent turns"
   "agent capabilities"
   "agent catalog"
   "agent admit"

@@ -16,6 +16,7 @@ Supported harnesses include Agy, Claude, Codex, Devin, Gemini, Muse, OpenCode, a
 - `wakterm agent inspect`: inspect a single adopted or detected agent
 - `wakterm agent output`: read experimental normalized agent output for shadow comparison
 - `wakterm agent events`: read durable normalized Agent API v1 events
+- `wakterm agent turns`: list finished agent turns since a time or since a named reader last looked
 - `wakterm agent capabilities`: print versioned Wakterm Agent API capabilities
 - `wakterm agent catalog`: print the narrow Agent API catalog
 - `wakterm agent caller`: print the catalog entry of the agent this command runs for, and the tab its pane is in
@@ -162,6 +163,34 @@ Promotes an adopted Codex TUI that is already connected to the current mux-owned
 
 ```sh
 wakterm agent promote-codex wakterm_codex --thread 01a02767-c120-77b2-88a1-4e17c93a7549
+```
+
+## `wakterm agent turns`
+
+Lists the agent turns that finished since a time, since a named reader last looked, or both, grouped by agent with the newest activity first. Each agent shows its number of turns, their outcomes, and the opening lines of its latest final message.
+
+```console
+{% include "../../generated/cli-help/cmd-synopsis-wakterm-agent-turns--help.txt" %}
+```
+
+`--since` takes a duration ago (`90s`, `30m`, `2h`, `1d`), a clock time at its most recent occurrence (`5am`, `5:30pm`, `17:00`), or an RFC 3339 timestamp, and lists the turns whose final event was observed since then.
+
+`--reader NAME` lists the turns after that reader's saved position in the event log and then saves the position it reached, so each look shows only what is new to that reader, and readers with different names never move each other's position. With `--peek`, the position is not saved. A reader's first look covers the last 24 hours unless `--since` is given; with both, a turn must be after the position and since the time. Positions are saved per reader in Wakterm's data directory on the machine that runs the command. If the event log no longer keeps some events after a reader's position, the output says that turns may be missing.
+
+`--full` shows every turn's full final message, and `--format json` prints the same report as JSON, with `after_sequence` and `through_sequence` giving the range of the event log it read.
+
+```sh
+# Turns since 5am today, or since yesterday's 5am if it is not yet 5am
+wakterm agent turns --since 5am
+
+# What is new since this reader last looked
+wakterm agent turns --reader voice
+
+# The same, as JSON with every final message in full, without saving the position
+wakterm agent turns --reader voice --peek --full --format json
+
+# One agent's turns in the last two hours
+wakterm agent turns --since 2h --agent concord_claude
 ```
 
 ## `wakterm agent send`
