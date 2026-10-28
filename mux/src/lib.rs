@@ -2191,7 +2191,10 @@ impl Mux {
     }
 
     /// A window's visible tabs ordered by their latest completed agent turn,
-    /// newest first. Tabs without a completed turn follow in tab order.
+    /// newest first. A tab whose agents have not completed a turn yet sorts
+    /// by when the newest of them started its turn, or was adopted, so a new
+    /// agent sorts among the recently active ones. Tabs without an agent
+    /// follow in tab order.
     pub fn visible_tab_ids_by_last_turn(&self, window_id: WindowId) -> Vec<TabId> {
         let Some(mut tab_ids) = self.get_window(window_id).map(|window| {
             window
@@ -2202,10 +2205,69 @@ impl Mux {
             return vec![];
         };
         let last_turns = self.last_turn_completed_at_by_tab(window_id);
+        let starts = self.first_turn_started_at_by_tab(window_id);
         // The stable sort keeps tab order among equal times and among tabs
         // without a time, which sort after every tab with one.
-        tab_ids.sort_by_key(|tab_id| std::cmp::Reverse(last_turns.get(tab_id).copied()));
+        tab_ids.sort_by_key(|tab_id| {
+            std::cmp::Reverse(last_turns.get(tab_id).or(starts.get(tab_id)).copied())
+        });
         tab_ids
+    }
+
+    /// For each tab of a window with an agent that has not completed a
+    /// turn, when the newest such agent started its turn, or was adopted
+    /// when it has not started one: from local agents and mirrored ones.
+    fn first_turn_started_at_by_tab(&self, window_id: WindowId) -> HashMap<TabId, DateTime<Utc>> {
+        fn started(
+            metadata: &AgentMetadata,
+            runtime: &AgentRuntimeSnapshot,
+        ) -> Option<DateTime<Utc>> {
+            if runtime.last_turn_completed_at.is_some() {
+                return None;
+            }
+            Some(
+                runtime
+                    .observed_turn
+                    .as_ref()
+                    .and_then(|turn| turn.started_at)
+                    .unwrap_or(metadata.created_at),
+            )
+        }
+        let mut latest = HashMap::<TabId, DateTime<Utc>>::new();
+        let mut record = |tab_id: TabId, at: DateTime<Utc>| {
+            let entry = latest.entry(tab_id).or_insert(at);
+            *entry = (*entry).max(at);
+        };
+        let Some(tabs) = self
+            .get_window(window_id)
+            .map(|window| window.iter().cloned().collect::<Vec<_>>())
+        else {
+            return latest;
+        };
+        // Metadata before runtimes, the order every reader of both takes.
+        let metadata = self.agent_metadata_by_pane.read();
+        let runtimes = self.agent_runtime_by_pane.read();
+        for tab in &tabs {
+            for pos in tab.iter_panes_ignoring_zoom() {
+                let pane_id = pos.pane.pane_id();
+                if let (Some(metadata), Some(runtime)) =
+                    (metadata.get(&pane_id), runtimes.get(&pane_id))
+                {
+                    if let Some(at) = started(metadata, runtime) {
+                        record(tab.tab_id(), at);
+                    }
+                }
+            }
+        }
+        drop((runtimes, metadata));
+        for snapshot in self.mirrored_agent_snapshot_by_pane.read().values() {
+            if snapshot.window_id == window_id {
+                if let Some(at) = started(&snapshot.metadata, &snapshot.runtime) {
+                    record(snapshot.tab_id, at);
+                }
+            }
+        }
+        latest
     }
 
     /// The most recent completed agent turn in each tab of a window, from
@@ -13903,6 +13965,36 @@ mod test {
         assert_eq!(
             mux.visible_tab_ids_by_last_turn(window_id),
             order(&[0, 3, 1, 4, 2, 5])
+        );
+
+        // An agent that has not completed a turn sorts by when its turn
+        // started, and one that has not started a turn by when it was
+        // adopted; a tab without an agent stays at the end.
+        let new_agent = |pane_id, adopted: u32, started: Option<u32>| {
+            let mut metadata = sample_agent_metadata("new");
+            metadata.created_at = at(adopted);
+            let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+            runtime.observed_turn = started.map(|minute| AgentObservedTurn {
+                provider_turn_id: "turn".to_string(),
+                outcome: AgentObservedTurnOutcome::Running,
+                started_at: Some(at(minute)),
+                completed_at: None,
+                started_cursor: None,
+                latest_cursor: None,
+                primary_user_message_sha256: None,
+                user_message_count: 1,
+                final_message: None,
+            });
+            mux.agent_metadata_by_pane
+                .write()
+                .insert(pane_id, Arc::new(metadata));
+            mux.agent_runtime_by_pane.write().insert(pane_id, runtime);
+        };
+        new_agent(263, 1, Some(40));
+        new_agent(266, 25, None);
+        assert_eq!(
+            mux.visible_tab_ids_by_last_turn(window_id),
+            order(&[2, 0, 5, 3, 1, 4])
         );
 
         // Ordering by activity never changes the shared tab order.
