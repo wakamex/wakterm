@@ -2315,6 +2315,30 @@ impl Mux {
         latest
     }
 
+    /// Marks a remote agent's latest reply seen in this client's mirror, as
+    /// soon as this client tells the server it was seen. The server's next
+    /// snapshots would say the same, but until they arrive the mirror would
+    /// still offer that reply, and "review next agent response" would pick
+    /// the tab already shown.
+    pub fn mark_mirrored_agent_attention_seen(&self, pane_id: PaneId) {
+        let (tab_id, others) = {
+            let mut snapshots = self.mirrored_agent_snapshot_by_pane.write();
+            let Some(snapshot) = snapshots.get_mut(&pane_id) else {
+                return;
+            };
+            snapshot.needs_attention = false;
+            let tab_id = snapshot.tab_id;
+            let others = snapshots
+                .values()
+                .any(|snapshot| snapshot.tab_id == tab_id && snapshot.needs_attention);
+            (tab_id, others)
+        };
+        if let Some(badge) = self.mirrored_agent_badge_by_tab.write().get_mut(&tab_id) {
+            badge.needs_attention = others;
+        }
+        self.notify_tab_title_changed(tab_id);
+    }
+
     pub fn mirrored_agent_snapshots_for_window(&self, window_id: WindowId) -> Vec<AgentSnapshot> {
         self.mirrored_agent_snapshot_by_pane
             .read()
@@ -14061,6 +14085,88 @@ mod test {
             mux.get_active_tab_for_window_for_current_identity(window_id)
                 .map(|tab| tab.tab_id()),
             Some(tab_ids[1])
+        );
+    }
+
+    #[test]
+    fn a_remote_reply_marked_seen_leaves_the_queue_at_once() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let mut tabs = vec![];
+        for pane_id in [281, 282] {
+            let tab = Arc::new(Tab::new(&size));
+            tab.assign_pane(&FakePane::new(pane_id, size, domain.id));
+            mux.add_tab_and_active_pane(&tab).unwrap();
+            mux.add_tab_to_window(&tab, window_id).unwrap();
+            tabs.push(tab);
+        }
+        let (client_id, _view_id) = register_test_client(&mux, "attention-mirror");
+        let _identity = mux.with_identity(Some(client_id));
+
+        // Two agents mirrored from a server, each with an unseen reply.
+        let at = |minute| Utc.with_ymd_and_hms(2026, 10, 29, 12, minute, 0).unwrap();
+        let metadata = sample_agent_metadata("mirrored");
+        let snapshot = |tab: &Arc<Tab>, pane_id, minute| {
+            let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+            runtime.turn_state = AgentTurnState::WaitingOnUser;
+            runtime.last_turn_completed_at = Some(at(minute));
+            AgentSnapshot {
+                metadata: metadata.clone(),
+                runtime,
+                pane_id,
+                tab_id: tab.tab_id(),
+                window_id,
+                workspace: DEFAULT_WORKSPACE.to_string(),
+                domain_id: domain.id,
+                origin: AgentOrigin::Adopted,
+                detection_source: None,
+                needs_attention: true,
+            }
+        };
+        mux.replace_mirrored_agent_snapshots_for_domain(
+            domain.id,
+            vec![snapshot(&tabs[0], 281, 10), snapshot(&tabs[1], 282, 20)],
+        );
+        for tab in &tabs {
+            mux.set_mirrored_agent_badge(
+                tab.tab_id(),
+                AgentTabBadgeState {
+                    waiting_on_user: true,
+                    needs_attention: true,
+                },
+            );
+        }
+        let oldest = || {
+            mux.activate_agent_needing_attention(window_id, AttentionQueueEnd::Oldest)
+                .unwrap()
+        };
+        assert_eq!(oldest(), Some((tabs[0].tab_id(), 281)));
+
+        // Once the reply shown is marked seen, before the server's next
+        // snapshot, the next press moves on, and the tab's badge clears.
+        mux.mark_mirrored_agent_attention_seen(281);
+        assert_eq!(oldest(), Some((tabs[1].tab_id(), 282)));
+        assert!(
+            !mux.tab_badge_state_for_current_identity(tabs[0].tab_id())
+                .needs_attention
+        );
+        assert!(
+            mux.tab_badge_state_for_current_identity(tabs[1].tab_id())
+                .needs_attention
         );
     }
 

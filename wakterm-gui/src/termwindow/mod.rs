@@ -1751,6 +1751,7 @@ impl TermWindow {
         }
         if let Some(client_pane) = pane.downcast_ref::<wakterm_client::pane::ClientPane>() {
             client_pane.acknowledge_agent_attention();
+            mux.mark_mirrored_agent_attention_seen(pane.pane_id());
         } else {
             mux.acknowledge_agent_attention(pane.pane_id());
         }
@@ -2799,10 +2800,13 @@ impl TermWindow {
 
     fn activate_tab_needing_attention(&mut self, end: mux::AttentionQueueEnd) {
         match Mux::get().activate_agent_needing_attention(self.mux_window_id, end) {
-            Ok(Some((_tab_id, pane_id))) => {
+            Ok(Some((tab_id, pane_id))) => {
                 if let Some(pane) = Mux::get().get_pane(pane_id) {
                     pane.focus_changed(true);
                 }
+                // The reply is shown now; marking it seen at once lets the
+                // next press move on to the next one.
+                self.acknowledge_visible_agent_attention(Some(tab_id));
                 self.update_title();
                 self.update_scrollbar();
             }
