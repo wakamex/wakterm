@@ -2019,8 +2019,31 @@ fn schedule_agent_prompt_admission<SND>(
 ) where
     SND: FnOnce(anyhow::Result<mux::agent_admission::AgentAdmissionReceipt>) + Send + 'static,
 {
+    // One line when an admission starts and one when it answers, so that a
+    // call a client gave up on shows whether it reached the server and how
+    // it ended.
+    let (request_id, agent_id) = (request.request_id.clone(), request.agent_id.clone());
+    log::info!("admission {request_id} to {agent_id} started");
+    let started = std::time::Instant::now();
     spawn_into_main_thread(async move {
-        send_response(admit_agent_prompt(request).await);
+        let result = admit_agent_prompt(request).await;
+        match &result {
+            Ok(receipt) => log::info!(
+                "admission {request_id} to {agent_id} answered {:?} after {:.1}s{}",
+                receipt.status,
+                started.elapsed().as_secs_f64(),
+                receipt
+                    .detail
+                    .as_deref()
+                    .map(|detail| format!(": {detail}"))
+                    .unwrap_or_default()
+            ),
+            Err(err) => log::warn!(
+                "admission {request_id} to {agent_id} failed after {:.1}s: {err:#}",
+                started.elapsed().as_secs_f64()
+            ),
+        }
+        send_response(result);
     })
     .detach();
 }
@@ -2051,8 +2074,10 @@ const AGENT_THAW_SETTLE: std::time::Duration = std::time::Duration::from_secs(1)
 const CLAUDE_STATUS_CONFIRMATION: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// How long a repeated admission waits for the attempt with its request_id
-/// that is still running.
-const ADMISSION_IN_FLIGHT_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+/// that is still running before answering that it is. It stays well below a
+/// client's deadline, so that a repeat answers even when the first attempt
+/// is stuck, and the client can repeat it again later.
+const ADMISSION_IN_FLIGHT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 async fn admit_agent_prompt(
     request: mux::agent_admission::AgentPromptAdmissionRequest,
