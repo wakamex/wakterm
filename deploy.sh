@@ -204,6 +204,12 @@ if $RESTART; then
     else
         echo "  Warning: could not save the agent snapshot; continuing"
     fi
+    # The server overwrites the session file seconds after it restarts, so
+    # keep the one that records the agents being restored.
+    if [ -f "$SESSION_FILE" ]; then
+        cp "$SESSION_FILE" "$SNAPSHOT_DIR/session-before-restart.json" ||
+            echo "  Warning: could not copy $SESSION_FILE; continuing"
+    fi
     echo ""
 fi
 

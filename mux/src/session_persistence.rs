@@ -14,7 +14,7 @@ use crate::Mux;
 use anyhow::{anyhow, Context};
 use portable_pty::CommandBuilder;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -216,6 +216,7 @@ fn build_saved_session(mux: &Mux) -> SavedSession {
     let mut windows = Vec::new();
     let mut agent_restore_intents = Vec::new();
     let mut pane_tokens = HashMap::new();
+    let mut unrestorable_agents = BTreeSet::new();
     let mut window_ids = mux.iter_windows();
     window_ids.sort();
 
@@ -243,7 +244,12 @@ fn build_saved_session(mux: &Mux) -> SavedSession {
             let title = mux.raw_tab_title(tab.tab_id());
             let mut tree = tab.codec_pane_tree_with_active_pane_id(None);
             mux.annotate_pane_tree_with_agent_metadata(&mut tree);
-            collect_agent_restore_intents(mux, &tree, &mut agent_restore_intents);
+            collect_agent_restore_intents(
+                mux,
+                &tree,
+                &mut agent_restore_intents,
+                &mut unrestorable_agents,
+            );
             collect_pane_tokens(mux, &tree, &mut pane_tokens);
             // Fix any degenerate splits (< 3 cols/rows on one side)
             // before saving, so the restore produces a usable layout
@@ -261,6 +267,8 @@ fn build_saved_session(mux: &Mux) -> SavedSession {
             });
         }
     }
+
+    log_unrestorable_agents(unrestorable_agents);
 
     SavedSession {
         version: SESSION_VERSION,
@@ -285,10 +293,13 @@ fn collect_pane_tokens(mux: &Mux, node: &PaneNode, tokens: &mut HashMap<PaneId, 
     }
 }
 
+/// Collects the panes' restore intents, and the panes whose agent would be
+/// resumed but has no intent to resume it with.
 fn collect_agent_restore_intents(
     mux: &Mux,
     node: &PaneNode,
     intents: &mut Vec<SavedAgentRestoreIntent>,
+    unrestorable: &mut BTreeSet<String>,
 ) {
     match node {
         PaneNode::Empty => {}
@@ -303,13 +314,38 @@ fn collect_agent_restore_intents(
                     session_id,
                     attention_seen_at: mux.agent_attention_seen_at(entry.pane_id),
                 });
+            } else if let Some((metadata, harness)) = resumable_agent(entry) {
+                unrestorable.insert(format!(
+                    "{} (pane {}, {:?})",
+                    metadata.name, entry.pane_id, harness
+                ));
             }
         }
         PaneNode::Split { left, right, .. } => {
-            collect_agent_restore_intents(mux, left, intents);
-            collect_agent_restore_intents(mux, right, intents);
+            collect_agent_restore_intents(mux, left, intents, unrestorable);
+            collect_agent_restore_intents(mux, right, intents, unrestorable);
         }
     }
+}
+
+/// Logs the agents that a restore could not resume whenever that set
+/// changes. Sessions are saved every few seconds, so logging each save
+/// would bury the moment an agent stops being restorable.
+fn log_unrestorable_agents(unrestorable: BTreeSet<String>) {
+    static LAST: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+    let mut last = LAST.lock().unwrap();
+    if *last == unrestorable {
+        return;
+    }
+    if unrestorable.is_empty() {
+        log::info!("every saved agent now has a session to resume");
+    } else {
+        log::warn!(
+            "saved agents without a session to resume, which a restore would leave as shells: {}",
+            unrestorable.iter().cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
+    *last = unrestorable;
 }
 
 /// Fix degenerate split sizes in a PaneNode tree before saving.
@@ -853,8 +889,17 @@ fn restore_command_for_entry(
     pane_tokens: &HashMap<PaneId, String>,
 ) -> anyhow::Result<(Option<CommandBuilder>, Option<SavedAgentRestoreIntent>)> {
     let (mut command, intent) = match prepare_restore_for_entry(entry, restore_intents)? {
-        Some(prepared) => (Some(prepared.command), Some(prepared.intent)),
-        None => (None, None),
+        Some(prepared) => {
+            log::info!(
+                "restoring agent {} in pane {} from its {:?} session {}",
+                prepared.intent.metadata.name,
+                entry.pane_id,
+                prepared.intent.harness(),
+                prepared.intent.session_id
+            );
+            (Some(prepared.command), Some(prepared.intent))
+        }
+        None => (unrestorable_agent_notice(entry)?, None),
     };
     if let Some(token) = pane_tokens.get(&entry.pane_id) {
         command
@@ -862,6 +907,51 @@ fn restore_command_for_entry(
             .env(crate::RESTORED_PANE_TOKEN_ENV, token);
     }
     Ok((command, intent))
+}
+
+/// For a pane saved with a harness agent but no restore intent, which names
+/// the session to resume, a command that says so in the pane before its
+/// shell starts: the agent is not restored, and a plain shell alone would
+/// hide that.
+/// The agent recorded on a saved pane, and its harness, when the harness is
+/// one Wakterm resumes on restore.
+fn resumable_agent(entry: &crate::tab::PaneEntry) -> Option<(&AgentMetadata, AgentHarness)> {
+    let metadata = entry.agent_metadata.as_ref()?;
+    let harness = crate::agent::infer_harness(&metadata.launch_cmd, None);
+    matches!(
+        harness,
+        AgentHarness::Agy
+            | AgentHarness::Claude
+            | AgentHarness::Codex
+            | AgentHarness::Zcode
+            | AgentHarness::Devin
+            | AgentHarness::Muse
+    )
+    .then_some((metadata, harness))
+}
+
+fn unrestorable_agent_notice(
+    entry: &crate::tab::PaneEntry,
+) -> anyhow::Result<Option<CommandBuilder>> {
+    let Some((metadata, harness)) = resumable_agent(entry) else {
+        return Ok(None);
+    };
+    log::warn!(
+        "not restoring agent {} in pane {}: its {:?} session was saved without a session to resume",
+        metadata.name,
+        entry.pane_id,
+        harness
+    );
+    let message = format!(
+        "Wakterm could not restore agent {} ({}) in {}: the saved session did not record which {:?} session to resume. Resume it by hand in this shell.",
+        metadata.name, metadata.launch_cmd, metadata.declared_cwd, harness
+    );
+    restored_harness_then_shell(CommandBuilder::from_argv(vec![
+        "printf".into(),
+        "%s\\n".into(),
+        message.into(),
+    ]))
+    .map(Some)
 }
 
 fn prepare_restore_for_entry(
@@ -2618,7 +2708,8 @@ mod test {
         let restored_mux = Arc::new(Mux::new(None));
         Mux::set_mux(&restored_mux);
         let restored_window = *restored_mux.new_empty_window(Some("default".to_string()), None);
-        let domain: Arc<dyn Domain> = Arc::new(TestDomain::new());
+        let test_domain = Arc::new(TestDomain::new());
+        let domain: Arc<dyn Domain> = test_domain.clone();
 
         smol::block_on(async {
             restore_tab(
@@ -2634,6 +2725,15 @@ mod test {
         });
 
         assert!(restored_mux.list_agents().is_empty());
+        // The pane says that its agent was not restored instead of opening
+        // a shell that looks like nothing was lost.
+        let commands = test_domain.commands.lock().unwrap().clone();
+        assert_eq!(commands.len(), 1);
+        let shown = commands[0].join(" ");
+        assert!(
+            shown.contains("could not restore agent reviewer (codex)"),
+            "{shown}"
+        );
     }
 
     #[test]
