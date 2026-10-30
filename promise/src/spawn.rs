@@ -1,10 +1,9 @@
 use anyhow::{anyhow, Result};
 use async_executor::Executor;
-use flume::{bounded, unbounded, Receiver, RecvTimeoutError, TryRecvError};
+use flume::{bounded, unbounded, Receiver, RecvTimeoutError};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::{Poll, Waker};
 use std::time::Duration;
 
 pub use async_task::{Runnable, Task};
@@ -62,57 +61,16 @@ where
     T: Send + 'static,
 {
     let (tx, rx) = bounded(1);
-
-    // Holds the waker that may later observe
-    // during the Future::poll call.
-    struct WakerHolder {
-        waker: Mutex<Option<Waker>>,
-    }
-
-    let holder = Arc::new(WakerHolder {
-        waker: Mutex::new(None),
-    });
-
-    let thread_waker = Arc::clone(&holder);
     std::thread::spawn(move || {
-        // Run the thread
-        let res = f();
-        // Pass the result back
-        tx.send(res).unwrap();
-        // If someone polled the thread before we got here,
-        // they will have populated the waker; extract it
-        // and wake up the scheduler so that it will poll
-        // the result again.
-        let mut waker = thread_waker.waker.lock().unwrap();
-        if let Some(waker) = waker.take() {
-            waker.wake();
-        }
+        let _ = tx.send(f());
     });
-
-    struct PendingResult<T> {
-        rx: Receiver<Result<T>>,
-        holder: Arc<WakerHolder>,
-    }
-
-    impl<T> std::future::Future for PendingResult<T> {
-        type Output = Result<T>;
-
-        fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context) -> Poll<Self::Output> {
-            match self.rx.try_recv() {
-                Ok(res) => Poll::Ready(res),
-                Err(TryRecvError::Empty) => {
-                    let mut waker = self.holder.waker.lock().unwrap();
-                    waker.replace(cx.waker().clone());
-                    Poll::Pending
-                }
-                Err(TryRecvError::Disconnected) => {
-                    Poll::Ready(Err(anyhow!("thread terminated without providing a result")))
-                }
-            }
-        }
-    }
-
-    spawn_into_main_thread(PendingResult { rx, holder })
+    // The channel wakes the receiver when the result is sent, and also when
+    // the thread ends without sending one, as when it panics.
+    spawn_into_main_thread(async move {
+        rx.recv_async()
+            .await
+            .map_err(|_| anyhow!("thread terminated without providing a result"))?
+    })
 }
 
 fn get_scoped() -> Option<Arc<Executor<'static>>> {
@@ -258,5 +216,49 @@ impl ScopedExecutor {
 impl Drop for ScopedExecutor {
     fn drop(&mut self) {
         SCOPED_EXECUTOR.lock().unwrap().take();
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    /// A thread that finishes while its result is being polled for must
+    /// still wake the task waiting for it.
+    #[test]
+    fn every_thread_result_wakes_its_waiting_task() {
+        const THREADS: usize = 20_000;
+        let executor = SimpleExecutor::new();
+        let finished = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&finished);
+        spawn_into_main_thread(async move {
+            for i in 0..THREADS {
+                assert_eq!(spawn_into_new_thread(move || Ok(i)).await.unwrap(), i);
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .detach();
+        while finished.load(Ordering::Relaxed) < THREADS {
+            assert!(
+                executor.tick_timeout(Duration::from_secs(5)).unwrap(),
+                "a thread's result did not wake its task after {} results",
+                finished.load(Ordering::Relaxed)
+            );
+        }
+
+        // A thread that panics ends its task with an error. Both checks
+        // share one test, since each executor replaces the global scheduler.
+        let task = spawn_into_new_thread(|| -> Result<()> { panic!("expected") });
+        let result = Arc::new(Mutex::new(None));
+        let slot = Arc::clone(&result);
+        spawn_into_main_thread(async move {
+            *slot.lock().unwrap() = Some(task.await);
+        })
+        .detach();
+        while result.lock().unwrap().is_none() {
+            assert!(executor.tick_timeout(Duration::from_secs(5)).unwrap());
+        }
+        assert!(result.lock().unwrap().take().unwrap().is_err());
     }
 }
