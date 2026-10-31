@@ -722,11 +722,15 @@ async fn restore_tab(
     Ok(tab.tab_id())
 }
 
-/// Recursively restore a PaneNode subtree.
+/// Recursively restore a PaneNode subtree, whose panes start at pane index
+/// `leaf_index`, which is so far a single pane standing for the whole
+/// subtree.
 ///
 /// For Leaf nodes: nothing to do (already exists as pane at `leaf_index`).
-/// For Split nodes: the left subtree is already the pane at `leaf_index`.
-///   Split that pane to create the right subtree, then recurse into both.
+/// For Split nodes: split that pane in two, one for each side, then recurse
+///   into both. Splitting before recursing splits the whole subtree's area,
+///   where splitting after the left side is restored would split only its
+///   last pane.
 fn restore_node<'a>(
     domain: &'a Arc<dyn crate::domain::Domain>,
     tab: &'a crate::tab::Tab,
@@ -747,13 +751,7 @@ fn restore_node<'a>(
                 right,
                 node: split_data,
             } => {
-                // First, recursively restore the left subtree.
-                // After this, all left-side leaves exist in the tab.
-                restore_node(domain, tab, left, leaf_index, restore_intents, pane_tokens).await?;
-
-                // The pane we need to split is the one just before
-                // the current leaf_index (the last leaf of the left subtree)
-                let split_pane_index = leaf_index.saturating_sub(1);
+                let split_pane_index = *leaf_index;
 
                 // Spawn a new pane for the right side
                 let right_entry = first_leaf_entry(right);
@@ -815,7 +813,7 @@ fn restore_node<'a>(
                     );
                 }
 
-                // Now recursively restore the right subtree
+                restore_node(domain, tab, left, leaf_index, restore_intents, pane_tokens).await?;
                 restore_node(domain, tab, right, leaf_index, restore_intents, pane_tokens).await?;
             }
         }
@@ -2404,6 +2402,127 @@ mod test {
         );
         assert_eq!(restored.intent.session_id, thread_id);
         assert!(restored.intent.metadata.codex_app_server.is_none());
+    }
+
+    /// A split layout's shape: its splits' directions and nesting.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Shape {
+        Leaf,
+        Split(SplitDirection, Box<Shape>, Box<Shape>),
+    }
+
+    impl Shape {
+        fn leaves(&self) -> usize {
+            match self {
+                Shape::Leaf => 1,
+                Shape::Split(_, left, right) => left.leaves() + right.leaves(),
+            }
+        }
+
+        fn of(node: &PaneNode) -> Shape {
+            match node {
+                PaneNode::Split { left, right, node } => Shape::Split(
+                    node.direction,
+                    Box::new(Shape::of(left)),
+                    Box::new(Shape::of(right)),
+                ),
+                PaneNode::Leaf(_) => Shape::Leaf,
+                PaneNode::Empty => panic!("empty pane tree"),
+            }
+        }
+
+        /// Every shape with exactly `leaves` panes.
+        fn all(leaves: usize) -> Vec<Shape> {
+            if leaves == 1 {
+                return vec![Shape::Leaf];
+            }
+            let mut shapes = Vec::new();
+            for left_leaves in 1..leaves {
+                for left in Shape::all(left_leaves) {
+                    for right in Shape::all(leaves - left_leaves) {
+                        for direction in [SplitDirection::Horizontal, SplitDirection::Vertical] {
+                            shapes.push(Shape::Split(
+                                direction,
+                                Box::new(left.clone()),
+                                Box::new(right.clone()),
+                            ));
+                        }
+                    }
+                }
+            }
+            shapes
+        }
+
+        /// Splits the pane at `index`, which stands for this whole shape,
+        /// into the shape's panes.
+        fn build(&self, tab: &Tab, index: usize, size: TerminalSize) {
+            if let Shape::Split(direction, left, right) = self {
+                let request = SplitRequest {
+                    direction: *direction,
+                    target_is_second: true,
+                    top_level: false,
+                    size: SplitSize::Percent(50),
+                };
+                tab.split_and_insert(index, request, TestPane::new(alloc_pane_id(), size))
+                    .unwrap();
+                left.build(tab, index, size);
+                right.build(tab, index + left.leaves(), size);
+            }
+        }
+    }
+
+    #[test]
+    fn restored_tabs_keep_every_split_shape_up_to_five_panes() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let tab_size = size(800, 400);
+        let mut wrong = Vec::new();
+        let mut checked = 0;
+        for leaves in 1..=5 {
+            for shape in Shape::all(leaves) {
+                let source = Arc::new(Mux::new(None));
+                Mux::set_mux(&source);
+                let window = *source.new_empty_window(Some("default".to_string()), None);
+                let tab = Arc::new(Tab::new(&tab_size));
+                tab.assign_pane(&TestPane::new(alloc_pane_id(), tab_size));
+                source.add_tab_and_active_pane(&tab).unwrap();
+                source.add_tab_to_window(&tab, window).unwrap();
+                shape.build(&tab, 0, tab_size);
+                let saved = SavedTab {
+                    title: String::new(),
+                    tree: tab.codec_pane_tree_with_active_pane_id(None),
+                    parked: false,
+                };
+                assert_eq!(Shape::of(&saved.tree), shape, "source tab");
+
+                let mux = Arc::new(Mux::new(None));
+                Mux::set_mux(&mux);
+                let window = *mux.new_empty_window(Some("default".to_string()), None);
+                let domain: Arc<dyn Domain> = Arc::new(TestDomain::new());
+                let tab_id = smol::block_on(restore_tab(
+                    &domain,
+                    &saved,
+                    tab_size,
+                    window,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                ))
+                .unwrap();
+                let restored = mux.get_tab(tab_id).unwrap();
+                let restored = Shape::of(&restored.codec_pane_tree_with_active_pane_id(None));
+                if restored != shape {
+                    wrong.push(format!("{shape:?}\n  restored as {restored:?}"));
+                }
+                checked += 1;
+            }
+        }
+        let _guard = crate::TestMuxGuard;
+        assert!(
+            wrong.is_empty(),
+            "{} of {checked} shapes restored differently, such as:\n{}",
+            wrong.len(),
+            wrong[..wrong.len().min(3)].join("\n")
+        );
     }
 
     #[test]
