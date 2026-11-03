@@ -36,6 +36,7 @@ impl AgentApiCapabilities {
                 "question_form_answers.v1".to_string(),
                 "input_accepted_events.v1".to_string(),
                 "claude_refusal_menu.v1".to_string(),
+                "claude_refusal_menu.discard_draft.v1".to_string(),
                 "claude_menu.v1".to_string(),
                 "devin_permission.v1".to_string(),
                 "muse_permission.v1".to_string(),

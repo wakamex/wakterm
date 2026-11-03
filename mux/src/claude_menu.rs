@@ -29,6 +29,10 @@ pub const MENU_KIND: &str = "claude_menu";
 pub const REFUSAL_MENU_KIND: &str = "claude_refusal_fallback";
 pub const RETRY_FALLBACK: &str = "retry_fallback";
 pub const EDIT_PROMPT: &str = "edit_prompt";
+/// A choice of the "Session paused" menu that is not one of its rows: it
+/// chooses `edit_prompt` and then discards the prompt Claude puts back in
+/// its input box, for a caller that cannot edit the box itself.
+pub const EDIT_PROMPT_DISCARD_DRAFT: &str = "edit_prompt_discard_draft";
 
 const REFUSAL_TITLE: &str = "Session paused";
 const REFUSAL_LABEL_PREFIXES: [&str; 2] = ["Switch to", "Edit prompt and retry"];
@@ -214,21 +218,41 @@ pub struct MenuKeys {
     pub(crate) choice_id: String,
 }
 
+/// The row a choice ID chooses, and whether the draft the choice leaves in
+/// the input box is then discarded.
+pub(crate) fn chosen_row(request: &AgentApprovalRequest, choice_id: &str) -> Option<(usize, bool)> {
+    let (row_id, discard) =
+        if request.kind == REFUSAL_MENU_KIND && choice_id == EDIT_PROMPT_DISCARD_DRAFT {
+            (EDIT_PROMPT, true)
+        } else {
+            (choice_id, false)
+        };
+    let row = request
+        .choices
+        .iter()
+        .position(|choice| choice.id == row_id)?;
+    Some((row, discard))
+}
+
 const KEY_PAUSE: Duration = Duration::from_millis(150);
 /// How long to wait for the menu to close after its row's number is pressed.
 #[cfg(not(test))]
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(20);
 #[cfg(test)]
 const CLOSE_TIMEOUT: Duration = Duration::from_millis(1500);
+/// How long to wait for Claude to put the prompt back in its input box, and
+/// for the box to empty after the keys that clear it.
+#[cfg(not(test))]
+const DRAFT_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const DRAFT_TIMEOUT: Duration = Duration::from_millis(600);
+/// How many times the keys that clear the box are pressed before giving up.
+const DISCARD_ROUNDS: usize = 3;
 
 impl MenuKeys {
     /// Answers the menu in the pane with the chosen option.
     pub fn run(self) -> anyhow::Result<AgentApprovalResolution> {
-        let target = self
-            .request
-            .choices
-            .iter()
-            .position(|choice| choice.id == self.choice_id)
+        let (target, discard) = chosen_row(&self.request, &self.choice_id)
             .context("approval choice is not available")?;
         let labels = self
             .request
@@ -242,6 +266,17 @@ impl MenuKeys {
             || screen(&self.pane),
             |key| self.pane.key_down(key, KeyModifiers::NONE),
         )?;
+        if discard {
+            discard_draft(
+                || {
+                    let dims = self.pane.get_dimensions();
+                    let top = dims.physical_top;
+                    let (_, lines) = self.pane.get_lines(top..top + dims.viewport_rows as isize);
+                    crate::agent::claude_draft(&lines)
+                },
+                |keys| Ok(self.pane.writer().write_all(keys)?),
+            )?;
+        }
         Ok(AgentApprovalResolution {
             schema: AGENT_APPROVAL_SCHEMA.to_string(),
             request_id: self.request.request_id.clone(),
@@ -285,6 +320,42 @@ fn answer(
         );
         std::thread::sleep(KEY_PAUSE);
     }
+    Ok(())
+}
+
+/// Waits for Claude to put the prompt back in its input box, then clears
+/// the box one line at a time, Ctrl+U clearing a line and Backspace joining
+/// it to the one above, until the box reads empty. A box that stays empty
+/// for the whole wait has nothing to discard.
+fn discard_draft(
+    read_draft: impl Fn() -> Option<String>,
+    mut write: impl FnMut(&[u8]) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let wait_for = |want_draft: bool| {
+        let deadline = Instant::now() + DRAFT_TIMEOUT;
+        loop {
+            let draft = read_draft();
+            if draft.is_some() == want_draft || Instant::now() >= deadline {
+                return draft;
+            }
+            std::thread::sleep(KEY_PAUSE);
+        }
+    };
+    let mut draft = wait_for(true);
+    for _ in 0..DISCARD_ROUNDS {
+        let Some(text) = draft else {
+            return Ok(());
+        };
+        let mut keys = b"\x15\x7f".repeat(text.lines().count());
+        keys.push(0x15);
+        write(&keys)?;
+        draft = wait_for(false);
+    }
+    anyhow::ensure!(
+        draft.is_none(),
+        "Claude put the prompt back in its input box, but it could not be cleared; clear it in \
+         the agent's pane"
+    );
     Ok(())
 }
 
@@ -591,6 +662,81 @@ mod test {
             error
         );
         assert_eq!(*menu.keys.borrow(), [KeyCode::Char('2')]);
+    }
+
+    #[test]
+    fn the_discarding_choice_chooses_edit_prompt_only_on_the_refusal_menu() {
+        let metadata = crate::agent::AgentMetadata {
+            agent_id: "agent".to_string(),
+            name: "agent".to_string(),
+            launch_cmd: "claude".to_string(),
+            declared_cwd: "/tmp".to_string(),
+            adopted_pid: Some(1),
+            adopted_start_time: Some(1),
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+            codex_app_server: None,
+            launch_supervisor: None,
+        };
+        let refusal =
+            approval_request(&parse(&lines(MENU)).unwrap(), &metadata, "turn", Utc::now()).unwrap();
+        assert_eq!(chosen_row(&refusal, EDIT_PROMPT), Some((1, false)));
+        assert_eq!(
+            chosen_row(&refusal, EDIT_PROMPT_DISCARD_DRAFT),
+            Some((1, true))
+        );
+        let other = approval_request(
+            &parse(&lines(SWITCH_MODEL)).unwrap(),
+            &metadata,
+            "turn",
+            Utc::now(),
+        )
+        .unwrap();
+        assert_eq!(chosen_row(&other, EDIT_PROMPT_DISCARD_DRAFT), None);
+    }
+
+    #[test]
+    fn discarding_clears_each_line_of_the_restored_draft() {
+        use std::cell::{Cell, RefCell};
+        // Claude puts a two-line draft back after a few reads.
+        let reads = Cell::new(0);
+        let draft = RefCell::new(None::<String>);
+        let written = RefCell::new(Vec::new());
+        discard_draft(
+            || {
+                reads.set(reads.get() + 1);
+                if reads.get() == 3 && written.borrow().is_empty() {
+                    *draft.borrow_mut() = Some("first\nsecond".to_string());
+                }
+                draft.borrow().clone()
+            },
+            |keys| {
+                written.borrow_mut().push(keys.to_vec());
+                *draft.borrow_mut() = None;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(*written.borrow(), [b"\x15\x7f\x15\x7f\x15".to_vec()]);
+
+        // A box that never empties is reported after a few rounds.
+        let presses = Cell::new(0);
+        let error = discard_draft(
+            || Some("[Pasted text #9 +4 lines]".to_string()),
+            |_| {
+                presses.set(presses.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(presses.get(), DISCARD_ROUNDS);
+        assert!(error.to_string().contains("could not be cleared"));
+
+        // Nothing is pressed when Claude puts nothing back.
+        discard_draft(|| None, |_| panic!("pressed a key")).unwrap();
     }
 
     #[test]

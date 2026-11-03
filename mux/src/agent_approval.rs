@@ -414,10 +414,7 @@ impl Mux {
             "this approval takes a choice, not answers"
         );
         anyhow::ensure!(
-            request
-                .choices
-                .iter()
-                .any(|choice| choice.id == resolution.choice_id),
+            crate::claude_menu::chosen_row(&request, &resolution.choice_id).is_some(),
             "approval choice is not available"
         );
         let (pane_id, metadata) = self
