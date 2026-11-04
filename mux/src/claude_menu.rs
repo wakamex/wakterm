@@ -240,12 +240,23 @@ const KEY_PAUSE: Duration = Duration::from_millis(150);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(20);
 #[cfg(test)]
 const CLOSE_TIMEOUT: Duration = Duration::from_millis(1500);
-/// How long to wait for Claude to put the prompt back in its input box, and
-/// for the box to empty after the keys that clear it.
+/// How long to wait for Claude to put the prompt back in its input box. It
+/// does so when the turn ends, which has taken 6 s after the menu closed.
 #[cfg(not(test))]
-const DRAFT_TIMEOUT: Duration = Duration::from_secs(5);
+const DRAFT_RESTORE_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(test)]
-const DRAFT_TIMEOUT: Duration = Duration::from_millis(600);
+const DRAFT_RESTORE_TIMEOUT: Duration = Duration::from_millis(2000);
+/// How long to wait for the box to empty after the keys that clear it, and
+/// how long it must then stay empty, so that a redraw that briefly hides the
+/// box, or a draft put back late, is not taken for an empty box.
+#[cfg(not(test))]
+const DRAFT_CLEAR_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const DRAFT_CLEAR_TIMEOUT: Duration = Duration::from_millis(600);
+#[cfg(not(test))]
+const DRAFT_EMPTY_SETTLE: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const DRAFT_EMPTY_SETTLE: Duration = Duration::from_millis(300);
 /// How many times the keys that clear the box are pressed before giving up.
 const DISCARD_ROUNDS: usize = 3;
 
@@ -267,7 +278,8 @@ impl MenuKeys {
             |key| self.pane.key_down(key, KeyModifiers::NONE),
         )?;
         if discard {
-            discard_draft(
+            let started = Instant::now();
+            let discarded = discard_draft(
                 || {
                     let dims = self.pane.get_dimensions();
                     let top = dims.physical_top;
@@ -276,6 +288,16 @@ impl MenuKeys {
                 },
                 |keys| Ok(self.pane.writer().write_all(keys)?),
             )?;
+            log::info!(
+                "approval {}: {} {:.1}s after the menu closed",
+                self.request.request_id,
+                if discarded {
+                    "discarded the prompt Claude put back"
+                } else {
+                    "Claude put no prompt back"
+                },
+                started.elapsed().as_secs_f64()
+            );
         }
         Ok(AgentApprovalResolution {
             schema: AGENT_APPROVAL_SCHEMA.to_string(),
@@ -325,14 +347,15 @@ fn answer(
 
 /// Waits for Claude to put the prompt back in its input box, then clears
 /// the box one line at a time, Ctrl+U clearing a line and Backspace joining
-/// it to the one above, until the box reads empty. A box that stays empty
-/// for the whole wait has nothing to discard.
+/// it to the one above, until the box stays empty. A box that stays empty
+/// for the whole wait has nothing to discard. Returns whether a draft was
+/// discarded.
 fn discard_draft(
     read_draft: impl Fn() -> Option<String>,
     mut write: impl FnMut(&[u8]) -> anyhow::Result<()>,
-) -> anyhow::Result<()> {
-    let wait_for = |want_draft: bool| {
-        let deadline = Instant::now() + DRAFT_TIMEOUT;
+) -> anyhow::Result<bool> {
+    let wait_for = |want_draft: bool, timeout: Duration| {
+        let deadline = Instant::now() + timeout;
         loop {
             let draft = read_draft();
             if draft.is_some() == want_draft || Instant::now() >= deadline {
@@ -341,22 +364,25 @@ fn discard_draft(
             std::thread::sleep(KEY_PAUSE);
         }
     };
-    let mut draft = wait_for(true);
-    for _ in 0..DISCARD_ROUNDS {
+    let mut draft = wait_for(true, DRAFT_RESTORE_TIMEOUT);
+    for round in 0..DISCARD_ROUNDS {
         let Some(text) = draft else {
-            return Ok(());
+            return Ok(round > 0);
         };
         let mut keys = b"\x15\x7f".repeat(text.lines().count());
         keys.push(0x15);
         write(&keys)?;
-        draft = wait_for(false);
+        draft = wait_for(false, DRAFT_CLEAR_TIMEOUT);
+        if draft.is_none() {
+            draft = wait_for(true, DRAFT_EMPTY_SETTLE);
+        }
     }
     anyhow::ensure!(
         draft.is_none(),
         "Claude put the prompt back in its input box, but it could not be cleared; clear it in \
          the agent's pane"
     );
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -701,14 +727,14 @@ mod test {
     #[test]
     fn discarding_clears_each_line_of_the_restored_draft() {
         use std::cell::{Cell, RefCell};
-        // Claude puts a two-line draft back after a few reads.
-        let reads = Cell::new(0);
+        // Claude puts a two-line draft back when its turn ends, which can
+        // be well after the menu closed.
+        let start = Instant::now();
         let draft = RefCell::new(None::<String>);
         let written = RefCell::new(Vec::new());
-        discard_draft(
+        assert!(discard_draft(
             || {
-                reads.set(reads.get() + 1);
-                if reads.get() == 3 && written.borrow().is_empty() {
+                if start.elapsed() >= DRAFT_RESTORE_TIMEOUT / 2 && written.borrow().is_empty() {
                     *draft.borrow_mut() = Some("first\nsecond".to_string());
                 }
                 draft.borrow().clone()
@@ -719,8 +745,27 @@ mod test {
                 Ok(())
             },
         )
-        .unwrap();
+        .unwrap());
         assert_eq!(*written.borrow(), [b"\x15\x7f\x15\x7f\x15".to_vec()]);
+
+        // A box that reads empty only while it redraws is cleared again.
+        let reads_after_keys = Cell::new(0);
+        let written = RefCell::new(0);
+        assert!(discard_draft(
+            || {
+                if *written.borrow() == 0 {
+                    return Some("draft".to_string());
+                }
+                reads_after_keys.set(reads_after_keys.get() + 1);
+                (*written.borrow() == 1 && reads_after_keys.get() > 1).then(|| "draft".to_string())
+            },
+            |_| {
+                *written.borrow_mut() += 1;
+                Ok(())
+            },
+        )
+        .unwrap());
+        assert_eq!(*written.borrow(), 2);
 
         // A box that never empties is reported after a few rounds.
         let presses = Cell::new(0);
@@ -736,7 +781,7 @@ mod test {
         assert!(error.to_string().contains("could not be cleared"));
 
         // Nothing is pressed when Claude puts nothing back.
-        discard_draft(|| None, |_| panic!("pressed a key")).unwrap();
+        assert!(!discard_draft(|| None, |_| panic!("pressed a key")).unwrap());
     }
 
     #[test]
