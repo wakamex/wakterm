@@ -142,6 +142,9 @@ jobs:
 
     env:
       CARGO_INCREMENTAL: "0"
+      # The release build and the test build together fill the runner's
+      # disk; line tables keep test backtraces' file and line numbers.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
     defaults:
       run:
