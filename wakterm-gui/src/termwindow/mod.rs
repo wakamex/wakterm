@@ -2367,6 +2367,10 @@ impl TermWindow {
         if mux.get_window(self.mux_window_id).is_none() {
             return;
         }
+        // A title update can run after the active tab closed and before the
+        // window hears of it. The order it last showed decides the closed
+        // tab's successor, so that is settled before the order is replaced.
+        self.activate_activity_order_neighbor_of_closed_tab();
         let tabs = self.get_tab_information();
         let panes = self.get_pane_information();
         let active_tab = tabs.iter().find(|t| t.is_active).cloned();
