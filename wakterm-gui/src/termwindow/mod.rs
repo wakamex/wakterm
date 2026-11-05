@@ -587,6 +587,9 @@ pub struct TermWindow {
     show_scroll_bar: bool,
     tab_bar: TabBarState,
     fancy_tab_bar: Option<box_model::ComputedElement>,
+    /// How opaque each tab's harness icon is drawn under a title that slid
+    /// over it, by tab index, for the laid out fancy tab bar.
+    fancy_tab_icon_opacity: std::collections::HashMap<usize, f32>,
     pub right_status: String,
     pub left_status: String,
     last_ui_item: Option<UIItem>,
@@ -951,6 +954,7 @@ impl TermWindow {
             show_scroll_bar: config.enable_scroll_bar,
             tab_bar: TabBarState::default(),
             fancy_tab_bar: None,
+            fancy_tab_icon_opacity: Default::default(),
             right_status: String::new(),
             left_status: String::new(),
             last_mouse_coords: (0, -1),

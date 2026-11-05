@@ -56,8 +56,10 @@ const ATTENTION_DOT: &[Poly] = &[Poly {
 const TITLE_FADE_STEPS: [f32; 2] = [0.45, 0.75];
 const TITLE_FADE_STEP: f32 = 0.6;
 /// How many characters of a cut title stay fully drawn. A tab with a harness
-/// icon narrows further by sliding its title under the icon.
+/// icon narrows further by sliding its title over the icon.
 const MIN_SHRUNK_TITLE_CHARS: usize = 3;
+/// How opaque a harness icon is drawn once its title covers it completely.
+const ICON_WATERMARK_OPACITY: f32 = 0.25;
 /// How far a working agent's tab is drawn toward the tab bar's background,
 /// and its icon toward transparent; and how long its activity marker takes
 /// to blink.
@@ -69,18 +71,20 @@ const MEASURE_WIDTH: f32 = 1_000_000.;
 
 /// How a tab's title is drawn when the tabs do not fit: how far each kept
 /// character is faded toward the tab's background, by the byte offset where
-/// the character ends, and the width of the space left of the title where
-/// the harness icon is drawn, when that space is narrowed.
+/// the character ends, and, when the title slides over its harness icon, the
+/// width of the space left of the title and how opaque the icon is drawn
+/// under the title.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct TitleCut {
     fades: Vec<(usize, f32)>,
     icon_space: Option<f32>,
+    icon_opacity: Option<f32>,
 }
 
 /// How to draw a title of these character widths, as cumulative widths at
 /// each character boundary, in `allowance` pixels. With an icon, the space
 /// before the title is `icon_space` wide, and narrowing it slides the title
-/// under the icon. Returns how many characters to keep and how to draw them.
+/// over the icon. Returns how many characters to keep and how to draw them.
 fn cut_title(
     prefixes: &[(usize, f32)],
     allowance: f32,
@@ -123,6 +127,7 @@ fn cut_title(
             TitleCut {
                 fades,
                 icon_space: None,
+                icon_opacity: None,
             },
         );
     }
@@ -137,12 +142,14 @@ fn cut_title(
             TitleCut {
                 fades,
                 icon_space: None,
+                icon_opacity: None,
             },
         );
     };
     // The icon space and the title share the tab's room. The title slides
-    // left under the icon, and drops characters only once it has slid all
-    // the way, and each character fades by how much of it the icon covers.
+    // left over the icon, which fades behind it as it is covered, and drops
+    // its last characters only once it has slid all the way. Its leading
+    // characters are always drawn whole.
     let room = icon_space + allowance.max(0.);
     let keep = if room >= width_of(min_chars) {
         min_chars
@@ -150,21 +157,14 @@ fn cut_title(
         fitting(room)
     };
     let space = (room - width_of(keep)).max(0.);
-    let fades = prefixes[..keep]
-        .iter()
-        .enumerate()
-        .map(|(i, (end, right))| {
-            let left = space + width_of(i);
-            let right = space + right;
-            let covered = ((icon_space - left) / (right - left).max(1.)).clamp(0., 1.);
-            (*end, covered)
-        })
-        .collect();
+    let covered = (1. - space / icon_space.max(1.)).clamp(0., 1.);
+    let fades = prefixes[..keep].iter().map(|(end, _)| (*end, 0.)).collect();
     (
         keep,
         TitleCut {
             fades,
             icon_space: Some(space),
+            icon_opacity: Some(1. - (1. - ICON_WATERMARK_OPACITY) * covered),
         },
     )
 }
@@ -211,12 +211,20 @@ impl crate::TermWindow {
         self.fancy_tab_bar.take();
     }
 
-    pub fn build_fancy_tab_bar(&self, palette: &ColorPalette) -> anyhow::Result<ComputedElement> {
+    /// Lays out the fancy tab bar, with how opaque each tab's harness icon
+    /// is drawn under a title that slid over it.
+    pub fn build_fancy_tab_bar(
+        &self,
+        palette: &ColorPalette,
+    ) -> anyhow::Result<(ComputedElement, HashMap<usize, f32>)> {
         let items = self.tab_bar.items();
         let width = self.dimensions.pixel_width as f32;
         let no_cuts = HashMap::new();
         if !self.config.tab_titles_shrink_to_fit {
-            return self.layout_fancy_tab_bar(palette, items, &no_cuts, false, width);
+            return Ok((
+                self.layout_fancy_tab_bar(palette, items, &no_cuts, false, width)?,
+                HashMap::new(),
+            ));
         }
         // Tabs past the window's edge are laid out with no room and lose
         // their width, so the tabs are measured in a bar wide enough for all
@@ -226,7 +234,10 @@ impl crate::TermWindow {
                 .map(|computed| computed.ui_items())
         };
         if self.tab_overflow(&measure(items, &no_cuts, false)?) <= 0. {
-            return self.layout_fancy_tab_bar(palette, items, &no_cuts, false, width);
+            return Ok((
+                self.layout_fancy_tab_bar(palette, items, &no_cuts, false, width)?,
+                HashMap::new(),
+            ));
         }
         // Tabs that do not fit first lose the close button of every tab but
         // the active one, then title width.
@@ -247,7 +258,15 @@ impl crate::TermWindow {
             }
             slack += overflow;
         }
-        self.layout_fancy_tab_bar(palette, &chosen.0, &chosen.1, true, width)
+        let icon_opacity = chosen
+            .1
+            .iter()
+            .filter_map(|(tab_idx, cut)| Some((*tab_idx, cut.icon_opacity?)))
+            .collect();
+        Ok((
+            self.layout_fancy_tab_bar(palette, &chosen.0, &chosen.1, true, width)?,
+            icon_opacity,
+        ))
     }
 
     /// How far, in pixels, the tabs and the new tab button of a bar laid out
@@ -978,11 +997,21 @@ impl crate::TermWindow {
 
             let hovered = hovered_tab_idx == Some(tab_idx);
             let mut color = harness_icon_color(entry, &colors, palette, hovered);
-            if entry.needs_attention && self.config.agent_tab_attention_pulse {
+            // An icon that its title slid over is drawn faded behind it.
+            let icon_opacity = self
+                .fancy_tab_icon_opacity
+                .get(&tab_idx)
+                .copied()
+                .unwrap_or(1.);
+            let covered = icon_opacity < 1.;
+            let pulsing = entry.needs_attention && self.config.agent_tab_attention_pulse;
+            if pulsing {
+                // A covered icon pulses from its faded opacity to full.
                 let cycle = Duration::from_secs(2).as_secs_f32();
                 let phase = ATTENTION_PULSE_START.elapsed().as_secs_f32() % cycle / cycle;
-                let opacity = 0.5 + 0.5 * (phase * std::f32::consts::TAU).cos();
-                color.3 *= opacity;
+                let pulse = 0.5 + 0.5 * (phase * std::f32::consts::TAU).cos();
+                let low = 0.5 * icon_opacity;
+                color.3 *= low + (1. - low) * pulse;
                 self.update_next_frame_time(Some(Instant::now() + Duration::from_millis(33)));
             }
             let working = self.config.agent_tab_dim_working && entry.agents_working;
@@ -991,9 +1020,22 @@ impl crate::TermWindow {
             if self.tab_dimmed(entry) && !active {
                 color.3 *= 1. - WORKING_TAB_DIM;
             }
+            let attention_color = color;
+            if !pulsing {
+                color.3 *= icon_opacity;
+            }
             let item_height = item.height as f32;
             let single_icon_size = (item_height - 2.0).max(0.0);
             let overlap_stride = single_icon_size * 0.65;
+            // A marker sits at the icon's right edge, or at the tab's when
+            // the title covers the icon, so that it never covers a letter.
+            let marker_x = |dot_size: f32| {
+                if covered {
+                    item.x as f32 + item.width as f32 - tab_left_padding - dot_size
+                } else {
+                    item.x as f32 + tab_left_padding + single_icon_size - dot_size * 0.5
+                }
+            };
 
             for (i, icon) in entry.icons.iter().enumerate() {
                 let icon_x = item.x as f32
@@ -1001,9 +1043,10 @@ impl crate::TermWindow {
                     + (i as f32) * overlap_stride
                     + (harness_icon_slot_width(item_height) - single_icon_size).max(0.0) / 2.0;
                 let icon_y = item.y as f32 + (item_height - single_icon_size) / 2.0;
+                // Drawn over the tab's background and under its title.
                 self.poly_quad(
                     &mut layers,
-                    1,
+                    0,
                     euclid::point2(icon_x, icon_y),
                     harness_icon_poly(*icon),
                     metrics.underline_height.max(2),
@@ -1027,7 +1070,7 @@ impl crate::TermWindow {
                     &mut layers,
                     1,
                     euclid::point2(
-                        item.x as f32 + tab_left_padding + single_icon_size - dot_size * 0.5,
+                        marker_x(dot_size),
                         item.y as f32 + item_height - dot_size - 1.0,
                     ),
                     ATTENTION_DOT,
@@ -1042,14 +1085,11 @@ impl crate::TermWindow {
                 self.poly_quad(
                     &mut layers,
                     1,
-                    euclid::point2(
-                        item.x as f32 + tab_left_padding + single_icon_size - dot_size * 0.5,
-                        item.y as f32 + 1.0,
-                    ),
+                    euclid::point2(marker_x(dot_size), item.y as f32 + 1.0),
                     ATTENTION_DOT,
                     1,
                     euclid::size2(dot_size, dot_size),
-                    color,
+                    attention_color,
                 )?;
             }
         }
@@ -1282,7 +1322,9 @@ mod tests {
 
 #[cfg(test)]
 mod test {
-    use super::{cut_title, shared_title_width, TITLE_FADE_STEP, TITLE_FADE_STEPS};
+    use super::{
+        cut_title, shared_title_width, ICON_WATERMARK_OPACITY, TITLE_FADE_STEP, TITLE_FADE_STEPS,
+    };
 
     #[test]
     fn shared_title_width_cuts_only_the_longest_titles() {
@@ -1333,24 +1375,27 @@ mod test {
     }
 
     #[test]
-    fn below_its_shortest_a_title_slides_under_its_icon_and_fades() {
+    fn below_its_shortest_a_title_slides_over_its_icon_which_fades_behind_it() {
         let prefixes = prefixes();
+        let opacity = |covered: f32| Some(1. - (1. - ICON_WATERMARK_OPACITY) * covered);
         // 20 pixels of room for the title: the 30-pixel title moves 10 pixels
-        // left, so the icon's 20-pixel space narrows to 10 and half covers the
-        // first character.
+        // left, so the icon's 20-pixel space narrows to 10, half covered, and
+        // every kept character stays whole.
         let (keep, cut) = cut_title(&prefixes, 20., Some(20.));
         assert_eq!(keep, 3);
         assert_eq!(cut.icon_space, Some(10.));
-        assert_eq!(fades(&cut), [1., 0., 0.]);
+        assert_eq!(cut.icon_opacity, opacity(0.5));
+        assert_eq!(fades(&cut), [0., 0., 0.]);
         let (_, cut) = cut_title(&prefixes, 25., Some(20.));
         assert_eq!(cut.icon_space, Some(15.));
-        assert_eq!(fades(&cut), [0.5, 0., 0.]);
-        // No room for the title: only the icon's space is left, and whatever
-        // text remains under it is fully faded.
+        assert_eq!(cut.icon_opacity, opacity(0.25));
+        // No room for the title: it covers the whole icon, which is drawn
+        // as a watermark, and keeps its leading characters that fit.
         let (keep, cut) = cut_title(&prefixes, 0., Some(20.));
         assert_eq!(keep, 2);
         assert_eq!(cut.icon_space, Some(0.));
-        assert_eq!(fades(&cut), [1., 1.]);
+        assert_eq!(cut.icon_opacity, Some(ICON_WATERMARK_OPACITY));
+        assert_eq!(fades(&cut), [0., 0.]);
         // Without an icon the title stops at its shortest.
         let (keep, cut) = cut_title(&prefixes, 0., None);
         assert_eq!((keep, fades(&cut)), (3, vec![0., 0., 0.]));
