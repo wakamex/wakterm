@@ -2079,7 +2079,7 @@ const CLAUDE_STATUS_CONFIRMATION: std::time::Duration = std::time::Duration::fro
 /// is stuck, and the client can repeat it again later.
 const ADMISSION_IN_FLIGHT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
-async fn admit_agent_prompt(
+pub(crate) async fn admit_agent_prompt(
     request: mux::agent_admission::AgentPromptAdmissionRequest,
 ) -> anyhow::Result<mux::agent_admission::AgentAdmissionReceipt> {
     use mux::agent_admission::{

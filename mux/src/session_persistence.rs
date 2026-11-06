@@ -53,6 +53,10 @@ pub struct SavedAgentRestoreIntent {
     pub session_id: String,
     #[serde(default)]
     pub attention_seen_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Whether the agent was working on a turn when the session was saved,
+    /// so that the restart interrupted it.
+    #[serde(default)]
+    pub turn_interrupted: bool,
 }
 
 impl SavedAgentRestoreIntent {
@@ -208,6 +212,28 @@ fn previous_session_path() -> PathBuf {
     config::DATA_DIR.join("session.json.prev")
 }
 
+/// A file whose presence asks the next mux server to resume the turns its
+/// restart interrupted, whatever `resume_interrupted_agent_turns` says.
+fn resume_request_path() -> PathBuf {
+    config::DATA_DIR.join("resume-interrupted-turns")
+}
+
+/// Whether the agent turns this server's restart interrupted should be
+/// resumed: when the config says so, or once when the restart asked for it.
+pub fn take_resume_request(configured: bool) -> bool {
+    let requested = std::fs::remove_file(resume_request_path()).is_ok();
+    configured || requested
+}
+
+/// The agents restored with a turn their restart interrupted, by agent ID
+/// and name, until taken.
+static RESTORED_INTERRUPTED_TURNS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// Takes the agents restored with an interrupted turn.
+pub fn take_restored_interrupted_turns() -> Vec<(String, String)> {
+    std::mem::take(&mut *RESTORED_INTERRUPTED_TURNS.lock().unwrap())
+}
+
 fn legacy_session_path() -> PathBuf {
     config::RUNTIME_DIR.join("session.json")
 }
@@ -307,12 +333,14 @@ fn collect_agent_restore_intents(
             if let Some((harness, metadata, session_id)) =
                 mux.agent_restore_intent_for_pane(entry.pane_id)
             {
+                let turn_interrupted = turn_interrupted(mux, entry.pane_id, &metadata.agent_id);
                 intents.push(SavedAgentRestoreIntent {
                     pane_id: entry.pane_id,
                     harness,
                     metadata,
                     session_id,
                     attention_seen_at: mux.agent_attention_seen_at(entry.pane_id),
+                    turn_interrupted,
                 });
             } else if let Some((metadata, harness)) = resumable_agent(entry) {
                 unrestorable.insert(format!(
@@ -326,6 +354,29 @@ fn collect_agent_restore_intents(
             collect_agent_restore_intents(mux, right, intents, unrestorable);
         }
     }
+}
+
+/// Whether the agent in the pane is working on a turn. Its harness is
+/// stopped with the server, which can end what the last save saw as a
+/// running turn, so a save during shutdown keeps the turns that were
+/// running at the save before it.
+fn turn_interrupted(mux: &Mux, pane_id: PaneId, agent_id: &str) -> bool {
+    static WORKING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+    let working = mux
+        .agent_runtime_by_pane
+        .read()
+        .get(&pane_id)
+        .is_some_and(|runtime| runtime.turn_state == crate::agent::AgentTurnState::WaitingOnAgent);
+    let mut seen = WORKING.lock().unwrap();
+    if shutdown_in_progress() {
+        return working || seen.contains(agent_id);
+    }
+    if working {
+        seen.insert(agent_id.to_string());
+    } else {
+        seen.remove(agent_id);
+    }
+    working
 }
 
 /// Logs the agents that a restore could not resume whenever that set
@@ -860,6 +911,12 @@ fn first_leaf_entry(node: &PaneNode) -> Option<&crate::tab::PaneEntry> {
 
 fn restore_agent_intent(pane_id: PaneId, intent: &SavedAgentRestoreIntent) -> anyhow::Result<()> {
     let mux = Mux::get();
+    if intent.turn_interrupted {
+        RESTORED_INTERRUPTED_TURNS.lock().unwrap().push((
+            intent.metadata.agent_id.clone(),
+            intent.metadata.name.clone(),
+        ));
+    }
     let harness = intent.harness();
     let result = if harness == AgentHarness::Codex && intent.metadata.codex_app_server.is_some() {
         mux.restore_agent_metadata(pane_id, intent.metadata.clone())
@@ -1813,6 +1870,7 @@ mod test {
             metadata,
             session_id: thread_id.to_string(),
             attention_seen_at: None,
+            turn_interrupted: false,
         };
         let mut requested = None;
         let restored = prepare_agent_restore(&intent, |request| {
@@ -1850,6 +1908,7 @@ mod test {
             metadata,
             session_id: "00000000-0000-4000-8000-000000000091".to_string(),
             attention_seen_at: None,
+            turn_interrupted: false,
         };
         let saved: SavedAgentRestoreIntent =
             serde_json::from_slice(&serde_json::to_vec(&intent).unwrap()).unwrap();
@@ -2022,10 +2081,27 @@ mod test {
         assert_eq!(session.agent_restore_intents[0].pane_id, pane_id);
         assert_eq!(session.agent_restore_intents[0].metadata.name, "resume");
         assert_eq!(session.agent_restore_intents[0].session_id, "saved-session");
+        // The agent was working, so a restart interrupts its turn.
+        assert!(session.agent_restore_intents[0].turn_interrupted);
         assert_eq!(
             session.agent_restore_intents[0].attention_seen_at,
             Some(attention_seen_at)
         );
+
+        // Stopping the server can end the turn before its last save, which
+        // still counts the turn as interrupted; outside shutdown, a turn
+        // that ended is not.
+        let set_turn_state = |state| {
+            let mut runtimes = mux.agent_runtime_by_pane.write();
+            runtimes.get_mut(&pane_id).unwrap().turn_state = state;
+        };
+        set_turn_state(crate::agent::AgentTurnState::WaitingOnUser);
+        {
+            begin_shutdown();
+            let _shutdown_guard = ShutdownStateGuard;
+            assert!(build_saved_session(&mux).agent_restore_intents[0].turn_interrupted);
+        }
+        assert!(!build_saved_session(&mux).agent_restore_intents[0].turn_interrupted);
     }
 
     #[test]
@@ -2175,6 +2251,7 @@ mod test {
             metadata: sample_agent_metadata("legacy"),
             session_id: "legacy-session".to_string(),
             attention_seen_at: None,
+            turn_interrupted: false,
         };
         let mut value = serde_json::to_value(intent).unwrap();
         value.as_object_mut().unwrap().remove("harness");
@@ -2198,6 +2275,7 @@ mod test {
             metadata,
             session_id: thread_id.to_string(),
             attention_seen_at: None,
+            turn_interrupted: false,
         };
 
         let restored = prepare_agent_restore(&intent, |request| {
@@ -2261,6 +2339,7 @@ mod test {
             metadata,
             session_id: session_id.to_string(),
             attention_seen_at: None,
+            turn_interrupted: false,
         };
 
         let restored = prepare_agent_restore(&intent, |_| {
@@ -2302,6 +2381,7 @@ mod test {
             metadata,
             session_id: conversation_id.to_string(),
             attention_seen_at: None,
+            turn_interrupted: false,
         };
 
         let restored = prepare_agent_restore(&intent, |_| {
@@ -2344,6 +2424,7 @@ mod test {
             metadata,
             session_id: "provider-session".to_string(),
             attention_seen_at: None,
+            turn_interrupted: false,
         };
 
         let restored = prepare_agent_restore(&intent, |request| {
@@ -2386,6 +2467,7 @@ mod test {
             metadata,
             session_id: "provider-session".to_string(),
             attention_seen_at: None,
+            turn_interrupted: false,
         };
 
         let restored =
@@ -2605,9 +2687,13 @@ mod test {
         );
         assert_eq!(
             command_dirs.lock().unwrap().as_slice(),
-            &[Some(metadata.declared_cwd)]
+            &[Some(metadata.declared_cwd.clone())]
         );
         assert_eq!(restored_mux.pending_agent_restores.read().len(), 1);
+        // The busy agent is restored with its interrupted turn to resume.
+        assert!(take_restored_interrupted_turns()
+            .iter()
+            .any(|(agent_id, _)| *agent_id == metadata.agent_id));
     }
 
     #[test]

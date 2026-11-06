@@ -199,6 +199,11 @@ pub struct Config {
     #[dynamic(default = "default_agent_tab_badge_mode")]
     pub agent_tab_badge_mode: String,
 
+    /// When the mux server restarts, as after a reboot or a deploy, ask each
+    /// restored agent whose turn the restart interrupted to continue it.
+    #[dynamic(default)]
+    pub resume_interrupted_agent_turns: bool,
+
     /// Slowly pulse harness icons when an unseen completed turn needs review.
     /// When disabled, attention remains visible as a static marker.
     #[dynamic(default = "default_true")]

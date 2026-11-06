@@ -384,6 +384,11 @@ async fn async_run(cmd: Option<CommandBuilder>) -> anyhow::Result<()> {
             }
         };
 
+        let interrupted = mux::session_persistence::take_restored_interrupted_turns();
+        if mux::session_persistence::take_resume_request(config.resume_interrupted_agent_turns) {
+            wakterm_mux_server_impl::agent_resume::start(interrupted);
+        }
+
         if restored == 0 {
             // No saved session or restore failed — create a fresh tab
             let workspace = None;

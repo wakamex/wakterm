@@ -13,9 +13,10 @@ usage() {
     echo "  (no flags)  Build, save manual layout snapshot, copy binaries"
     echo "  --restart   Also kill the mux server (Mac reconnect triggers new binary)"
     echo "              Saves the agent list and catalog first, to compare after restart"
-    echo "  --notify    With --restart, ask the agents that were busy to continue once"
-    echo "              they are back, then ask the agent working in this repository"
-    echo "              to check the deploy; logs to resume-busy-agents.log in the snapshot"
+    echo "  --notify    With --restart, have the new mux server ask the agents whose turns"
+    echo "              the restart interrupted to continue, and ask the agent working in"
+    echo "              this repository to check the deploy; logs to deploy-check.log in"
+    echo "              the snapshot"
     echo "  --no-save   Skip wakterm cli save-layout (use when layout/session state is known bad)"
     echo "  --wipe-session  Remove saved session state after restart for a clean session"
     echo "  --clean     Run cargo clean for deployed crates before building"
@@ -228,15 +229,19 @@ echo "  Version: $($DEST/wakterm --version 2>&1)"
 echo ""
 
 if $NOTIFY; then
+    echo "=== Step 3b: Request resumed turns and a deploy check ==="
+    # The new mux server resumes the turns its restart interrupts when it
+    # finds this file, whatever resume_interrupted_agent_turns says.
+    mkdir -p "$(dirname "$SESSION_FILE")"
+    touch "$(dirname "$SESSION_FILE")/resume-interrupted-turns"
     # The restart ends every process started from a mux pane, including a
-    # deploy run from an agent, so the follow-up runs as its own unit.
-    echo "=== Step 3b: Schedule resume messages for busy agents ==="
+    # deploy run from an agent, so the check request runs as its own unit.
     systemd-run --user --quiet --collect \
-        --unit="wakterm-resume-busy-agents-$(date +%s)" \
+        --unit="wakterm-deploy-check-$(date +%s)" \
         --setenv=WAKTERM="$DEST/wakterm" \
-        "$REPO_ROOT/resume-busy-agents.sh" "$SNAPSHOT_DIR" \
+        "$REPO_ROOT/request-deploy-check.sh" "$SNAPSHOT_DIR" \
         "$(pgrep -f wakterm-mux-server | head -1 || true)" "$REPO_ROOT"
-    echo "  Log: $SNAPSHOT_DIR/resume-busy-agents.log"
+    echo "  Log: $SNAPSHOT_DIR/deploy-check.log"
     echo ""
 fi
 

@@ -7,6 +7,7 @@ use wakterm_client::domain::{ClientDomain, ClientDomainConfig};
 
 pub mod agent_freezing;
 pub mod agent_reminders;
+pub mod agent_resume;
 pub mod dispatch;
 pub mod local;
 pub mod pki;
