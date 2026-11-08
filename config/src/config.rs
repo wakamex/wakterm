@@ -219,6 +219,11 @@ pub struct Config {
     #[dynamic(default)]
     pub agent_tab_dim_reviewed: bool,
 
+    /// Unpark a parked tab when one of its agents completes a turn, in new
+    /// windows. `ToggleUnparkOnTurnEnd` switches it for one window.
+    #[dynamic(default)]
+    pub agent_unpark_on_turn_end: bool,
+
     /// Text prefix shown in tab titles for agents with no known harness icon.
     /// When a harness-specific icon (Claude, Codex, etc.) is available, the
     /// icon is used instead and this text badge is suppressed.

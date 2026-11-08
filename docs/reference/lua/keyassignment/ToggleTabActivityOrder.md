@@ -4,4 +4,6 @@ Switches the current window's tab bar between its own tab order and activity ord
 
 While the tab bar shows activity order, closing the active tab activates its neighbor in that order: the tab after it, or the one before it when it was the last.
 
+With [`ToggleUnparkOnTurnEnd`](ToggleUnparkOnTurnEnd.md), a parked tab returns when its agent completes a turn, and so appears first.
+
 The default shortcut is Ctrl+Shift+B on Linux and Windows and Cmd+Shift+B on macOS.

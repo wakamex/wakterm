@@ -575,6 +575,7 @@ pub enum KeyAssignment {
     ScrollToBottom,
     ShowTabNavigator,
     ToggleTabActivityOrder,
+    ToggleUnparkOnTurnEnd,
     ActivateNextTabNeedingAttention,
     ActivateOldestTabNeedingAttention,
     ShowDebugOverlay,

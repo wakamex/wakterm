@@ -1792,6 +1792,23 @@ fn derive_command_from_key_assignment_for_platform(
             menubar: &["Window"],
             icon: Some("md_sort_clock_descending_outline"),
         },
+        ToggleUnparkOnTurnEnd => CommandDef {
+            brief: "Toggle unparking tabs when a turn ends".into(),
+            doc: "Switches whether this window unparks a parked tab when one of its agents \
+            completes a turn."
+                .into(),
+            keys: vec![(
+                if platform == KeyBindingPlatform::MacOs {
+                    Modifiers::SUPER | Modifiers::SHIFT | Modifiers::ALT
+                } else {
+                    Modifiers::CTRL | Modifiers::SHIFT | Modifiers::ALT
+                },
+                "b".into(),
+            )],
+            args: &[ArgType::ActiveWindow],
+            menubar: &["Window"],
+            icon: Some("md_bell_ring_outline"),
+        },
         ActivateNextTabNeedingAttention => CommandDef {
             brief: "Review next agent response".into(),
             doc: "Activates the newest unseen agent response in a visible tab.".into(),
@@ -2316,6 +2333,7 @@ fn compute_default_actions(platform: KeyBindingPlatform) -> Vec<KeyAssignment> {
         ShowLauncher,
         ShowTabNavigator,
         ToggleTabActivityOrder,
+        ToggleUnparkOnTurnEnd,
         ActivateNextTabNeedingAttention,
         ActivateOldestTabNeedingAttention,
         // ----------------- Help
@@ -2376,15 +2394,23 @@ mod test {
 
     #[test]
     fn tab_activity_order_toggle_has_the_default_window_binding() {
-        let action = KeyAssignment::ToggleTabActivityOrder;
-        let command = derive_command_from_key_assignment(&action).unwrap();
-
-        assert_eq!(command.args, &[ArgType::ActiveWindow]);
-        let expected = if KeyBindingPlatform::current() == KeyBindingPlatform::MacOs {
+        let base = if KeyBindingPlatform::current() == KeyBindingPlatform::MacOs {
             Modifiers::SUPER | Modifiers::SHIFT
         } else {
             Modifiers::CTRL | Modifiers::SHIFT
         };
+        for (action, expected) in [
+            (KeyAssignment::ToggleTabActivityOrder, base),
+            (KeyAssignment::ToggleUnparkOnTurnEnd, base | Modifiers::ALT),
+        ] {
+            assert_default_window_binding_on_b(action, expected);
+        }
+    }
+
+    fn assert_default_window_binding_on_b(action: KeyAssignment, expected: Modifiers) {
+        let command = derive_command_from_key_assignment(&action).unwrap();
+
+        assert_eq!(command.args, &[ArgType::ActiveWindow]);
         assert_eq!(command.keys, vec![(expected, "b".into())]);
         // Every form a keyboard may report for the shortcut is registered.
         let config = config::configuration();
