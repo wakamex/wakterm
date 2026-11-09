@@ -4003,6 +4003,15 @@ impl Mux {
         let Some(reason) = agent::input_box_blocked(&harness, &lines) else {
             return AgentInputBox::Ready;
         };
+        if harness == AgentHarness::Claude {
+            let cursor = pane.get_cursor_position();
+            let row = <usize as std::convert::TryFrom<_>>::try_from(cursor.y - top).ok();
+            if cursor.visibility == termwiz::surface::CursorVisibility::Visible
+                && row.is_some_and(|row| agent::claude_caret_at_box_start(&lines, row, cursor.x))
+            {
+                return AgentInputBox::Ready;
+            }
+        }
         let recent_input = self
             .agent_input_by_pane
             .read()
@@ -7837,6 +7846,9 @@ mod test {
 
     /// The title of a fake pane whose screen shows a Claude draft.
     const CLAUDE_DRAFT_TITLE: &str = "claude draft";
+    /// A Claude pane whose input box shows the same text with the caret
+    /// before it, so that nothing is typed there.
+    const CLAUDE_STALE_BOX_TITLE: &str = "claude stale box";
     /// The title of a fake pane whose screen shows text in Codex's composer.
     const CODEX_COMPOSER_TITLE: &str = "codex composer";
     /// Fake pane titles that show agy's empty input box, with and without
@@ -8080,7 +8092,18 @@ mod test {
         }
 
         fn get_cursor_position(&self) -> StableCursorPosition {
-            unimplemented!();
+            // Claude's caret is after the typed draft, or at the start of a
+            // box with nothing typed.
+            let x = match self.title.as_str() {
+                CLAUDE_DRAFT_TITLE => 16,
+                CLAUDE_STALE_BOX_TITLE => 2,
+                _ => 0,
+            };
+            StableCursorPosition {
+                x,
+                y: 1,
+                ..Default::default()
+            }
         }
 
         fn get_current_seqno(&self) -> SequenceNo {
@@ -8098,7 +8121,7 @@ mod test {
         fn get_lines(&self, lines: Range<StableRowIndex>) -> (StableRowIndex, Vec<Line>) {
             let line = |text: &str| Line::from_text(text, &Default::default(), 0, None);
             // A pane with this title shows a draft in Claude's input box.
-            if self.title == CLAUDE_DRAFT_TITLE {
+            if self.title == CLAUDE_DRAFT_TITLE || self.title == CLAUDE_STALE_BOX_TITLE {
                 let rule = "\u{2500}".repeat(8);
                 return (
                     lines.start,
@@ -9970,8 +9993,24 @@ mod test {
             "drafting",
         );
         let empty = add_agent(FakePane::new(147, size, domain.id), "empty");
+        let stale = add_agent(
+            FakePane::new_detected(
+                148,
+                size,
+                domain.id,
+                CLAUDE_STALE_BOX_TITLE,
+                "/tmp/stale",
+                "claude",
+                &["claude"],
+            ),
+            "stale",
+        );
 
         assert_eq!(mux.agent_input_box(empty), AgentInputBox::Ready);
+        // Text after a caret at the start of the box is not typed, even
+        // right after input reached the pane.
+        mux.record_agent_input_generation(stale, "keyboard");
+        assert_eq!(mux.agent_input_box(stale), AgentInputBox::Ready);
         // No input has reached the pane, so nobody is typing the draft.
         assert_eq!(
             mux.agent_input_box(drafting),

@@ -4863,14 +4863,7 @@ pub(crate) fn claude_user_text(record: &Value) -> Option<String> {
 /// intensity.
 pub fn claude_draft(lines: &[wakterm_term::Line]) -> Option<String> {
     let is_rule = |line: &wakterm_term::Line| line.as_str().trim_start().starts_with('─');
-    let prompt = (1..lines.len()).rev().find(|&index| {
-        is_rule(&lines[index - 1])
-            && lines[index]
-                .as_str()
-                .trim_start()
-                .strip_prefix('❯')
-                .is_some_and(|rest| rest.starts_with(['\u{a0}', ' ']))
-    })?;
+    let prompt = claude_prompt_row(lines)?;
     let mut draft = String::new();
     for (offset, line) in lines[prompt..].iter().enumerate() {
         if offset > 0 && is_rule(line) {
@@ -4892,6 +4885,36 @@ pub fn claude_draft(lines: &[wakterm_term::Line]) -> Option<String> {
         }
     }
     (!draft.is_empty()).then_some(draft)
+}
+
+/// The index of the line that starts Claude's input box: `❯` and a space
+/// right after a horizontal rule.
+fn claude_prompt_row(lines: &[wakterm_term::Line]) -> Option<usize> {
+    let is_rule = |line: &wakterm_term::Line| line.as_str().trim_start().starts_with('─');
+    (1..lines.len()).rev().find(|&index| {
+        is_rule(&lines[index - 1])
+            && lines[index]
+                .as_str()
+                .trim_start()
+                .strip_prefix('❯')
+                .is_some_and(|rest| rest.starts_with(['\u{a0}', ' ']))
+    })
+}
+
+/// Whether the cursor, at `column` of line `row` of the pane's visible
+/// lines, is where Claude's input box starts. Claude keeps the terminal
+/// cursor at its input caret, after any text typed into the box, so with
+/// the caret there, what the box shows after it is not typed text: a
+/// suggestion, or cells left from an earlier drawing.
+pub fn claude_caret_at_box_start(lines: &[wakterm_term::Line], row: usize, column: usize) -> bool {
+    let Some(prompt) = claude_prompt_row(lines) else {
+        return false;
+    };
+    row == prompt
+        && lines[prompt]
+            .visible_cells()
+            .find(|cell| cell.str() == "❯")
+            .is_some_and(|marker| column == marker.cell_index() + 2)
 }
 
 /// The slash command a Claude user record holds, as the command and its
@@ -6379,6 +6402,30 @@ mod test {
             serde_json::to_string(&AgentOrigin::Managed).unwrap(),
             r#""managed""#
         );
+    }
+
+    #[test]
+    fn text_after_a_caret_at_the_box_start_is_not_typed() {
+        use wakterm_term::{CellAttributes, Line};
+        let line = |text: &str| Line::from_text(text, &CellAttributes::default(), 0, None);
+        let lines = vec![
+            line("● done"),
+            line("────────────────────"),
+            line("❯ abc"),
+            line("────────────────────"),
+        ];
+        // The box shows text that the cell attributes cannot tell apart from
+        // a draft, but Claude's caret is before it.
+        assert!(claude_draft(&lines).is_some());
+        assert!(claude_caret_at_box_start(&lines, 2, 2));
+        // A caret after the text, or on another line, is where typed text
+        // ends.
+        assert!(!claude_caret_at_box_start(&lines, 2, 5));
+        assert!(!claude_caret_at_box_start(&lines, 3, 2));
+        // An indented box starts after its own marker.
+        let indented = vec![line("────"), line("  ❯ abc")];
+        assert!(claude_caret_at_box_start(&indented, 1, 4));
+        assert!(!claude_caret_at_box_start(&indented, 1, 2));
     }
 
     #[test]
