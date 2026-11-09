@@ -4003,14 +4003,22 @@ impl Mux {
         let Some(reason) = agent::input_box_blocked(&harness, &lines) else {
             return AgentInputBox::Ready;
         };
-        let typed_recently = self
+        let recent_input = self
             .agent_input_by_pane
             .read()
             .get(&pane_id)
-            .and_then(|input| input.at)
-            .is_some_and(|at| at.elapsed() < CLAUDE_DRAFT_IDLE);
-        if harness != AgentHarness::Claude || typed_recently {
+            .and_then(|input| Some((input.last_kind, input.at?.elapsed())))
+            .filter(|(_, age)| *age < CLAUDE_DRAFT_IDLE);
+        if harness != AgentHarness::Claude {
             return AgentInputBox::Blocked(reason.to_string());
+        }
+        // Names the input that makes the draft look typed, since nothing
+        // else records which input that was.
+        if let Some((kind, age)) = recent_input {
+            return AgentInputBox::Blocked(format!(
+                "{reason}: the pane received {kind} input {} s ago",
+                age.as_secs()
+            ));
         }
         match agent::claude_stash_key() {
             Ok(_) => AgentInputBox::IdleClaudeDraft,
@@ -9972,7 +9980,11 @@ mod test {
         mux.record_agent_input_generation(drafting, "keyboard");
         assert_eq!(
             mux.agent_input_box(drafting),
-            AgentInputBox::Blocked("the input box holds text the user is typing".to_string())
+            AgentInputBox::Blocked(
+                "the input box holds text the user is typing: the pane received keyboard \
+                 input 0 s ago"
+                    .to_string()
+            )
         );
         // The draft counts as left there once the pane has had no input for
         // a while.
