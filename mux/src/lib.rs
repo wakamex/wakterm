@@ -659,6 +659,16 @@ struct AgentPaneInput {
     at: Option<Instant>,
 }
 
+/// Whether an agent may be frozen as far as its turn goes: a live Claude
+/// whose transcript shows its turn ended. Claude can report itself idle
+/// before it writes the turn's last records, and a frozen Claude writes
+/// nothing, so its reported status alone would hold back the turn's end.
+fn may_freeze_after_turn(runtime: &AgentRuntimeSnapshot) -> bool {
+    runtime.alive
+        && runtime.harness == AgentHarness::Claude
+        && runtime.turn_state == AgentTurnState::WaitingOnUser
+}
+
 /// How long an idle agent must go without input before it is frozen.
 const AGENT_FREEZE_AFTER: Duration = Duration::from_secs(30);
 
@@ -4248,7 +4258,7 @@ impl Mux {
             .agent_runtime_by_pane
             .read()
             .iter()
-            .filter(|(_, runtime)| runtime.alive && runtime.harness == AgentHarness::Claude)
+            .filter(|(_, runtime)| may_freeze_after_turn(runtime))
             .map(|(pane_id, _)| *pane_id)
             .collect();
         for pane_id in claude_panes {
@@ -9948,6 +9958,21 @@ mod test {
         mux.note_codex_steer(pane_id);
         mux.submit_codex_steer_left_in_composer(pane_id);
         assert!(FAKE_PANE_WRITES.lock().is_empty());
+    }
+
+    #[test]
+    fn a_claude_is_frozen_only_once_its_transcript_shows_the_turn_ended() {
+        let mut runtime = AgentRuntimeSnapshot::new(&sample_agent_metadata("freeze"));
+        runtime.alive = true;
+        runtime.harness = AgentHarness::Claude;
+        runtime.turn_state = AgentTurnState::WaitingOnAgent;
+        // Claude may already report itself idle, but the transcript has not
+        // recorded the turn's end.
+        assert!(!may_freeze_after_turn(&runtime));
+        runtime.turn_state = AgentTurnState::WaitingOnUser;
+        assert!(may_freeze_after_turn(&runtime));
+        runtime.harness = AgentHarness::Codex;
+        assert!(!may_freeze_after_turn(&runtime));
     }
 
     #[test]
