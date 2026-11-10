@@ -2217,16 +2217,37 @@ fn observe_claude_process(
             job_id,
             session_id,
         });
-    let mut observation = observe_claude(
-        cwd,
-        metadata.adopted_pid,
-        runtime.session_path.as_deref(),
-        runtime.observer_started_at,
-        owned
-            .as_ref()
-            .map(|owned| owned.current_id.as_str())
-            .or(expected_id),
-    )?;
+    let mut observation = match owned.as_ref() {
+        // Until a new session's transcript exists, Claude's own report
+        // below is all there is to observe, and the transcript is where the
+        // session's input will be recorded.
+        Some(owned) if !owned.transcript_written => claude_sessions_root_for(metadata.adopted_pid)
+            .map(|root| HarnessObservation {
+                session_path: Some(
+                    root.join(claude_project_dir_name(cwd))
+                        .join(format!("{}.jsonl", owned.current_id))
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                progress_summary: None,
+                harness_mode: None,
+                turn_phase: None,
+                updated_at: None,
+                turn_state: AgentTurnState::Unknown,
+                last_turn_completed_at: None,
+                observed_turn: None,
+            }),
+        _ => observe_claude(
+            cwd,
+            metadata.adopted_pid,
+            runtime.session_path.as_deref(),
+            runtime.observer_started_at,
+            owned
+                .as_ref()
+                .map(|owned| owned.current_id.as_str())
+                .or(expected_id),
+        )?,
+    };
     // Claude's own report outranks inference from the transcript, which
     // cannot tell a running turn from input Claude showed without answering.
     if let (Some(observation), Some(reported)) = (
@@ -2701,6 +2722,9 @@ enum ClaudeOwnership {
 struct OwnedClaudeSession {
     launched_id: String,
     current_id: String,
+    /// Whether the current session has a transcript. A new session gets
+    /// one only with its first input.
+    transcript_written: bool,
     job_id: Option<String>,
     /// Claude's own report of the process.
     status: Option<ClaudeReportedStatus>,
@@ -2915,15 +2939,23 @@ fn claude_ownership_from_registry(
     let path = root
         .join(claude_project_dir_name(cwd))
         .join(format!("{current_id}.jsonl"));
-    if !path.is_file()
-        || claude_session_id(&path)?.as_deref() != Some(current_id.as_str())
-        || !claude_session_is_interactive(&path)?
+    let transcript_written = path.is_file();
+    // A session Claude started in this window has no transcript until its
+    // first input; the window's own record already shows it started.
+    let new_window_session = !transcript_written
+        && parked.is_none()
+        && launched_id.as_deref() == Some(current_id.as_str());
+    if !new_window_session
+        && (!transcript_written
+            || claude_session_id(&path)?.as_deref() != Some(current_id.as_str())
+            || !claude_session_is_interactive(&path)?)
     {
         return Ok(ClaudeOwnership::Unknown);
     }
     Ok(ClaudeOwnership::Owned(OwnedClaudeSession {
         launched_id: launched_id.unwrap_or_else(|| current_id.clone()),
         current_id,
+        transcript_written,
         job_id: parked,
         status,
     }))
@@ -8417,6 +8449,47 @@ mod test {
             observed.last_turn_completed_at,
             Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 2).unwrap())
         );
+    }
+
+    #[test]
+    fn a_new_window_session_without_a_transcript_is_owned() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("projects");
+        let sessions = temp.path().join("sessions");
+        let cwd = "/code/personal";
+        let session = "24679b6a-bdbc-4fbe-90cf-dbee14c2ac5d";
+        fs::create_dir_all(root.join(claude_project_dir_name(cwd))).unwrap();
+        fs::create_dir_all(&sessions).unwrap();
+        // Claude started a new session in this window and is idle at its
+        // prompt; nothing has been sent to it, so it has no transcript.
+        let window = sessions.join("100.json");
+        fs::write(
+            &window,
+            serde_json::json!({"pid":100,"sessionId":session,"cwd":cwd,
+                "kind":"interactive","status":"idle","statusUpdatedAt":1})
+            .to_string(),
+        )
+        .unwrap();
+        let ownership = || {
+            claude_ownership_from_registry(&root, &sessions, &window, cwd, "claude", |_| Ok(true))
+                .unwrap()
+        };
+        match ownership() {
+            ClaudeOwnership::Owned(owned) => {
+                assert_eq!(owned.current_id, session);
+                assert!(!owned.transcript_written);
+                assert_eq!(owned.status.unwrap().status, "idle");
+            }
+            _ => panic!("a started session without a transcript is not owned"),
+        }
+        // Once its first input is recorded, the transcript is read as usual.
+        fs::write(
+            root.join(claude_project_dir_name(cwd))
+                .join(format!("{session}.jsonl")),
+            format!("{{\"type\":\"user\",\"sessionId\":\"{session}\",\"entrypoint\":\"cli\"}}\n"),
+        )
+        .unwrap();
+        assert!(matches!(ownership(), ClaudeOwnership::Owned(owned) if owned.transcript_written));
     }
 
     #[cfg(target_os = "linux")]
