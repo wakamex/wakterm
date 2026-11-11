@@ -1587,7 +1587,7 @@ impl TermWindow {
                 }
                 MuxNotification::WindowInvalidated(window_id) => {
                     log::debug!("termwindow handling WindowInvalidated window_id={window_id}");
-                    self.activate_activity_order_neighbor_of_closed_tab();
+                    self.activate_activity_order_neighbor_of_removed_tab();
                     self.acknowledge_visible_agent_attention(None);
                     window.invalidate();
                     self.update_title_post_status();
@@ -2137,29 +2137,30 @@ impl TermWindow {
         }
     }
 
-    /// In activity order, when the active tab has closed, activates the tab
-    /// next to it in the order the tab bar showed, the following one or, for
-    /// the last tab, the one before. The mux picks a replacement by the
-    /// window's own tab order, which activity order does not show.
-    fn activate_activity_order_neighbor_of_closed_tab(&mut self) {
+    /// In activity order, when the active tab has left the tab bar, closed
+    /// or parked, activates the tab next to it in the order the tab bar
+    /// showed, the following one or, for the last tab, the one before. The
+    /// mux picks a replacement by the window's own tab order, which activity
+    /// order does not show.
+    fn activate_activity_order_neighbor_of_removed_tab(&mut self) {
         if !self.tab_activity_order {
             return;
         }
-        let Some(closed) = self.displayed_active_tab else {
+        let Some(removed) = self.displayed_active_tab else {
             return;
         };
-        if Mux::get().get_tab(closed).is_some() {
+        let current = self.display_tab_ids();
+        if current.contains(&removed) {
             return;
         }
         let shown = std::mem::take(&mut self.displayed_tab_ids);
         self.displayed_active_tab = None;
-        let current = self.display_tab_ids();
-        let Some(neighbor) = activity_order_neighbor(&shown, closed, &current) else {
+        let Some(neighbor) = activity_order_neighbor(&shown, removed, &current) else {
             return;
         };
         if let Some(idx) = current.iter().position(|tab_id| *tab_id == neighbor) {
             if let Err(err) = self.activate_tab(idx as isize) {
-                log::warn!("activating the closed tab's neighbor: {err:#}");
+                log::warn!("activating the removed tab's neighbor: {err:#}");
             }
         }
     }
@@ -2445,10 +2446,11 @@ impl TermWindow {
         if mux.get_window(self.mux_window_id).is_none() {
             return;
         }
-        // A title update can run after the active tab closed and before the
-        // window hears of it. The order it last showed decides the closed
-        // tab's successor, so that is settled before the order is replaced.
-        self.activate_activity_order_neighbor_of_closed_tab();
+        // A title update can run after the active tab closed or was parked
+        // and before the window hears of it. The order it last showed decides
+        // that tab's successor, so that is settled before the order is
+        // replaced.
+        self.activate_activity_order_neighbor_of_removed_tab();
         self.unpark_tabs_whose_turn_ended();
         let tabs = self.get_tab_information();
         let panes = self.get_pane_information();
