@@ -8451,6 +8451,7 @@ mod test {
         );
     }
 
+    #[cfg(any(target_os = "linux", windows))]
     #[test]
     fn a_new_window_session_without_a_transcript_is_owned() {
         let temp = tempfile::tempdir().unwrap();
