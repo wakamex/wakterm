@@ -154,6 +154,8 @@ Automatic restoration must resume the intended provider session or report a
 visible failure. It must never silently replace an expected harness with a
 fresh shell or silently start a new provider session.
 
+An agent that had not started a provider session, such as an agy or a Claude that starts one only with its first input, has no session to resume and nothing to lose. Restoration starts it again with its launch command in its folder and keeps its agent ID and name, binding them to the new process once it starts. An agent Wakterm saw take a turn or write a transcript is never started this way; it resumes its session or reports the failure. An agent behind a launch supervisor, such as a sandbox, is not started again either, since starting it needs its own recipe.
+
 An exited restorable pane remains in the recoverable layout until the pane or
 tab is explicitly closed. Process exit updates live agent status but does not
 discard its restore intent.

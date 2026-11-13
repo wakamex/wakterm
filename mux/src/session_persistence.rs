@@ -57,6 +57,10 @@ pub struct SavedAgentRestoreIntent {
     /// so that the restart interrupted it.
     #[serde(default)]
     pub turn_interrupted: bool,
+    /// Whether the agent had not started a session yet, so that a restore
+    /// starts it again with its launch command; `session_id` is then empty.
+    #[serde(default)]
+    pub fresh_launch: bool,
 }
 
 impl SavedAgentRestoreIntent {
@@ -341,12 +345,25 @@ fn collect_agent_restore_intents(
                     session_id,
                     attention_seen_at: mux.agent_attention_seen_at(entry.pane_id),
                     turn_interrupted,
+                    fresh_launch: false,
                 });
             } else if let Some((metadata, harness)) = resumable_agent(entry) {
-                unrestorable.insert(format!(
-                    "{} (pane {}, {:?})",
-                    metadata.name, entry.pane_id, harness
-                ));
+                if started_no_session(mux, entry.pane_id, metadata) {
+                    intents.push(SavedAgentRestoreIntent {
+                        pane_id: entry.pane_id,
+                        harness,
+                        metadata: metadata.clone(),
+                        session_id: String::new(),
+                        attention_seen_at: None,
+                        turn_interrupted: false,
+                        fresh_launch: true,
+                    });
+                } else {
+                    unrestorable.insert(format!(
+                        "{} (pane {}, {:?})",
+                        metadata.name, entry.pane_id, harness
+                    ));
+                }
             }
         }
         PaneNode::Split { left, right, .. } => {
@@ -354,6 +371,31 @@ fn collect_agent_restore_intents(
             collect_agent_restore_intents(mux, right, intents, unrestorable);
         }
     }
+}
+
+/// Whether the agent in the pane has not started a session: Wakterm saw no
+/// turn and no transcript for it, as with a harness that starts its session
+/// only with its first input. Starting it again loses nothing. A launch
+/// supervisor, such as a sandbox, needs its own recipe to start again.
+fn started_no_session(mux: &Mux, pane_id: PaneId, metadata: &AgentMetadata) -> bool {
+    if metadata
+        .launch_supervisor
+        .as_ref()
+        .is_some_and(|supervisor| !crate::agent::is_wakterm_cli(supervisor))
+    {
+        return false;
+    }
+    mux.agent_runtime_by_pane
+        .read()
+        .get(&pane_id)
+        .is_some_and(|runtime| {
+            runtime.observed_turn.is_none()
+                && runtime.last_turn_completed_at.is_none()
+                && runtime
+                    .session_path
+                    .as_deref()
+                    .map_or(true, |path| !std::path::Path::new(path).exists())
+        })
 }
 
 /// Whether the agent in the pane is working on a turn. Its harness is
@@ -918,7 +960,17 @@ fn restore_agent_intent(pane_id: PaneId, intent: &SavedAgentRestoreIntent) -> an
         ));
     }
     let harness = intent.harness();
-    let result = if harness == AgentHarness::Codex && intent.metadata.codex_app_server.is_some() {
+    let result = if intent.fresh_launch {
+        // The same agent, bound to the new process once it starts.
+        mux.restore_agent_metadata(
+            pane_id,
+            AgentMetadata {
+                adopted_pid: None,
+                adopted_start_time: None,
+                ..intent.metadata.clone()
+            },
+        )
+    } else if harness == AgentHarness::Codex && intent.metadata.codex_app_server.is_some() {
         mux.restore_agent_metadata(pane_id, intent.metadata.clone())
     } else {
         mux.register_agent_restore_intent(
@@ -945,13 +997,22 @@ fn restore_command_for_entry(
 ) -> anyhow::Result<(Option<CommandBuilder>, Option<SavedAgentRestoreIntent>)> {
     let (mut command, intent) = match prepare_restore_for_entry(entry, restore_intents)? {
         Some(prepared) => {
-            log::info!(
-                "restoring agent {} in pane {} from its {:?} session {}",
-                prepared.intent.metadata.name,
-                entry.pane_id,
-                prepared.intent.harness(),
-                prepared.intent.session_id
-            );
+            if prepared.intent.fresh_launch {
+                log::info!(
+                    "starting agent {} in pane {} again with its launch command, since it had \
+                     not started a session",
+                    prepared.intent.metadata.name,
+                    entry.pane_id
+                );
+            } else {
+                log::info!(
+                    "restoring agent {} in pane {} from its {:?} session {}",
+                    prepared.intent.metadata.name,
+                    entry.pane_id,
+                    prepared.intent.harness(),
+                    prepared.intent.session_id
+                );
+            }
             (Some(prepared.command), Some(prepared.intent))
         }
         None => (unrestorable_agent_notice(entry)?, None),
@@ -964,10 +1025,6 @@ fn restore_command_for_entry(
     Ok((command, intent))
 }
 
-/// For a pane saved with a harness agent but no restore intent, which names
-/// the session to resume, a command that says so in the pane before its
-/// shell starts: the agent is not restored, and a plain shell alone would
-/// hide that.
 /// The agent recorded on a saved pane, and its harness, when the harness is
 /// one Wakterm resumes on restore.
 fn resumable_agent(entry: &crate::tab::PaneEntry) -> Option<(&AgentMetadata, AgentHarness)> {
@@ -985,6 +1042,10 @@ fn resumable_agent(entry: &crate::tab::PaneEntry) -> Option<(&AgentMetadata, Age
     .then_some((metadata, harness))
 }
 
+/// For a pane saved with a harness agent but no restore intent, which names
+/// the session to resume, a command that says so in the pane before its
+/// shell starts: the agent is not restored, and a plain shell alone would
+/// hide that.
 fn unrestorable_agent_notice(
     entry: &crate::tab::PaneEntry,
 ) -> anyhow::Result<Option<CommandBuilder>> {
@@ -1084,6 +1145,15 @@ fn prepare_agent_restore(
     intent: &SavedAgentRestoreIntent,
     prepare_managed: impl FnOnce(PrepareCodexLaunch) -> anyhow::Result<PreparedCodexLaunch>,
 ) -> anyhow::Result<PreparedAgentRestore> {
+    if intent.fresh_launch {
+        let argv = shell_words::split(&intent.metadata.launch_cmd)
+            .context("parsing agent launch command")?;
+        anyhow::ensure!(!argv.is_empty(), "agent launch command must not be empty");
+        return Ok(PreparedAgentRestore {
+            command: CommandBuilder::from_argv(argv.into_iter().map(Into::into).collect()),
+            intent: intent.clone(),
+        });
+    }
     // Records saved before Wakterm's own CLI stopped counting as a
     // supervisor still name it; it adds nothing to restore.
     if let Some(supervisor) = intent
@@ -1871,6 +1941,7 @@ mod test {
             session_id: thread_id.to_string(),
             attention_seen_at: None,
             turn_interrupted: false,
+            fresh_launch: false,
         };
         let mut requested = None;
         let restored = prepare_agent_restore(&intent, |request| {
@@ -1909,6 +1980,7 @@ mod test {
             session_id: "00000000-0000-4000-8000-000000000091".to_string(),
             attention_seen_at: None,
             turn_interrupted: false,
+            fresh_launch: false,
         };
         let saved: SavedAgentRestoreIntent =
             serde_json::from_slice(&serde_json::to_vec(&intent).unwrap()).unwrap();
@@ -2252,6 +2324,7 @@ mod test {
             session_id: "legacy-session".to_string(),
             attention_seen_at: None,
             turn_interrupted: false,
+            fresh_launch: false,
         };
         let mut value = serde_json::to_value(intent).unwrap();
         value.as_object_mut().unwrap().remove("harness");
@@ -2276,6 +2349,7 @@ mod test {
             session_id: thread_id.to_string(),
             attention_seen_at: None,
             turn_interrupted: false,
+            fresh_launch: false,
         };
 
         let restored = prepare_agent_restore(&intent, |request| {
@@ -2340,6 +2414,7 @@ mod test {
             session_id: session_id.to_string(),
             attention_seen_at: None,
             turn_interrupted: false,
+            fresh_launch: false,
         };
 
         let restored = prepare_agent_restore(&intent, |_| {
@@ -2382,6 +2457,7 @@ mod test {
             session_id: conversation_id.to_string(),
             attention_seen_at: None,
             turn_interrupted: false,
+            fresh_launch: false,
         };
 
         let restored = prepare_agent_restore(&intent, |_| {
@@ -2425,6 +2501,7 @@ mod test {
             session_id: "provider-session".to_string(),
             attention_seen_at: None,
             turn_interrupted: false,
+            fresh_launch: false,
         };
 
         let restored = prepare_agent_restore(&intent, |request| {
@@ -2468,6 +2545,7 @@ mod test {
             session_id: "provider-session".to_string(),
             attention_seen_at: None,
             turn_interrupted: false,
+            fresh_launch: false,
         };
 
         let restored =
@@ -2605,6 +2683,87 @@ mod test {
             wrong.len(),
             wrong[..wrong.len().min(3)].join("\n")
         );
+    }
+
+    #[test]
+    fn an_agent_that_started_no_session_starts_again_with_its_launch_command() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let source_mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&source_mux);
+
+        let window_id = *source_mux.new_empty_window(Some("default".to_string()), None);
+        let tab_size = size(120, 40);
+        let tab = Arc::new(Tab::new(&tab_size));
+        let pane = TestPane::new(alloc_pane_id(), tab_size);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        source_mux.add_tab_and_active_pane(&tab).unwrap();
+        source_mux.add_tab_to_window(&tab, window_id).unwrap();
+        // A fresh agy tab, which starts its conversation only with its first
+        // input, so Wakterm has seen no turn and no transcript for it.
+        let mut metadata = sample_agent_metadata("fresh");
+        metadata.launch_cmd = "agy --model gemini-4-carbon-medium".to_string();
+        metadata.adopted_pid = Some(4242);
+        metadata.adopted_start_time = Some(7);
+        source_mux
+            .set_agent_metadata(pane_id, metadata.clone())
+            .unwrap();
+
+        let saved_session = build_saved_session(&source_mux);
+        assert_eq!(saved_session.agent_restore_intents.len(), 1);
+        let intent = &saved_session.agent_restore_intents[0];
+        assert!(intent.fresh_launch);
+        assert!(intent.session_id.is_empty());
+        let saved_tab = saved_session.windows[0].tabs[0].clone();
+        let intents = saved_session
+            .agent_restore_intents
+            .into_iter()
+            .map(|intent| (intent.pane_id, intent))
+            .collect::<HashMap<_, _>>();
+
+        let restored_mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&restored_mux);
+        let _guard = crate::TestMuxGuard;
+        let restored_window = *restored_mux.new_empty_window(Some("default".to_string()), None);
+        let recording_domain = Arc::new(TestDomain::new());
+        let commands = Arc::clone(&recording_domain.commands);
+        let command_dirs = Arc::clone(&recording_domain.command_dirs);
+        let domain: Arc<dyn Domain> = recording_domain;
+        let tab_id = smol::block_on(restore_tab(
+            &domain,
+            &saved_tab,
+            tab_size,
+            restored_window,
+            &intents,
+            &HashMap::new(),
+        ))
+        .expect("restore tab");
+
+        // The same command in the agent's folder, and the same agent, to be
+        // bound to the new process once it starts.
+        assert_eq!(
+            commands.lock().unwrap().as_slice(),
+            expected_restored_spawn(vec![
+                "agy".to_string(),
+                "--model".to_string(),
+                "gemini-4-carbon-medium".to_string(),
+            ])
+        );
+        assert_eq!(
+            command_dirs.lock().unwrap().as_slice(),
+            &[Some(metadata.declared_cwd.clone())]
+        );
+        let restored_pane = restored_mux.get_tab(tab_id).unwrap().iter_panes()[0]
+            .pane
+            .pane_id();
+        let restored = restored_mux
+            .get_agent_metadata_for_pane(restored_pane)
+            .expect("agent metadata");
+        assert_eq!(restored.agent_id, metadata.agent_id);
+        assert_eq!(restored.name, "fresh");
+        assert_eq!(restored.adopted_pid, None);
+        assert!(restored_mux.pending_agent_restores.read().is_empty());
     }
 
     #[test]
