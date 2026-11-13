@@ -1366,7 +1366,7 @@ pub struct AgyInputBox {
 
 /// Reads agy's input box from the pane's visible lines: the lowest line that
 /// starts with `>` right below a rule, and the lines under it up to the next
-/// rule. The footer below that rule reads "esc to cancel" while a turn runs.
+/// rule. agy's bottom line reads "esc to cancel" while a turn runs.
 /// agy 1.5 draws a placeholder in the empty box, such as "Auto mode: edits
 /// & safe commands auto-approved", in grey (ANSI bright black); it is not
 /// the box's text. Typed or pasted text is drawn in the default color.
@@ -1404,9 +1404,16 @@ pub fn agy_input_box(lines: &[wakterm_term::Line]) -> Option<AgyInputBox> {
     while content.last().is_some_and(String::is_empty) && content.len() > 1 {
         content.pop();
     }
-    let footer = || lines[end + 1..].iter().take(2);
-    let working = footer().any(|line| line.contains("esc to cancel"));
-    let idle = footer().any(|line| line.contains("? for shortcuts"));
+    // The hint is on agy's bottom line. Panels such as the commands a turn
+    // runs can sit between the box and it, and hold any text.
+    let footer = lines[end + 1..]
+        .iter()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map(String::as_str)
+        .unwrap_or_default();
+    let working = footer.contains("esc to cancel");
+    let idle = footer.contains("? for shortcuts");
     Some(AgyInputBox {
         rows: content.len(),
         text: content.join("\n").trim().to_string(),
@@ -6862,6 +6869,28 @@ mod test {
             ("", false, true)
         );
         assert_eq!(input_box_blocked(&AgentHarness::Agy, &placeholder), None);
+
+        // agy 1.5.7 lists a running command in a panel between the box and
+        // its bottom line, which still says whether a turn runs.
+        let panel = screen(&[
+            &rule,
+            ">",
+            &rule,
+            "  \u{25cf} [00:29:43] cargo test running",
+            &rule,
+            "esc to cancel                                    auto \u{00b7} Gemini 4 Carbon",
+        ]);
+        let state = agy_input_box(&panel).unwrap();
+        assert!(state.working && !state.idle);
+        let idle_panel = screen(&[
+            &rule,
+            ">",
+            &rule,
+            "  \u{25cf} [00:29:43] dev server running",
+            &rule,
+            "? for shortcuts",
+        ]);
+        assert!(agy_input_box(&idle_panel).unwrap().idle);
 
         // A quoted line in the transcript is not the box.
         assert_eq!(agy_input_box(&screen(&["> quoted", "text"])), None);
