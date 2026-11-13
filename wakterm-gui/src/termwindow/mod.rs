@@ -540,14 +540,17 @@ fn activity_order_neighbor(shown: &[TabId], closed: TabId, current: &[TabId]) ->
         .copied()
 }
 
-/// The parked tabs whose latest completed agent turn is newer than when
-/// each was first seen parked, in `parked` order. Records that baseline for
-/// tabs seen parked for the first time, and forgets tabs no longer parked
-/// and those it returns.
+/// The parked tabs with an agent turn completed after each was first seen
+/// parked, in `parked` order. Records that time, `now` or a later turn
+/// already known, for tabs seen parked for the first time, and forgets tabs
+/// no longer parked and those it returns. An agent's earlier turns can
+/// become known only later, as when a mux restart restores its tab under a
+/// new ID before its transcript is read, so they are told apart by time.
 fn tabs_whose_turn_ended(
-    baselines: &mut HashMap<TabId, Option<chrono::DateTime<chrono::Utc>>>,
+    baselines: &mut HashMap<TabId, chrono::DateTime<chrono::Utc>>,
     parked: &[TabId],
     last_turns: &HashMap<TabId, chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Vec<TabId> {
     baselines.retain(|tab_id, _| parked.contains(tab_id));
     let mut ended = vec![];
@@ -555,9 +558,9 @@ fn tabs_whose_turn_ended(
         let latest = last_turns.get(tab_id).copied();
         match baselines.get(tab_id) {
             None => {
-                baselines.insert(*tab_id, latest);
+                baselines.insert(*tab_id, latest.map_or(now, |latest| latest.max(now)));
             }
-            Some(baseline) if latest > *baseline => {
+            Some(baseline) if latest.is_some_and(|latest| latest > *baseline) => {
                 baselines.remove(tab_id);
                 ended.push(*tab_id);
             }
@@ -585,10 +588,9 @@ pub struct TermWindow {
     displayed_tab_ids: Vec<TabId>,
     displayed_active_tab: Option<TabId>,
     /// Unpark this window's parked tabs when one of their agents completes
-    /// a turn, and the latest completed turn each parked tab had when it
-    /// was first seen parked.
+    /// a turn, and since when each parked tab has been seen parked.
     unpark_on_turn_end: bool,
-    parked_turn_baselines: HashMap<TabId, Option<chrono::DateTime<chrono::Utc>>>,
+    parked_turn_baselines: HashMap<TabId, chrono::DateTime<chrono::Utc>>,
     /// Whether a rebuild of the tab bar and window title is queued.
     title_update_scheduled: bool,
     os_parameters: Option<parameters::Parameters>,
@@ -2130,7 +2132,12 @@ impl TermWindow {
             return;
         };
         let last_turns = mux.last_turn_completed_at_by_tab(self.mux_window_id);
-        for tab_id in tabs_whose_turn_ended(&mut self.parked_turn_baselines, &parked, &last_turns) {
+        for tab_id in tabs_whose_turn_ended(
+            &mut self.parked_turn_baselines,
+            &parked,
+            &last_turns,
+            chrono::Utc::now(),
+        ) {
             if let Err(err) = mux.set_tab_parked(self.mux_window_id, tab_id, false) {
                 log::warn!("unparking tab {tab_id} after its agent's turn ended: {err:#}");
             }
@@ -4383,29 +4390,41 @@ mod test {
         use chrono::{TimeZone, Utc};
         let at = |minute| Utc.with_ymd_and_hms(2026, 11, 8, 12, minute, 0).unwrap();
         let mut baselines = HashMap::new();
-        // Tab 1 last completed a turn before it was parked, and tab 2 never
-        // has; seeing them parked records that, and returns neither.
+        // Seen parked at 12:01. Tab 1 last completed a turn before that, and
+        // tab 2 never has; neither returns.
         let mut last_turns = HashMap::from([(1, at(0))]);
-        assert!(tabs_whose_turn_ended(&mut baselines, &[1, 2], &last_turns).is_empty());
-        assert!(tabs_whose_turn_ended(&mut baselines, &[1, 2], &last_turns).is_empty());
+        assert!(tabs_whose_turn_ended(&mut baselines, &[1, 2], &last_turns, at(1)).is_empty());
+        assert!(tabs_whose_turn_ended(&mut baselines, &[1, 2], &last_turns, at(2)).is_empty());
         // Both complete a turn while parked, and return.
         last_turns.insert(1, at(5));
         last_turns.insert(2, at(6));
         assert_eq!(
-            tabs_whose_turn_ended(&mut baselines, &[1, 2], &last_turns),
+            tabs_whose_turn_ended(&mut baselines, &[1, 2], &last_turns, at(7)),
             [1, 2]
         );
-        // Parked again, tab 1 waits for a turn newer than its last.
-        assert!(tabs_whose_turn_ended(&mut baselines, &[1], &last_turns).is_empty());
-        assert!(tabs_whose_turn_ended(&mut baselines, &[1], &last_turns).is_empty());
+        // Parked again, tab 1 waits for a turn completed after that.
+        assert!(tabs_whose_turn_ended(&mut baselines, &[1], &last_turns, at(8)).is_empty());
         last_turns.insert(1, at(9));
         assert_eq!(
-            tabs_whose_turn_ended(&mut baselines, &[1], &last_turns),
+            tabs_whose_turn_ended(&mut baselines, &[1], &last_turns, at(10)),
             [1]
         );
         // A tab unparked by hand is forgotten.
-        assert!(tabs_whose_turn_ended(&mut baselines, &[], &last_turns).is_empty());
+        assert!(tabs_whose_turn_ended(&mut baselines, &[], &last_turns, at(11)).is_empty());
         assert!(baselines.is_empty());
+
+        // After a mux restart a tab is seen parked under a new ID before its
+        // agent's earlier turns are known; learning them does not return it.
+        let mut baselines = HashMap::new();
+        let mut last_turns = HashMap::new();
+        assert!(tabs_whose_turn_ended(&mut baselines, &[3], &last_turns, at(30)).is_empty());
+        last_turns.insert(3, at(20));
+        assert!(tabs_whose_turn_ended(&mut baselines, &[3], &last_turns, at(31)).is_empty());
+        last_turns.insert(3, at(32));
+        assert_eq!(
+            tabs_whose_turn_ended(&mut baselines, &[3], &last_turns, at(33)),
+            [3]
+        );
     }
 
     #[test]
