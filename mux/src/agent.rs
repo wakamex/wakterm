@@ -1297,12 +1297,14 @@ pub fn input_box_blocked(
             Some(state) if !state.text.is_empty() => {
                 Some("the input box holds text the user is typing")
             }
-            // agy queues a message submitted during a turn and can send it
-            // together with the user's next input. Only its idle hint shows
-            // that no turn runs.
-            Some(state) if !state.idle => Some(
-                "agy's footer does not show it waiting for input, so a turn may be running, and \
-                 agy would queue the message to send with the user's next input",
+            // agy holds a message submitted during a turn and sends it on its
+            // own as the next turn once the running one ends, joined with any
+            // other message held until then. Its footer shows which of these
+            // states it is in; a blank or other hint, as right after Enter
+            // or after Esc put held messages back in the box, says neither.
+            Some(state) if !(state.idle || state.working || state.queued) => Some(
+                "agy's footer shows neither a turn running, messages it holds for its next turn, \
+                 nor it waiting for input",
             ),
             Some(_) => None,
         },
@@ -1362,6 +1364,12 @@ pub struct AgyInputBox {
     /// running. The idle hint appears only when no turn runs and no other
     /// hint is shown.
     pub idle: bool,
+    /// Whether the footer shows agy holding messages for its next turn,
+    /// "Press up to edit queued messages".
+    pub queued: bool,
+    /// The messages agy holds for its next turn, from the `▸` rows it draws
+    /// right above the box, as far as each row shows.
+    pub queued_inputs: Vec<String>,
 }
 
 /// Reads agy's input box from the pane's visible lines: the lowest line that
@@ -1414,11 +1422,26 @@ pub fn agy_input_box(lines: &[wakterm_term::Line]) -> Option<AgyInputBox> {
         .unwrap_or_default();
     let working = footer.contains("esc to cancel");
     let idle = footer.contains("? for shortcuts");
+    let queued = footer.contains("to edit queued messages");
+    let mut queued_inputs: Vec<String> = lines[..prompt - 1]
+        .iter()
+        .rev()
+        .map_while(|line| line.trim_start().strip_prefix('\u{25b8}'))
+        .map(|row| {
+            row.trim()
+                .trim_end_matches("(alt+m to send immediately)")
+                .trim()
+                .to_string()
+        })
+        .collect();
+    queued_inputs.reverse();
     Some(AgyInputBox {
         rows: content.len(),
         text: content.join("\n").trim().to_string(),
         working,
         idle,
+        queued,
+        queued_inputs,
     })
 }
 
@@ -6811,22 +6834,40 @@ mod test {
         );
         assert_eq!(input_box_blocked(&AgentHarness::Agy, &idle), None);
 
+        // agy holds a message typed during a turn and sends it on its own
+        // once the turn ends, so a working agy takes a message.
         let working = screen(&["  Running command...", &rule, ">", &rule, "esc to cancel"]);
         let state = agy_input_box(&working).unwrap();
         assert!(state.working && !state.idle);
-        assert!(input_box_blocked(&AgentHarness::Agy, &working)
-            .is_some_and(|reason| reason.contains("a turn may be running")));
-        // Hints agy shows instead of "esc to cancel" while a turn runs, such
-        // as for a message queued into it, are not its idle hint.
-        for hint in [
-            "  Press \u{2191} to edit queued messages",
-            "press ctrl+b again to send command to background",
-        ] {
-            let running = screen(&["  Running command...", &rule, ">", &rule, hint]);
-            let state = agy_input_box(&running).unwrap();
-            assert!(!state.working && !state.idle, "{hint}");
+        assert_eq!(input_box_blocked(&AgentHarness::Agy, &working), None);
+        // As agy 1.5.7 draws messages it holds for its next turn.
+        let queued = screen(&[
+            "\u{28fe}  Generating...",
+            "\u{25b8} Reply with exactly the word PINEAPPLE.",
+            "\u{25b8} Also reply with MANGO. (alt+m to send immediately)",
+            &rule,
+            ">",
+            &rule,
+            "  Press up to edit queued messages          auto \u{00b7} Gemini 4 Argon",
+        ]);
+        let state = agy_input_box(&queued).unwrap();
+        assert!(state.queued && !state.working && !state.idle);
+        assert_eq!(
+            state.queued_inputs,
+            [
+                "Reply with exactly the word PINEAPPLE.",
+                "Also reply with MANGO."
+            ]
+        );
+        assert_eq!(input_box_blocked(&AgentHarness::Agy, &queued), None);
+        // Other hints, or none, say neither that a turn runs nor that agy
+        // waits for input.
+        for hint in ["press ctrl+b again to send command to background", ""] {
+            let unclear = screen(&["  Running command...", &rule, ">", &rule, hint]);
+            let state = agy_input_box(&unclear).unwrap();
+            assert!(!state.working && !state.idle && !state.queued, "{hint}");
             assert!(
-                input_box_blocked(&AgentHarness::Agy, &running).is_some(),
+                input_box_blocked(&AgentHarness::Agy, &unclear).is_some(),
                 "{hint}"
             );
         }

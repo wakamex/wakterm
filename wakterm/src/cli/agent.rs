@@ -1921,6 +1921,31 @@ impl SendAgentCommand {
                             .blocked)
                     }
                 },
+                |pane_id| {
+                    let client = client.clone();
+                    async move {
+                        let dims = client
+                            .get_dimensions(codec::GetPaneRenderableDimensions { pane_id })
+                            .await?
+                            .dimensions;
+                        let top = dims.physical_top;
+                        let lines = client
+                            .get_lines(codec::GetLines {
+                                pane_id,
+                                lines: vec![
+                                    top..top + dims.viewport_rows as wakterm_term::StableRowIndex,
+                                ],
+                            })
+                            .await?;
+                        Ok(lines
+                            .lines
+                            .extract_data()
+                            .0
+                            .into_iter()
+                            .map(|(_, line)| line)
+                            .collect())
+                    }
+                },
             )
             .await?;
         write_json(&result)
@@ -1939,6 +1964,8 @@ impl SendAgentCommand {
         ConfirmInputFut,
         PrepareInputBoxFn,
         PrepareInputBoxFut,
+        ReadScreenFn,
+        ReadScreenFut,
     >(
         &self,
         mut list_agents: ListAgents,
@@ -1947,6 +1974,7 @@ impl SendAgentCommand {
         submit_input: SubmitInputFn,
         confirm_input: ConfirmInputFn,
         prepare_input_box: PrepareInputBoxFn,
+        read_screen: ReadScreenFn,
     ) -> anyhow::Result<AgentSendResult>
     where
         ListAgents: FnMut() -> ListAgentsFut,
@@ -1967,6 +1995,9 @@ impl SendAgentCommand {
         // is ready; a draft nobody is typing is set aside first.
         PrepareInputBoxFn: FnOnce(PaneId) -> PrepareInputBoxFut,
         PrepareInputBoxFut: Future<Output = anyhow::Result<Option<String>>>,
+        // The pane's visible lines.
+        ReadScreenFn: Fn(PaneId) -> ReadScreenFut,
+        ReadScreenFut: Future<Output = anyhow::Result<Vec<wakterm_term::Line>>>,
     {
         let agents = list_agents().await?.agents;
         let agent = find_agent(&agents, &self.target)
@@ -2026,6 +2057,83 @@ impl SendAgentCommand {
             if let Some(detail) = submit_native_harness_prompt(agent.pane_id, &submit_input).await?
             {
                 return Ok(refused(detail));
+            }
+        }
+
+        // agy holds input sent during a turn and records it only when it
+        // sends it as the next turn, so until then its screen confirms it.
+        if submitted && matches!(agent.runtime.harness, AgentHarness::Agy) {
+            let started = Instant::now();
+            let deadline = started + Duration::from_millis(self.ack_timeout_ms);
+            let first_line = sent_text
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let mut last = None;
+            while Instant::now() < deadline {
+                let window = deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(500));
+                let acknowledgement = confirm_input(
+                    agent.metadata.agent_id.clone(),
+                    input_sha256.clone(),
+                    false,
+                    window,
+                )
+                .await?;
+                let queued = !first_line.is_empty()
+                    && mux::agent::agy_input_box(&read_screen(agent.pane_id).await?).is_some_and(
+                        |state| {
+                            state
+                                .queued_inputs
+                                .iter()
+                                .any(|row| shown_as_queued(row, &first_line))
+                        },
+                    );
+                let acknowledgement = match acknowledgement {
+                    Some(acknowledgement) if acknowledgement.acknowledged => acknowledgement,
+                    _ if queued => AgentSendAcknowledgement {
+                        kind: AgentAckKind::InputQueued,
+                        acknowledged: true,
+                        latency_ms: None,
+                        session_path: agent.runtime.session_path.clone(),
+                        detail: Some(
+                            "agy holds the message and sends it as its next turn once the \
+                             running one ends"
+                                .to_string(),
+                        ),
+                    },
+                    acknowledgement => {
+                        last = acknowledgement;
+                        continue;
+                    }
+                };
+                return Ok(AgentSendResult {
+                    agent_id: agent.metadata.agent_id.clone(),
+                    agent_name: agent.metadata.name.clone(),
+                    pane_id: agent.pane_id,
+                    transport: agent.runtime.transport,
+                    submitted,
+                    acknowledgement: AgentSendAcknowledgement {
+                        latency_ms: Some(started.elapsed().as_millis() as u64),
+                        ..acknowledgement
+                    },
+                    refusal: None,
+                });
+            }
+            if let Some(mut acknowledgement) = last {
+                acknowledgement.latency_ms = Some(started.elapsed().as_millis() as u64);
+                return Ok(AgentSendResult {
+                    agent_id: agent.metadata.agent_id.clone(),
+                    agent_name: agent.metadata.name.clone(),
+                    pane_id: agent.pane_id,
+                    transport: agent.runtime.transport,
+                    submitted,
+                    acknowledgement,
+                    refusal: None,
+                });
             }
         }
 
@@ -2928,6 +3036,10 @@ struct ClearAgentResult {
 enum AgentAckKind {
     /// The provider recorded the exact input that was sent.
     InputAccepted,
+    /// The harness holds the input to send as its next turn once the running
+    /// one ends, as agy shows on its screen; its transcript records the input
+    /// only when it is sent.
+    InputQueued,
     SessionObserver,
     TimedOut,
     Unavailable,
@@ -3030,6 +3142,13 @@ fn send_events_from(page: anyhow::Result<mux::agent_event::AgentEventPage>) -> O
 /// Harnesses whose event projection emits `input_accepted`.
 /// Waits for the agent to record input with this hash, reading the event
 /// stream from `after`, and returns as soon as it does.
+/// Whether a row agy draws for a message it holds, which shows as much of
+/// the message's first line as fits, shows this one.
+fn shown_as_queued(row: &str, first_line: &str) -> bool {
+    let row = row.trim_end_matches(['\u{2026}', '.']).trim();
+    !row.is_empty() && (first_line.starts_with(row) || row.starts_with(first_line))
+}
+
 async fn wait_for_input_accepted<ReadPage, ReadPageFut>(
     mut read_page: ReadPage,
     mut after: u64,
@@ -4201,6 +4320,7 @@ mod test {
             },
             |_, _, _, _| async { Ok(None) },
             |_| async { Ok(None) },
+            |_| async { Ok(Vec::new()) },
         ))
         .unwrap();
 
@@ -4361,6 +4481,7 @@ mod test {
                     }
                 },
                 |_| async { Ok(None) },
+                |_| async { Ok(Vec::new()) },
             ))
             .unwrap();
 
@@ -4418,6 +4539,7 @@ mod test {
             },
             |_, _, _, _| async { Ok(None) },
             |_| async { Ok(None) },
+            |_| async { Ok(Vec::new()) },
         ))
         .unwrap();
 
@@ -4486,6 +4608,7 @@ mod test {
                     assert_eq!(pane_id, 30);
                     async move { Ok(Some(detail.to_string())) }
                 },
+                |_| async { Ok(Vec::new()) },
             ))
             .unwrap();
 
@@ -4495,6 +4618,68 @@ mod test {
             assert_eq!(json["refusal"]["reason"], "input_blocked");
             assert_eq!(json["refusal"]["detail"], detail);
         }
+    }
+
+    #[test]
+    fn a_message_agy_holds_for_its_next_turn_is_acknowledged_from_its_screen() {
+        let command = SendAgentCommand {
+            target: "reviewer".to_string(),
+            no_paste: false,
+            no_submit: false,
+            return_final: false,
+            request_id: None,
+            ack_timeout_ms: 2000,
+            ack_poll_ms: 0,
+            final_timeout_ms: 0,
+            text: Some("Reply with exactly the word PINEAPPLE.\nThen stop.".to_string()),
+        };
+        let mut agent = sample_agent(30, "reviewer");
+        agent.metadata.launch_cmd = "agy".to_string();
+        agent.runtime.harness = AgentHarness::Agy;
+        // agy is working on a turn, and draws the message it holds above
+        // its input box; its transcript records nothing until the turn ends.
+        let screen = || {
+            let rule = "\u{2500}".repeat(20);
+            [
+                "\u{28fe}  Generating...",
+                "\u{25b8} Reply with exactly the word PINEAPPLE. (alt+m to send immediately)",
+                &rule,
+                ">",
+                &rule,
+                "  Press up to edit queued messages",
+            ]
+            .iter()
+            .map(|row| wakterm_term::Line::from_text(row, &Default::default(), 0, None))
+            .collect::<Vec<_>>()
+        };
+
+        let result = promise::spawn::block_on(command.run_with(
+            move || {
+                let agent = agent.clone();
+                async move {
+                    Ok(ListAgentsResponse {
+                        agents: vec![agent],
+                    })
+                }
+            },
+            |_: WriteToPane| async { Ok(UnitResponse {}) },
+            |_: SendPaste| async { Ok(UnitResponse {}) },
+            |_: SubmitTypedInput| async { Ok(SubmitTypedInputResponse { taken_back: None }) },
+            |_, _, _, _| async { Ok(None) },
+            |_| async { Ok(None) },
+            move |pane_id| {
+                assert_eq!(pane_id, 30);
+                let lines = screen();
+                async move { Ok(lines) }
+            },
+        ))
+        .unwrap();
+
+        assert!(result.submitted);
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["acknowledgement"]["kind"], "input_queued");
+        assert_eq!(json["acknowledgement"]["acknowledged"], true);
+        assert!(json["refusal"].is_null());
     }
 
     #[test]
@@ -4561,6 +4746,7 @@ mod test {
             |_: SubmitTypedInput| async { Ok(SubmitTypedInputResponse { taken_back: None }) },
             |_, _, _, _| async { Ok(None) },
             |_| async { Ok(None) },
+            |_| async { Ok(Vec::new()) },
         ))
         .unwrap();
 
@@ -4606,6 +4792,7 @@ mod test {
             },
             |_, _, _, _| async { panic!("nothing was submitted to confirm") },
             |_| async { Ok(None) },
+            |_| async { Ok(Vec::new()) },
         ))
         .unwrap();
 
@@ -4664,6 +4851,7 @@ mod test {
             },
             |_, _, _, _| async { Ok(None) },
             |_| async { Ok(None) },
+            |_| async { Ok(Vec::new()) },
         ))
         .unwrap();
 
@@ -5295,6 +5483,7 @@ mod test {
             },
             |_, _, _, _| async { Ok(None) },
             |_| async { Ok(None) },
+            |_| async { Ok(Vec::new()) },
         ))
         .unwrap();
 
@@ -5355,6 +5544,7 @@ mod test {
             },
             |_, _, _, _| async { Ok(None) },
             |_| async { Ok(None) },
+            |_| async { Ok(Vec::new()) },
         ))
         .unwrap();
 
@@ -5411,6 +5601,7 @@ mod test {
             |_: SubmitTypedInput| async { panic!("submit_typed_input should not be used") },
             |_, _, _, _| async { Ok(None) },
             |_| async { Ok(None) },
+            |_| async { Ok(Vec::new()) },
         ))
         .unwrap();
 
