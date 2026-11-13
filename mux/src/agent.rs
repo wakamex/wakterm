@@ -1367,21 +1367,40 @@ pub struct AgyInputBox {
 /// Reads agy's input box from the pane's visible lines: the lowest line that
 /// starts with `>` right below a rule, and the lines under it up to the next
 /// rule. The footer below that rule reads "esc to cancel" while a turn runs.
-/// agy draws no placeholder, so any text after the `>` was typed or pasted.
+/// agy 1.5 draws a placeholder in the empty box, such as "Auto mode: edits
+/// & safe commands auto-approved", in grey (ANSI bright black); it is not
+/// the box's text. Typed or pasted text is drawn in the default color.
 pub fn agy_input_box(lines: &[wakterm_term::Line]) -> Option<AgyInputBox> {
-    let text = |line: &wakterm_term::Line| line.as_str().trim_end().to_string();
+    let plain = |line: &wakterm_term::Line| line.as_str().trim_end().to_string();
+    // The box's text without its grey placeholder; agy draws its rules and
+    // hints in the same grey, so only the box's own rows are read this way.
+    let typed = |line: &wakterm_term::Line| {
+        line.visible_cells()
+            .map(|cell| {
+                if cell.attrs().foreground() == wakterm_term::color::ColorAttribute::PaletteIndex(8)
+                {
+                    " ".repeat(cell.width())
+                } else {
+                    cell.str().to_string()
+                }
+            })
+            .collect::<String>()
+            .trim()
+            .to_string()
+    };
     let is_rule = |line: &str| line.trim_start().starts_with('\u{2500}');
-    let lines: Vec<String> = lines.iter().map(text).collect();
+    let screen = lines;
+    let lines: Vec<String> = screen.iter().map(plain).collect();
     let prompt = (1..lines.len())
         .rev()
         .find(|&i| is_rule(&lines[i - 1]) && lines[i].starts_with('>'))?;
     let end = (prompt + 1..lines.len()).find(|&i| is_rule(&lines[i]))?;
-    let mut content = vec![lines[prompt][1..].trim().to_string()];
-    content.extend(
-        lines[prompt + 1..end]
-            .iter()
-            .map(|line| line.trim().to_string()),
-    );
+    let mut content = vec![typed(&screen[prompt])
+        .strip_prefix('>')
+        .unwrap_or_default()
+        .trim()
+        .to_string()];
+    content.extend(screen[prompt + 1..end].iter().map(typed));
     while content.last().is_some_and(String::is_empty) && content.len() > 1 {
         content.pop();
     }
@@ -1747,6 +1766,13 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
         AgentTransport::PlainPty
     };
     finalize_runtime_snapshot(runtime);
+}
+
+/// Records an agent that has no transcript yet as idle, waiting for its
+/// first input, as its screen shows.
+pub(crate) fn mark_waiting_for_first_input(runtime: &mut AgentRuntimeSnapshot) {
+    runtime.turn_state = AgentTurnState::WaitingOnUser;
+    runtime.turn_phase = Some("idle".to_string());
 }
 
 pub fn finalize_runtime_snapshot(runtime: &mut AgentRuntimeSnapshot) {
@@ -6813,6 +6839,30 @@ mod test {
             input_box_blocked(&AgentHarness::Agy, &draft),
             Some("the input box holds text the user is typing")
         );
+        // agy 1.5's grey placeholder, as a fresh 1.5.7 tab draws it, with its
+        // rules and idle hint in the same grey, is an empty box.
+        let mut grey = wakterm_term::CellAttributes::default();
+        grey.set_foreground(wakterm_term::color::ColorAttribute::PaletteIndex(8));
+        let grey_line = |text: &str| wakterm_term::Line::from_text(text, &grey, 0, None);
+        let mut prompt = wakterm_term::Line::from_text("> ", &Default::default(), 0, None);
+        prompt.append_line(
+            grey_line("Auto mode: edits & safe commands auto-approved (shift+tab to cycle)"),
+            0,
+        );
+        let placeholder = vec![
+            grey_line("  Introducing Gemini 4 Carbon \u{00b7} esc to dismiss"),
+            grey_line(&rule),
+            prompt,
+            grey_line(&rule),
+            grey_line("? for shortcuts"),
+        ];
+        let state = agy_input_box(&placeholder).unwrap();
+        assert_eq!(
+            (state.text.as_str(), state.working, state.idle),
+            ("", false, true)
+        );
+        assert_eq!(input_box_blocked(&AgentHarness::Agy, &placeholder), None);
+
         // A quoted line in the transcript is not the box.
         assert_eq!(agy_input_box(&screen(&["> quoted", "text"])), None);
         assert_eq!(

@@ -3656,6 +3656,8 @@ impl Mux {
             .as_ref()
             .is_some_and(|turn| turn.outcome == AgentObservedTurnOutcome::Running)
             && self.harness_idle_on_screen(&update.runtime.harness, update.pane_id);
+        let agy_waiting_for_first_input =
+            self.agy_waiting_for_first_input(update.pane_id, &update.runtime);
 
         let (before_title, after_title, session_identity_changed) = {
             let mut runtime_by_pane = self.agent_runtime_by_pane.write();
@@ -3692,6 +3694,9 @@ impl Mux {
                 .max(update.runtime.last_progress_at);
             if idle_on_screen {
                 agent::end_turn_stopped_on_screen(runtime, previous_turn.as_ref(), Utc::now());
+            }
+            if agy_waiting_for_first_input {
+                agent::mark_waiting_for_first_input(runtime);
             }
             finalize_runtime_snapshot(runtime);
             runtime.status = derive_runtime_status(runtime);
@@ -4099,6 +4104,27 @@ impl Mux {
                     .is_some_and(|state| state.text.is_empty() && !state.working),
             }
         })
+    }
+
+    /// Whether the agy agent in the pane has no conversation yet and its
+    /// screen shows it waiting for input. agy starts its conversation, and
+    /// the transcript Wakterm observes, only with its first input, so until
+    /// then an empty box with its idle hint is the only record of its state.
+    pub(crate) fn agy_waiting_for_first_input(
+        &self,
+        pane_id: PaneId,
+        runtime: &AgentRuntimeSnapshot,
+    ) -> bool {
+        runtime.harness == AgentHarness::Agy
+            && runtime.alive
+            && runtime.session_path.is_none()
+            && self.get_pane(pane_id).is_some_and(|pane| {
+                let dims = pane.get_dimensions();
+                let top = dims.physical_top;
+                let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
+                agent::agy_input_box(&lines)
+                    .is_some_and(|state| state.idle && !state.working && state.text.is_empty())
+            })
     }
 
     /// Whether the agy pane's input box is empty.

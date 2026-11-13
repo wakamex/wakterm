@@ -204,6 +204,10 @@ impl AgentAdmissionCandidate {
             return self;
         }
         refresh_runtime_from_harness(&mut self.runtime, &self.metadata);
+        if crate::Mux::get().agy_waiting_for_first_input(self.pane_id, &self.runtime) {
+            crate::agent::mark_waiting_for_first_input(&mut self.runtime);
+            crate::agent::finalize_runtime_snapshot(&mut self.runtime);
+        }
         self
     }
 
