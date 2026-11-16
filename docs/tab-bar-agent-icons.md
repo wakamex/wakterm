@@ -192,7 +192,7 @@ It is intentionally narrow:
 That matches the problem we actually solved. Trace output is a bootstrap tool,
 not the final asset.
 
-The endchat icon, a spiral, comes from endchat itself: its `assets/icon/make_icon.py` writes the polygon on the same 120-unit grid, with the SVG it is drawn from.
+The endchat icon, a line standing on a wall, comes from endchat itself: its `assets/icon/make_icon.py` writes the polygon on the same 120-unit grid, with the SVG it is drawn from.
 
 The Agy, ZCode, Devin and Muse icons were traced from the official monochrome mark with [vtracer](https://github.com/visioncortex/vtracer) (`cargo install vtracer`):
 

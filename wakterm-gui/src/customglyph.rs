@@ -470,672 +470,142 @@ pub const HARNESS_ICON_AGY_POLY: &[Poly] = &[Poly {
     style: PolyStyle::Fill,
 }];
 
-/// Meta's infinity mark, which Muse Code's site uses as its logo, traced from
-/// the official logo SVG on dev.meta.ai with vtracer and simplified at RDP
-/// 1.0 (docs/tab-bar-agent-icons.md). Its two loops are holes wound against
-/// the outline.
-/// endchat's mark, a spiral for a conversation that never ends: a band around the spiral with
-/// round ends, written by endchat's assets/icon/make_icon.py with the same outline as its SVG.
+/// endchat's mark, a line standing on a wall: the chat running down to its end, where every
+/// turn works. Written by endchat's assets/icon/make_icon.py from the same rectangles as its SVG;
+/// the two overlap and go the same way, so the winding fill joins them.
 pub const HARNESS_ICON_ENDCHAT_POLY: &[Poly] = &[Poly {
     path: &[
         PolyCommand::MoveTo(
-            BlockCoord::SquareFrac(67, 120),
-            BlockCoord::SquareFrac(77, 120),
+            BlockCoord::SquareFrac(55, 120),
+            BlockCoord::SquareFrac(8, 120),
         ),
         PolyCommand::LineTo(
             BlockCoord::SquareFrac(65, 120),
-            BlockCoord::SquareFrac(78, 120),
+            BlockCoord::SquareFrac(8, 120),
         ),
+        PolyCommand::QuadTo {
+            control: (
+                BlockCoord::SquareFrac(69, 120),
+                BlockCoord::SquareFrac(8, 120),
+            ),
+            to: (
+                BlockCoord::SquareFrac(69, 120),
+                BlockCoord::SquareFrac(12, 120),
+            ),
+        },
         PolyCommand::LineTo(
-            BlockCoord::SquareFrac(63, 120),
-            BlockCoord::SquareFrac(79, 120),
+            BlockCoord::SquareFrac(69, 120),
+            BlockCoord::SquareFrac(94, 120),
         ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(61, 120),
-            BlockCoord::SquareFrac(80, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(58, 120),
-            BlockCoord::SquareFrac(80, 120),
-        ),
+        PolyCommand::QuadTo {
+            control: (
+                BlockCoord::SquareFrac(69, 120),
+                BlockCoord::SquareFrac(98, 120),
+            ),
+            to: (
+                BlockCoord::SquareFrac(65, 120),
+                BlockCoord::SquareFrac(98, 120),
+            ),
+        },
         PolyCommand::LineTo(
             BlockCoord::SquareFrac(55, 120),
-            BlockCoord::SquareFrac(81, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(53, 120),
-            BlockCoord::SquareFrac(80, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(50, 120),
-            BlockCoord::SquareFrac(80, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(47, 120),
-            BlockCoord::SquareFrac(79, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(45, 120),
-            BlockCoord::SquareFrac(77, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(42, 120),
-            BlockCoord::SquareFrac(76, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(40, 120),
-            BlockCoord::SquareFrac(74, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(38, 120),
-            BlockCoord::SquareFrac(71, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(36, 120),
-            BlockCoord::SquareFrac(69, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(35, 120),
-            BlockCoord::SquareFrac(66, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(34, 120),
-            BlockCoord::SquareFrac(63, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(33, 120),
-            BlockCoord::SquareFrac(59, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(33, 120),
-            BlockCoord::SquareFrac(56, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(33, 120),
-            BlockCoord::SquareFrac(53, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(34, 120),
-            BlockCoord::SquareFrac(49, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(35, 120),
-            BlockCoord::SquareFrac(46, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(37, 120),
-            BlockCoord::SquareFrac(43, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(38, 120),
-            BlockCoord::SquareFrac(40, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(41, 120),
-            BlockCoord::SquareFrac(37, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(43, 120),
-            BlockCoord::SquareFrac(34, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(46, 120),
-            BlockCoord::SquareFrac(32, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(50, 120),
-            BlockCoord::SquareFrac(30, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(53, 120),
-            BlockCoord::SquareFrac(29, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(57, 120),
-            BlockCoord::SquareFrac(28, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(61, 120),
-            BlockCoord::SquareFrac(27, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(65, 120),
-            BlockCoord::SquareFrac(27, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(69, 120),
-            BlockCoord::SquareFrac(27, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(73, 120),
-            BlockCoord::SquareFrac(28, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(77, 120),
-            BlockCoord::SquareFrac(30, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(81, 120),
-            BlockCoord::SquareFrac(31, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(85, 120),
-            BlockCoord::SquareFrac(34, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(88, 120),
-            BlockCoord::SquareFrac(37, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(91, 120),
-            BlockCoord::SquareFrac(40, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(94, 120),
-            BlockCoord::SquareFrac(44, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(96, 120),
-            BlockCoord::SquareFrac(48, 120),
-        ),
-        PolyCommand::LineTo(
             BlockCoord::SquareFrac(98, 120),
-            BlockCoord::SquareFrac(52, 120),
         ),
+        PolyCommand::QuadTo {
+            control: (
+                BlockCoord::SquareFrac(51, 120),
+                BlockCoord::SquareFrac(98, 120),
+            ),
+            to: (
+                BlockCoord::SquareFrac(51, 120),
+                BlockCoord::SquareFrac(94, 120),
+            ),
+        },
         PolyCommand::LineTo(
-            BlockCoord::SquareFrac(99, 120),
-            BlockCoord::SquareFrac(57, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(99, 120),
-            BlockCoord::SquareFrac(61, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(99, 120),
-            BlockCoord::SquareFrac(66, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(99, 120),
-            BlockCoord::SquareFrac(71, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(98, 120),
-            BlockCoord::SquareFrac(76, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(96, 120),
-            BlockCoord::SquareFrac(80, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(94, 120),
-            BlockCoord::SquareFrac(85, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(91, 120),
-            BlockCoord::SquareFrac(89, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(87, 120),
-            BlockCoord::SquareFrac(93, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(84, 120),
-            BlockCoord::SquareFrac(96, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(79, 120),
-            BlockCoord::SquareFrac(99, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(74, 120),
-            BlockCoord::SquareFrac(102, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(69, 120),
-            BlockCoord::SquareFrac(104, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(64, 120),
-            BlockCoord::SquareFrac(105, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(59, 120),
-            BlockCoord::SquareFrac(106, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(53, 120),
-            BlockCoord::SquareFrac(106, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(48, 120),
-            BlockCoord::SquareFrac(105, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(42, 120),
-            BlockCoord::SquareFrac(104, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(37, 120),
-            BlockCoord::SquareFrac(102, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(32, 120),
-            BlockCoord::SquareFrac(99, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(27, 120),
-            BlockCoord::SquareFrac(96, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(22, 120),
-            BlockCoord::SquareFrac(92, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(18, 120),
-            BlockCoord::SquareFrac(87, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(15, 120),
-            BlockCoord::SquareFrac(82, 120),
-        ),
-        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(51, 120),
             BlockCoord::SquareFrac(12, 120),
-            BlockCoord::SquareFrac(77, 120),
         ),
+        PolyCommand::QuadTo {
+            control: (
+                BlockCoord::SquareFrac(51, 120),
+                BlockCoord::SquareFrac(8, 120),
+            ),
+            to: (
+                BlockCoord::SquareFrac(55, 120),
+                BlockCoord::SquareFrac(8, 120),
+            ),
+        },
+        PolyCommand::Close,
+        PolyCommand::MoveTo(
+            BlockCoord::SquareFrac(14, 120),
+            BlockCoord::SquareFrac(94, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(106, 120),
+            BlockCoord::SquareFrac(94, 120),
+        ),
+        PolyCommand::QuadTo {
+            control: (
+                BlockCoord::SquareFrac(110, 120),
+                BlockCoord::SquareFrac(94, 120),
+            ),
+            to: (
+                BlockCoord::SquareFrac(110, 120),
+                BlockCoord::SquareFrac(98, 120),
+            ),
+        },
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(110, 120),
+            BlockCoord::SquareFrac(108, 120),
+        ),
+        PolyCommand::QuadTo {
+            control: (
+                BlockCoord::SquareFrac(110, 120),
+                BlockCoord::SquareFrac(112, 120),
+            ),
+            to: (
+                BlockCoord::SquareFrac(106, 120),
+                BlockCoord::SquareFrac(112, 120),
+            ),
+        },
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(14, 120),
+            BlockCoord::SquareFrac(112, 120),
+        ),
+        PolyCommand::QuadTo {
+            control: (
+                BlockCoord::SquareFrac(10, 120),
+                BlockCoord::SquareFrac(112, 120),
+            ),
+            to: (
+                BlockCoord::SquareFrac(10, 120),
+                BlockCoord::SquareFrac(108, 120),
+            ),
+        },
         PolyCommand::LineTo(
             BlockCoord::SquareFrac(10, 120),
-            BlockCoord::SquareFrac(71, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(8, 120),
-            BlockCoord::SquareFrac(65, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(8, 120),
-            BlockCoord::SquareFrac(59, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(8, 120),
-            BlockCoord::SquareFrac(53, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(9, 120),
-            BlockCoord::SquareFrac(46, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(10, 120),
-            BlockCoord::SquareFrac(40, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(12, 120),
-            BlockCoord::SquareFrac(34, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(16, 120),
-            BlockCoord::SquareFrac(28, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(19, 120),
-            BlockCoord::SquareFrac(23, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(22, 120),
-            BlockCoord::SquareFrac(21, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(24, 120),
-            BlockCoord::SquareFrac(20, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(27, 120),
-            BlockCoord::SquareFrac(20, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(30, 120),
-            BlockCoord::SquareFrac(21, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(32, 120),
-            BlockCoord::SquareFrac(24, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(33, 120),
-            BlockCoord::SquareFrac(26, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(32, 120),
-            BlockCoord::SquareFrac(29, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(31, 120),
-            BlockCoord::SquareFrac(32, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(28, 120),
-            BlockCoord::SquareFrac(36, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(26, 120),
-            BlockCoord::SquareFrac(40, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(24, 120),
-            BlockCoord::SquareFrac(44, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(23, 120),
-            BlockCoord::SquareFrac(49, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(23, 120),
-            BlockCoord::SquareFrac(53, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(23, 120),
-            BlockCoord::SquareFrac(58, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(23, 120),
-            BlockCoord::SquareFrac(62, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(24, 120),
-            BlockCoord::SquareFrac(67, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(26, 120),
-            BlockCoord::SquareFrac(71, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(28, 120),
-            BlockCoord::SquareFrac(75, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(30, 120),
-            BlockCoord::SquareFrac(78, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(33, 120),
-            BlockCoord::SquareFrac(81, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(36, 120),
-            BlockCoord::SquareFrac(84, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(39, 120),
-            BlockCoord::SquareFrac(86, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(43, 120),
-            BlockCoord::SquareFrac(88, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(46, 120),
-            BlockCoord::SquareFrac(89, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(50, 120),
-            BlockCoord::SquareFrac(90, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(54, 120),
-            BlockCoord::SquareFrac(91, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(58, 120),
-            BlockCoord::SquareFrac(91, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(61, 120),
-            BlockCoord::SquareFrac(90, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(65, 120),
-            BlockCoord::SquareFrac(90, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(68, 120),
-            BlockCoord::SquareFrac(88, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(71, 120),
-            BlockCoord::SquareFrac(87, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(74, 120),
-            BlockCoord::SquareFrac(85, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(77, 120),
-            BlockCoord::SquareFrac(82, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(79, 120),
-            BlockCoord::SquareFrac(80, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(81, 120),
-            BlockCoord::SquareFrac(77, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(82, 120),
-            BlockCoord::SquareFrac(74, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(83, 120),
-            BlockCoord::SquareFrac(71, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(84, 120),
-            BlockCoord::SquareFrac(68, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(84, 120),
-            BlockCoord::SquareFrac(65, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(84, 120),
-            BlockCoord::SquareFrac(62, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(84, 120),
-            BlockCoord::SquareFrac(59, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(83, 120),
-            BlockCoord::SquareFrac(57, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(82, 120),
-            BlockCoord::SquareFrac(54, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(81, 120),
-            BlockCoord::SquareFrac(52, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(79, 120),
-            BlockCoord::SquareFrac(49, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(78, 120),
-            BlockCoord::SquareFrac(48, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(76, 120),
-            BlockCoord::SquareFrac(46, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(74, 120),
-            BlockCoord::SquareFrac(44, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(71, 120),
-            BlockCoord::SquareFrac(43, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(69, 120),
-            BlockCoord::SquareFrac(43, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(67, 120),
-            BlockCoord::SquareFrac(42, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(65, 120),
-            BlockCoord::SquareFrac(42, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(62, 120),
-            BlockCoord::SquareFrac(42, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(60, 120),
-            BlockCoord::SquareFrac(42, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(58, 120),
-            BlockCoord::SquareFrac(43, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(56, 120),
-            BlockCoord::SquareFrac(44, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(55, 120),
-            BlockCoord::SquareFrac(45, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(53, 120),
-            BlockCoord::SquareFrac(46, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(52, 120),
-            BlockCoord::SquareFrac(47, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(51, 120),
-            BlockCoord::SquareFrac(48, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(50, 120),
-            BlockCoord::SquareFrac(50, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(49, 120),
-            BlockCoord::SquareFrac(51, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(49, 120),
-            BlockCoord::SquareFrac(53, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(48, 120),
-            BlockCoord::SquareFrac(55, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(48, 120),
-            BlockCoord::SquareFrac(56, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(48, 120),
-            BlockCoord::SquareFrac(58, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(49, 120),
-            BlockCoord::SquareFrac(59, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(49, 120),
-            BlockCoord::SquareFrac(60, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(50, 120),
-            BlockCoord::SquareFrac(61, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(50, 120),
-            BlockCoord::SquareFrac(62, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(51, 120),
-            BlockCoord::SquareFrac(63, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(52, 120),
-            BlockCoord::SquareFrac(64, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(53, 120),
-            BlockCoord::SquareFrac(64, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(53, 120),
-            BlockCoord::SquareFrac(65, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(54, 120),
-            BlockCoord::SquareFrac(65, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(55, 120),
-            BlockCoord::SquareFrac(65, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(56, 120),
-            BlockCoord::SquareFrac(66, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(57, 120),
-            BlockCoord::SquareFrac(66, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(57, 120),
-            BlockCoord::SquareFrac(65, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(58, 120),
-            BlockCoord::SquareFrac(65, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(59, 120),
-            BlockCoord::SquareFrac(65, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(61, 120),
-            BlockCoord::SquareFrac(64, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(64, 120),
-            BlockCoord::SquareFrac(64, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(67, 120),
-            BlockCoord::SquareFrac(65, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(69, 120),
-            BlockCoord::SquareFrac(67, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(70, 120),
-            BlockCoord::SquareFrac(69, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(70, 120),
-            BlockCoord::SquareFrac(72, 120),
-        ),
-        PolyCommand::LineTo(
-            BlockCoord::SquareFrac(69, 120),
-            BlockCoord::SquareFrac(75, 120),
-        ),
+            BlockCoord::SquareFrac(98, 120),
+        ),
+        PolyCommand::QuadTo {
+            control: (
+                BlockCoord::SquareFrac(10, 120),
+                BlockCoord::SquareFrac(94, 120),
+            ),
+            to: (
+                BlockCoord::SquareFrac(14, 120),
+                BlockCoord::SquareFrac(94, 120),
+            ),
+        },
         PolyCommand::Close,
     ],
     intensity: BlockAlpha::Full,
     style: PolyStyle::Fill,
 }];
 
+/// Meta's infinity mark, which Muse Code's site uses as its logo, traced from
+/// the official logo SVG on dev.meta.ai with vtracer and simplified at RDP
+/// 1.0 (docs/tab-bar-agent-icons.md). Its two loops are holes wound against
+/// the outline.
 pub const HARNESS_ICON_MUSE_POLY: &[Poly] = &[Poly {
     path: &[
         PolyCommand::MoveTo(
