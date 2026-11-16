@@ -6929,7 +6929,14 @@ mod test {
     #[test]
     fn an_endchat_chat_is_observed_through_its_profile() {
         let dir = tempfile::tempdir().unwrap();
-        let profile = dir.path().join("w3end");
+        // endchat reads a profile name containing `/` as a path, so name it
+        // with forward slashes, which Windows accepts too.
+        let profile = PathBuf::from(
+            dir.path()
+                .join("w3end")
+                .to_string_lossy()
+                .replace('\\', "/"),
+        );
         fs::create_dir(&profile).unwrap();
         let metadata = AgentMetadata {
             agent_id: "w3end".to_string(),

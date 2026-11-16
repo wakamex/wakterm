@@ -152,9 +152,12 @@ mod test {
             profile_dir("work/chat", "/code/w3sim"),
             Some(PathBuf::from("/code/w3sim/work/chat"))
         );
-        assert!(profile_dir("w3end", "/code")
-            .unwrap()
-            .ends_with(".endchat/w3end"));
+        // A named profile lives under HOME, which Windows does not set.
+        if crate::agent::home_dir().is_some() {
+            assert!(profile_dir("w3end", "/code")
+                .unwrap()
+                .ends_with(".endchat/w3end"));
+        }
     }
 
     #[test]
