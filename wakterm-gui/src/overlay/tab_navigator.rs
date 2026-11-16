@@ -628,6 +628,7 @@ impl NavigatorState {
                 TabHarnessIcon::ZCode => 32,
                 TabHarnessIcon::Devin => 64,
                 TabHarnessIcon::Muse => 128,
+                TabHarnessIcon::Endchat => 256,
             }
         });
         match harness_icon_stack_glyph(mask) {

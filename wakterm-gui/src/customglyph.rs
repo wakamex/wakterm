@@ -232,7 +232,7 @@ pub enum BlockKey {
     Branches(Branch),
     Spinner(u8),
 
-    HarnessIconStack(u8),
+    HarnessIconStack(u16),
 
     Poly(&'static [Poly]),
 
@@ -251,13 +251,15 @@ pub const HARNESS_ICON_AGY: char = '\u{e004}';
 pub const TAB_HIDDEN_ICON: char = '\u{e005}';
 pub const HARNESS_ICON_ZCODE: char = '\u{e006}';
 pub const HARNESS_ICON_DEVIN: char = '\u{e007}';
-/// Muse's icon and the stacked icons sit in U+E3E4 to U+E5F9, which no
-/// Nerd Fonts icon uses, so they cannot replace an icon in terminal text.
-pub const HARNESS_ICON_MUSE: char = '\u{e3ff}';
-/// One glyph per set of harness icons, U+E401 to U+E4FF, with a bit per
-/// harness in the code point's low byte. A ninth harness needs another
-/// scheme.
-pub const HARNESS_ICON_STACK_BASE: u32 = 0xe400;
+/// The stacked icons, Muse's icon and endchat's sit in U+E3E4 to U+E5F9,
+/// which no Nerd Fonts icon uses, so they cannot replace an icon in
+/// terminal text.
+pub const HARNESS_ICON_MUSE: char = '\u{e5e4}';
+pub const HARNESS_ICON_ENDCHAT: char = '\u{e5e5}';
+/// One glyph per set of harness icons, U+E3E5 to U+E5E3, with a bit per
+/// harness, nine in all, added to the base code point.
+pub const HARNESS_ICON_STACK_BASE: u32 = 0xe3e4;
+const HARNESS_ICON_STACK_MASKS: u16 = (1 << 9) - 1;
 pub const HARNESS_ICON_STACK_CELL_WIDTH: usize = 3;
 
 const HARNESS_ICON_OVERLAP: f32 = 0.65;
@@ -288,8 +290,8 @@ fn harness_icon_stack_layout(
     }
 }
 
-pub fn harness_icon_stack_glyph(mask: u8) -> Option<char> {
-    if mask == 0 {
+pub fn harness_icon_stack_glyph(mask: u16) -> Option<char> {
+    if mask == 0 || mask > HARNESS_ICON_STACK_MASKS {
         None
     } else {
         char::from_u32(HARNESS_ICON_STACK_BASE + mask as u32)
@@ -472,6 +474,668 @@ pub const HARNESS_ICON_AGY_POLY: &[Poly] = &[Poly {
 /// the official logo SVG on dev.meta.ai with vtracer and simplified at RDP
 /// 1.0 (docs/tab-bar-agent-icons.md). Its two loops are holes wound against
 /// the outline.
+/// endchat's mark, a spiral for a conversation that never ends: a band around the spiral with
+/// round ends, written by endchat's assets/icon/make_icon.py with the same outline as its SVG.
+pub const HARNESS_ICON_ENDCHAT_POLY: &[Poly] = &[Poly {
+    path: &[
+        PolyCommand::MoveTo(
+            BlockCoord::SquareFrac(67, 120),
+            BlockCoord::SquareFrac(77, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(65, 120),
+            BlockCoord::SquareFrac(78, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(63, 120),
+            BlockCoord::SquareFrac(79, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(61, 120),
+            BlockCoord::SquareFrac(80, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(58, 120),
+            BlockCoord::SquareFrac(80, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(55, 120),
+            BlockCoord::SquareFrac(81, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(53, 120),
+            BlockCoord::SquareFrac(80, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(50, 120),
+            BlockCoord::SquareFrac(80, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(47, 120),
+            BlockCoord::SquareFrac(79, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(45, 120),
+            BlockCoord::SquareFrac(77, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(42, 120),
+            BlockCoord::SquareFrac(76, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(40, 120),
+            BlockCoord::SquareFrac(74, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(38, 120),
+            BlockCoord::SquareFrac(71, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(36, 120),
+            BlockCoord::SquareFrac(69, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(35, 120),
+            BlockCoord::SquareFrac(66, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(34, 120),
+            BlockCoord::SquareFrac(63, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(33, 120),
+            BlockCoord::SquareFrac(59, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(33, 120),
+            BlockCoord::SquareFrac(56, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(33, 120),
+            BlockCoord::SquareFrac(53, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(34, 120),
+            BlockCoord::SquareFrac(49, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(35, 120),
+            BlockCoord::SquareFrac(46, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(37, 120),
+            BlockCoord::SquareFrac(43, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(38, 120),
+            BlockCoord::SquareFrac(40, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(41, 120),
+            BlockCoord::SquareFrac(37, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(43, 120),
+            BlockCoord::SquareFrac(34, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(46, 120),
+            BlockCoord::SquareFrac(32, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(50, 120),
+            BlockCoord::SquareFrac(30, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(53, 120),
+            BlockCoord::SquareFrac(29, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(57, 120),
+            BlockCoord::SquareFrac(28, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(61, 120),
+            BlockCoord::SquareFrac(27, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(65, 120),
+            BlockCoord::SquareFrac(27, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(69, 120),
+            BlockCoord::SquareFrac(27, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(73, 120),
+            BlockCoord::SquareFrac(28, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(77, 120),
+            BlockCoord::SquareFrac(30, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(81, 120),
+            BlockCoord::SquareFrac(31, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(85, 120),
+            BlockCoord::SquareFrac(34, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(88, 120),
+            BlockCoord::SquareFrac(37, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(91, 120),
+            BlockCoord::SquareFrac(40, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(94, 120),
+            BlockCoord::SquareFrac(44, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(96, 120),
+            BlockCoord::SquareFrac(48, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(98, 120),
+            BlockCoord::SquareFrac(52, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(99, 120),
+            BlockCoord::SquareFrac(57, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(99, 120),
+            BlockCoord::SquareFrac(61, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(99, 120),
+            BlockCoord::SquareFrac(66, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(99, 120),
+            BlockCoord::SquareFrac(71, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(98, 120),
+            BlockCoord::SquareFrac(76, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(96, 120),
+            BlockCoord::SquareFrac(80, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(94, 120),
+            BlockCoord::SquareFrac(85, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(91, 120),
+            BlockCoord::SquareFrac(89, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(87, 120),
+            BlockCoord::SquareFrac(93, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(84, 120),
+            BlockCoord::SquareFrac(96, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(79, 120),
+            BlockCoord::SquareFrac(99, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(74, 120),
+            BlockCoord::SquareFrac(102, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(69, 120),
+            BlockCoord::SquareFrac(104, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(64, 120),
+            BlockCoord::SquareFrac(105, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(59, 120),
+            BlockCoord::SquareFrac(106, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(53, 120),
+            BlockCoord::SquareFrac(106, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(48, 120),
+            BlockCoord::SquareFrac(105, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(42, 120),
+            BlockCoord::SquareFrac(104, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(37, 120),
+            BlockCoord::SquareFrac(102, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(32, 120),
+            BlockCoord::SquareFrac(99, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(27, 120),
+            BlockCoord::SquareFrac(96, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(22, 120),
+            BlockCoord::SquareFrac(92, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(18, 120),
+            BlockCoord::SquareFrac(87, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(15, 120),
+            BlockCoord::SquareFrac(82, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(12, 120),
+            BlockCoord::SquareFrac(77, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(10, 120),
+            BlockCoord::SquareFrac(71, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(8, 120),
+            BlockCoord::SquareFrac(65, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(8, 120),
+            BlockCoord::SquareFrac(59, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(8, 120),
+            BlockCoord::SquareFrac(53, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(9, 120),
+            BlockCoord::SquareFrac(46, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(10, 120),
+            BlockCoord::SquareFrac(40, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(12, 120),
+            BlockCoord::SquareFrac(34, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(16, 120),
+            BlockCoord::SquareFrac(28, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(19, 120),
+            BlockCoord::SquareFrac(23, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(22, 120),
+            BlockCoord::SquareFrac(21, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(24, 120),
+            BlockCoord::SquareFrac(20, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(27, 120),
+            BlockCoord::SquareFrac(20, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(30, 120),
+            BlockCoord::SquareFrac(21, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(32, 120),
+            BlockCoord::SquareFrac(24, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(33, 120),
+            BlockCoord::SquareFrac(26, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(32, 120),
+            BlockCoord::SquareFrac(29, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(31, 120),
+            BlockCoord::SquareFrac(32, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(28, 120),
+            BlockCoord::SquareFrac(36, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(26, 120),
+            BlockCoord::SquareFrac(40, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(24, 120),
+            BlockCoord::SquareFrac(44, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(23, 120),
+            BlockCoord::SquareFrac(49, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(23, 120),
+            BlockCoord::SquareFrac(53, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(23, 120),
+            BlockCoord::SquareFrac(58, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(23, 120),
+            BlockCoord::SquareFrac(62, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(24, 120),
+            BlockCoord::SquareFrac(67, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(26, 120),
+            BlockCoord::SquareFrac(71, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(28, 120),
+            BlockCoord::SquareFrac(75, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(30, 120),
+            BlockCoord::SquareFrac(78, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(33, 120),
+            BlockCoord::SquareFrac(81, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(36, 120),
+            BlockCoord::SquareFrac(84, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(39, 120),
+            BlockCoord::SquareFrac(86, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(43, 120),
+            BlockCoord::SquareFrac(88, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(46, 120),
+            BlockCoord::SquareFrac(89, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(50, 120),
+            BlockCoord::SquareFrac(90, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(54, 120),
+            BlockCoord::SquareFrac(91, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(58, 120),
+            BlockCoord::SquareFrac(91, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(61, 120),
+            BlockCoord::SquareFrac(90, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(65, 120),
+            BlockCoord::SquareFrac(90, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(68, 120),
+            BlockCoord::SquareFrac(88, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(71, 120),
+            BlockCoord::SquareFrac(87, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(74, 120),
+            BlockCoord::SquareFrac(85, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(77, 120),
+            BlockCoord::SquareFrac(82, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(79, 120),
+            BlockCoord::SquareFrac(80, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(81, 120),
+            BlockCoord::SquareFrac(77, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(82, 120),
+            BlockCoord::SquareFrac(74, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(83, 120),
+            BlockCoord::SquareFrac(71, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(84, 120),
+            BlockCoord::SquareFrac(68, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(84, 120),
+            BlockCoord::SquareFrac(65, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(84, 120),
+            BlockCoord::SquareFrac(62, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(84, 120),
+            BlockCoord::SquareFrac(59, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(83, 120),
+            BlockCoord::SquareFrac(57, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(82, 120),
+            BlockCoord::SquareFrac(54, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(81, 120),
+            BlockCoord::SquareFrac(52, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(79, 120),
+            BlockCoord::SquareFrac(49, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(78, 120),
+            BlockCoord::SquareFrac(48, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(76, 120),
+            BlockCoord::SquareFrac(46, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(74, 120),
+            BlockCoord::SquareFrac(44, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(71, 120),
+            BlockCoord::SquareFrac(43, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(69, 120),
+            BlockCoord::SquareFrac(43, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(67, 120),
+            BlockCoord::SquareFrac(42, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(65, 120),
+            BlockCoord::SquareFrac(42, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(62, 120),
+            BlockCoord::SquareFrac(42, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(60, 120),
+            BlockCoord::SquareFrac(42, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(58, 120),
+            BlockCoord::SquareFrac(43, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(56, 120),
+            BlockCoord::SquareFrac(44, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(55, 120),
+            BlockCoord::SquareFrac(45, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(53, 120),
+            BlockCoord::SquareFrac(46, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(52, 120),
+            BlockCoord::SquareFrac(47, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(51, 120),
+            BlockCoord::SquareFrac(48, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(50, 120),
+            BlockCoord::SquareFrac(50, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(49, 120),
+            BlockCoord::SquareFrac(51, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(49, 120),
+            BlockCoord::SquareFrac(53, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(48, 120),
+            BlockCoord::SquareFrac(55, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(48, 120),
+            BlockCoord::SquareFrac(56, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(48, 120),
+            BlockCoord::SquareFrac(58, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(49, 120),
+            BlockCoord::SquareFrac(59, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(49, 120),
+            BlockCoord::SquareFrac(60, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(50, 120),
+            BlockCoord::SquareFrac(61, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(50, 120),
+            BlockCoord::SquareFrac(62, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(51, 120),
+            BlockCoord::SquareFrac(63, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(52, 120),
+            BlockCoord::SquareFrac(64, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(53, 120),
+            BlockCoord::SquareFrac(64, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(53, 120),
+            BlockCoord::SquareFrac(65, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(54, 120),
+            BlockCoord::SquareFrac(65, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(55, 120),
+            BlockCoord::SquareFrac(65, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(56, 120),
+            BlockCoord::SquareFrac(66, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(57, 120),
+            BlockCoord::SquareFrac(66, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(57, 120),
+            BlockCoord::SquareFrac(65, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(58, 120),
+            BlockCoord::SquareFrac(65, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(59, 120),
+            BlockCoord::SquareFrac(65, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(61, 120),
+            BlockCoord::SquareFrac(64, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(64, 120),
+            BlockCoord::SquareFrac(64, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(67, 120),
+            BlockCoord::SquareFrac(65, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(69, 120),
+            BlockCoord::SquareFrac(67, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(70, 120),
+            BlockCoord::SquareFrac(69, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(70, 120),
+            BlockCoord::SquareFrac(72, 120),
+        ),
+        PolyCommand::LineTo(
+            BlockCoord::SquareFrac(69, 120),
+            BlockCoord::SquareFrac(75, 120),
+        ),
+        PolyCommand::Close,
+    ],
+    intensity: BlockAlpha::Full,
+    style: PolyStyle::Fill,
+}];
+
 pub const HARNESS_ICON_MUSE_POLY: &[Poly] = &[Poly {
     path: &[
         PolyCommand::MoveTo(
@@ -2648,8 +3312,11 @@ impl BlockKey {
     pub fn from_char(c: char) -> Option<Self> {
         let c = c as u32;
         Some(match c {
-            x if (HARNESS_ICON_STACK_BASE + 1..=HARNESS_ICON_STACK_BASE + 255).contains(&x) => {
-                Self::HarnessIconStack((c - HARNESS_ICON_STACK_BASE) as u8)
+            x if (HARNESS_ICON_STACK_BASE + 1
+                ..=HARNESS_ICON_STACK_BASE + HARNESS_ICON_STACK_MASKS as u32)
+                .contains(&x) =>
+            {
+                Self::HarnessIconStack((c - HARNESS_ICON_STACK_BASE) as u16)
             }
             x if x == HARNESS_ICON_AGY as u32 => Self::Poly(HARNESS_ICON_AGY_POLY),
             x if x == HARNESS_ICON_CLAUDE as u32 => Self::Poly(HARNESS_ICON_CLAUDE_POLY),
@@ -2659,6 +3326,7 @@ impl BlockKey {
             x if x == HARNESS_ICON_ZCODE as u32 => Self::Poly(HARNESS_ICON_ZCODE_POLY),
             x if x == HARNESS_ICON_DEVIN as u32 => Self::Poly(HARNESS_ICON_DEVIN_POLY),
             x if x == HARNESS_ICON_MUSE as u32 => Self::Poly(HARNESS_ICON_MUSE_POLY),
+            x if x == HARNESS_ICON_ENDCHAT as u32 => Self::Poly(HARNESS_ICON_ENDCHAT_POLY),
             x if x == TAB_HIDDEN_ICON as u32 => Self::Poly(TAB_HIDDEN_ICON_POLY),
             // [─] BOX DRAWINGS LIGHT HORIZONTAL
             0x2500 => Self::Poly(&[Poly {
@@ -7190,6 +7858,7 @@ impl GlyphCache {
                     (32, HARNESS_ICON_ZCODE_POLY),
                     (64, HARNESS_ICON_DEVIN_POLY),
                     (128, HARNESS_ICON_MUSE_POLY),
+                    (256, HARNESS_ICON_ENDCHAT_POLY),
                 ];
                 let mut icon_index = 0;
                 for (bit, polys) in icon_polys {
@@ -8106,7 +8775,14 @@ mod test {
             BlockKey::from_char(HARNESS_ICON_MUSE),
             Some(BlockKey::Poly(HARNESS_ICON_MUSE_POLY))
         );
-        for mask in 1..=255 {
+        assert_eq!(
+            BlockKey::from_char(HARNESS_ICON_ENDCHAT),
+            Some(BlockKey::Poly(HARNESS_ICON_ENDCHAT_POLY))
+        );
+        // Every set of the nine harnesses' icons has its own glyph, inside
+        // the range no Nerd Fonts icon uses.
+        assert_eq!(harness_icon_stack_glyph(512), None);
+        for mask in 1..=511 {
             let glyph = harness_icon_stack_glyph(mask).unwrap();
             assert_eq!(
                 BlockKey::from_char(glyph),

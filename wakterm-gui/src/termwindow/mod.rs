@@ -4,7 +4,8 @@ use super::utilsprites::RenderMetrics;
 use crate::colorease::ColorEase;
 use crate::customglyph::{
     HARNESS_ICON_AGY, HARNESS_ICON_CLAUDE, HARNESS_ICON_CODEX, HARNESS_ICON_DEVIN,
-    HARNESS_ICON_GEMINI, HARNESS_ICON_MUSE, HARNESS_ICON_OPENCODE, HARNESS_ICON_ZCODE,
+    HARNESS_ICON_ENDCHAT, HARNESS_ICON_GEMINI, HARNESS_ICON_MUSE, HARNESS_ICON_OPENCODE,
+    HARNESS_ICON_ZCODE,
 };
 use crate::frontend::{front_end, try_front_end};
 use crate::inputmap::InputMap;
@@ -253,6 +254,7 @@ pub enum TabHarnessIcon {
     ZCode,
     Devin,
     Muse,
+    Endchat,
 }
 
 impl TabHarnessIcon {
@@ -266,8 +268,8 @@ impl TabHarnessIcon {
             AgentHarness::Zcode => Some(Self::ZCode),
             AgentHarness::Devin => Some(Self::Devin),
             AgentHarness::Muse => Some(Self::Muse),
-            // No icon yet; the tab shows the text badge.
-            AgentHarness::Endchat | AgentHarness::Unknown => None,
+            AgentHarness::Endchat => Some(Self::Endchat),
+            AgentHarness::Unknown => None,
         }
     }
 
@@ -281,6 +283,7 @@ impl TabHarnessIcon {
             Self::ZCode => "zcode",
             Self::Devin => "devin",
             Self::Muse => "muse",
+            Self::Endchat => "endchat",
         }
     }
 
@@ -294,6 +297,7 @@ impl TabHarnessIcon {
             Self::ZCode => HARNESS_ICON_ZCODE,
             Self::Devin => HARNESS_ICON_DEVIN,
             Self::Muse => HARNESS_ICON_MUSE,
+            Self::Endchat => HARNESS_ICON_ENDCHAT,
         }
     }
 }

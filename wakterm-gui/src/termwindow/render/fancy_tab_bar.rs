@@ -1225,6 +1225,7 @@ fn harness_icon_poly(icon: TabHarnessIcon) -> &'static [Poly] {
         TabHarnessIcon::ZCode => HARNESS_ICON_ZCODE_POLY,
         TabHarnessIcon::Devin => HARNESS_ICON_DEVIN_POLY,
         TabHarnessIcon::Muse => HARNESS_ICON_MUSE_POLY,
+        TabHarnessIcon::Endchat => HARNESS_ICON_ENDCHAT_POLY,
     }
 }
 
