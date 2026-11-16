@@ -1038,6 +1038,7 @@ fn resumable_agent(entry: &crate::tab::PaneEntry) -> Option<(&AgentMetadata, Age
             | AgentHarness::Zcode
             | AgentHarness::Devin
             | AgentHarness::Muse
+            | AgentHarness::Endchat
     )
     .then_some((metadata, harness))
 }
@@ -1183,6 +1184,7 @@ fn prepare_agent_restore(
             | AgentHarness::Zcode
             | AgentHarness::Devin
             | AgentHarness::Muse
+            | AgentHarness::Endchat
     ) {
         return Ok(PreparedAgentRestore {
             command: native_resume_command(

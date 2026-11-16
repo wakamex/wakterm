@@ -73,6 +73,8 @@ pub enum AgentHarness {
     Devin,
     /// Meta's Muse Code CLI.
     Muse,
+    /// endchat, a chat that never ends, kept as a profile directory.
+    Endchat,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -335,6 +337,9 @@ pub fn infer_harness(launch_cmd: &str, foreground_process_name: Option<&str>) ->
         if program == Some("muse") {
             return AgentHarness::Muse;
         }
+        if program == Some("endchat") {
+            return AgentHarness::Endchat;
+        }
         if candidate.contains("claude") {
             return AgentHarness::Claude;
         }
@@ -364,6 +369,7 @@ pub fn default_launch_cmd_for_harness(harness: &AgentHarness) -> Option<&'static
         AgentHarness::Zcode => Some("zcode"),
         AgentHarness::Devin => Some("devin"),
         AgentHarness::Muse => Some("muse"),
+        AgentHarness::Endchat => Some("endchat"),
         AgentHarness::Unknown => None,
     }
 }
@@ -378,6 +384,7 @@ fn infer_harness_from_process_info(process: &LocalProcessInfo) -> AgentHarness {
         AgentHarness::Zcode,
         AgentHarness::Devin,
         AgentHarness::Muse,
+        AgentHarness::Endchat,
     ]
     .iter()
     .cloned()
@@ -532,6 +539,7 @@ fn is_harness_tui_program(harness: &AgentHarness, value: &str) -> bool {
                 AgentHarness::Zcode => matches!(name.as_str(), "zcode" | "zcode.cjs"),
                 AgentHarness::Devin => name == "devin",
                 AgentHarness::Muse => name == "muse",
+                AgentHarness::Endchat => name == "endchat",
                 _ => false,
             }
         })
@@ -1315,6 +1323,13 @@ pub fn input_box_blocked(
             }
             Some(_) => None,
         },
+        // endchat queues a message sent during a turn and hands it to the
+        // turn between tool calls, or starts the next turn with it.
+        AgentHarness::Endchat => match crate::endchat::input_box(lines) {
+            None => Some("endchat's prompt is not on screen"),
+            Some(text) if !text.is_empty() => Some("the input box holds text the user is typing"),
+            Some(_) => None,
+        },
         // Muse queues a message sent during a turn and hands it to the turn.
         AgentHarness::Muse => match crate::muse::input_box(lines) {
             None => Some("Muse's input box is not on screen"),
@@ -1721,6 +1736,7 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
                 .or_else(|| zcode_resumed_session(&observing_harness, &metadata.launch_cmd))
                 .as_deref(),
         ),
+        AgentHarness::Endchat => observe_endchat(cwd, metadata),
         AgentHarness::Unknown => Ok(None),
     };
 
@@ -1870,6 +1886,7 @@ pub fn pending_observer_detail(
         .flatten(),
         AgentHarness::Devin => Some("devin session has not appeared yet".to_string()),
         AgentHarness::Muse => Some("muse session has not appeared yet".to_string()),
+        AgentHarness::Endchat => Some("the endchat profile has no state yet".to_string()),
         AgentHarness::Unknown => None,
     }
 }
@@ -1944,6 +1961,77 @@ struct HarnessObservationDetails {
     turn_state: AgentTurnState,
     last_turn_completed_at: Option<DateTime<Utc>>,
     observed_turn: Option<AgentObservedTurn>,
+}
+
+/// Observes an endchat chat through its profile directory, which the
+/// launch command names: whether a turn runs, and when the latest one ended.
+/// Each turn is numbered by how many turns ended before it.
+fn observe_endchat(
+    cwd: &str,
+    metadata: &AgentMetadata,
+) -> anyhow::Result<Option<HarnessObservation>> {
+    let Some(dir) = crate::endchat::profile_dir_of(&metadata.launch_cmd, cwd) else {
+        return Ok(None);
+    };
+    let Some(state) = crate::endchat::read_state(&dir)? else {
+        return Ok(None);
+    };
+    let ended = crate::endchat::last_ended_turn(&dir)?;
+    let modified = |name: &str| {
+        fs::metadata(dir.join(name))
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .map(DateTime::<Utc>::from)
+    };
+    let updated_at = modified("state.json").max(modified("turns.jsonl"));
+    let turn = |index: usize| format!("endchat:{}:{index}", dir.display());
+    let observed_turn = if state.busy {
+        Some(AgentObservedTurn {
+            provider_turn_id: turn(ended.as_ref().map_or(0, |ended| ended.index + 1)),
+            outcome: AgentObservedTurnOutcome::Running,
+            started_at: state.since,
+            completed_at: None,
+            started_cursor: None,
+            latest_cursor: None,
+            primary_user_message_sha256: None,
+            user_message_count: 0,
+            final_message: None,
+        })
+    } else {
+        ended.as_ref().map(|ended| AgentObservedTurn {
+            provider_turn_id: turn(ended.index),
+            outcome: if ended.ok {
+                AgentObservedTurnOutcome::Completed
+            } else {
+                AgentObservedTurnOutcome::Aborted
+            },
+            started_at: None,
+            completed_at: Some(ended.ended_at),
+            started_cursor: None,
+            latest_cursor: None,
+            primary_user_message_sha256: None,
+            user_message_count: 0,
+            final_message: None,
+        })
+    };
+    Ok(Some(HarnessObservation {
+        session_path: Some(dir.to_string_lossy().into_owned()),
+        progress_summary: state.doing.clone(),
+        harness_mode: None,
+        turn_phase: Some(if state.busy {
+            state.doing.unwrap_or_else(|| "working".to_string())
+        } else {
+            "idle".to_string()
+        }),
+        updated_at,
+        turn_state: if state.busy {
+            AgentTurnState::WaitingOnAgent
+        } else {
+            AgentTurnState::WaitingOnUser
+        },
+        last_turn_completed_at: ended.map(|ended| ended.ended_at),
+        observed_turn,
+    }))
 }
 
 fn observe_agy(
@@ -3992,6 +4080,18 @@ pub fn native_resume_command(
         !session_id.trim().is_empty(),
         "agent session ID must not be empty"
     );
+    // An endchat profile is the whole conversation, so the same command
+    // resumes it.
+    if harness == &AgentHarness::Endchat {
+        anyhow::ensure!(
+            crate::endchat::profile_name(launch_cmd).is_some(),
+            "endchat restore requires a chat command"
+        );
+        let argv = shell_words::split(launch_cmd).context("parsing agent launch command")?;
+        return Ok(CommandBuilder::from_argv(
+            argv.into_iter().map(OsString::from).collect(),
+        ));
+    }
     if matches!(
         harness,
         AgentHarness::Agy | AgentHarness::Claude | AgentHarness::Muse
@@ -4074,6 +4174,9 @@ pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> V
         AgentHarness::Muse => {
             crate::muse::data_dir_for(None).map(|data| vec![data.join("sessions")])
         }
+        // Profiles named with a `/` live elsewhere and are read when the
+        // observer polls.
+        AgentHarness::Endchat => home_dir().map(|home| vec![home.join(".endchat")]),
         AgentHarness::Unknown => None,
     };
 
@@ -4107,12 +4210,16 @@ pub(crate) fn agent_observer_artifact_paths(
                     .collect()
             })
             .unwrap_or_default(),
+        AgentHarness::Endchat => ["state.json", "turns.jsonl"]
+            .iter()
+            .map(|name| Path::new(session_path).join(name))
+            .collect(),
         AgentHarness::Unknown => vec![],
         _ => vec![PathBuf::from(session_path)],
     }
 }
 
-fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
@@ -4226,6 +4333,7 @@ pub fn restorable_session_id(
             .map(|(_, session_id)| session_id)
             .filter(|session_id| is_zcode_session_id(session_id))),
         AgentHarness::Muse => Ok(crate::muse::session_id_of(path)),
+        AgentHarness::Endchat => Ok(path.is_dir().then(|| path.to_string_lossy().into_owned())),
         AgentHarness::Devin => Ok(path
             .to_str()
             .and_then(crate::devin::parse_session_url)
@@ -6819,6 +6927,94 @@ mod test {
     }
 
     #[test]
+    fn an_endchat_chat_is_observed_through_its_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("w3end");
+        fs::create_dir(&profile).unwrap();
+        let metadata = AgentMetadata {
+            agent_id: "w3end".to_string(),
+            name: "w3end".to_string(),
+            launch_cmd: format!("endchat chat {} -v", profile.display()),
+            declared_cwd: "/code/w3sim".to_string(),
+            adopted_pid: None,
+            adopted_start_time: None,
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+            launch_supervisor: None,
+            codex_app_server: None,
+        };
+        assert_eq!(
+            infer_harness(&metadata.launch_cmd, None),
+            AgentHarness::Endchat
+        );
+        // No state written yet: nothing to observe.
+        assert!(observe_endchat("/code/w3sim", &metadata).unwrap().is_none());
+
+        fs::write(
+            profile.join("turns.jsonl"),
+            "{\"date\":\"2026-11-16T11:30:07Z\",\"end\":3340,\"ok\":true}\n",
+        )
+        .unwrap();
+        fs::write(
+            profile.join("state.json"),
+            r#"{"busy":true,"since":"2026-11-16T11:31:00Z","doing":"Bash","queued":0}"#,
+        )
+        .unwrap();
+        let busy = observe_endchat("/code/w3sim", &metadata).unwrap().unwrap();
+        assert_eq!(busy.turn_state, AgentTurnState::WaitingOnAgent);
+        let running = busy.observed_turn.unwrap();
+        assert_eq!(running.outcome, AgentObservedTurnOutcome::Running);
+        assert!(running.provider_turn_id.ends_with(":1"));
+        assert_eq!(
+            busy.last_turn_completed_at,
+            Some(Utc.with_ymd_and_hms(2026, 11, 16, 11, 30, 7).unwrap())
+        );
+        assert_eq!(
+            busy.session_path.as_deref(),
+            Some(profile.to_string_lossy().as_ref())
+        );
+
+        // The turn ended, and is the same turn by number.
+        fs::write(profile.join("state.json"), r#"{"busy":false,"queued":0}"#).unwrap();
+        let mut turns = fs::read_to_string(profile.join("turns.jsonl")).unwrap();
+        turns.push_str("{\"date\":\"2026-11-16T11:33:09Z\",\"end\":3352,\"ok\":true}\n");
+        fs::write(profile.join("turns.jsonl"), turns).unwrap();
+        let idle = observe_endchat("/code/w3sim", &metadata).unwrap().unwrap();
+        assert_eq!(idle.turn_state, AgentTurnState::WaitingOnUser);
+        let ended = idle.observed_turn.unwrap();
+        assert_eq!(ended.outcome, AgentObservedTurnOutcome::Completed);
+        assert_eq!(ended.provider_turn_id, running.provider_turn_id);
+        assert_eq!(
+            idle.last_turn_completed_at,
+            Some(Utc.with_ymd_and_hms(2026, 11, 16, 11, 33, 9).unwrap())
+        );
+
+        // The profile is the session, and the same command resumes it.
+        assert_eq!(
+            restorable_session_id(&AgentHarness::Endchat, &profile).unwrap(),
+            Some(profile.to_string_lossy().into_owned())
+        );
+        let resume = native_resume_command(
+            &AgentHarness::Endchat,
+            &metadata.launch_cmd,
+            &profile.to_string_lossy(),
+        )
+        .unwrap();
+        assert_eq!(
+            resume
+                .get_argv()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            shell_words::split(&metadata.launch_cmd).unwrap()
+        );
+        assert!(native_resume_command(&AgentHarness::Endchat, "endchat serve main", "x").is_err());
+    }
+
+    #[test]
     fn agy_input_box_is_read_with_its_text_and_whether_a_turn_runs() {
         let screen = |rows: &[&str]| {
             rows.iter()
@@ -7228,7 +7424,7 @@ mod test {
     }
 
     /// `harnesses.toml` from [agent-spec-sheet](https://github.com/wakamex/agent-spec-sheet)
-    /// at commit 55725a0, byte for byte. Replace it with a newer commit's copy when the
+    /// at commit 69be93c, byte for byte. Replace it with a newer commit's copy when the
     /// spec changes; this test then fails until Wakterm's path resolvers agree.
     #[cfg(target_os = "linux")]
     const HARNESS_SPEC: &str = include_str!("../tests/harnesses.toml");
@@ -7242,11 +7438,15 @@ mod test {
         let spec: toml::Table = HARNESS_SPEC.parse().unwrap();
         // Each harness Wakterm reads, under its key in the spec, and the
         // location Wakterm reads for a harness process.
-        let resolvers: [(&str, fn(Option<u32>) -> Option<PathBuf>); 8] = [
+        let resolvers: [(&str, fn(Option<u32>) -> Option<PathBuf>); 9] = [
             ("agy", |_| agy_root()),
             ("claude", claude_sessions_root_for),
             ("codex", codex_sessions_root_for),
             ("devin", crate::devin::db_path_for),
+            ("endchat", |_| {
+                crate::endchat::profile_dir("main", "/")
+                    .and_then(|main| main.parent().map(Path::to_path_buf))
+            }),
             ("gemini", gemini_root_for),
             ("muse", crate::muse::data_dir_for),
             ("opencode", opencode_db_path),
@@ -7275,6 +7475,7 @@ mod test {
             AgentHarness::Claude => "claude",
             AgentHarness::Codex => "codex",
             AgentHarness::Devin => "devin",
+            AgentHarness::Endchat => "endchat",
             AgentHarness::Gemini => "gemini",
             AgentHarness::Muse => "muse",
             AgentHarness::Opencode => "opencode",
@@ -7286,6 +7487,7 @@ mod test {
             AgentHarness::Claude,
             AgentHarness::Codex,
             AgentHarness::Devin,
+            AgentHarness::Endchat,
             AgentHarness::Gemini,
             AgentHarness::Muse,
             AgentHarness::Opencode,

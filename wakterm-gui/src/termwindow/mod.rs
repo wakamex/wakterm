@@ -266,7 +266,8 @@ impl TabHarnessIcon {
             AgentHarness::Zcode => Some(Self::ZCode),
             AgentHarness::Devin => Some(Self::Devin),
             AgentHarness::Muse => Some(Self::Muse),
-            AgentHarness::Unknown => None,
+            // No icon yet; the tab shows the text badge.
+            AgentHarness::Endchat | AgentHarness::Unknown => None,
         }
     }
 

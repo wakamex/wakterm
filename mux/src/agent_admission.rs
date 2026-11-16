@@ -813,6 +813,7 @@ fn harness_name(harness: &AgentHarness) -> &'static str {
         AgentHarness::Zcode => "zcode",
         AgentHarness::Devin => "devin",
         AgentHarness::Muse => "muse",
+        AgentHarness::Endchat => "endchat",
     }
 }
 

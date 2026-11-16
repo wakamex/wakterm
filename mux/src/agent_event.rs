@@ -538,9 +538,14 @@ impl AgentEventStore {
 
         let mut runtime_update = None;
         if runtime.alive {
+            // endchat's turns are followed through its profile's state,
+            // without a projection of its message log yet.
             if let (Some(session_path), false) = (
                 runtime.session_path.as_deref(),
-                matches!(runtime.harness, AgentHarness::Unknown),
+                matches!(
+                    runtime.harness,
+                    AgentHarness::Unknown | AgentHarness::Endchat
+                ),
             ) {
                 match project_provider_events(
                     &runtime.harness,
@@ -1587,6 +1592,7 @@ fn project_provider_events(
         AgentHarness::Opencode | AgentHarness::Zcode => project_opencode(session_path, cursor),
         AgentHarness::Devin => project_devin(session_path, cursor),
         AgentHarness::Muse => project_muse(Path::new(session_path), cursor, metadata),
+        AgentHarness::Endchat => bail!("endchat has no provider event projection yet"),
         AgentHarness::Unknown => bail!("unknown harness has no provider event projection"),
     }
 }

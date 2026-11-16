@@ -43,8 +43,8 @@ readers = ["sch", "clanker-analytics", "wakterm"]
 name = "OpenCode"
 home = "${XDG_DATA_HOME:-~/.local/share}/opencode"
 sessions = ["opencode.db"]
-format = "SQLite: session, message and part tables with JSON data"
-readers = ["sch", "wakterm"]
+format = "SQLite in WAL mode, so read the -wal file too. In 1.19.3 the conversation is in the message and part tables (JSON in data) and session.parent_id marks a subagent. An assistant message records its call in data.tokens {input, output, reasoning, cache {read, write}, total}, with providerID, modelID and cost. Whether output includes reasoning depends on the provider: for openai models total = input + output + cache, for others total = input + output + reasoning + cache, so take total when present instead of adding reasoning to output. The file is opencode.db for the latest, beta and prod channels and opencode-<channel>.db for other builds; OPENCODE_DB names another file, relative to the home or absolute. The newer session_message, event and session_input tables exist but are empty on this host."
+readers = ["sch", "clanker-analytics", "wakterm"]
 
 [zcode]
 name = "Zcode"
@@ -102,6 +102,13 @@ sessions = [
 ]
 format = "JSON Lines of records with payload_type, stream {kind, id}, recorded_at (microseconds) and payload; session ids are UUIDv7. Most of a turn is payload_type runtime.session with payload.kind run and payload.event.kind naming the step: model_completed carries usage (input_tokens, cached_tokens, cache_read_tokens, cache_write_tokens, output_tokens, reasoning_tokens) and model, assistant_message_committed holds replies, assistant_tool_calls_committed tool calls (tool_calls name and args) and tool_result_batch_committed their results (results[].text). reasoning_committed keeps only encrypted_content with empty text; the readable reasoning is in reasoning_summary_committed. The user's prompt is runtime.user_intent.accepted with semantic_kind chat (model_messages), and the workspace is workspace_root in runtime.session.metadata. Settings and the login are under ${XDG_CONFIG_HOME:-~/.config}/muse. Checked against 1.4.12."
 readers = ["sch", "clanker-analytics", "wakterm"]
+
+[endchat]
+name = "endchat"
+home = "~/.endchat"
+sessions = ["<profile>/main/YYYY-MM-DD.jsonl", "<profile>/state.json", "<profile>/turns.jsonl"]
+format = "One directory per profile, ~/.endchat/<name>, or the named directory when the name contains a /; `endchat` alone chats with the profile main and `endchat chat NAME` with NAME. main/YYYY-MM-DD.jsonl is the append-only log, one record {i, kind, text, size, date, run?, more?} per message with kind user, agent, tool, echo, work or note, and main.idx indexes it. state.json is the profile's activity, {busy, since?, effort?, doing?, queued}, rewritten as it changes. turns.jsonl gains {date, end, ok} as each turn ends, end being the last message's i. Model usage per turn is in ledger.jsonl. Checked against endchat 5b15f19."
+readers = ["wakterm"]
 
 [antigravity-editor]
 name = "Antigravity editor"
