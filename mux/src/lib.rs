@@ -2700,12 +2700,28 @@ impl Mux {
             .filter(|leaf| !leaf.is_empty())
     }
 
+    /// A detected agent is named for what it works on and its harness: the
+    /// directory it runs in, or for endchat the profile it chats with, which
+    /// is the same conversation from any directory.
     fn detected_agent_name_base(
         harness: &crate::agent::AgentHarness,
         declared_cwd: &str,
+        launch_cmd: Option<&str>,
     ) -> String {
+        let profile_leaf = match harness {
+            crate::agent::AgentHarness::Endchat => launch_cmd
+                .and_then(crate::endchat::profile_name)
+                .and_then(|name| {
+                    std::path::Path::new(&name)
+                        .file_name()
+                        .and_then(|leaf| leaf.to_str())
+                        .map(Self::slugify_agent_name_piece)
+                })
+                .filter(|leaf| !leaf.is_empty()),
+            _ => None,
+        };
         let harness = Self::harness_slug(harness);
-        match Self::cwd_leaf_for_agent_name(declared_cwd) {
+        match profile_leaf.or_else(|| Self::cwd_leaf_for_agent_name(declared_cwd)) {
             Some(leaf) if leaf != harness => format!("{leaf}_{harness}"),
             _ => harness.to_string(),
         }
@@ -3378,7 +3394,11 @@ impl Mux {
             .keys()
             .cloned()
             .collect::<HashSet<_>>();
-        let base_name = Self::detected_agent_name_base(&candidate.harness, &candidate.declared_cwd);
+        let base_name = Self::detected_agent_name_base(
+            &candidate.harness,
+            &candidate.declared_cwd,
+            Some(&candidate.launch_cmd),
+        );
         let name = Self::next_available_agent_name(&taken_names, &base_name);
         let created_at = candidate.created_at;
         let pane_id = candidate.pane_id;
@@ -5471,8 +5491,11 @@ impl Mux {
         }
 
         if let Some(candidate) = self.agent_adoption_candidates.read().get(&pane_id).cloned() {
-            let base_name =
-                Self::detected_agent_name_base(&candidate.harness, &candidate.declared_cwd);
+            let base_name = Self::detected_agent_name_base(
+                &candidate.harness,
+                &candidate.declared_cwd,
+                Some(&candidate.launch_cmd),
+            );
             let name = Self::next_available_agent_name(taken_names, &base_name);
             taken_names.insert(name.clone());
             return self.snapshot_with_runtime(
@@ -5501,7 +5524,7 @@ impl Mux {
         let pane = self.get_pane(pane_id)?;
 
         let declared_cwd = Self::pane_declared_cwd(&pane, None).unwrap_or_default();
-        let base_name = Self::detected_agent_name_base(&runtime.harness, &declared_cwd);
+        let base_name = Self::detected_agent_name_base(&runtime.harness, &declared_cwd, None);
         let name = Self::next_available_agent_name(taken_names, &base_name);
         taken_names.insert(name.clone());
         let launch_cmd = default_launch_cmd_for_harness(&runtime.harness)?.to_string();
@@ -5579,8 +5602,11 @@ impl Mux {
                     continue;
                 }
             }
-            let base_name =
-                Self::detected_agent_name_base(&state.runtime.harness, &state.declared_cwd);
+            let base_name = Self::detected_agent_name_base(
+                &state.runtime.harness,
+                &state.declared_cwd,
+                Some(&state.launch_cmd),
+            );
             let name = Self::next_available_agent_name(&taken_names, &base_name);
             taken_names.insert(name.clone());
             agents.push(self.detected_agent_snapshot_from_state(state, name));
@@ -7404,6 +7430,41 @@ mod test {
         ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn a_detected_endchat_is_named_for_its_profile() {
+        use crate::agent::AgentHarness;
+        let name = |harness, cwd, cmd| Mux::detected_agent_name_base(&harness, cwd, cmd);
+        assert_eq!(
+            name(AgentHarness::Endchat, "/home/u", Some("endchat chat w3end")),
+            "w3end_endchat"
+        );
+        assert_eq!(
+            name(AgentHarness::Endchat, "/home/u", Some("endchat")),
+            "main_endchat"
+        );
+        assert_eq!(
+            name(
+                AgentHarness::Endchat,
+                "/code/w3sim",
+                Some("endchat chat work/my-chat")
+            ),
+            "my_chat_endchat"
+        );
+        // Without its command, an endchat is named for its directory.
+        assert_eq!(
+            name(AgentHarness::Endchat, "/code/w3sim", None),
+            "w3sim_endchat"
+        );
+        assert_eq!(
+            name(
+                AgentHarness::Claude,
+                "/code/w3sim",
+                Some("endchat chat w3end")
+            ),
+            "w3sim_claude"
+        );
     }
 
     #[test]
