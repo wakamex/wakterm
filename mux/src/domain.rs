@@ -196,6 +196,11 @@ pub trait Domain: Downcast + Send + Sync {
 
     /// Indicates the state of the domain
     fn state(&self) -> DomainState;
+
+    /// Called after the user or a script in this process set the title of
+    /// `tab_id`, one of this domain's tabs, so that a domain mirroring a
+    /// server's tabs can send the title on to the server.
+    fn tab_title_set_by_user(&self, _tab_id: TabId, _title: &str) {}
 }
 impl_downcast!(Domain);
 

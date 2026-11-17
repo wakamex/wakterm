@@ -934,23 +934,6 @@ fn mux_notify_client_domain(local_domain_id: DomainId, notif: MuxNotification) -
             })
             .detach();
         }
-        MuxNotification::TabTitleChanged { tab_id, title } => {
-            if let Some(remote_tab_id) = client_domain.local_to_remote_tab_id(tab_id) {
-                if let Some(inner) = client_domain.inner() {
-                    promise::spawn::spawn(async move {
-                        inner
-                            .client
-                            .set_tab_title(codec::TabTitleChanged {
-                                tab_id: remote_tab_id,
-                                title,
-                                badge: AgentTabBadgeState::default(),
-                            })
-                            .await
-                    })
-                    .detach();
-                }
-            }
-        }
         MuxNotification::TabOrderChanged {
             window_id, tab_ids, ..
         } => {
@@ -2081,6 +2064,27 @@ impl ClientDomain {
 
 #[async_trait(?Send)]
 impl Domain for ClientDomain {
+    fn tab_title_set_by_user(&self, tab_id: TabId, title: &str) {
+        let Some(remote_tab_id) = self.local_to_remote_tab_id(tab_id) else {
+            log::warn!("tab {tab_id} has no remote tab; its new title stays local");
+            return;
+        };
+        let Some(inner) = self.inner() else {
+            return;
+        };
+        let request = codec::TabTitleChanged {
+            tab_id: remote_tab_id,
+            title: title.to_string(),
+            badge: AgentTabBadgeState::default(),
+        };
+        promise::spawn::spawn(async move {
+            if let Err(err) = inner.client.set_tab_title(request).await {
+                log::warn!("sending the title of remote tab {remote_tab_id}: {err:#}");
+            }
+        })
+        .detach();
+    }
+
     fn domain_id(&self) -> DomainId {
         self.local_domain_id
     }
@@ -3758,5 +3762,94 @@ mod test {
         let target = ClientDomain::spawn_target_for_window(&mux, inner.as_ref(), local_window_id);
 
         assert_eq!(target, (None, None));
+    }
+
+    /// Installs a client domain mirroring one tab, remote tab 101 holding
+    /// pane 1001, and returns the local tab and the receiver of every
+    /// request the client sends.
+    fn mirrored_tab_with_requests(
+        mux: &Arc<Mux>,
+    ) -> (TabId, smol::channel::Receiver<crate::client::ReaderMessage>) {
+        let domain = Arc::new(ClientDomain::new(ClientDomainConfig::Unix(
+            UnixDomain::default(),
+        )));
+        mux.add_domain(&(domain.clone() as Arc<dyn Domain>));
+        let client_id = Arc::new(ClientId::new());
+        let view_id = Arc::new(ClientViewId("tab-title".to_string()));
+        let (client, requests) = Client::new_for_test_with_requests(
+            domain.local_domain_id,
+            client_id.as_ref().clone(),
+            view_id.as_ref().clone(),
+        );
+        mux.register_client(client_id.clone(), view_id);
+        let inner = Arc::new(ClientInner::new(
+            domain.local_domain_id,
+            client,
+            None,
+            false,
+        ));
+        *domain.inner.lock().unwrap() = Some(inner.clone());
+        apply_panes(
+            mux,
+            inner.clone(),
+            client_id,
+            panes_response(vec![leaf(1, 101, 1001, size(120, 40), true)], 101, 1001),
+        );
+        (inner.remote_to_local_tab_id(101).unwrap(), requests)
+    }
+
+    fn sent_tab_titles(
+        executor: &promise::spawn::SimpleExecutor,
+        requests: &smol::channel::Receiver<crate::client::ReaderMessage>,
+    ) -> Vec<(TabId, String)> {
+        let run_until_idle = || while executor.tick_timeout(std::time::Duration::ZERO).unwrap() {};
+        run_until_idle();
+        let titles = std::iter::from_fn(|| requests.try_recv().ok())
+            .filter_map(|message| match message.into_request() {
+                Some(codec::Pdu::TabTitleChanged(change)) => Some((change.tab_id, change.title)),
+                _ => None,
+            })
+            .collect();
+        run_until_idle();
+        titles
+    }
+
+    #[test]
+    fn a_tab_title_notification_sends_no_title_to_the_server() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+        let (tab_id, requests) = mirrored_tab_with_requests(&mux);
+        sent_tab_titles(&executor, &requests);
+
+        // A badge change or a title the server sent, as the mux reports it.
+        mux.notify(MuxNotification::TabTitleChanged {
+            tab_id,
+            title: "review".to_string(),
+        });
+        mux.get_tab(tab_id).unwrap().set_title_from_remote("review");
+
+        assert_eq!(sent_tab_titles(&executor, &requests), vec![]);
+    }
+
+    #[test]
+    fn a_user_rename_of_a_mirrored_tab_reaches_the_server_once() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+        let (tab_id, requests) = mirrored_tab_with_requests(&mux);
+        sent_tab_titles(&executor, &requests);
+
+        mux.set_tab_title_by_user(tab_id, "review").unwrap();
+
+        assert_eq!(
+            sent_tab_titles(&executor, &requests),
+            vec![(101, "review".to_string())]
+        );
+        assert_eq!(mux.get_tab(tab_id).unwrap().get_title(), "review");
     }
 }

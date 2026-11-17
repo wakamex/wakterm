@@ -108,7 +108,7 @@ struct VersionProbeStepMarker {
 #[error("ChannelSendError")]
 struct ChannelSendError;
 
-enum ReaderMessage {
+pub(crate) enum ReaderMessage {
     SendPdu {
         pdu: Pdu,
         promise: Sender<anyhow::Result<Pdu>>,
@@ -1921,8 +1921,18 @@ impl Client {
         client_id: ClientId,
         view_id: ClientViewId,
     ) -> Self {
-        let (sender, _rx) = smol::channel::unbounded();
-        Self {
+        Self::new_for_test_with_requests(local_domain_id, client_id, view_id).0
+    }
+
+    /// A test client whose requests arrive on the returned receiver, and
+    /// whose responses never come.
+    pub(crate) fn new_for_test_with_requests(
+        local_domain_id: DomainId,
+        client_id: ClientId,
+        view_id: ClientViewId,
+    ) -> (Self, Receiver<ReaderMessage>) {
+        let (sender, requests) = smol::channel::unbounded();
+        let client = Self {
             sender,
             local_domain_id: Some(local_domain_id),
             client_id,
@@ -1930,6 +1940,25 @@ impl Client {
             client_domain_config: ClientDomainConfig::Unix(UnixDomain::default()),
             is_reconnectable: false,
             is_local: false,
+        };
+        (client, requests)
+    }
+}
+
+#[cfg(test)]
+impl ReaderMessage {
+    /// The request a test client was asked to send. A request waiting for
+    /// a response gets an error, so that its task ends with the test.
+    pub(crate) fn into_request(self) -> Option<Pdu> {
+        match self {
+            ReaderMessage::SendPdu { pdu, promise } => {
+                promise
+                    .try_send(Err(anyhow!("test client sends nothing")))
+                    .ok();
+                Some(pdu)
+            }
+            ReaderMessage::SendPduNoWait { pdu } => Some(pdu),
+            _ => None,
         }
     }
 }

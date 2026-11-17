@@ -44,7 +44,8 @@ impl UserData for MuxTab {
         methods.add_method("set_title", |_, this, title: String| {
             let mux = get_mux()?;
             let tab = this.resolve(&mux)?;
-            Ok(tab.set_title(&title))
+            mux.set_tab_title_by_user(tab.tab_id(), &title)
+                .map_err(mlua::Error::external)
         });
         methods.add_method("active_pane", |_, this, _: ()| {
             let mux = get_mux()?;

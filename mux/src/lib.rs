@@ -2403,6 +2403,23 @@ impl Mux {
         }
     }
 
+    /// Sets a tab's title as the user or a script asked, and passes it to
+    /// the tab's domain, which sends it to the server when the tab mirrors
+    /// one there.
+    pub fn set_tab_title_by_user(&self, tab_id: TabId, title: &str) -> anyhow::Result<()> {
+        let tab = self
+            .get_tab(tab_id)
+            .ok_or_else(|| anyhow!("no such tab {tab_id}"))?;
+        tab.set_title(title);
+        let domain = tab
+            .get_active_pane()
+            .and_then(|pane| self.get_domain(pane.domain_id()));
+        if let Some(domain) = domain {
+            domain.tab_title_set_by_user(tab_id, title);
+        }
+        Ok(())
+    }
+
     /// Whether this pane's own agent has a reply the user has not seen, or
     /// `None` when the mux holds no attention state for the pane.
     pub fn pane_needs_attention(&self, pane_id: PaneId) -> Option<bool> {

@@ -101,9 +101,7 @@ pub fn show_rename_tab_prompt_overlay(
 
     promise::spawn::spawn_into_main_thread(async move {
         if let Some(line) = line {
-            if let Some(tab) = Mux::get().get_tab(tab_id) {
-                tab.set_title(&line);
-            }
+            Mux::get().set_tab_title_by_user(tab_id, &line)?;
         }
         anyhow::Result::<()>::Ok(())
     })
