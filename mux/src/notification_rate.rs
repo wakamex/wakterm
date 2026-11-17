@@ -170,7 +170,8 @@ mod test {
         let report = reports(&mut rate, &title(90), 1, start);
         assert_eq!(report.len(), 1);
         assert!(report[0].starts_with("TabTitleChanged for 90 fired more than 200 times"));
-        assert!(report[0].contains("TabTitleChanged 90 from mux/src/notification_rate.rs:"));
+        // The sender's location, written with the platform's separator.
+        assert!(report[0].contains(&format!("TabTitleChanged 90 from {}:", file!())));
         assert!(report[0].ends_with(&format!(" ({RECENT} times)")));
 
         // Still within the reporting interval, a new burst stays quiet.
