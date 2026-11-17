@@ -995,42 +995,6 @@ fn mux_notify_client_domain(local_domain_id: DomainId, notif: MuxNotification) -
                 }
             }
         }
-        MuxNotification::WindowTitleChanged {
-            window_id,
-            title: _,
-        } => {
-            if let Some(remote_window_id) = client_domain.local_to_remote_window_id(window_id) {
-                if let Some(inner) = client_domain.inner() {
-                    promise::spawn::spawn_into_main_thread(async move {
-                        // De-bounce the title propagation.
-                        // There is a bit of a race condition with these async
-                        // updates that can trigger a cycle of WindowTitleChanged
-                        // PDUs being exchanged between client and server if the
-                        // title is changed twice in quick succession.
-                        // To avoid that, here on the client, we wait a second
-                        // and then report the now-current name of the window, rather
-                        // than propagating the title encoded in the MuxNotification.
-                        smol::Timer::after(std::time::Duration::from_secs(1)).await;
-                        if let Some(mux) = Mux::try_get() {
-                            let title = mux
-                                .get_window(window_id)
-                                .map(|win| win.get_title().to_string());
-                            if let Some(title) = title {
-                                inner
-                                    .client
-                                    .set_window_title(codec::WindowTitleChanged {
-                                        window_id: remote_window_id,
-                                        title,
-                                    })
-                                    .await?;
-                            }
-                        }
-                        anyhow::Result::<()>::Ok(())
-                    })
-                    .detach();
-                }
-            }
-        }
         _ => {}
     }
     true
@@ -2064,6 +2028,25 @@ impl ClientDomain {
 
 #[async_trait(?Send)]
 impl Domain for ClientDomain {
+    fn window_title_set_by_user(&self, window_id: WindowId, title: &str) {
+        let Some(remote_window_id) = self.local_to_remote_window_id(window_id) else {
+            return;
+        };
+        let Some(inner) = self.inner() else {
+            return;
+        };
+        let request = codec::WindowTitleChanged {
+            window_id: remote_window_id,
+            title: title.to_string(),
+        };
+        promise::spawn::spawn(async move {
+            if let Err(err) = inner.client.set_window_title(request).await {
+                log::warn!("sending the title of remote window {remote_window_id}: {err:#}");
+            }
+        })
+        .detach();
+    }
+
     fn tab_title_set_by_user(&self, tab_id: TabId, title: &str) {
         let Some(remote_tab_id) = self.local_to_remote_tab_id(tab_id) else {
             log::warn!("tab {tab_id} has no remote tab; its new title stays local");
@@ -3764,18 +3747,22 @@ mod test {
         assert_eq!(target, (None, None));
     }
 
-    /// Installs a client domain mirroring one tab, remote tab 101 holding
-    /// pane 1001, and returns the local tab and the receiver of every
-    /// request the client sends.
-    fn mirrored_tab_with_requests(
+    /// Installs a client domain mirroring remote window 1, whose tab 101
+    /// holds pane 1001, and returns the local window and tab and the
+    /// receiver of every request the client sends.
+    fn mirrored_window_with_requests(
         mux: &Arc<Mux>,
-    ) -> (TabId, smol::channel::Receiver<crate::client::ReaderMessage>) {
+    ) -> (
+        WindowId,
+        TabId,
+        smol::channel::Receiver<crate::client::ReaderMessage>,
+    ) {
         let domain = Arc::new(ClientDomain::new(ClientDomainConfig::Unix(
             UnixDomain::default(),
         )));
         mux.add_domain(&(domain.clone() as Arc<dyn Domain>));
         let client_id = Arc::new(ClientId::new());
-        let view_id = Arc::new(ClientViewId("tab-title".to_string()));
+        let view_id = Arc::new(ClientViewId("titles".to_string()));
         let (client, requests) = Client::new_for_test_with_requests(
             domain.local_domain_id,
             client_id.as_ref().clone(),
@@ -3795,43 +3782,64 @@ mod test {
             client_id,
             panes_response(vec![leaf(1, 101, 1001, size(120, 40), true)], 101, 1001),
         );
-        (inner.remote_to_local_tab_id(101).unwrap(), requests)
+        (
+            inner.remote_to_local_window(1).unwrap(),
+            inner.remote_to_local_tab_id(101).unwrap(),
+            requests,
+        )
     }
 
-    fn sent_tab_titles(
+    /// Runs the spawned work and returns the title requests the client
+    /// sent since the last call.
+    fn sent_title_requests(
         executor: &promise::spawn::SimpleExecutor,
         requests: &smol::channel::Receiver<crate::client::ReaderMessage>,
-    ) -> Vec<(TabId, String)> {
+    ) -> Vec<codec::Pdu> {
         let run_until_idle = || while executor.tick_timeout(std::time::Duration::ZERO).unwrap() {};
         run_until_idle();
-        let titles = std::iter::from_fn(|| requests.try_recv().ok())
-            .filter_map(|message| match message.into_request() {
-                Some(codec::Pdu::TabTitleChanged(change)) => Some((change.tab_id, change.title)),
-                _ => None,
+        let sent = std::iter::from_fn(|| requests.try_recv().ok())
+            .filter_map(|message| message.into_request())
+            .filter(|pdu| {
+                matches!(
+                    pdu,
+                    codec::Pdu::TabTitleChanged(_) | codec::Pdu::WindowTitleChanged(_)
+                )
             })
             .collect();
         run_until_idle();
-        titles
+        sent
     }
 
     #[test]
-    fn a_tab_title_notification_sends_no_title_to_the_server() {
+    fn title_notifications_send_nothing_to_the_server() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();
         let mux = Arc::new(Mux::new(None));
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
-        let (tab_id, requests) = mirrored_tab_with_requests(&mux);
-        sent_tab_titles(&executor, &requests);
+        let (window_id, tab_id, requests) = mirrored_window_with_requests(&mux);
+        sent_title_requests(&executor, &requests);
 
-        // A badge change or a title the server sent, as the mux reports it.
+        // Badge changes and titles the server sent, as the mux reports them.
         mux.notify(MuxNotification::TabTitleChanged {
             tab_id,
             title: "review".to_string(),
         });
+        mux.notify(MuxNotification::WindowTitleChanged {
+            window_id,
+            title: "work".to_string(),
+        });
         mux.get_tab(tab_id).unwrap().set_title_from_remote("review");
+        mux.get_window_mut(window_id)
+            .unwrap()
+            .set_title_from_remote("work");
 
-        assert_eq!(sent_tab_titles(&executor, &requests), vec![]);
+        // Long enough for a send held back to coalesce renames to go out.
+        while executor
+            .tick_timeout(std::time::Duration::from_millis(1500))
+            .unwrap()
+        {}
+        assert_eq!(sent_title_requests(&executor, &requests), vec![]);
     }
 
     #[test]
@@ -3841,15 +3849,47 @@ mod test {
         let mux = Arc::new(Mux::new(None));
         Mux::set_mux(&mux);
         let _guard = MuxGuard;
-        let (tab_id, requests) = mirrored_tab_with_requests(&mux);
-        sent_tab_titles(&executor, &requests);
+        let (_window_id, tab_id, requests) = mirrored_window_with_requests(&mux);
+        sent_title_requests(&executor, &requests);
 
         mux.set_tab_title_by_user(tab_id, "review").unwrap();
 
         assert_eq!(
-            sent_tab_titles(&executor, &requests),
-            vec![(101, "review".to_string())]
+            sent_title_requests(&executor, &requests),
+            vec![codec::Pdu::TabTitleChanged(codec::TabTitleChanged {
+                tab_id: 101,
+                title: "review".to_string(),
+                badge: AgentTabBadgeState::default(),
+            })]
         );
         assert_eq!(mux.get_tab(tab_id).unwrap().get_title(), "review");
+    }
+
+    #[test]
+    fn a_user_rename_of_a_mirrored_window_reaches_the_server_once() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+        let (window_id, _tab_id, requests) = mirrored_window_with_requests(&mux);
+        sent_title_requests(&executor, &requests);
+
+        // Renamed twice in quick succession, each title is sent once and in
+        // order, so the server ends with the latest.
+        mux.set_window_title_by_user(window_id, "first").unwrap();
+        mux.set_window_title_by_user(window_id, "work").unwrap();
+
+        let sent = |title: &str| {
+            codec::Pdu::WindowTitleChanged(codec::WindowTitleChanged {
+                window_id: 1,
+                title: title.to_string(),
+            })
+        };
+        assert_eq!(
+            sent_title_requests(&executor, &requests),
+            vec![sent("first"), sent("work")]
+        );
+        assert_eq!(mux.get_window(window_id).unwrap().get_title(), "work");
     }
 }

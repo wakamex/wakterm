@@ -61,8 +61,8 @@ impl UserData for MuxWindow {
         });
         methods.add_method("set_title", |_, this, title: String| {
             let mux = get_mux()?;
-            let mut window = this.resolve_mut(&mux)?;
-            Ok(window.set_title(&title))
+            mux.set_window_title_by_user(this.0, &title)
+                .map_err(mlua::Error::external)
         });
         methods.add_method("tabs", |_, this, _: ()| {
             let mux = get_mux()?;

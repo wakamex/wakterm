@@ -201,6 +201,12 @@ pub trait Domain: Downcast + Send + Sync {
     /// `tab_id`, one of this domain's tabs, so that a domain mirroring a
     /// server's tabs can send the title on to the server.
     fn tab_title_set_by_user(&self, _tab_id: TabId, _title: &str) {}
+
+    /// Called after the user or a script in this process set the title of
+    /// `window_id`, so that a domain mirroring that window from a server
+    /// can send the title on to the server. A window can hold tabs from
+    /// several domains, so every domain is called.
+    fn window_title_set_by_user(&self, _window_id: WindowId, _title: &str) {}
 }
 impl_downcast!(Domain);
 

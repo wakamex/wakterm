@@ -2403,6 +2403,19 @@ impl Mux {
         }
     }
 
+    /// Sets a window's title as the user or a script asked, and passes it to
+    /// every domain, so that each one mirroring the window from a server
+    /// sends it there.
+    pub fn set_window_title_by_user(&self, window_id: WindowId, title: &str) -> anyhow::Result<()> {
+        self.get_window_mut(window_id)
+            .ok_or_else(|| anyhow!("no such window {window_id}"))?
+            .set_title(title);
+        for domain in self.iter_domains() {
+            domain.window_title_set_by_user(window_id, title);
+        }
+        Ok(())
+    }
+
     /// Sets a tab's title as the user or a script asked, and passes it to
     /// the tab's domain, which sends it to the server when the tab mirrors
     /// one there.
