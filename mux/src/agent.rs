@@ -313,50 +313,50 @@ pub fn infer_harness(launch_cmd: &str, foreground_process_name: Option<&str>) ->
         {
             return AgentHarness::Agy;
         }
-        // Match the program name exactly: "zcode" also appears in paths.
-        if candidate.split_whitespace().next().is_some_and(|program| {
-            matches!(
-                Path::new(program)
-                    .file_name()
-                    .and_then(|name| name.to_str()),
-                Some("zcode" | "zcode.cjs")
-            )
-        }) {
-            return AgentHarness::Zcode;
+        // The program decides, not its arguments, which can name another
+        // harness's model, directory or file.
+        if let Some(program) = launched_program(candidate) {
+            if let Some(harness) = [
+                AgentHarness::Zcode,
+                AgentHarness::Devin,
+                AgentHarness::Muse,
+                AgentHarness::Endchat,
+                AgentHarness::Claude,
+                AgentHarness::Codex,
+                AgentHarness::Gemini,
+                AgentHarness::Opencode,
+            ]
+            .iter()
+            .find(|harness| is_harness_tui_program(harness, program))
+            {
+                return harness.clone();
+            }
         }
-        // Match the program name exactly: "devin" and "muse" also appear
-        // in paths.
-        let program = candidate
-            .split_whitespace()
-            .next()
-            .and_then(|program| Path::new(program).file_name())
-            .and_then(|name| name.to_str());
-        if program == Some("devin") {
-            return AgentHarness::Devin;
-        }
-        if program == Some("muse") {
-            return AgentHarness::Muse;
-        }
-        if program == Some("endchat") {
-            return AgentHarness::Endchat;
-        }
-        if candidate.contains("claude") {
-            return AgentHarness::Claude;
-        }
-        if candidate.contains("codex") {
-            return AgentHarness::Codex;
-        }
-        if candidate.contains("gemini")
-            || candidate.starts_with("◇ ")
-            || candidate.starts_with("◆ ")
-        {
+        // Pane titles these harnesses set.
+        if candidate.starts_with("◇ ") || candidate.starts_with("◆ ") {
             return AgentHarness::Gemini;
         }
-        if candidate.contains("opencode") || candidate.starts_with("oc |") {
+        if candidate.starts_with("oc |") {
             return AgentHarness::Opencode;
         }
     }
     AgentHarness::Unknown
+}
+
+/// The file name of the program a command runs, past an `env VAR=value`
+/// prefix, and for a script run by node, bun or deno, the script's.
+fn launched_program(command: &str) -> Option<&str> {
+    fn file_name(word: &str) -> &str {
+        word.rsplit(['/', '\\']).next().unwrap_or(word)
+    }
+    let mut words = command
+        .split_whitespace()
+        .skip_while(|word| file_name(word) == "env" || word.contains('='));
+    let program = file_name(words.next()?);
+    if matches!(program, "node" | "node.exe" | "bun" | "bun.exe" | "deno") {
+        return words.find(|word| !word.starts_with('-')).map(file_name);
+    }
+    Some(program)
 }
 
 pub fn default_launch_cmd_for_harness(harness: &AgentHarness) -> Option<&'static str> {
@@ -10499,6 +10499,40 @@ mod test {
             parse_opencode_session_path(observed.session_path.as_deref().unwrap()).unwrap();
         assert_eq!(session_db_path, db_path);
         assert_eq!(session_id, "session-1");
+    }
+
+    #[test]
+    fn infers_the_harness_from_the_program_not_its_arguments() {
+        for (command, harness) in [
+            (
+                "opencode -m anthropic/claude-opus-4",
+                AgentHarness::Opencode,
+            ),
+            ("opencode -m openai/gpt-5-codex", AgentHarness::Opencode),
+            (
+                "opencode --model google/gemini-3-pro",
+                AgentHarness::Opencode,
+            ),
+            ("codex --cd /code/claude-tools", AgentHarness::Codex),
+            ("vim /code/claude-tools/notes", AgentHarness::Unknown),
+            ("python codex_report.py", AgentHarness::Unknown),
+            ("/home/u/.local/bin/claude --resume x", AgentHarness::Claude),
+            ("env CLAUDE_CONFIG_DIR=/tmp/c claude", AgentHarness::Claude),
+            ("FOO=1 codex", AgentHarness::Codex),
+            (
+                "node /usr/lib/node_modules/.bin/gemini --yolo",
+                AgentHarness::Gemini,
+            ),
+            ("bun /home/u/.bun/bin/codex.js", AgentHarness::Codex),
+            (r"C:\Users\u\.local\bin\claude.exe", AgentHarness::Claude),
+        ] {
+            assert_eq!(infer_harness(command, None), harness, "{command}");
+        }
+        assert_eq!(
+            infer_harness("", Some("/usr/local/bin/opencode")),
+            AgentHarness::Opencode
+        );
+        assert_eq!(infer_harness("", Some("node")), AgentHarness::Unknown);
     }
 
     #[test]
