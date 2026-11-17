@@ -1778,16 +1778,19 @@ impl TermWindow {
         if expected_tab_id.is_some_and(|tab_id| tab_id != tab.tab_id()) {
             return;
         }
-        let mux = Mux::get();
-        if !mux
-            .tab_badge_state_for_current_identity(tab.tab_id())
-            .needs_attention
-        {
-            return;
-        }
         let Some(pane) = self.get_active_pane_no_overlay() else {
             return;
         };
+        // The tab's badge also covers its other panes, which this does not
+        // acknowledge, so it decides only for a pane the mux has no state for.
+        let mux = Mux::get();
+        let needs_attention = mux.pane_needs_attention(pane.pane_id()).unwrap_or_else(|| {
+            mux.tab_badge_state_for_current_identity(tab.tab_id())
+                .needs_attention
+        });
+        if !needs_attention {
+            return;
+        }
         if self
             .get_active_pane_or_overlay()
             .is_none_or(|visible| visible.pane_id() != pane.pane_id())

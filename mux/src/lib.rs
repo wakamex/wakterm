@@ -2333,23 +2333,46 @@ impl Mux {
     /// snapshots would say the same, but until they arrive the mirror would
     /// still offer that reply, and "review next agent response" would pick
     /// the tab already shown.
+    /// Notifies a tab title change only when marking the pane seen changed
+    /// its tab's attention state: the GUI answers that notification by
+    /// acknowledging the visible pane again.
     pub fn mark_mirrored_agent_attention_seen(&self, pane_id: PaneId) {
-        let (tab_id, others) = {
+        let (tab_id, pane_changed, others) = {
             let mut snapshots = self.mirrored_agent_snapshot_by_pane.write();
             let Some(snapshot) = snapshots.get_mut(&pane_id) else {
                 return;
             };
-            snapshot.needs_attention = false;
+            let pane_changed = std::mem::replace(&mut snapshot.needs_attention, false);
             let tab_id = snapshot.tab_id;
             let others = snapshots
                 .values()
                 .any(|snapshot| snapshot.tab_id == tab_id && snapshot.needs_attention);
-            (tab_id, others)
+            (tab_id, pane_changed, others)
         };
-        if let Some(badge) = self.mirrored_agent_badge_by_tab.write().get_mut(&tab_id) {
-            badge.needs_attention = others;
+        let badge_changed = self
+            .mirrored_agent_badge_by_tab
+            .write()
+            .get_mut(&tab_id)
+            .is_some_and(|badge| std::mem::replace(&mut badge.needs_attention, others) != others);
+        if pane_changed || badge_changed {
+            self.notify_tab_title_changed(tab_id);
         }
-        self.notify_tab_title_changed(tab_id);
+    }
+
+    /// Whether this pane's own agent has a reply the user has not seen, or
+    /// `None` when the mux holds no attention state for the pane.
+    pub fn pane_needs_attention(&self, pane_id: PaneId) -> Option<bool> {
+        if self.agent_metadata_by_pane.read().contains_key(&pane_id)
+            || self.detected_agent_panes.read().contains(&pane_id)
+        {
+            if let Some(runtime) = self.agent_runtime_by_pane.read().get(&pane_id) {
+                return Some(self.agent_turn_needs_attention(pane_id, runtime));
+            }
+        }
+        self.mirrored_agent_snapshot_by_pane
+            .read()
+            .get(&pane_id)
+            .map(|snapshot| snapshot.needs_attention)
     }
 
     pub fn mirrored_agent_snapshots_for_window(&self, window_id: WindowId) -> Vec<AgentSnapshot> {
@@ -14335,6 +14358,110 @@ mod test {
             mux.tab_badge_state_for_current_identity(tabs[1].tab_id())
                 .needs_attention
         );
+    }
+
+    #[test]
+    fn marking_a_seen_pane_seen_again_does_not_notify_its_tab() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let shown = FakePane::new(291, size, domain.id);
+        let beside = FakePane::new(292, size, domain.id);
+        tab.assign_pane(&shown);
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: crate::tab::SplitDirection::Horizontal,
+                target_is_second: true,
+                size: crate::tab::SplitSize::Percent(50),
+                top_level: false,
+            },
+            beside.clone(),
+        )
+        .unwrap();
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_pane(&beside).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        let tab_id = tab.tab_id();
+
+        // A mirrored tab whose shown agent has no unseen reply while the
+        // agent beside it has one, so the tab's badge needs attention.
+        let metadata = sample_agent_metadata("mirrored");
+        let snapshot = |pane_id, needs_attention| {
+            let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+            runtime.turn_state = AgentTurnState::WaitingOnUser;
+            runtime.last_turn_completed_at =
+                Some(Utc.with_ymd_and_hms(2026, 11, 17, 16, 50, 0).unwrap());
+            AgentSnapshot {
+                metadata: metadata.clone(),
+                runtime,
+                pane_id,
+                tab_id,
+                window_id,
+                workspace: DEFAULT_WORKSPACE.to_string(),
+                domain_id: domain.id,
+                origin: AgentOrigin::Adopted,
+                detection_source: None,
+                needs_attention,
+            }
+        };
+        mux.replace_mirrored_agent_snapshots_for_domain(
+            domain.id,
+            vec![snapshot(291, false), snapshot(292, true)],
+        );
+        mux.set_mirrored_agent_badge(
+            tab_id,
+            AgentTabBadgeState {
+                waiting_on_user: true,
+                needs_attention: true,
+            },
+        );
+
+        let title_changes = Arc::new(Mutex::new(0usize));
+        let title_changes_for_sub = Arc::clone(&title_changes);
+        mux.subscribe(move |notification| {
+            if matches!(notification, MuxNotification::TabTitleChanged { tab_id: changed, .. } if changed == tab_id) {
+                *title_changes_for_sub.lock() += 1;
+            }
+            true
+        });
+
+        assert_eq!(mux.pane_needs_attention(291), Some(false));
+        assert_eq!(mux.pane_needs_attention(292), Some(true));
+        assert_eq!(mux.pane_needs_attention(293), None);
+
+        // The GUI answers each tab title change by acknowledging the shown
+        // pane, so a change here would repeat without end.
+        mux.mark_mirrored_agent_attention_seen(291);
+        assert_eq!(*title_changes.lock(), 0);
+        assert!(
+            mux.tab_badge_state_for_current_identity(tab_id)
+                .needs_attention
+        );
+
+        mux.mark_mirrored_agent_attention_seen(292);
+        assert_eq!(*title_changes.lock(), 1);
+        assert!(
+            !mux.tab_badge_state_for_current_identity(tab_id)
+                .needs_attention
+        );
+
+        mux.mark_mirrored_agent_attention_seen(292);
+        assert_eq!(*title_changes.lock(), 1);
     }
 
     #[test]
