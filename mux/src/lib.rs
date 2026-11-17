@@ -1160,6 +1160,48 @@ fn spawn_agent_observer_timer(mux_instance_id: usize) -> Sender<PaneId> {
     tx
 }
 
+/// The pane a focused window shows, as passed to
+/// `Mux::acknowledge_shown_agent_reply`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShownAgentPane {
+    pub tab_id: TabId,
+    pub pane_id: PaneId,
+    /// Whether the pane mirrors one owned by a server.
+    pub mirrored: bool,
+}
+
+/// Which shown reply a window checks after a notification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShownReplyCheck {
+    /// The reply in the window's active tab.
+    ActiveTab,
+    /// The reply in this tab, only while it is the window's active tab.
+    Tab(TabId),
+}
+
+impl ShownReplyCheck {
+    /// Whether the check applies to a window whose active tab is `active_tab`.
+    pub fn covers(self, active_tab: TabId) -> bool {
+        match self {
+            ShownReplyCheck::ActiveTab => true,
+            ShownReplyCheck::Tab(tab_id) => tab_id == active_tab,
+        }
+    }
+}
+
+impl MuxNotification {
+    /// Whether this notification may have changed whether the agent a
+    /// window shows has an unseen reply, so that the window should check
+    /// it with `Mux::acknowledge_shown_agent_reply`.
+    pub fn shown_reply_check(&self) -> Option<ShownReplyCheck> {
+        match self {
+            MuxNotification::WindowInvalidated(_) => Some(ShownReplyCheck::ActiveTab),
+            MuxNotification::TabTitleChanged { tab_id, .. } => Some(ShownReplyCheck::Tab(*tab_id)),
+            _ => None,
+        }
+    }
+}
+
 /// Which end of the queue of unseen agent responses to visit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttentionQueueEnd {
@@ -2375,6 +2417,30 @@ impl Mux {
             .read()
             .get(&pane_id)
             .map(|snapshot| snapshot.needs_attention)
+    }
+
+    /// Marks the reply of the agent a focused window shows as seen, if it
+    /// has one. Returns true when the pane is mirrored and the caller must
+    /// also send the acknowledgement to the server that owns it.
+    ///
+    /// A window calls this when `shown_reply_check` says a notification
+    /// may have changed what it shows. The tab's badge also covers the
+    /// tab's other panes, which this does not acknowledge, so it decides
+    /// only for a pane the mux holds no attention state for.
+    pub fn acknowledge_shown_agent_reply(&self, shown: ShownAgentPane) -> bool {
+        let needs_attention = self.pane_needs_attention(shown.pane_id).unwrap_or_else(|| {
+            self.tab_badge_state_for_current_identity(shown.tab_id)
+                .needs_attention
+        });
+        if !needs_attention {
+            return false;
+        }
+        if shown.mirrored {
+            self.mark_mirrored_agent_attention_seen(shown.pane_id);
+        } else {
+            self.acknowledge_agent_attention(shown.pane_id);
+        }
+        shown.mirrored
     }
 
     pub fn mirrored_agent_snapshots_for_window(&self, window_id: WindowId) -> Vec<AgentSnapshot> {
@@ -14362,6 +14428,217 @@ mod test {
         );
     }
 
+    fn attention_test_size() -> TerminalSize {
+        TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        }
+    }
+
+    /// Adds a window holding one tab mirrored from a server, with an agent
+    /// pane for each entry and the first pane active. An entry's flag says
+    /// whether that agent has an unseen reply, or `None` for a pane whose
+    /// snapshot has not arrived. The tab's badge is what the server sends:
+    /// it needs attention when any of its agents does.
+    fn mirrored_agent_tab(
+        mux: &Arc<Mux>,
+        domain: &Arc<FakeDomain>,
+        panes: &[(PaneId, Option<bool>)],
+    ) -> (WindowId, TabId) {
+        let size = attention_test_size();
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let fake_panes = panes
+            .iter()
+            .map(|(pane_id, _)| FakePane::new(*pane_id, size, domain.id))
+            .collect::<Vec<_>>();
+        tab.assign_pane(&fake_panes[0]);
+        for pane in &fake_panes[1..] {
+            tab.split_and_insert(
+                0,
+                SplitRequest {
+                    direction: crate::tab::SplitDirection::Horizontal,
+                    target_is_second: true,
+                    size: crate::tab::SplitSize::Percent(50),
+                    top_level: false,
+                },
+                pane.clone(),
+            )
+            .unwrap();
+        }
+        tab.set_active_idx(0);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        for pane in &fake_panes[1..] {
+            mux.add_pane(pane).unwrap();
+        }
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        let tab_id = tab.tab_id();
+
+        let metadata = sample_agent_metadata("mirrored");
+        let snapshots = panes
+            .iter()
+            .filter_map(|(pane_id, needs_attention)| {
+                let needs_attention = (*needs_attention)?;
+                let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+                runtime.turn_state = AgentTurnState::WaitingOnUser;
+                runtime.last_turn_completed_at =
+                    Some(Utc.with_ymd_and_hms(2026, 11, 17, 16, 50, 0).unwrap());
+                Some(AgentSnapshot {
+                    metadata: metadata.clone(),
+                    runtime,
+                    pane_id: *pane_id,
+                    tab_id,
+                    window_id,
+                    workspace: DEFAULT_WORKSPACE.to_string(),
+                    domain_id: domain.id,
+                    origin: AgentOrigin::Adopted,
+                    detection_source: None,
+                    needs_attention,
+                })
+            })
+            .collect();
+        mux.replace_mirrored_agent_snapshots_for_domain(domain.id, snapshots);
+        mux.set_mirrored_agent_badge(
+            tab_id,
+            AgentTabBadgeState {
+                waiting_on_user: true,
+                needs_attention: panes.iter().any(|(_, needs)| *needs == Some(true)),
+            },
+        );
+        (window_id, tab_id)
+    }
+
+    /// Handles notifications the way a focused window showing `shown` does,
+    /// starting with `first` and then every notification that handling
+    /// causes, and returns how many it handled and how many
+    /// acknowledgements it sent to the server.
+    fn run_shown_reply_cycle(
+        mux: &Arc<Mux>,
+        shown: ShownAgentPane,
+        first: MuxNotification,
+    ) -> (usize, usize) {
+        let queue = Arc::new(Mutex::new(std::collections::VecDeque::from([first])));
+        let queue_for_sub = Arc::clone(&queue);
+        mux.subscribe(move |notification| {
+            queue_for_sub.lock().push_back(notification);
+            true
+        });
+        let (mut handled, mut sent) = (0, 0);
+        loop {
+            let Some(notification) = queue.lock().pop_front() else {
+                break;
+            };
+            handled += 1;
+            assert!(handled <= 20, "notifications did not stop");
+            let covered = notification
+                .shown_reply_check()
+                .is_some_and(|check| check.covers(shown.tab_id));
+            if covered && mux.acknowledge_shown_agent_reply(shown) {
+                sent += 1;
+            }
+        }
+        (handled, sent)
+    }
+
+    #[test]
+    fn a_shown_pane_is_not_acknowledged_for_the_reply_beside_it() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        // The shown agent has no unseen reply; the one beside it has.
+        let (_window_id, tab_id) =
+            mirrored_agent_tab(&mux, &domain, &[(291, Some(false)), (292, Some(true))]);
+        let shown = ShownAgentPane {
+            tab_id,
+            pane_id: 291,
+            mirrored: true,
+        };
+        let first = MuxNotification::TabTitleChanged {
+            tab_id,
+            title: String::new(),
+        };
+
+        assert_eq!(run_shown_reply_cycle(&mux, shown, first), (1, 0));
+        assert_eq!(mux.pane_needs_attention(292), Some(true));
+        assert!(
+            mux.tab_badge_state_for_current_identity(tab_id)
+                .needs_attention
+        );
+    }
+
+    #[test]
+    fn a_shown_reply_is_acknowledged_once() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let (window_id, tab_id) =
+            mirrored_agent_tab(&mux, &domain, &[(291, Some(true)), (292, Some(true))]);
+        let shown = ShownAgentPane {
+            tab_id,
+            pane_id: 291,
+            mirrored: true,
+        };
+
+        // Marking the shown reply seen changes the pane, so its tab title
+        // change is handled once more and finds nothing left to mark.
+        let first = MuxNotification::WindowInvalidated(window_id);
+        assert_eq!(run_shown_reply_cycle(&mux, shown, first), (2, 1));
+        assert_eq!(mux.pane_needs_attention(291), Some(false));
+        assert_eq!(mux.pane_needs_attention(292), Some(true));
+        assert!(
+            mux.tab_badge_state_for_current_identity(tab_id)
+                .needs_attention
+        );
+
+        // A title change in another tab leaves the shown tab alone.
+        let elsewhere = MuxNotification::TabTitleChanged {
+            tab_id: tab_id + 1,
+            title: String::new(),
+        };
+        assert_eq!(run_shown_reply_cycle(&mux, shown, elsewhere), (1, 0));
+    }
+
+    #[test]
+    fn a_shown_pane_without_a_snapshot_is_acknowledged_by_its_tab_badge() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        config::use_test_configuration();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+
+        let (_window_id, tab_id) =
+            mirrored_agent_tab(&mux, &domain, &[(291, None), (292, Some(true))]);
+        let shown = ShownAgentPane {
+            tab_id,
+            pane_id: 291,
+            mirrored: true,
+        };
+        let first = MuxNotification::TabTitleChanged {
+            tab_id,
+            title: String::new(),
+        };
+
+        // Until its snapshot arrives the shown pane goes by the tab's badge,
+        // and the server ignores an acknowledgement for a reply already seen.
+        assert_eq!(mux.pane_needs_attention(291), None);
+        assert_eq!(run_shown_reply_cycle(&mux, shown, first), (1, 1));
+    }
+
     #[test]
     fn marking_a_seen_pane_seen_again_does_not_notify_its_tab() {
         let _test_lock = TEST_MUX_LOCK.lock();
@@ -14372,67 +14649,8 @@ mod test {
         Mux::set_mux(&mux);
         let _guard = TestMuxGuard;
 
-        let size = TerminalSize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 800,
-            pixel_height: 480,
-            dpi: 96,
-        };
-        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
-        let tab = Arc::new(Tab::new(&size));
-        let shown = FakePane::new(291, size, domain.id);
-        let beside = FakePane::new(292, size, domain.id);
-        tab.assign_pane(&shown);
-        tab.split_and_insert(
-            0,
-            SplitRequest {
-                direction: crate::tab::SplitDirection::Horizontal,
-                target_is_second: true,
-                size: crate::tab::SplitSize::Percent(50),
-                top_level: false,
-            },
-            beside.clone(),
-        )
-        .unwrap();
-        mux.add_tab_and_active_pane(&tab).unwrap();
-        mux.add_pane(&beside).unwrap();
-        mux.add_tab_to_window(&tab, window_id).unwrap();
-        let tab_id = tab.tab_id();
-
-        // A mirrored tab whose shown agent has no unseen reply while the
-        // agent beside it has one, so the tab's badge needs attention.
-        let metadata = sample_agent_metadata("mirrored");
-        let snapshot = |pane_id, needs_attention| {
-            let mut runtime = AgentRuntimeSnapshot::new(&metadata);
-            runtime.turn_state = AgentTurnState::WaitingOnUser;
-            runtime.last_turn_completed_at =
-                Some(Utc.with_ymd_and_hms(2026, 11, 17, 16, 50, 0).unwrap());
-            AgentSnapshot {
-                metadata: metadata.clone(),
-                runtime,
-                pane_id,
-                tab_id,
-                window_id,
-                workspace: DEFAULT_WORKSPACE.to_string(),
-                domain_id: domain.id,
-                origin: AgentOrigin::Adopted,
-                detection_source: None,
-                needs_attention,
-            }
-        };
-        mux.replace_mirrored_agent_snapshots_for_domain(
-            domain.id,
-            vec![snapshot(291, false), snapshot(292, true)],
-        );
-        mux.set_mirrored_agent_badge(
-            tab_id,
-            AgentTabBadgeState {
-                waiting_on_user: true,
-                needs_attention: true,
-            },
-        );
-
+        let (_window_id, tab_id) =
+            mirrored_agent_tab(&mux, &domain, &[(291, Some(false)), (292, Some(true))]);
         let title_changes = Arc::new(Mutex::new(0usize));
         let title_changes_for_sub = Arc::clone(&title_changes);
         mux.subscribe(move |notification| {
@@ -14442,12 +14660,6 @@ mod test {
             true
         });
 
-        assert_eq!(mux.pane_needs_attention(291), Some(false));
-        assert_eq!(mux.pane_needs_attention(292), Some(true));
-        assert_eq!(mux.pane_needs_attention(293), None);
-
-        // The GUI answers each tab title change by acknowledging the shown
-        // pane, so a change here would repeat without end.
         mux.mark_mirrored_agent_attention_seen(291);
         assert_eq!(*title_changes.lock(), 0);
         assert!(

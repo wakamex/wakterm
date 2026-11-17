@@ -56,7 +56,7 @@ use mux::tab::{
     TabId,
 };
 use mux::window::WindowId as MuxWindowId;
-use mux::{Mux, MuxNotification};
+use mux::{Mux, MuxNotification, ShownAgentPane, ShownReplyCheck};
 use mux_lua::MuxPane;
 use smol::channel::Sender;
 use smol::Timer;
@@ -1417,6 +1417,12 @@ impl TermWindow {
             anyhow::anyhow!("{}", e)
         }
 
+        // Checked once the notification is handled, which can change the
+        // active tab.
+        let reply_check = match &notif {
+            TermWindowNotif::MuxNotification(n) => n.shown_reply_check(),
+            _ => None,
+        };
         match notif {
             TermWindowNotif::InvalidateShapeCache => {
                 self.shape_generation += 1;
@@ -1595,7 +1601,6 @@ impl TermWindow {
                 MuxNotification::WindowInvalidated(window_id) => {
                     log::debug!("termwindow handling WindowInvalidated window_id={window_id}");
                     self.activate_activity_order_neighbor_of_removed_tab();
-                    self.acknowledge_visible_agent_attention(None);
                     window.invalidate();
                     self.update_title_post_status();
                 }
@@ -1634,7 +1639,6 @@ impl TermWindow {
                     log::debug!(
                         "termwindow handling TabTitleChanged tab_id={tab_id} title={title:?}"
                     );
-                    self.acknowledge_visible_agent_attention(Some(tab_id));
                     self.update_title_post_status();
                 }
                 MuxNotification::PaneAdded(_)
@@ -1682,6 +1686,9 @@ impl TermWindow {
             TermWindowNotif::SetInnerSize { width, height } => {
                 self.set_inner_size(window, width, height);
             }
+        }
+        if let Some(check) = reply_check {
+            self.acknowledge_visible_agent_attention(check);
         }
 
         Ok(())
@@ -1768,40 +1775,35 @@ impl TermWindow {
         }
     }
 
-    fn acknowledge_visible_agent_attention(&mut self, expected_tab_id: Option<TabId>) {
+    fn acknowledge_visible_agent_attention(&mut self, check: ShownReplyCheck) {
         if self.focused.is_none() {
             return;
         }
         let Some(tab) = self.get_active_mux_tab() else {
             return;
         };
-        if expected_tab_id.is_some_and(|tab_id| tab_id != tab.tab_id()) {
+        if !check.covers(tab.tab_id()) {
             return;
         }
         let Some(pane) = self.get_active_pane_no_overlay() else {
             return;
         };
-        // The tab's badge also covers its other panes, which this does not
-        // acknowledge, so it decides only for a pane the mux has no state for.
-        let mux = Mux::get();
-        let needs_attention = mux.pane_needs_attention(pane.pane_id()).unwrap_or_else(|| {
-            mux.tab_badge_state_for_current_identity(tab.tab_id())
-                .needs_attention
-        });
-        if !needs_attention {
-            return;
-        }
         if self
             .get_active_pane_or_overlay()
             .is_none_or(|visible| visible.pane_id() != pane.pane_id())
         {
             return;
         }
-        if let Some(client_pane) = pane.downcast_ref::<wakterm_client::pane::ClientPane>() {
-            client_pane.acknowledge_agent_attention();
-            mux.mark_mirrored_agent_attention_seen(pane.pane_id());
-        } else {
-            mux.acknowledge_agent_attention(pane.pane_id());
+        let client_pane = pane.downcast_ref::<wakterm_client::pane::ClientPane>();
+        let shown = ShownAgentPane {
+            tab_id: tab.tab_id(),
+            pane_id: pane.pane_id(),
+            mirrored: client_pane.is_some(),
+        };
+        if Mux::get().acknowledge_shown_agent_reply(shown) {
+            if let Some(client_pane) = client_pane {
+                client_pane.acknowledge_agent_attention();
+            }
         }
     }
 
@@ -2910,7 +2912,7 @@ impl TermWindow {
                 }
                 // The reply is shown now; marking it seen at once lets the
                 // next press move on to the next one.
-                self.acknowledge_visible_agent_attention(Some(tab_id));
+                self.acknowledge_visible_agent_attention(ShownReplyCheck::Tab(tab_id));
                 self.update_title();
                 self.update_scrollbar();
             }
