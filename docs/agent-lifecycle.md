@@ -126,7 +126,7 @@ Supervised Claude observation requires its process-owned session record and tran
 
 Claude can move a conversation to a background job run by its daemon, and a pane may then show that job: either the window that sent it there or `claude attach <job>`. Wakterm observes such a pane through the job's live worker and its session, and the pane keeps its agent identity. While the job runs, the pane's runtime reports `background_job` with a hint for moving the conversation back into the pane, because the worker runs outside the pane and a mux restart stops it. When the worker is gone, observation reports an error naming the job's saved session and the command that resumes it in the pane, rather than choosing a session from transcript timestamps.
 
-ZCode stores sessions in OpenCode's database schema in its own database. A ZCode pane started with `--resume sess_...`, as every restoration is, is observed as exactly that session. Otherwise, as for OpenCode, the observer selects the most recently updated session in the pane's working directory, so two ZCode sessions in one directory can be confused until one is resumed explicitly.
+An OpenCode pane started with `--session ses_...`, as every restoration is, is observed as exactly that session. A restored OpenCode pane keeps its project directory and other options and drops `--continue`, `--fork`, `--session` and `--prompt`; a pane running another OpenCode command, such as `opencode run` or `opencode serve`, is not restored. ZCode stores sessions in OpenCode's database schema in its own database. A ZCode pane started with `--resume sess_...`, as every restoration is, is observed as exactly that session. Otherwise, for either harness, the observer selects the most recently updated session in the pane's working directory, so two sessions of one harness in one directory can be confused until one is resumed explicitly.
 
 Muse Code, Meta's coding CLI, keeps each session as an event log, `sessions/YYYY/MM/DD/<session>/session.jsonl` under `muse` in `XDG_DATA_HOME`, and lists every session with its workspace root in `session-index.db` there. A Muse process holds its session directory's `.session.lock` open while it runs the session, so on Linux a Muse pane is observed as exactly the session whose lock its process holds. Muse adds a new session to its index only some seconds after starting it. Without the lock, a pane started with `muse resume <session>`, as every restoration is, is observed as that session, and otherwise the observer selects the most recently updated session whose workspace root is the pane's working directory. A turn starts with the user's input, which the log records with its text, and ends with its run's terminal record, completed or aborted. Input sent while a turn runs is input to that turn: Muse queues it and hands it to the running run or, when that run ends first, to a new run that answers it, and the turn then ends with that run. While Muse waits on a permission request it has recorded and not yet decided, the agent is waiting for a permission decision and `agent send` writes nothing. `agent send` reads Muse's input box from the screen and writes only while it is empty.
 
@@ -191,7 +191,7 @@ launch command does not.
 Native restoration has one shared provider boundary: identify a restorable
 harness, extract its stable session ID, normalize its concrete process argv,
 construct its exact resume invocation, and confirm the session after launch.
-Agy, Claude, Codex, and ZCode implement that boundary. Provider-specific managed
+Agy, Claude, Codex, Devin, Muse, OpenCode, and ZCode implement that boundary. Provider-specific managed
 transports remain optional preparation paths layered on the same persisted
 restore intent.
 
@@ -305,7 +305,7 @@ The provider stance is:
 | --- | --- | --- |
 | Agy | Native observed and restorable PTY; investigate structured supervision | The interactive TUI exposes exact conversation presence and a persistent transcript; stream JSON and state callbacks apply to managed launches rather than attachment to an existing TUI |
 | Gemini | Native TUI; investigate same-session supervision | Direct ACP makes the client the UI unless Gemini supports concurrent native-TUI attachment |
-| OpenCode | Native TUI; investigate same-session supervision | Direct ACP is not sufficient if it replaces the provider TUI |
+| OpenCode | Native observed and restorable PTY; investigate same-session supervision | `--session` reopens an exact session; direct ACP is not sufficient if it replaces the provider TUI |
 | Muse | Native observed and restorable PTY | Its session log records each input, reply and run end with exact IDs, and `muse resume` reopens an exact session |
 | endchat | Native observed and restorable PTY | Its profile records whether a turn runs and when each turn ends, and the same command reopens the profile |
 | Devin | Native observed and restorable PTY; investigate its ACP worker | Its session database records each message as the turn runs, and a lock file ties the running process to its session; Devin also runs an ACP worker whose attachment to its TUI is untested |

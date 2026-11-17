@@ -872,19 +872,30 @@ fn normalize_claude_argv(argv: &mut Vec<String>) {
 }
 
 /// The session a zcode process was started with through `--resume`.
-fn zcode_resumed_session(harness: &AgentHarness, launch_cmd: &str) -> Option<String> {
-    if harness != &AgentHarness::Zcode {
-        return None;
-    }
+/// The session an OpenCode or zcode command names: OpenCode's `--session`
+/// or `-s`, zcode's `--resume`.
+fn opencode_resumed_session(harness: &AgentHarness, launch_cmd: &str) -> Option<String> {
+    let (options, is_session_id): (&[&str], fn(&str) -> bool) = match harness {
+        AgentHarness::Opencode => (&["--session", "-s"], is_opencode_session_id),
+        AgentHarness::Zcode => (&["--resume"], is_zcode_session_id),
+        _ => return None,
+    };
     let argv = shell_words::split(launch_cmd).ok()?;
     argv.iter()
         .enumerate()
-        .find_map(|(index, arg)| match arg.strip_prefix("--resume=") {
-            Some(session_id) => Some(session_id.to_string()),
-            None if arg == "--resume" => argv.get(index + 1).cloned(),
-            None => None,
+        .find_map(|(index, arg)| {
+            options.iter().find_map(|option| {
+                match arg
+                    .strip_prefix(option)
+                    .and_then(|rest| rest.strip_prefix('='))
+                {
+                    Some(session_id) => Some(session_id.to_string()),
+                    None if arg == option => argv.get(index + 1).cloned(),
+                    None => None,
+                }
+            })
         })
-        .filter(|session_id| is_zcode_session_id(session_id))
+        .filter(|session_id| is_session_id(session_id))
 }
 
 fn is_zcode_session_id(value: &str) -> bool {
@@ -909,6 +920,84 @@ fn normalize_zcode_argv(argv: &mut Vec<String>) {
             _ => argv.push(arg),
         }
     }
+}
+
+/// An OpenCode session ID: `ses_` followed by letters and digits.
+fn is_opencode_session_id(value: &str) -> bool {
+    value
+        .strip_prefix("ses_")
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// Keep an OpenCode command's options and project directory and drop its
+/// session selectors and prompt, which would pick another session or start
+/// a turn on restore. False for its other commands, such as `run` or
+/// `serve`, which are not its interactive interface.
+fn normalize_opencode_argv(argv: &mut Vec<String>) -> bool {
+    const VALUE_OPTIONS: &[&str] = &[
+        "-m",
+        "--model",
+        "--agent",
+        "--port",
+        "--hostname",
+        "--log-level",
+        "--mdns-domain",
+        "--cors",
+        "--replay-limit",
+    ];
+    const SUBCOMMANDS: &[&str] = &[
+        "completion",
+        "acp",
+        "mcp",
+        "attach",
+        "run",
+        "debug",
+        "providers",
+        "auth",
+        "agent",
+        "upgrade",
+        "uninstall",
+        "serve",
+        "web",
+        "models",
+        "stats",
+        "export",
+        "import",
+        "github",
+        "pr",
+        "session",
+        "plugin",
+        "plug",
+        "db",
+    ];
+    let original = std::mem::take(argv);
+    let mut args = original.into_iter();
+    argv.extend(args.next());
+    let mut seen_positional = false;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-c" | "--continue" | "--fork" => {}
+            "-s" | "--session" | "--prompt" => {
+                args.next();
+            }
+            _ if ["--session=", "--prompt="]
+                .iter()
+                .any(|prefix| arg.starts_with(prefix)) => {}
+            _ if VALUE_OPTIONS.contains(&arg.as_str()) => {
+                argv.push(arg);
+                argv.extend(args.next());
+            }
+            _ if !arg.starts_with('-') && !seen_positional => {
+                if SUBCOMMANDS.contains(&arg.as_str()) {
+                    return false;
+                }
+                seen_positional = true;
+                argv.push(arg);
+            }
+            _ => argv.push(arg),
+        }
+    }
+    true
 }
 
 /// A Devin session ID: lowercase words joined by hyphens, such as
@@ -1047,6 +1136,7 @@ fn remove_native_resume_selector(harness: &AgentHarness, argv: &mut Vec<String>)
             }
         }
         AgentHarness::Zcode => normalize_zcode_argv(argv),
+        AgentHarness::Opencode => return normalize_opencode_argv(argv),
         AgentHarness::Devin => normalize_devin_argv(argv),
         AgentHarness::Muse => normalize_muse_argv(argv),
         _ => return false,
@@ -1733,7 +1823,7 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
             expected_session
                 .filter(|expected| expected.harness == observing_harness)
                 .map(|expected| expected.session_id.clone())
-                .or_else(|| zcode_resumed_session(&observing_harness, &metadata.launch_cmd))
+                .or_else(|| opencode_resumed_session(&observing_harness, &metadata.launch_cmd))
                 .as_deref(),
         ),
         AgentHarness::Endchat => observe_endchat(cwd, metadata),
@@ -4108,6 +4198,12 @@ pub fn native_resume_command(
             "zcode restore requires an exact sess_ session ID"
         );
     }
+    if harness == &AgentHarness::Opencode {
+        anyhow::ensure!(
+            is_opencode_session_id(session_id.trim()),
+            "opencode restore requires an exact ses_ session ID"
+        );
+    }
     if harness == &AgentHarness::Devin {
         anyhow::ensure!(
             is_devin_session_id(session_id.trim()),
@@ -4129,6 +4225,7 @@ pub fn native_resume_command(
     argv.push(
         match harness {
             AgentHarness::Agy => "--conversation",
+            AgentHarness::Opencode => "--session",
             AgentHarness::Claude | AgentHarness::Zcode | AgentHarness::Devin => "--resume",
             AgentHarness::Codex | AgentHarness::Muse => "resume",
             _ => unreachable!(),
@@ -4332,6 +4429,11 @@ pub fn restorable_session_id(
             .and_then(parse_opencode_session_path)
             .map(|(_, session_id)| session_id)
             .filter(|session_id| is_zcode_session_id(session_id))),
+        AgentHarness::Opencode => Ok(path
+            .to_str()
+            .and_then(parse_opencode_session_path)
+            .map(|(_, session_id)| session_id)
+            .filter(|session_id| is_opencode_session_id(session_id))),
         AgentHarness::Muse => Ok(crate::muse::session_id_of(path)),
         AgentHarness::Endchat => Ok(path.is_dir().then(|| path.to_string_lossy().into_owned())),
         AgentHarness::Devin => Ok(path
@@ -10439,13 +10541,87 @@ mod test {
         );
         assert!(native_resume_command(&AgentHarness::Zcode, "zcode", "not-a-session").is_err());
         assert_eq!(
-            zcode_resumed_session(&AgentHarness::Zcode, &format!("zcode --resume={session}")),
+            opencode_resumed_session(&AgentHarness::Zcode, &format!("zcode --resume={session}")),
             Some(session.to_string())
         );
-        assert_eq!(zcode_resumed_session(&AgentHarness::Zcode, "zcode"), None);
+        assert_eq!(
+            opencode_resumed_session(&AgentHarness::Zcode, "zcode"),
+            None
+        );
         let url = format!("opencode://session?db=/tmp/db.sqlite&id={session}");
         assert_eq!(
             restorable_session_id(&AgentHarness::Zcode, Path::new(&url)).unwrap(),
+            Some(session.to_string())
+        );
+    }
+
+    #[test]
+    fn opencode_restore_resumes_the_exact_session_with_the_panes_options() {
+        let session = "ses_e1594fef9ffeZYe9PCacTsyWBo";
+        let argv = |launch_cmd: &str| {
+            native_resume_command(&AgentHarness::Opencode, launch_cmd, session).map(|command| {
+                command
+                    .get_argv()
+                    .iter()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            argv("opencode").unwrap(),
+            ["opencode", "--session", session]
+        );
+        assert_eq!(
+            argv(
+                "opencode /code/sebastien -m openai/gpt-5 --agent build -c --fork \
+                 -s ses_old --prompt 'do it' --auto"
+            )
+            .unwrap(),
+            [
+                "opencode",
+                "/code/sebastien",
+                "-m",
+                "openai/gpt-5",
+                "--agent",
+                "build",
+                "--auto",
+                "--session",
+                session
+            ]
+        );
+        // An option's value is not its project, and a project named like a
+        // command is still a project once one is given.
+        assert_eq!(
+            argv("opencode --agent run").unwrap(),
+            ["opencode", "--agent", "run", "--session", session]
+        );
+        assert_eq!(
+            argv("opencode . run").unwrap(),
+            ["opencode", ".", "run", "--session", session]
+        );
+        // Its other commands are not its interactive interface.
+        assert!(argv("opencode run hello").is_err());
+        assert!(argv("opencode serve --port 4096").is_err());
+        assert!(native_resume_command(&AgentHarness::Opencode, "opencode", "sess_x").is_err());
+
+        assert_eq!(
+            opencode_resumed_session(&AgentHarness::Opencode, &format!("opencode -s {session}")),
+            Some(session.to_string())
+        );
+        assert_eq!(
+            opencode_resumed_session(
+                &AgentHarness::Opencode,
+                &format!("opencode --session={session}")
+            ),
+            Some(session.to_string())
+        );
+        assert_eq!(
+            opencode_resumed_session(&AgentHarness::Opencode, "opencode"),
+            None
+        );
+        let url = format!("opencode://session?db=/tmp/opencode.db&id={session}");
+        assert_eq!(
+            restorable_session_id(&AgentHarness::Opencode, Path::new(&url)).unwrap(),
             Some(session.to_string())
         );
     }

@@ -1973,6 +1973,7 @@ impl Mux {
                     | AgentHarness::Claude
                     | AgentHarness::Codex
                     | AgentHarness::Zcode
+                    | AgentHarness::Opencode
                     | AgentHarness::Devin
                     | AgentHarness::Muse
                     | AgentHarness::Endchat
@@ -2024,6 +2025,7 @@ impl Mux {
                 | AgentHarness::Claude
                 | AgentHarness::Codex
                 | AgentHarness::Zcode
+                | AgentHarness::Opencode
                 | AgentHarness::Devin
                 | AgentHarness::Muse
                 | AgentHarness::Endchat

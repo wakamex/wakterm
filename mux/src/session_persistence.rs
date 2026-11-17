@@ -1036,6 +1036,7 @@ fn resumable_agent(entry: &crate::tab::PaneEntry) -> Option<(&AgentMetadata, Age
             | AgentHarness::Claude
             | AgentHarness::Codex
             | AgentHarness::Zcode
+            | AgentHarness::Opencode
             | AgentHarness::Devin
             | AgentHarness::Muse
             | AgentHarness::Endchat
@@ -1182,6 +1183,7 @@ fn prepare_agent_restore(
         AgentHarness::Agy
             | AgentHarness::Claude
             | AgentHarness::Zcode
+            | AgentHarness::Opencode
             | AgentHarness::Devin
             | AgentHarness::Muse
             | AgentHarness::Endchat
