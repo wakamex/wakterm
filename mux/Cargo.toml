@@ -7,6 +7,11 @@ publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+# Panic when a notification keeps firing for one window, tab, or pane,
+# instead of logging it. Other crates enable it for their tests.
+notification-loop-panic = []
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true

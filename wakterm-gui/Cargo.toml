@@ -123,6 +123,7 @@ windows = { workspace=true, features = [
 ]}
 
 [dev-dependencies]
+mux = { workspace = true, features = ["notification-loop-panic"] }
 benchmarking.workspace = true
 env_logger.workspace = true
 k9.workspace = true

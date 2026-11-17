@@ -43,3 +43,6 @@ wakterm-uds.workspace = true
 winapi = { workspace=true, features = [
     "winuser",
 ]}
+
+[dev-dependencies]
+mux = { workspace = true, features = ["notification-loop-panic"] }

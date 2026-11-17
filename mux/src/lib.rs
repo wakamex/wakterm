@@ -73,6 +73,7 @@ pub mod localpane;
 pub mod memory_report;
 pub mod muse;
 pub mod muse_prompt;
+mod notification_rate;
 pub mod pane;
 pub mod renderable;
 pub mod session_persistence;
@@ -250,6 +251,7 @@ pub struct Mux {
     domains: RwLock<HashMap<DomainId, Arc<dyn Domain>>>,
     domains_by_name: RwLock<HashMap<String, Arc<dyn Domain>>>,
     subscribers: RwLock<HashMap<usize, Box<dyn Fn(MuxNotification) -> bool + Send + Sync>>>,
+    notification_rate: Mutex<notification_rate::NotificationRate>,
     pending_pane_output_notifications: Mutex<HashSet<PaneId>>,
     banner: RwLock<Option<String>>,
     clients: RwLock<HashMap<ClientId, ClientInfo>>,
@@ -1585,6 +1587,7 @@ impl Mux {
             domains_by_name: RwLock::new(domains_by_name),
             domains: RwLock::new(domains),
             subscribers: RwLock::new(HashMap::new()),
+            notification_rate: Mutex::new(Default::default()),
             pending_pane_output_notifications: Mutex::new(HashSet::new()),
             banner: RwLock::new(None),
             clients: RwLock::new(HashMap::new()),
@@ -4839,6 +4842,7 @@ impl Mux {
         }
     }
 
+    #[track_caller]
     fn notify_tab_title_changed(&self, tab_id: TabId) {
         self.notify(MuxNotification::TabTitleChanged {
             tab_id,
@@ -6430,7 +6434,23 @@ impl Mux {
         }
     }
 
+    /// Delivers a notification to every subscriber. A notification about
+    /// one window, tab, or pane that keeps firing is reported as a likely
+    /// feedback loop: a panic in tests, where the `notification-loop-panic`
+    /// feature also applies, and otherwise an error in the log.
+    #[track_caller]
     pub fn notify(&self, notification: MuxNotification) {
+        let loop_report = self.notification_rate.lock().record(
+            &notification,
+            std::panic::Location::caller(),
+            Instant::now(),
+        );
+        if let Some(report) = loop_report {
+            if cfg!(any(test, feature = "notification-loop-panic")) {
+                panic!("{}", report);
+            }
+            log::error!("{}", report);
+        }
         self.clear_pending_notification(&notification);
         if notification_changes_saved_session(&notification) {
             crate::session_persistence::request_session_save();
@@ -6447,6 +6467,7 @@ impl Mux {
         subscribers.retain(|_, notify| notify(notification.clone()));
     }
 
+    #[track_caller]
     pub fn notify_tab_resized(&self, tab_id: TabId) {
         self.notify(MuxNotification::TabResized {
             tab_id,
@@ -14562,7 +14583,8 @@ mod test {
                 break;
             };
             handled += 1;
-            assert!(handled <= 20, "notifications did not stop");
+            // Past the limit at which the mux reports a loop with its senders.
+            assert!(handled <= 1_000, "notifications did not stop");
             let covered = notification
                 .shown_reply_check()
                 .is_some_and(|check| check.covers(shown.tab_id));
