@@ -956,7 +956,8 @@ fn first_leaf_entry(node: &PaneNode) -> Option<&crate::tab::PaneEntry> {
 
 fn restore_agent_intent(pane_id: PaneId, intent: &SavedAgentRestoreIntent) -> anyhow::Result<()> {
     let mux = Mux::get();
-    if intent.turn_interrupted {
+    // endchat's turns outlive the mux, whatever an earlier build saved.
+    if intent.turn_interrupted && intent.harness() != AgentHarness::Endchat {
         RESTORED_INTERRUPTED_TURNS.lock().unwrap().push((
             intent.metadata.agent_id.clone(),
             intent.metadata.name.clone(),
