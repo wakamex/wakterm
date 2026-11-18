@@ -337,7 +337,10 @@ fn collect_agent_restore_intents(
             if let Some((harness, metadata, session_id)) =
                 mux.agent_restore_intent_for_pane(entry.pane_id)
             {
-                let turn_interrupted = turn_interrupted(mux, entry.pane_id, &metadata.agent_id);
+                // endchat runs its turns in its own server process, which
+                // a mux restart leaves running.
+                let turn_interrupted = harness != AgentHarness::Endchat
+                    && turn_interrupted(mux, entry.pane_id, &metadata.agent_id);
                 intents.push(SavedAgentRestoreIntent {
                     pane_id: entry.pane_id,
                     harness,
@@ -2178,6 +2181,50 @@ mod test {
             assert!(build_saved_session(&mux).agent_restore_intents[0].turn_interrupted);
         }
         assert!(!build_saved_session(&mux).agent_restore_intents[0].turn_interrupted);
+    }
+
+    #[test]
+    fn a_busy_endchat_turn_is_not_interrupted_by_a_restart() {
+        let _test_lock = crate::TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = crate::TestMuxGuard;
+
+        let window_id = *mux.new_empty_window(Some("default".to_string()), None);
+        let tab_size = size(120, 40);
+        let tab = Arc::new(Tab::new(&tab_size));
+        let pane = TestPane::new(alloc_pane_id(), tab_size);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        let profile = tempfile::tempdir().unwrap();
+        let metadata = AgentMetadata {
+            launch_cmd: format!("endchat chat {}", profile.path().display()),
+            ..sample_agent_metadata("chat")
+        };
+        mux.set_agent_metadata(pane_id, metadata).unwrap();
+        let mut runtime = mux
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .cloned()
+            .expect("agent runtime");
+        runtime.harness = AgentHarness::Endchat;
+        runtime.turn_state = crate::agent::AgentTurnState::WaitingOnAgent;
+        runtime.session_path = Some(profile.path().to_string_lossy().into_owned());
+        mux.agent_runtime_by_pane.write().insert(pane_id, runtime);
+
+        // endchat's own server runs the turn, so it outlives the mux.
+        let session = build_saved_session(&mux);
+        assert_eq!(session.agent_restore_intents.len(), 1);
+        assert_eq!(
+            session.agent_restore_intents[0].harness,
+            AgentHarness::Endchat
+        );
+        assert!(!session.agent_restore_intents[0].turn_interrupted);
     }
 
     #[test]
