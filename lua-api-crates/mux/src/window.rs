@@ -48,8 +48,8 @@ impl UserData for MuxWindow {
         });
         methods.add_method("set_workspace", |_, this, new_name: String| {
             let mux = get_mux()?;
-            let mut window = this.resolve_mut(&mux)?;
-            Ok(window.set_workspace(&new_name))
+            mux.set_window_workspace_by_user(this.0, &new_name)
+                .map_err(mlua::Error::external)
         });
         methods.add_async_method("spawn_tab", |_, this, spawn: SpawnTab| async move {
             spawn.spawn(this).await

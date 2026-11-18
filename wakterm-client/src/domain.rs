@@ -853,15 +853,6 @@ struct StatusRefreshState {
     pending: bool,
 }
 
-async fn update_remote_workspace(
-    local_domain_id: DomainId,
-    pdu: codec::SetWindowWorkspace,
-) -> anyhow::Result<()> {
-    let inner = ClientDomain::get_client_inner_for_domain(local_domain_id)?;
-    inner.client.set_window_workspace(pdu).await?;
-    Ok(())
-}
-
 fn mux_notify_client_domain(local_domain_id: DomainId, notif: MuxNotification) -> bool {
     let mux = Mux::get();
     let domain = match mux.get_domain(local_domain_id) {
@@ -876,63 +867,6 @@ fn mux_notify_client_domain(local_domain_id: DomainId, notif: MuxNotification) -
     match notif {
         MuxNotification::ActiveWorkspaceChanged(_client_id) => {
             // TODO: advice remote host of interesting workspaces
-        }
-        MuxNotification::WorkspaceRenamed {
-            old_workspace,
-            new_workspace,
-        } => {
-            if let Some(inner) = client_domain.inner() {
-                let workspaces = Mux::get().iter_workspaces();
-                if workspaces.contains(&old_workspace) {
-                    promise::spawn::spawn(async move {
-                        inner
-                            .client
-                            .rename_workspace(codec::RenameWorkspace {
-                                old_workspace,
-                                new_workspace,
-                            })
-                            .await
-                    })
-                    .detach();
-                }
-            }
-        }
-        MuxNotification::WindowWorkspaceChanged(window_id) => {
-            // Mux::get_window() may trigger a borrow error if called
-            // immediately; defer the bulk of this work.
-            // <https://github.com/wakamex/wakterm/issues/2638>
-            promise::spawn::spawn_into_main_thread(async move {
-                let mux = Mux::get();
-                let domain = match mux.get_domain(local_domain_id) {
-                    Some(domain) => domain,
-                    None => return,
-                };
-                let domain = match domain.downcast_ref::<ClientDomain>() {
-                    Some(domain) => domain,
-                    None => return,
-                };
-                if let Some(remote_window_id) = domain.local_to_remote_window_id(window_id) {
-                    if let Some(workspace) = mux
-                        .get_window(window_id)
-                        .map(|w| w.get_workspace().to_string())
-                    {
-                        promise::spawn::spawn_into_main_thread(async move {
-                            let request = codec::SetWindowWorkspace {
-                                window_id: remote_window_id,
-                                workspace,
-                            };
-                            let _ = update_remote_workspace(local_domain_id, request).await;
-                        })
-                        .detach();
-                    }
-                } else {
-                    log::debug!(
-                        "local window id {window_id} has no known remote window \
-                        id while reconciling a local WindowWorkspaceChanged event"
-                    );
-                }
-            })
-            .detach();
         }
         MuxNotification::TabOrderChanged {
             window_id, tab_ids, ..
@@ -2028,6 +1962,41 @@ impl ClientDomain {
 
 #[async_trait(?Send)]
 impl Domain for ClientDomain {
+    fn window_workspace_set_by_user(&self, window_id: WindowId, workspace: &str) {
+        let Some(remote_window_id) = self.local_to_remote_window_id(window_id) else {
+            return;
+        };
+        let Some(inner) = self.inner() else {
+            return;
+        };
+        let request = codec::SetWindowWorkspace {
+            window_id: remote_window_id,
+            workspace: workspace.to_string(),
+        };
+        promise::spawn::spawn(async move {
+            if let Err(err) = inner.client.set_window_workspace(request).await {
+                log::warn!("sending the workspace of remote window {remote_window_id}: {err:#}");
+            }
+        })
+        .detach();
+    }
+
+    fn workspace_renamed_by_user(&self, old_workspace: &str, new_workspace: &str) {
+        let Some(inner) = self.inner() else {
+            return;
+        };
+        let request = codec::RenameWorkspace {
+            old_workspace: old_workspace.to_string(),
+            new_workspace: new_workspace.to_string(),
+        };
+        promise::spawn::spawn(async move {
+            if let Err(err) = inner.client.rename_workspace(request).await {
+                log::warn!("sending a workspace rename: {err:#}");
+            }
+        })
+        .detach();
+    }
+
     fn window_title_set_by_user(&self, window_id: WindowId, title: &str) {
         let Some(remote_window_id) = self.local_to_remote_window_id(window_id) else {
             return;
@@ -3789,8 +3758,8 @@ mod test {
         )
     }
 
-    /// Runs the spawned work and returns the title requests the client
-    /// sent since the last call.
+    /// Runs the spawned work and returns the title and workspace requests
+    /// the client sent since the last call.
     fn sent_title_requests(
         executor: &promise::spawn::SimpleExecutor,
         requests: &smol::channel::Receiver<crate::client::ReaderMessage>,
@@ -3802,7 +3771,10 @@ mod test {
             .filter(|pdu| {
                 matches!(
                     pdu,
-                    codec::Pdu::TabTitleChanged(_) | codec::Pdu::WindowTitleChanged(_)
+                    codec::Pdu::TabTitleChanged(_)
+                        | codec::Pdu::WindowTitleChanged(_)
+                        | codec::Pdu::SetWindowWorkspace(_)
+                        | codec::Pdu::RenameWorkspace(_)
                 )
             })
             .collect();
@@ -3891,5 +3863,64 @@ mod test {
             vec![sent("first"), sent("work")]
         );
         assert_eq!(mux.get_window(window_id).unwrap().get_title(), "work");
+    }
+
+    #[test]
+    fn workspace_changes_from_the_server_send_nothing_back() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+        let (window_id, _tab_id, requests) = mirrored_window_with_requests(&mux);
+        sent_title_requests(&executor, &requests);
+
+        // As the client applies the server's WindowWorkspaceChanged and
+        // RenameWorkspace.
+        mux.get_window_mut(window_id)
+            .unwrap()
+            .set_workspace("remote");
+        mux.rename_workspace("remote", "renamed");
+
+        assert_eq!(sent_title_requests(&executor, &requests), vec![]);
+        assert_eq!(
+            mux.get_window(window_id).unwrap().get_workspace(),
+            "renamed"
+        );
+    }
+
+    #[test]
+    fn a_user_workspace_change_reaches_the_server_once() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+        let (window_id, _tab_id, requests) = mirrored_window_with_requests(&mux);
+        sent_title_requests(&executor, &requests);
+
+        mux.set_window_workspace_by_user(window_id, "work").unwrap();
+        assert_eq!(
+            sent_title_requests(&executor, &requests),
+            vec![codec::Pdu::SetWindowWorkspace(codec::SetWindowWorkspace {
+                window_id: 1,
+                workspace: "work".to_string(),
+            })]
+        );
+
+        // The rename goes out once, without a move for each of its windows.
+        mux.rename_workspace_by_user("work", "review");
+        assert_eq!(
+            sent_title_requests(&executor, &requests),
+            vec![codec::Pdu::RenameWorkspace(codec::RenameWorkspace {
+                old_workspace: "work".to_string(),
+                new_workspace: "review".to_string(),
+            })]
+        );
+        assert_eq!(mux.get_window(window_id).unwrap().get_workspace(), "review");
+
+        // A workspace no window is in has nothing to rename.
+        mux.rename_workspace_by_user("work", "other");
+        assert_eq!(sent_title_requests(&executor, &requests), vec![]);
     }
 }

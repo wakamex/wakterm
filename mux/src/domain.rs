@@ -207,6 +207,17 @@ pub trait Domain: Downcast + Send + Sync {
     /// can send the title on to the server. A window can hold tabs from
     /// several domains, so every domain is called.
     fn window_title_set_by_user(&self, _window_id: WindowId, _title: &str) {}
+
+    /// Called after the user or a script in this process moved `window_id`
+    /// to `workspace`, so that a domain mirroring that window from a
+    /// server can send the change on to the server. Every domain is called.
+    fn window_workspace_set_by_user(&self, _window_id: WindowId, _workspace: &str) {}
+
+    /// Called after the user or a script in this process renamed a
+    /// workspace that held at least one window, so that a domain mirroring
+    /// a server can send the rename on to the server. Every domain is
+    /// called.
+    fn workspace_renamed_by_user(&self, _old_workspace: &str, _new_workspace: &str) {}
 }
 impl_downcast!(Domain);
 

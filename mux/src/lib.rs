@@ -2419,6 +2419,39 @@ impl Mux {
         Ok(())
     }
 
+    /// Moves a window to `workspace` as the user or a script asked, and
+    /// passes the change to every domain, so that each one mirroring the
+    /// window from a server sends it there.
+    pub fn set_window_workspace_by_user(
+        &self,
+        window_id: WindowId,
+        workspace: &str,
+    ) -> anyhow::Result<()> {
+        self.get_window_mut(window_id)
+            .ok_or_else(|| anyhow!("no such window {window_id}"))?
+            .set_workspace(workspace);
+        for domain in self.iter_domains() {
+            domain.window_workspace_set_by_user(window_id, workspace);
+        }
+        Ok(())
+    }
+
+    /// Renames a workspace as the user or a script asked, and, when a
+    /// window was in it, passes the rename to every domain, so that each
+    /// one mirroring a server sends it there.
+    pub fn rename_workspace_by_user(&self, old_workspace: &str, new_workspace: &str) {
+        let existed = self
+            .iter_workspaces()
+            .iter()
+            .any(|workspace| workspace == old_workspace);
+        self.rename_workspace(old_workspace, new_workspace);
+        if existed && old_workspace != new_workspace {
+            for domain in self.iter_domains() {
+                domain.workspace_renamed_by_user(old_workspace, new_workspace);
+            }
+        }
+    }
+
     /// Sets a tab's title as the user or a script asked, and passes it to
     /// the tab's domain, which sends it to the server when the tab mirrors
     /// one there.
