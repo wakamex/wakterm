@@ -38,6 +38,16 @@ use wakterm_term::{
 
 const PROC_INFO_CACHE_TTL: Duration = Duration::from_millis(300);
 
+/// Refreshes the process snapshot that panes read their foreground process
+/// from when it is more than half as old as they accept. Call it from
+/// another thread just before main-thread work that reads it for many
+/// panes, such as listing agents, so that the work finds it fresh instead of
+/// capturing it on the main thread.
+pub fn refresh_process_info() {
+    #[cfg(target_os = "linux")]
+    LocalProcessInfo::refresh_cached_snapshot(PROC_INFO_CACHE_TTL / 2);
+}
+
 /// Whether the program in the pane receives a mouse event: with mouse
 /// reporting on, or a wheel turned into arrow keys on the alternate screen.
 /// Moving the pointer over a shell is not input to it.

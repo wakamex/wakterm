@@ -34,10 +34,26 @@ static PROCESS_SNAPSHOT: LazyLock<Mutex<Option<CachedLinuxProcessSnapshot>>> =
 static SNAPSHOT_CAPTURE_COUNT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// When set, a capture waits at this barrier as it starts and again before
+/// it reads /proc, so a test can act while a capture is in progress.
+#[cfg(test)]
+static CAPTURE_PAUSE: Mutex<Option<Arc<std::sync::Barrier>>> = Mutex::new(None);
+
+/// Serializes the tests that use the process-wide snapshot.
+#[cfg(test)]
+static SNAPSHOT_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 impl LinuxProcessSnapshot {
     fn capture() -> Self {
         #[cfg(test)]
-        SNAPSHOT_CAPTURE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        {
+            SNAPSHOT_CAPTURE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let pause = CAPTURE_PAUSE.lock().unwrap().clone();
+            if let Some(pause) = pause {
+                pause.wait();
+                pause.wait();
+            }
+        }
 
         let mut processes = HashMap::new();
         if let Ok(entries) = std::fs::read_dir("/proc") {
@@ -141,20 +157,34 @@ impl LinuxProcessSnapshot {
     }
 }
 
+/// Returns a snapshot no older than `max_age`, capturing a new one when the
+/// cached one is older. The capture runs outside the lock, so a slow capture
+/// on one thread never holds up a thread that can use the cached snapshot.
 fn cached_process_snapshot(max_age: Duration) -> Option<Arc<LinuxProcessSnapshot>> {
-    let mut cached = PROCESS_SNAPSHOT.lock().ok()?;
-    let expired = max_age.is_zero()
-        || cached
+    if !max_age.is_zero() {
+        let cached = PROCESS_SNAPSHOT.lock().ok()?;
+        if let Some(cached) = cached
             .as_ref()
-            .map(|cached| cached.captured_at.elapsed() > max_age)
-            .unwrap_or(true);
-    if expired {
+            .filter(|cached| cached.captured_at.elapsed() <= max_age)
+        {
+            return Some(Arc::clone(&cached.snapshot));
+        }
+    }
+
+    let captured_at = Instant::now();
+    let snapshot = Arc::new(LinuxProcessSnapshot::capture());
+    let mut cached = PROCESS_SNAPSHOT.lock().ok()?;
+    // A capture that started later on another thread is the newer one.
+    if cached
+        .as_ref()
+        .map_or(true, |cached| cached.captured_at <= captured_at)
+    {
         *cached = Some(CachedLinuxProcessSnapshot {
-            captured_at: Instant::now(),
-            snapshot: Arc::new(LinuxProcessSnapshot::capture()),
+            captured_at,
+            snapshot: Arc::clone(&snapshot),
         });
     }
-    cached.as_ref().map(|cached| Arc::clone(&cached.snapshot))
+    Some(snapshot)
 }
 
 impl From<&str> for LocalProcessStatus {
@@ -214,6 +244,13 @@ impl LocalProcessInfo {
     pub fn with_root_pid_cached(pid: u32, max_age: Duration) -> Option<Self> {
         cached_process_snapshot(max_age)?.process(pid)
     }
+
+    /// Captures a new process snapshot when the cached one is older than
+    /// `max_age`. Calling this from another thread just before work that
+    /// reads cached process info keeps the capture off that work's thread.
+    pub fn refresh_cached_snapshot(max_age: Duration) {
+        cached_process_snapshot(max_age);
+    }
 }
 
 #[cfg(test)]
@@ -242,6 +279,9 @@ mod tests {
 
     #[test]
     fn cached_process_lookups_share_one_proc_snapshot() {
+        let _lock = SNAPSHOT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         *PROCESS_SNAPSHOT.lock().unwrap() = None;
         SNAPSHOT_CAPTURE_COUNT.store(0, Ordering::Relaxed);
         let pid = std::process::id();
@@ -257,5 +297,35 @@ mod tests {
         LocalProcessInfo::with_root_pid_cached(pid, Duration::ZERO).unwrap();
 
         assert_eq!(SNAPSHOT_CAPTURE_COUNT.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn a_capture_in_progress_does_not_hold_up_a_cached_lookup() {
+        let _lock = SNAPSHOT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let pid = std::process::id();
+        LocalProcessInfo::refresh_cached_snapshot(Duration::ZERO);
+
+        let pause = Arc::new(std::sync::Barrier::new(2));
+        *CAPTURE_PAUSE.lock().unwrap() = Some(Arc::clone(&pause));
+        let refresh =
+            std::thread::spawn(|| LocalProcessInfo::refresh_cached_snapshot(Duration::ZERO));
+        pause.wait();
+        *CAPTURE_PAUSE.lock().unwrap() = None;
+
+        let (looked_up, lookup) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = looked_up.send(LocalProcessInfo::with_root_pid_cached(
+                pid,
+                Duration::from_secs(3600),
+            ));
+        });
+        let result = lookup.recv_timeout(Duration::from_secs(5));
+        pause.wait();
+        refresh.join().unwrap();
+
+        let process = result.expect("the cached lookup waited for the capture");
+        assert_eq!(process.unwrap().pid, pid);
     }
 }
