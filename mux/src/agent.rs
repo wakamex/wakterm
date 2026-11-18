@@ -5199,11 +5199,19 @@ fn claude_prompt_row(lines: &[wakterm_term::Line]) -> Option<usize> {
     })
 }
 
+/// The text Claude's input box shows, when all of it is on the box's first
+/// row.
+pub fn claude_draft_on_prompt_row(lines: &[wakterm_term::Line]) -> Option<String> {
+    let prompt = claude_prompt_row(lines)?;
+    let draft = claude_draft(lines)?;
+    (claude_draft(&lines[prompt - 1..=prompt]).as_ref() == Some(&draft)).then_some(draft)
+}
+
 /// Whether the cursor, at `column` of line `row` of the pane's visible
 /// lines, is where Claude's input box starts. Claude keeps the terminal
-/// cursor at its input caret, after any text typed into the box, so with
-/// the caret there, what the box shows after it is not typed text: a
-/// suggestion, or cells left from an earlier drawing.
+/// cursor at its input caret, so what the box shows after a caret there is
+/// either text the caret was moved back over or cells left from an earlier
+/// drawing, which the screen alone cannot tell apart.
 pub fn claude_caret_at_box_start(lines: &[wakterm_term::Line], row: usize, column: usize) -> bool {
     let Some(prompt) = claude_prompt_row(lines) else {
         return false;
@@ -6703,7 +6711,7 @@ mod test {
     }
 
     #[test]
-    fn text_after_a_caret_at_the_box_start_is_not_typed() {
+    fn a_caret_at_the_box_start_is_found_before_the_text() {
         use wakterm_term::{CellAttributes, Line};
         let line = |text: &str| Line::from_text(text, &CellAttributes::default(), 0, None);
         let lines = vec![
@@ -6712,9 +6720,17 @@ mod test {
             line("❯ abc"),
             line("────────────────────"),
         ];
-        // The box shows text that the cell attributes cannot tell apart from
-        // a draft, but Claude's caret is before it.
-        assert!(claude_draft(&lines).is_some());
+        // The box shows text with Claude's caret before it.
+        assert_eq!(claude_draft_on_prompt_row(&lines).as_deref(), Some("abc"));
+        // Text continuing on the next row is typed: nothing else draws there.
+        let wrapped = vec![
+            line("────────────────────"),
+            line("❯ abc"),
+            line("  def"),
+            line("────────────────────"),
+        ];
+        assert_eq!(claude_draft(&wrapped).as_deref(), Some("abc\ndef"));
+        assert_eq!(claude_draft_on_prompt_row(&wrapped), None);
         assert!(claude_caret_at_box_start(&lines, 2, 2));
         // A caret after the text, or on another line, is where typed text
         // ends.

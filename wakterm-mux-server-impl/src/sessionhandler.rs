@@ -2539,9 +2539,17 @@ pub(crate) async fn prepare_agent_input_box(
         blocked,
         draft_stashed,
     };
-    match Mux::get().agent_input_box(pane_id) {
+    let mut input_box = Mux::get().agent_input_box(pane_id);
+    if let AgentInputBox::ClaudeTextAfterCaret(text) = input_box {
+        input_box = claude_box_after_pressing_end(pane_id, text).await?;
+    }
+    match input_box {
         AgentInputBox::Ready => Ok(response(None, false)),
         AgentInputBox::Blocked(reason) => Ok(response(Some(reason), false)),
+        AgentInputBox::ClaudeTextAfterCaret(_) => Ok(response(
+            Some("the input box changed while it was being read".to_string()),
+            false,
+        )),
         AgentInputBox::IdleClaudeDraft => {
             Mux::get().stash_claude_draft(pane_id)?;
             wait_for_redraw(pane_id).await;
@@ -2566,6 +2574,38 @@ pub(crate) async fn prepare_agent_input_box(
         }
     }
 }
+
+/// Presses End in a Claude box showing `text` after a caret at its start.
+/// A caret that moves shows a draft, which is then read like any other; one
+/// that stays shows the box is empty and `text` was left on the screen.
+async fn claude_box_after_pressing_end(
+    pane_id: mux::pane::PaneId,
+    text: String,
+) -> anyhow::Result<mux::AgentInputBox> {
+    use mux::AgentInputBox;
+    let thawed = Mux::get().press_end_in_claude_box(pane_id)?;
+    let patience = if thawed {
+        REDRAW_UNRESPONSIVE_LIMIT
+    } else {
+        CLAUDE_END_KEY_PATIENCE
+    };
+    let deadline = std::time::Instant::now() + patience;
+    loop {
+        smol::Timer::after(std::time::Duration::from_millis(50)).await;
+        match Mux::get().agent_input_box(pane_id) {
+            AgentInputBox::ClaudeTextAfterCaret(shown) if shown == text => {
+                if std::time::Instant::now() >= deadline {
+                    Mux::get().note_claude_stale_box_text(pane_id, text);
+                    return Ok(Mux::get().agent_input_box(pane_id));
+                }
+            }
+            other => return Ok(other),
+        }
+    }
+}
+
+/// How long Claude has to move its caret when End is pressed.
+const CLAUDE_END_KEY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
 
 const REDRAW_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 const REDRAW_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);

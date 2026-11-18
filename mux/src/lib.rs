@@ -230,6 +230,8 @@ pub struct Mux {
     pending_agent_approvals: RwLock<HashMap<String, agent_approval::PendingAgentApproval>>,
     agent_output_reader: agent_service::AgentOutputReader,
     agent_input_by_pane: RwLock<HashMap<PaneId, AgentPaneInput>>,
+    /// Text a Claude pane's screen shows in an input box found to be empty.
+    claude_stale_box_text: RwLock<HashMap<PaneId, String>>,
     /// The process of each frozen agent pane.
     frozen_agents: Mutex<HashMap<PaneId, u32>>,
     /// When each pane's agent was last thawed, which restarts its idle time.
@@ -1240,6 +1242,11 @@ pub enum AgentInputBox {
     /// A draft in Claude's box that nobody has typed into for a while.
     /// Claude can stash it and restore it after the message is submitted.
     IdleClaudeDraft,
+    /// Text in Claude's box after a caret at its start, with no recent input
+    /// to the pane: a draft the caret was moved back over, or cells left
+    /// from an earlier drawing. Pressing End tells them apart, since only a
+    /// draft gives the caret somewhere to go.
+    ClaudeTextAfterCaret(String),
     /// agy's feedback survey in place of its input box, which shows that no
     /// turn runs. Its Skip choice closes it and brings the box back.
     AgySurvey,
@@ -1574,6 +1581,7 @@ impl Mux {
             pending_agent_approvals: RwLock::new(HashMap::new()),
             agent_output_reader,
             agent_input_by_pane: RwLock::new(HashMap::new()),
+            claude_stale_box_text: RwLock::new(HashMap::new()),
             frozen_agents: Mutex::new(HashMap::new()),
             agent_thawed_at: Mutex::new(HashMap::new()),
             claude_menus: Mutex::new(HashMap::new()),
@@ -2749,6 +2757,7 @@ impl Mux {
         self.agent_artifact_watcher.lock().unwatch_pane(pane_id);
         self.agent_observer_state_by_pane.write().remove(&pane_id);
         self.agent_input_by_pane.write().remove(&pane_id);
+        self.claude_stale_box_text.write().remove(&pane_id);
         self.agent_attention_seen_at.write().remove(&pane_id);
         crate::session_persistence::request_session_save();
         self.notify(MuxNotification::AgentMetadataChanged {
@@ -4199,14 +4208,8 @@ impl Mux {
         let Some(reason) = agent::input_box_blocked(&harness, &lines) else {
             return AgentInputBox::Ready;
         };
-        if harness == AgentHarness::Claude {
-            let cursor = pane.get_cursor_position();
-            let row = <usize as std::convert::TryFrom<_>>::try_from(cursor.y - top).ok();
-            if cursor.visibility == termwiz::surface::CursorVisibility::Visible
-                && row.is_some_and(|row| agent::claude_caret_at_box_start(&lines, row, cursor.x))
-            {
-                return AgentInputBox::Ready;
-            }
+        if harness != AgentHarness::Claude {
+            return AgentInputBox::Blocked(reason.to_string());
         }
         let recent_input = self
             .agent_input_by_pane
@@ -4214,8 +4217,18 @@ impl Mux {
             .get(&pane_id)
             .and_then(|input| Some((input.last_kind, input.at?.elapsed())))
             .filter(|(_, age)| *age < CLAUDE_DRAFT_IDLE);
-        if harness != AgentHarness::Claude {
-            return AgentInputBox::Blocked(reason.to_string());
+        let cursor = pane.get_cursor_position();
+        let row = <usize as std::convert::TryFrom<_>>::try_from(cursor.y - top).ok();
+        if recent_input.is_none()
+            && cursor.visibility == termwiz::surface::CursorVisibility::Visible
+            && row.is_some_and(|row| agent::claude_caret_at_box_start(&lines, row, cursor.x))
+        {
+            if let Some(text) = agent::claude_draft_on_prompt_row(&lines) {
+                if self.claude_stale_box_text.read().get(&pane_id) == Some(&text) {
+                    return AgentInputBox::Ready;
+                }
+                return AgentInputBox::ClaudeTextAfterCaret(text);
+            }
         }
         // Names the input that makes the draft look typed, since nothing
         // else records which input that was.
@@ -4342,6 +4355,23 @@ impl Mux {
         self.thaw_agent_pane(pane_id);
         pane.writer().write_all(&key)?;
         Ok(())
+    }
+
+    /// Presses End in Claude's input box, which moves the caret only past
+    /// text the box really holds. Returns whether the pane had to be thawed.
+    pub fn press_end_in_claude_box(&self, pane_id: PaneId) -> anyhow::Result<bool> {
+        let pane = self
+            .get_pane(pane_id)
+            .with_context(|| format!("pane {pane_id} disappeared"))?;
+        let thawed = self.thaw_agent_pane(pane_id);
+        pane.writer().write_all(b"\x1b[F")?;
+        Ok(thawed)
+    }
+
+    /// Records that the text a Claude pane's screen shows in its input box
+    /// is not in the box.
+    pub fn note_claude_stale_box_text(&self, pane_id: PaneId, text: String) {
+        self.claude_stale_box_text.write().insert(pane_id, text);
     }
 
     /// Notes that Enter is about to submit typed input to the pane, so that
@@ -10298,10 +10328,33 @@ mod test {
         );
 
         assert_eq!(mux.agent_input_box(empty), AgentInputBox::Ready);
-        // Text after a caret at the start of the box is not typed, even
-        // right after input reached the pane.
-        mux.record_agent_input_generation(stale, "keyboard");
+        // Text after a caret at the start of the box may be a draft, and
+        // is one while someone is at the pane.
+        let shown = "half a thought".to_string();
+        assert_eq!(
+            mux.agent_input_box(stale),
+            AgentInputBox::ClaudeTextAfterCaret(shown.clone())
+        );
+        mux.record_agent_input_generation(stale, "mouse");
+        assert_eq!(
+            mux.agent_input_box(stale),
+            AgentInputBox::Blocked(
+                "the input box holds text the user is typing: the pane received mouse input \
+                 0 s ago"
+                    .to_string()
+            )
+        );
+        mux.agent_input_by_pane.write().get_mut(&stale).unwrap().at =
+            Instant::now().checked_sub(CLAUDE_DRAFT_IDLE);
+        // Found to be left from an earlier drawing, that text is an empty
+        // box; any other text is looked at again.
+        mux.note_claude_stale_box_text(stale, shown);
         assert_eq!(mux.agent_input_box(stale), AgentInputBox::Ready);
+        mux.note_claude_stale_box_text(stale, "other text".to_string());
+        assert!(matches!(
+            mux.agent_input_box(stale),
+            AgentInputBox::ClaudeTextAfterCaret(_)
+        ));
         // No input has reached the pane, so nobody is typing the draft.
         assert_eq!(
             mux.agent_input_box(drafting),
