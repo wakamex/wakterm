@@ -308,6 +308,17 @@ fn build_saved_session(mux: &Mux) -> SavedSession {
     }
 }
 
+fn collect_pane_ids(node: &PaneNode, pane_ids: &mut Vec<PaneId>) {
+    match node {
+        PaneNode::Empty => {}
+        PaneNode::Leaf(entry) => pane_ids.push(entry.pane_id),
+        PaneNode::Split { left, right, .. } => {
+            collect_pane_ids(left, pane_ids);
+            collect_pane_ids(right, pane_ids);
+        }
+    }
+}
+
 fn collect_pane_tokens(mux: &Mux, node: &PaneNode, tokens: &mut HashMap<PaneId, String>) {
     match node {
         PaneNode::Empty => {}
@@ -701,11 +712,25 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
     // Each Claude agent was running in its folder, so Claude must not stop
     // at its folder trust prompt when it resumes there. Recorded for all of
     // them before any starts, since each running Claude takes the same lock.
-    let claude_folders = restore_intents
-        .values()
+    // It runs on another thread, since the main thread serves clients that
+    // connect meanwhile.
+    let mut restored_panes = Vec::new();
+    for saved_window in &session.windows {
+        for saved_tab in &saved_window.tabs {
+            collect_pane_ids(&saved_tab.tree, &mut restored_panes);
+        }
+    }
+    let claude_folders = restored_panes
+        .iter()
+        .filter_map(|pane_id| restore_intents.get(pane_id))
         .filter(|intent| intent.harness() == AgentHarness::Claude)
-        .map(|intent| intent.metadata.declared_cwd.as_str());
-    match crate::agent::trust_claude_folders(claude_folders) {
+        .map(|intent| intent.metadata.declared_cwd.clone())
+        .collect::<Vec<_>>();
+    let trust = promise::spawn::spawn_into_new_thread(move || {
+        crate::agent::trust_claude_folders(claude_folders.iter().map(String::as_str))
+    })
+    .await;
+    match trust {
         Ok(trusted) if !trusted.is_empty() => {
             log::info!("recorded Claude folder trust for {}", trusted.join(", "))
         }

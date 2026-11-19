@@ -2602,6 +2602,12 @@ pub fn trust_claude_folders<'a>(
     let config = claude_sessions_root()
         .and_then(|root| Some(root.parent()?.parent()?.join(".claude.json")))
         .context("Claude's config file has no known location")?;
+    let mut cwds = cwds
+        .into_iter()
+        .filter(|cwd| !cwd.is_empty())
+        .collect::<Vec<_>>();
+    cwds.sort_unstable();
+    cwds.dedup();
     let mut keys = cwds
         .into_iter()
         .map(|cwd| {
@@ -2616,7 +2622,25 @@ pub fn trust_claude_folders<'a>(
         .collect::<Vec<_>>();
     keys.sort();
     keys.dedup();
-    if keys.is_empty() {
+
+    // Claude replaces the file whole, so reading it unlocked sees a complete
+    // version; when every folder is trusted already, the lock is not taken.
+    let untrusted = |settings: &Value| {
+        keys.iter()
+            .filter(|key| {
+                settings.pointer(&format!(
+                    "/projects/{}/hasTrustDialogAccepted",
+                    key.replace('~', "~0").replace('/', "~1")
+                )) != Some(&Value::Bool(true))
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let read = || -> anyhow::Result<Value> {
+        serde_json::from_slice(&fs::read(&config)?)
+            .with_context(|| format!("parsing {}", config.display()))
+    };
+    if untrusted(&read()?).is_empty() {
         return Ok(Vec::new());
     }
 
@@ -2628,9 +2652,11 @@ pub fn trust_claude_folders<'a>(
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    let staged = config.with_file_name(format!(".claude.json.wakterm-{}", std::process::id()));
     let result = (|| {
-        let mut settings: Value = serde_json::from_slice(&fs::read(&config)?)
-            .with_context(|| format!("parsing {}", config.display()))?;
+        let mut settings = read()?;
+        let missing = untrusted(&settings);
+        let mut trusted = Vec::new();
         let projects = settings
             .as_object_mut()
             .context("Claude's config is not a JSON object")?
@@ -2638,27 +2664,35 @@ pub fn trust_claude_folders<'a>(
             .or_insert_with(|| serde_json::json!({}))
             .as_object_mut()
             .context("Claude's projects are not a JSON object")?;
-        let mut trusted = Vec::new();
-        for key in keys {
-            let project = projects
+        for key in missing {
+            // A project entry Claude would not read is left alone, and the
+            // other folders are still trusted.
+            match projects
                 .entry(key.clone())
                 .or_insert_with(|| serde_json::json!({}))
                 .as_object_mut()
-                .with_context(|| format!("Claude's project {key} is not a JSON object"))?;
-            if project.get("hasTrustDialogAccepted") != Some(&Value::Bool(true)) {
-                project.insert("hasTrustDialogAccepted".to_string(), Value::Bool(true));
-                trusted.push(key);
+            {
+                Some(project) => {
+                    project.insert("hasTrustDialogAccepted".to_string(), Value::Bool(true));
+                    trusted.push(key);
+                }
+                None => log::warn!("Claude's project {key} is not a JSON object"),
             }
         }
         if trusted.is_empty() {
             return Ok(trusted);
         }
-        let staged = config.with_file_name(format!(".claude.json.wakterm-{}", std::process::id()));
-        fs::write(&staged, serde_json::to_vec_pretty(&settings)?)?;
+        let mut file = fs::File::create(&staged)?;
+        std::io::Write::write_all(&mut file, &serde_json::to_vec_pretty(&settings)?)?;
+        file.sync_all()?;
+        drop(file);
         fs::set_permissions(&staged, fs::metadata(&config)?.permissions())?;
         fs::rename(&staged, &config)?;
         Ok(trusted)
     })();
+    if result.is_err() {
+        let _ = fs::remove_file(&staged);
+    }
     let _ = fs::remove_dir(&lock);
     result
 }
@@ -7419,12 +7453,36 @@ mod test {
             true
         );
 
-        // Already trusted: nothing to write.
+        // Already trusted: nothing to write, and Claude's lock is not
+        // waited for.
         let written = fs::metadata(&config).unwrap().modified().unwrap();
+        fs::create_dir(&lock).unwrap();
+        let started = std::time::Instant::now();
         assert!(trust_claude_folders([repo.to_str().unwrap()])
             .unwrap()
             .is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        fs::remove_dir(&lock).unwrap();
         assert_eq!(fs::metadata(&config).unwrap().modified().unwrap(), written);
+
+        // A project entry Claude could not read does not keep the other
+        // folders from being trusted.
+        let other = home.path().join("other");
+        fs::create_dir_all(&other).unwrap();
+        let mut saved: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+        saved["projects"]["/broken"] = serde_json::json!(5);
+        fs::write(&config, saved.to_string()).unwrap();
+        assert_eq!(
+            trust_claude_folders(["/broken", other.to_str().unwrap()]).unwrap(),
+            [other.to_string_lossy().into_owned()]
+        );
+        let saved: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+        assert_eq!(saved["projects"]["/broken"], 5);
+        assert!(!home.path().read_dir().unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".claude.json.wakterm")));
         remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
     }
 
