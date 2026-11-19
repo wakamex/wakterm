@@ -584,7 +584,16 @@ mod tests {
         assert_eq!(root.name, "sh");
         let sleep = root.children.values().next().unwrap();
         assert_eq!(sleep.argv, ["sleep", "30"]);
-        assert_eq!(sleep.executable.file_name().unwrap(), "sleep");
+        // The executable is the file `sleep` resolves to, which some
+        // systems, such as Nix, make one multi-call coreutils binary.
+        let sleep_on_path = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|dir| dir.join("sleep"))
+            .find(|path| path.is_file())
+            .unwrap();
+        assert_eq!(
+            sleep.executable,
+            std::fs::canonicalize(sleep_on_path).unwrap()
+        );
 
         child.0.kill().unwrap();
         child.0.wait().unwrap();
