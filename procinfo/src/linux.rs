@@ -287,6 +287,16 @@ impl TreeSampler {
                     .retain(|_, asked| asked.elapsed() < FORGET_ROOT_AFTER);
                 wants.roots.keys().copied().collect::<Vec<_>>()
             };
+            // The last roots have just been forgotten: publish nothing and
+            // wait, without a scan.
+            if roots.is_empty() {
+                images.clear();
+                *self
+                    .published
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(HashMap::new());
+                continue;
+            }
             // A pass that panics is logged and the thread keeps sampling,
             // so lookups are not left with the last pass for good.
             let pass = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
