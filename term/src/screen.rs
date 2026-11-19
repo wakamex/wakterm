@@ -105,7 +105,7 @@ impl Screen {
         cursor_y: PhysRowIndex,
         seqno: SequenceNo,
     ) -> (usize, PhysRowIndex) {
-        let mut rewrapped = VecDeque::new();
+        let mut rewrapped = VecDeque::with_capacity(self.lines.len());
         let mut logical_line: Option<Line> = None;
         let mut logical_cursor_x: Option<usize> = None;
         let mut adjusted_cursor = (cursor_x, cursor_y);
@@ -217,9 +217,10 @@ impl Screen {
         // maximized states.
         let cursor_phys = self.phys_row(cursor.y);
         for _ in cursor_phys + 1..self.lines.len() {
-            if self.lines.back().map(Line::is_whitespace).unwrap_or(false) {
-                self.lines.pop_back();
+            if !self.lines.back().map(Line::is_whitespace).unwrap_or(false) {
+                break;
             }
+            self.lines.pop_back();
         }
 
         let (cursor_x, cursor_y) = if physical_cols != self.physical_cols {

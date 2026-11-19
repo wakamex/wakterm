@@ -308,6 +308,46 @@ impl ClusteredLine {
         self.last_cell_width
     }
 
+    /// Whether the last cell, as `iter` yields it, has the wrapped
+    /// attribute, found without segmenting the text into graphemes. With
+    /// only single-width cells the last cell belongs to the last cluster.
+    /// Otherwise `iter`'s assignment of cells to clusters is replayed from
+    /// the cell widths.
+    pub fn last_cell_was_wrapped(&self) -> bool {
+        if self.len == 0 {
+            return false;
+        }
+        if self.is_double_wide.is_none() {
+            return self
+                .clusters
+                .last()
+                .is_some_and(|cluster| cluster.attrs.wrapped());
+        }
+        let mut clusters = self.clusters.iter();
+        let mut cluster = clusters.next();
+        let mut cluster_total = 0;
+        let mut cell_index = 0;
+        let mut wrapped = false;
+        while cell_index < self.len as usize {
+            let Some(current) = cluster else {
+                break;
+            };
+            let width = if self.is_double_wide(cell_index) {
+                2
+            } else {
+                1
+            };
+            cell_index += width;
+            cluster_total += width;
+            wrapped = current.attrs.wrapped();
+            if cluster_total >= current.cell_width as usize {
+                cluster = clusters.next();
+                cluster_total = 0;
+            }
+        }
+        wrapped
+    }
+
     pub fn set_last_cell_was_wrapped(&mut self, wrapped: bool) {
         if let Some(width) = self.compute_last_cell_width() {
             let width = width.get() as u16;
@@ -381,5 +421,47 @@ mod test {
         assert_eq!(core::mem::size_of::<Vec<Cluster>>(), 24);
         assert_eq!(core::mem::size_of::<Option<Box<FixedBitSet>>>(), 8);
         assert_eq!(core::mem::size_of::<Option<NonZeroU8>>(), 1);
+    }
+
+    #[test]
+    fn the_wrap_flag_is_read_from_the_last_cluster() {
+        use crate::line::Line;
+        let plain = CellAttributes::default();
+        let mut bold = CellAttributes::default();
+        bold.set_intensity(wakterm_cell::Intensity::Bold);
+        let walked = |line: &Line| {
+            line.visible_cells()
+                .last()
+                .map(|cell| cell.attrs().wrapped())
+                .unwrap_or(false)
+        };
+        let mut lines = vec![
+            Line::from_text("", &plain, 0, None),
+            Line::from_text("plain text", &plain, 0, None),
+            Line::from_text("wide at the end \u{4e2d}", &plain, 0, None),
+        ];
+        let mut mixed = Line::from_text("start ", &plain, 0, None);
+        mixed.append_line(Line::from_text("bold end", &bold, 0, None), 0);
+        lines.push(mixed);
+        let mut wide_mixed = Line::from_text("\u{4e2d}\u{6587} a", &plain, 0, None);
+        wide_mixed.append_line(Line::from_text("\u{5b57} b", &bold, 0, None), 0);
+        lines.push(wide_mixed);
+        for line in lines {
+            for wrapped in [false, true] {
+                // The flag set before and after the line is compressed.
+                let mut before = line.clone();
+                before.set_last_cell_was_wrapped(wrapped, 0);
+                before.compress_for_scrollback();
+                let mut after = line.clone();
+                after.compress_for_scrollback();
+                after.set_last_cell_was_wrapped(wrapped, 0);
+                if !after.visible_cells().any(|cell| cell.width() > 1) {
+                    assert_eq!(after.last_cell_was_wrapped(), wrapped, "{after:?}");
+                }
+                for line in [before, after] {
+                    assert_eq!(line.last_cell_was_wrapped(), walked(&line), "{line:?}");
+                }
+            }
+        }
     }
 }

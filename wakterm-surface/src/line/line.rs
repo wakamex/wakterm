@@ -1086,6 +1086,11 @@ impl Line {
     /// Return true if the last cell in the line has the wrapped attribute,
     /// indicating that the following line is logically a part of this one.
     pub fn last_cell_was_wrapped(&self) -> bool {
+        // Rewrapping asks this of every scrollback line, so a clustered line
+        // answers from its last cluster instead of walking its cells.
+        if let CellStorage::C(cl) = &self.cells {
+            return cl.last_cell_was_wrapped();
+        }
         self.visible_cells()
             .last()
             .map(|c| c.attrs().wrapped())
