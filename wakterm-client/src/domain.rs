@@ -2,7 +2,7 @@ use crate::client::Client;
 use crate::pane::ClientPane;
 use anyhow::{anyhow, bail, ensure};
 use async_trait::async_trait;
-use codec::{ListPanesResponse, SetParkedTabs, SetTabOrder, SpawnV2, SplitPane};
+use codec::{ListPanesResponse, ResizeTab, SetParkedTabs, SetTabOrder, SpawnV2, SplitPane};
 use config::keyassignment::SpawnTabDomain;
 use config::{configuration, SshDomain, TlsDomainClient, UnixDomain};
 use mux::agent::{AgentMetadata, AgentTabBadgeState};
@@ -30,6 +30,7 @@ pub struct ClientInner {
     remote_tab_to_window: Mutex<HashMap<TabId, WindowId>>,
     remote_to_local_pane: Mutex<HashMap<PaneId, PaneId>>,
     tab_order_outbox: Mutex<TabOrderOutbox>,
+    resize_tab_outbox: Mutex<ResizeTabOutbox>,
     parked_tabs_outbox: Mutex<ParkedTabsOutbox>,
     active_tab_outbox: Mutex<ActiveTabOutbox>,
     pub focused_remote_pane_id: Mutex<Option<PaneId>>,
@@ -191,6 +192,46 @@ impl ParkedTabsOutbox {
 
     fn abort(&mut self, window_id: WindowId) {
         self.windows.remove(&window_id);
+    }
+}
+
+#[derive(Default)]
+struct ResizeTabSendState {
+    in_flight: bool,
+    pending: Option<Vec<(PaneId, TerminalSize)>>,
+}
+
+/// The newest pane sizes of each remote tab not yet sent, one request in
+/// flight per tab. Resizes arrive faster than the server applies them while
+/// a window is dragged; only the latest sizes matter.
+#[derive(Default)]
+struct ResizeTabOutbox {
+    tabs: HashMap<TabId, ResizeTabSendState>,
+}
+
+impl ResizeTabOutbox {
+    fn queue(&mut self, tab_id: TabId, pane_sizes: Vec<(PaneId, TerminalSize)>) -> bool {
+        let state = self.tabs.entry(tab_id).or_default();
+        state.pending = Some(pane_sizes);
+        if state.in_flight {
+            false
+        } else {
+            state.in_flight = true;
+            true
+        }
+    }
+
+    fn take_next_or_finish(&mut self, tab_id: TabId) -> Option<Vec<(PaneId, TerminalSize)>> {
+        let state = self.tabs.get_mut(&tab_id)?;
+        if let Some(pane_sizes) = state.pending.take() {
+            return Some(pane_sizes);
+        }
+        self.tabs.remove(&tab_id);
+        None
+    }
+
+    fn abort(&mut self, tab_id: TabId) {
+        self.tabs.remove(&tab_id);
     }
 }
 
@@ -617,6 +658,67 @@ impl ClientInner {
         }
     }
 
+    /// Sends a remote tab's pane sizes, keeping only the newest sizes while
+    /// a resize of that tab is in flight.
+    pub(crate) fn queue_resize_tab(
+        self: &Arc<Self>,
+        remote_tab_id: TabId,
+        pane_sizes: Vec<(PaneId, TerminalSize)>,
+    ) {
+        let should_start = self
+            .resize_tab_outbox
+            .lock()
+            .unwrap()
+            .queue(remote_tab_id, pane_sizes);
+        if !should_start {
+            return;
+        }
+        let inner = Arc::clone(self);
+        promise::spawn::spawn(async move {
+            inner.flush_resize_tab(remote_tab_id).await;
+        })
+        .detach();
+    }
+
+    async fn flush_resize_tab(self: &Arc<Self>, remote_tab_id: TabId) {
+        loop {
+            let Some(pane_sizes) = self
+                .resize_tab_outbox
+                .lock()
+                .unwrap()
+                .take_next_or_finish(remote_tab_id)
+            else {
+                return;
+            };
+            let request = ResizeTab {
+                tab_id: remote_tab_id,
+                pane_sizes,
+            };
+            if let Err(err) = self.client.resize_tab(request).await {
+                log::error!("failed to resize remote tab {remote_tab_id}: {err:#}");
+                self.resize_tab_outbox.lock().unwrap().abort(remote_tab_id);
+                self.request_resync();
+                return;
+            }
+        }
+    }
+
+    /// Reconciles this domain's mirror from the server.
+    pub(crate) fn request_resync(&self) {
+        let local_domain_id = self.local_domain_id;
+        promise::spawn::spawn_into_main_thread(async move {
+            let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
+            let domain = mux
+                .get_domain(local_domain_id)
+                .ok_or_else(|| anyhow!("no such domain {}", local_domain_id))?;
+            let domain = domain
+                .downcast_ref::<ClientDomain>()
+                .ok_or_else(|| anyhow!("domain {} is not a ClientDomain", local_domain_id))?;
+            domain.resync_coalesced().await
+        })
+        .detach();
+    }
+
     pub(crate) fn queue_active_tab(self: &Arc<Self>, remote_tab_id: TabId, remote_pane_id: PaneId) {
         let remote_window_id = {
             let tab_windows = self.remote_tab_to_window.lock().unwrap();
@@ -830,6 +932,7 @@ impl ClientInner {
             remote_tab_to_window: Mutex::new(HashMap::new()),
             remote_to_local_pane: Mutex::new(HashMap::new()),
             tab_order_outbox: Mutex::new(TabOrderOutbox::default()),
+            resize_tab_outbox: Mutex::new(ResizeTabOutbox::default()),
             parked_tabs_outbox: Mutex::new(ParkedTabsOutbox::default()),
             active_tab_outbox: Mutex::new(ActiveTabOutbox::default()),
             focused_remote_pane_id: Mutex::new(None),
@@ -3398,6 +3501,34 @@ mod test {
         );
         assert_eq!(echoes.load(Ordering::Relaxed), 0);
         assert!(domain.process_remote_tab_order(1, &[101]).is_err());
+    }
+
+    #[test]
+    fn resize_tab_outbox_keeps_only_the_newest_sizes_while_one_is_in_flight() {
+        let mut outbox = ResizeTabOutbox::default();
+        assert!(outbox.queue(7, vec![(70, size(80, 24))]));
+        assert_eq!(
+            outbox.take_next_or_finish(7),
+            Some(vec![(70, size(80, 24))])
+        );
+
+        // A drag queues many sizes while the first is in flight; the next
+        // request carries the last of them, and tabs do not wait on each
+        // other.
+        for cols in 81..=120 {
+            assert!(!outbox.queue(7, vec![(70, size(cols, 24))]));
+        }
+        assert!(outbox.queue(8, vec![(80, size(100, 30))]));
+        assert_eq!(
+            outbox.take_next_or_finish(7),
+            Some(vec![(70, size(120, 24))])
+        );
+        assert_eq!(outbox.take_next_or_finish(7), None);
+        assert!(outbox.queue(7, vec![(70, size(90, 24))]));
+
+        // A failed send leaves nothing in flight.
+        outbox.abort(8);
+        assert!(outbox.queue(8, vec![(80, size(90, 30))]));
     }
 
     #[test]

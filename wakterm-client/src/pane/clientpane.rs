@@ -291,36 +291,34 @@ impl ClientPane {
     }
 }
 
+/// The batch with each local pane ID replaced by its remote ID, or None
+/// when any pane has no remote ID: the server must never be sent local IDs.
 fn translate_resize_batch<F>(
     pane_sizes: Vec<(PaneId, TerminalSize)>,
     mut resolve_remote_pane_id: F,
-) -> Vec<(PaneId, TerminalSize)>
+) -> Option<Vec<(PaneId, TerminalSize)>>
 where
     F: FnMut(PaneId) -> Option<PaneId>,
 {
     let mut missing = Vec::new();
     let translated = pane_sizes
         .into_iter()
-        .map(|(pane_id, size)| {
-            let remote_pane_id = match resolve_remote_pane_id(pane_id) {
-                Some(remote_pane_id) => remote_pane_id,
-                None => {
-                    missing.push(pane_id);
-                    pane_id
-                }
-            };
-            (remote_pane_id, size)
+        .filter_map(|(pane_id, size)| match resolve_remote_pane_id(pane_id) {
+            Some(remote_pane_id) => Some((remote_pane_id, size)),
+            None => {
+                missing.push(pane_id);
+                None
+            }
         })
         .collect();
-
     if !missing.is_empty() {
         log::error!(
             "resize_tab could not map local pane ids to remote pane ids: pane_ids={:?}",
             missing
         );
+        return None;
     }
-
-    translated
+    Some(translated)
 }
 
 #[async_trait(?Send)]
@@ -487,8 +485,6 @@ impl Pane for ClientPane {
     }
 
     fn send_resize_batch(&self, _tab_id: mux::tab::TabId, pane_sizes: Vec<(PaneId, TerminalSize)>) {
-        let client = Arc::clone(&self.client);
-        let tab_id = self.remote_tab_id;
         let pane_sizes = translate_resize_batch(pane_sizes, |local_pane_id| {
             Mux::try_get()
                 .and_then(|mux| mux.get_pane(local_pane_id))
@@ -497,13 +493,10 @@ impl Pane for ClientPane {
                         .map(|pane| pane.remote_pane_id())
                 })
         });
-        promise::spawn::spawn(async move {
-            client
-                .client
-                .resize_tab(ResizeTab { tab_id, pane_sizes })
-                .await
-        })
-        .detach();
+        match pane_sizes {
+            Some(pane_sizes) => self.client.queue_resize_tab(self.remote_tab_id, pane_sizes),
+            None => self.client.request_resync(),
+        }
     }
 
     fn send_rotate_panes(&self, _tab_id: mux::tab::TabId, clockwise: bool) {
@@ -772,12 +765,18 @@ mod tests {
                 }
             });
 
-        assert_eq!(translated, vec![(101, size(250, 68)), (202, size(124, 68))]);
+        assert_eq!(
+            translated,
+            Some(vec![(101, size(250, 68)), (202, size(124, 68))])
+        );
     }
 
     #[test]
-    fn resize_batch_falls_back_to_local_id_when_unmapped() {
-        let translated = translate_resize_batch(vec![(10, size(80, 24))], |_| None);
-        assert_eq!(translated, vec![(10, size(80, 24))]);
+    fn a_resize_batch_with_an_unmapped_pane_is_not_sent() {
+        let translated =
+            translate_resize_batch(vec![(10, size(80, 24)), (11, size(80, 24))], |pane_id| {
+                (pane_id == 10).then_some(101)
+            });
+        assert_eq!(translated, None);
     }
 }
