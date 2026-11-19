@@ -1525,9 +1525,30 @@ impl SessionHandler {
                                         .ok_or_else(|| anyhow!("pane {pane_id} is gone"))
                                 })
                                 .collect::<anyhow::Result<Vec<_>>>()?;
-                            // Apply all pane sizes, then rebuild once.
+                            // Apply all pane sizes, then rebuild once. A request
+                            // that changes no pane's size changes nothing to
+                            // tell the other clients about.
+                            let changed = panes.iter().any(|(pane, size)| {
+                                let dims = pane.get_dimensions();
+                                (
+                                    dims.cols,
+                                    dims.viewport_rows,
+                                    dims.pixel_width,
+                                    dims.pixel_height,
+                                    dims.dpi,
+                                ) != (
+                                    size.cols,
+                                    size.rows,
+                                    size.pixel_width,
+                                    size.pixel_height,
+                                    size.dpi,
+                                )
+                            });
                             for (pane, size) in panes {
                                 pane.resize(size)?;
+                            }
+                            if !changed {
+                                return Ok(Pdu::UnitResponse(UnitResponse {}));
                             }
                             tab.rebuild_splits_sizes_from_contained_panes();
                             tab.log_runtime_invariant_errors("server.resize_tab");
@@ -2629,11 +2650,14 @@ fn validate_resize_tab(
             tab_pane_ids
         );
     }
-    if let Some((pane_id, size)) = pane_sizes
-        .iter()
-        .find(|(_, size)| size.rows == 0 || size.cols == 0)
-    {
-        anyhow::bail!("resize_tab gave pane {pane_id} an empty size {size:?}");
+    let fits = |value: usize| (1..=usize::from(u16::MAX)).contains(&value);
+    if let Some((pane_id, size)) = pane_sizes.iter().find(|(_, size)| {
+        !fits(size.rows)
+            || !fits(size.cols)
+            || size.pixel_width > usize::from(u16::MAX)
+            || size.pixel_height > usize::from(u16::MAX)
+    }) {
+        anyhow::bail!("resize_tab gave pane {pane_id} a size a terminal cannot take: {size:?}");
     }
     Ok(())
 }
@@ -2959,6 +2983,9 @@ mod test {
         assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24)), (1, size(40, 24))]).is_err());
         assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24)), (3, size(40, 24))]).is_err());
         assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24)), (2, size(0, 24))]).is_err());
+        // So is one too large for a terminal's 16-bit size fields.
+        assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24)), (2, size(70_000, 24))]).is_err());
+        assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24)), (2, size(7_000, 24))]).is_err());
     }
 
     use super::*;

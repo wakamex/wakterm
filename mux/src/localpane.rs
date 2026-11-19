@@ -38,6 +38,57 @@ use wakterm_term::{
 
 const PROC_INFO_CACHE_TTL: Duration = Duration::from_millis(300);
 
+/// A terminal resize this slow is logged with what the thread spent it on.
+const SLOW_TERMINAL_RESIZE: Duration = Duration::from_millis(50);
+
+/// Resizes the terminal, which rewraps its scrollback, and logs a slow
+/// resize with the thread's CPU time, page faults and context switches
+/// during it: faults that read pages back from swap and time spent waiting
+/// tell a resize slowed by memory pressure from one slowed by the rewrap.
+fn resize_terminal(terminal: &mut Terminal, size: TerminalSize) {
+    #[cfg(target_os = "linux")]
+    fn thread_usage() -> Option<libc::rusage> {
+        let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+        (unsafe { libc::getrusage(libc::RUSAGE_THREAD, usage.as_mut_ptr()) } == 0)
+            .then(|| unsafe { usage.assume_init() })
+    }
+    #[cfg(target_os = "linux")]
+    let before = thread_usage();
+    let lines = terminal.screen().scrollback_rows();
+    let started = Instant::now();
+    terminal.resize(size);
+    let elapsed = started.elapsed();
+    if elapsed < SLOW_TERMINAL_RESIZE {
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    if let (Some(before), Some(after)) = (before, thread_usage()) {
+        let ms = |end: libc::timeval, start: libc::timeval| {
+            (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / 1000
+        };
+        log::warn!(
+            "resizing a terminal of {lines} lines to {}x{} took {} ms: {} ms user, {} ms \
+             system, {} major and {} minor page faults, {} waits, {} preemptions",
+            size.cols,
+            size.rows,
+            elapsed.as_millis(),
+            ms(after.ru_utime, before.ru_utime),
+            ms(after.ru_stime, before.ru_stime),
+            after.ru_majflt - before.ru_majflt,
+            after.ru_minflt - before.ru_minflt,
+            after.ru_nvcsw - before.ru_nvcsw,
+            after.ru_nivcsw - before.ru_nivcsw,
+        );
+        return;
+    }
+    log::warn!(
+        "resizing a terminal of {lines} lines to {}x{} took {} ms",
+        size.cols,
+        size.rows,
+        elapsed.as_millis()
+    );
+}
+
 /// Whether the program in the pane receives a mouse event: with mouse
 /// reporting on, or a wheel turned into arrow keys on the alternate screen.
 /// Moving the pointer over a shell is not input to it.
@@ -446,7 +497,8 @@ impl Pane for LocalPane {
     fn resize(&self, size: TerminalSize) -> Result<(), Error> {
         // Already this size with no resize waiting: waking a frozen agent
         // and signalling the program would only make it redraw.
-        if self.pending_resize.lock().is_none() && self.terminal.lock().get_size() == size {
+        let resize_waiting = self.pending_resize.lock().is_some();
+        if !resize_waiting && self.terminal.lock().get_size() == size {
             return Ok(());
         }
         // A frozen agent would keep showing its old layout.
@@ -470,7 +522,7 @@ impl Pane for LocalPane {
             }
             _ => {
                 self.pending_resize.lock().take();
-                self.terminal.lock().resize(size);
+                resize_terminal(&mut self.terminal.lock(), size);
             }
         }
         Ok(())
@@ -484,7 +536,7 @@ impl Pane for LocalPane {
         if let Some((target, size)) = *pending {
             if progress.applied() >= target {
                 pending.take();
-                self.terminal.lock().resize(size);
+                resize_terminal(&mut self.terminal.lock(), size);
             }
         }
     }
