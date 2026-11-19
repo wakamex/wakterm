@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if ! command -v cargo >/dev/null 2>&1; then
+# Commit tools often run without ~/.cargo/bin on PATH, which once skipped
+# this check without a word.
+cargo=$(command -v cargo || true)
+if [ -z "$cargo" ] && [ -x "${CARGO_HOME:-$HOME/.cargo}/bin/cargo" ]; then
+  cargo="${CARGO_HOME:-$HOME/.cargo}/bin/cargo"
+fi
+if [ -z "$cargo" ]; then
+  echo "pre-commit: cargo not found; the formatting check was skipped" >&2
   exit 0
 fi
 
-if ! cargo +nightly fmt --all --check >/dev/null 2>&1; then
+if ! "$cargo" +nightly fmt --all --check >/dev/null 2>&1; then
   echo "pre-commit: formatting check failed" >&2
   echo "Run: cargo +nightly fmt --all" >&2
   exit 1
