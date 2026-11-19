@@ -568,7 +568,15 @@ impl SessionHandler {
             }
         }
 
+        let request = decoded.pdu.pdu_name();
         let send_response = move |result: anyhow::Result<Pdu>| {
+            let elapsed = start.elapsed();
+            if elapsed >= SLOW_RESPONSE && !WAITING_REQUESTS.contains(&request) {
+                log::warn!(
+                    "answered {request} {} ms after it arrived",
+                    elapsed.as_millis()
+                );
+            }
             let pdu = match result {
                 Ok(pdu) => pdu,
                 Err(err) => Pdu::ErrorResponse(ErrorResponse {
@@ -581,12 +589,24 @@ impl SessionHandler {
             }
         };
 
+        #[track_caller]
         fn catch<F, SND>(f: F, send_response: SND)
         where
             F: FnOnce() -> anyhow::Result<Pdu>,
             SND: Fn(anyhow::Result<Pdu>),
         {
-            send_response(f());
+            let handler = std::panic::Location::caller();
+            let started = Instant::now();
+            let result = f();
+            let ran = started.elapsed();
+            if ran >= SLOW_HANDLER {
+                log::warn!(
+                    "the request handler at line {} ran {} ms",
+                    handler.line(),
+                    ran.as_millis()
+                );
+            }
+            send_response(result);
         }
 
         match decoded.pdu {
@@ -2606,6 +2626,23 @@ async fn claude_box_after_pressing_end(
 
 /// How long Claude has to move its caret when End is pressed.
 const CLAUDE_END_KEY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A request handler that holds its thread this long is logged with its
+/// line, since most run on the main thread, which then waits for it.
+const SLOW_HANDLER: Duration = Duration::from_millis(200);
+/// A request answered this long after it arrived is logged by its type.
+const SLOW_RESPONSE: Duration = Duration::from_secs(1);
+/// Requests whose answer waits on an agent or for events by design.
+const WAITING_REQUESTS: &[&str] = &[
+    "AdmitAgentPrompt",
+    "SubmitAgentRequest",
+    "ReadAgentEvents",
+    "ListAgentRequestEvents",
+    "ReadAgentOutput",
+    "PrepareAgentInputBox",
+    "SubmitTypedInput",
+    "ResolveAgentApproval",
+];
 
 const REDRAW_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 const REDRAW_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);

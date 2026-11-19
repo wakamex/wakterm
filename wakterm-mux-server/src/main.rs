@@ -313,6 +313,23 @@ fn run() -> anyhow::Result<()> {
         mux::memory_report::log_memory_report();
     });
 
+    // Logs when the main thread runs a task late, which delays every
+    // request that needs it.
+    thread::spawn(|| loop {
+        thread::sleep(std::time::Duration::from_secs(1));
+        if SHUTDOWN_FLAG.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        let queued = std::time::Instant::now();
+        promise::spawn::spawn_into_main_thread(async move {
+            let late = queued.elapsed();
+            if late >= std::time::Duration::from_millis(250) {
+                log::warn!("the main thread ran a task {} ms late", late.as_millis());
+            }
+        })
+        .detach();
+    });
+
     let activity = Activity::new();
 
     promise::spawn::spawn(async move {

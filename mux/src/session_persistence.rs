@@ -496,7 +496,9 @@ pub fn save_session() -> anyhow::Result<PathBuf> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mux = Mux::try_get().context("no mux instance")?;
+    let started = std::time::Instant::now();
     let session = build_saved_session(&mux);
+    let built = started.elapsed();
 
     let path = session_path();
     if let Some(parent) = path.parent() {
@@ -504,10 +506,24 @@ pub fn save_session() -> anyhow::Result<PathBuf> {
             .with_context(|| format!("creating session directory {}", parent.display()))?;
     }
     let json = serde_json::to_vec_pretty(&session).context("serializing session")?;
+    let serialized = started.elapsed();
     let mut last_committed = LAST_COMMITTED_SESSION
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !commit_serialized_session(&path, &previous_session_path(), &json, &mut last_committed)? {
+    let committed =
+        commit_serialized_session(&path, &previous_session_path(), &json, &mut last_committed)?;
+    let total = started.elapsed();
+    if total >= std::time::Duration::from_millis(200) {
+        log::warn!(
+            "saving the session took {} ms: {} ms reading the mux, {} ms serializing, {} ms \
+             writing",
+            total.as_millis(),
+            built.as_millis(),
+            (serialized - built).as_millis(),
+            (total - serialized).as_millis()
+        );
+    }
+    if !committed {
         log::debug!("Session unchanged: {}", path.display());
         return Ok(path);
     }
