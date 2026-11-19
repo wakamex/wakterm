@@ -2,7 +2,8 @@
 //! memory, and thaws them before input reaches them.
 //!
 //! On Linux an agent is frozen with the cgroup v2 freezer: the process alone
-//! moves into a child of the mux's own cgroup, which is frozen. Unlike
+//! moves into a child of the mux's own cgroup, or of the panes' cgroup when
+//! the server keeps its memory out of swap, which is frozen. Unlike
 //! SIGSTOP, this sends no signal, so the job-control shell the agent runs
 //! under does not see it stop and keeps the terminal with it.
 //!
@@ -55,8 +56,18 @@ mod imp {
         own_cgroup().is_ok_and(|dir| dir.join("cgroup.procs").exists())
     }
 
+    /// Where freeze cgroups go, and where thawed processes return: the
+    /// panes' cgroup when the server keeps its own memory out of swap, so
+    /// that a frozen agent's memory is never charged to the server's.
+    fn freeze_root() -> anyhow::Result<PathBuf> {
+        match crate::memory_protection::panes_cgroup() {
+            Some(panes) => Ok(panes.clone()),
+            None => own_cgroup(),
+        }
+    }
+
     pub fn freeze(pid: u32) -> anyhow::Result<()> {
-        let dir = own_cgroup()?.join(format!("{PREFIX}{pid}"));
+        let dir = freeze_root()?.join(format!("{PREFIX}{pid}"));
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         fs::write(dir.join("cgroup.procs"), pid.to_string())
             .with_context(|| format!("moving process {pid} into {}", dir.display()))?;
@@ -66,7 +77,7 @@ mod imp {
     }
 
     pub fn thaw(pid: u32) -> anyhow::Result<()> {
-        let root = own_cgroup()?;
+        let root = freeze_root()?;
         thaw_dir(&root, &root.join(format!("{PREFIX}{pid}")))
     }
 
@@ -87,15 +98,23 @@ mod imp {
     }
 
     pub fn thaw_leftovers() -> anyhow::Result<()> {
-        let root = own_cgroup()?;
-        for entry in fs::read_dir(&root)? {
-            let dir = entry?.path();
-            if dir
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(PREFIX))
-            {
-                thaw_dir(&root, &dir)?;
+        let root = freeze_root()?;
+        // An earlier mux may have frozen agents under the service's own
+        // cgroup, before the server kept its memory out of swap.
+        let mut parents = vec![root.clone()];
+        if let Some(unit) = crate::memory_protection::panes_cgroup().and_then(|p| p.parent()) {
+            parents.push(unit.to_path_buf());
+        }
+        for parent in parents {
+            for entry in fs::read_dir(&parent)? {
+                let dir = entry?.path();
+                if dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(PREFIX))
+                {
+                    thaw_dir(&root, &dir)?;
+                }
             }
         }
         Ok(())

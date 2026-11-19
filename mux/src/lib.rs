@@ -69,6 +69,7 @@ pub mod devin;
 pub mod devin_prompt;
 pub mod domain;
 pub mod endchat;
+pub mod memory_protection;
 pub mod localpane;
 pub mod memory_report;
 pub mod muse;

@@ -14,6 +14,35 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::{io, mem, ptr};
 
+/// The `cgroup.procs` file of the cgroup that spawned processes join.
+static CHILD_CGROUP_PROCS: std::sync::OnceLock<std::ffi::CString> = std::sync::OnceLock::new();
+
+/// Makes every process spawned afterwards move itself into the cgroup
+/// whose `cgroup.procs` file is `procs`, after it forks and before it
+/// execs, so that none of its memory is charged to the spawner's cgroup.
+pub fn set_child_cgroup(procs: &std::path::Path) {
+    if let Ok(procs) = std::ffi::CString::new(procs.as_os_str().as_bytes()) {
+        let _ = CHILD_CGROUP_PROCS.set(procs);
+    }
+}
+
+/// Moves the calling process into the cgroup `set_child_cgroup` names, if
+/// any. Meant for a forked child before it execs, so it allocates nothing
+/// and only makes system calls. Failing to move is not an error: the
+/// process then stays in its parent's cgroup.
+pub fn join_child_cgroup() {
+    let Some(procs) = CHILD_CGROUP_PROCS.get() else {
+        return;
+    };
+    unsafe {
+        let fd = libc::open(procs.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+        if fd >= 0 {
+            libc::write(fd, b"0".as_ptr().cast(), 1);
+            libc::close(fd);
+        }
+    }
+}
+
 pub use std::os::unix::io::RawFd;
 
 #[derive(Default)]
@@ -236,6 +265,7 @@ impl PtyFd {
                 .stdout(self.as_stdio()?)
                 .stderr(self.as_stdio()?)
                 .pre_exec(move || {
+                    join_child_cgroup();
                     // Clean up a few things before we exec the program
                     // Clear out any potentially problematic signal
                     // dispositions that we might have inherited

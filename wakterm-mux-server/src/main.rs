@@ -330,6 +330,11 @@ fn run() -> anyhow::Result<()> {
         .detach();
     });
 
+    // Before any pane starts, so that each one joins the panes' cgroup.
+    if let Err(err) = mux::memory_protection::protect_server() {
+        log::warn!("the mux server's memory stays swappable: {err:#}");
+    }
+
     let activity = Activity::new();
 
     promise::spawn::spawn(async move {

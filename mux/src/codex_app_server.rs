@@ -777,12 +777,15 @@ fn ensure_running(state: &mut State) -> anyhow::Result<()> {
         std::fs::remove_file(&state.socket_path)
             .with_context(|| format!("removing stale {}", state.socket_path.display()))?;
     }
-    let mut child = Command::new(&executable)
+    let mut command = Command::new(&executable);
+    command
         .args(["app-server", "--listen"])
         .arg(codex_socket_url(&state.socket_path))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    crate::memory_protection::spawn_into_panes(&mut command);
+    let mut child = command
         .spawn()
         .context("starting shared Codex app-server")?;
     let startup = (|| {
