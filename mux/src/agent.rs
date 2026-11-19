@@ -2583,7 +2583,7 @@ pub fn records_input_events(harness: &AgentHarness) -> bool {
     )
 }
 
-/// Records in Claude's config that the folder of a Claude agent is trusted,
+/// Records in Claude's config that the folders of Claude agents are trusted,
 /// so that Claude resumes there without its folder trust prompt. Claude
 /// keys trust by the folder's git root, or the folder outside a repository,
 /// and a trusted parent does not cover a folder that is its own git root.
@@ -2592,19 +2592,33 @@ pub fn records_input_events(harness: &AgentHarness) -> bool {
 ///
 /// The config file is shared with running Claude processes, so the change
 /// follows Claude's own protocol: hold the `.claude.json.lock` directory,
-/// read the file again, change only this flag, and replace the file.
-/// Returns whether trust had to be recorded.
-pub fn trust_claude_folder(cwd: &str) -> anyhow::Result<bool> {
+/// read the file again, change only this flag, and replace the file. All of
+/// `cwds` are recorded in one read and at most one write, since Claude
+/// processes starting at the same time take the same lock. Returns the
+/// folders whose trust had to be recorded.
+pub fn trust_claude_folders<'a>(
+    cwds: impl IntoIterator<Item = &'a str>,
+) -> anyhow::Result<Vec<String>> {
     let config = claude_sessions_root()
         .and_then(|root| Some(root.parent()?.parent()?.join(".claude.json")))
         .context("Claude's config file has no known location")?;
-    let folder = PathBuf::from(normalize_declared_cwd(cwd));
-    let key = folder
-        .ancestors()
-        .find(|dir| dir.join(".git").exists())
-        .unwrap_or(&folder)
-        .to_string_lossy()
-        .into_owned();
+    let mut keys = cwds
+        .into_iter()
+        .map(|cwd| {
+            let folder = PathBuf::from(normalize_declared_cwd(cwd));
+            folder
+                .ancestors()
+                .find(|dir| dir.join(".git").exists())
+                .unwrap_or(&folder)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys.dedup();
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
 
     let lock = config.with_file_name(".claude.json.lock");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -2617,26 +2631,33 @@ pub fn trust_claude_folder(cwd: &str) -> anyhow::Result<bool> {
     let result = (|| {
         let mut settings: Value = serde_json::from_slice(&fs::read(&config)?)
             .with_context(|| format!("parsing {}", config.display()))?;
-        let project = settings
+        let projects = settings
             .as_object_mut()
             .context("Claude's config is not a JSON object")?
             .entry("projects")
             .or_insert_with(|| serde_json::json!({}))
             .as_object_mut()
-            .context("Claude's projects are not a JSON object")?
-            .entry(key.clone())
-            .or_insert_with(|| serde_json::json!({}))
-            .as_object_mut()
-            .with_context(|| format!("Claude's project {key} is not a JSON object"))?;
-        if project.get("hasTrustDialogAccepted") == Some(&Value::Bool(true)) {
-            return Ok(false);
+            .context("Claude's projects are not a JSON object")?;
+        let mut trusted = Vec::new();
+        for key in keys {
+            let project = projects
+                .entry(key.clone())
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .with_context(|| format!("Claude's project {key} is not a JSON object"))?;
+            if project.get("hasTrustDialogAccepted") != Some(&Value::Bool(true)) {
+                project.insert("hasTrustDialogAccepted".to_string(), Value::Bool(true));
+                trusted.push(key);
+            }
         }
-        project.insert("hasTrustDialogAccepted".to_string(), Value::Bool(true));
+        if trusted.is_empty() {
+            return Ok(trusted);
+        }
         let staged = config.with_file_name(format!(".claude.json.wakterm-{}", std::process::id()));
         fs::write(&staged, serde_json::to_vec_pretty(&settings)?)?;
         fs::set_permissions(&staged, fs::metadata(&config)?.permissions())?;
         fs::rename(&staged, &config)?;
-        Ok(true)
+        Ok(trusted)
     })();
     let _ = fs::remove_dir(&lock);
     result
@@ -7381,7 +7402,10 @@ mod test {
             })
         };
         // A folder inside the repository is trusted through its git root.
-        assert!(trust_claude_folder(repo.join("src").to_str().unwrap()).unwrap());
+        assert_eq!(
+            trust_claude_folders([repo.join("src").to_str().unwrap(), "/elsewhere"]).unwrap(),
+            [repo.to_string_lossy().into_owned()]
+        );
         release.join().unwrap();
         assert!(!lock.exists());
 
@@ -7397,7 +7421,9 @@ mod test {
 
         // Already trusted: nothing to write.
         let written = fs::metadata(&config).unwrap().modified().unwrap();
-        assert!(!trust_claude_folder(repo.to_str().unwrap()).unwrap());
+        assert!(trust_claude_folders([repo.to_str().unwrap()])
+            .unwrap()
+            .is_empty());
         assert_eq!(fs::metadata(&config).unwrap().modified().unwrap(), written);
         remove_env_var("WAKTERM_AGENT_CLAUDE_DIR");
     }

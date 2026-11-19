@@ -698,6 +698,21 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
         .collect();
     let mut total_tabs = 0;
 
+    // Each Claude agent was running in its folder, so Claude must not stop
+    // at its folder trust prompt when it resumes there. Recorded for all of
+    // them before any starts, since each running Claude takes the same lock.
+    let claude_folders = restore_intents
+        .values()
+        .filter(|intent| intent.harness() == AgentHarness::Claude)
+        .map(|intent| intent.metadata.declared_cwd.as_str());
+    match crate::agent::trust_claude_folders(claude_folders) {
+        Ok(trusted) if !trusted.is_empty() => {
+            log::info!("recorded Claude folder trust for {}", trusted.join(", "))
+        }
+        Ok(_) => {}
+        Err(err) => log::warn!("could not record Claude folder trust: {err:#}"),
+    }
+
     for saved_window in &session.windows {
         let workspace = Some(saved_window.workspace.clone());
         let position = None;
@@ -1099,22 +1114,6 @@ fn prepare_restore_for_entry(
     let Some(intent) = restore_intents.get(&entry.pane_id) else {
         return Ok(None);
     };
-    // The agent was running in its folder, so Claude must not stop at its
-    // folder trust prompt when it resumes there.
-    if intent.harness() == AgentHarness::Claude {
-        match crate::agent::trust_claude_folder(&intent.metadata.declared_cwd) {
-            Ok(true) => log::info!(
-                "recorded Claude folder trust for {} before resuming {}",
-                intent.metadata.declared_cwd,
-                intent.metadata.name
-            ),
-            Ok(false) => {}
-            Err(err) => log::warn!(
-                "could not record Claude folder trust for {}: {err:#}",
-                intent.metadata.declared_cwd
-            ),
-        }
-    }
     let mut prepared = prepare_agent_restore(intent, |request| {
         Mux::get().prepare_codex_app_server_launch(request)
     })?;
