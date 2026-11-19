@@ -444,6 +444,11 @@ impl Pane for LocalPane {
     }
 
     fn resize(&self, size: TerminalSize) -> Result<(), Error> {
+        // Already this size with no resize waiting: waking a frozen agent
+        // and signalling the program would only make it redraw.
+        if self.pending_resize.lock().is_none() && self.terminal.lock().get_size() == size {
+            return Ok(());
+        }
         // A frozen agent would keep showing its old layout.
         if let Some(mux) = Mux::try_get() {
             mux.thaw_agent_pane(self.pane_id);

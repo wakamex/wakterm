@@ -1505,43 +1505,29 @@ impl SessionHandler {
                         move || {
                             let mux = Mux::get();
                             let _identity = mux.with_identity(client_id);
-                            // Apply all pane sizes atomically, then rebuild once
                             let tab = mux
                                 .get_tab(tab_id)
                                 .ok_or_else(|| anyhow!("no such tab {}", tab_id))?;
-                            let tab_panes = tab.iter_panes();
-                            if pane_sizes.len() != tab_panes.len() {
-                                log::error!(
-                                    "resize_tab pane count mismatch: tab_id={} batch_panes={} tab_panes={} {}",
-                                    tab_id,
-                                    pane_sizes.len(),
-                                    tab_panes.len(),
-                                    tab.debug_size_snapshot()
-                                );
-                            }
-
-                            let tab_pane_ids = tab_panes
+                            // The request must size exactly the tab's panes, each
+                            // once, before any of them changes; the client
+                            // reconciles from the server when it is refused.
+                            let tab_pane_ids = tab
+                                .iter_panes_ignoring_zoom()
                                 .iter()
                                 .map(|pane| pane.pane.pane_id())
-                                .collect::<Vec<_>>();
-                            let mut missing_pane_ids = Vec::new();
-                            for (pane_id, size) in &pane_sizes {
-                                if !tab_pane_ids.contains(pane_id) {
-                                    missing_pane_ids.push(*pane_id);
-                                    continue;
-                                }
-                                match mux.get_pane(*pane_id) {
-                                    Some(pane) => pane.resize(*size)?,
-                                    None => missing_pane_ids.push(*pane_id),
-                                }
-                            }
-                            if !missing_pane_ids.is_empty() {
-                                log::error!(
-                                    "resize_tab referenced unknown panes: tab_id={} pane_ids={:?} {}",
-                                    tab_id,
-                                    missing_pane_ids,
-                                    tab.debug_size_snapshot()
-                                );
+                                .collect::<HashSet<_>>();
+                            validate_resize_tab(tab_id, &tab_pane_ids, &pane_sizes)?;
+                            let panes = pane_sizes
+                                .iter()
+                                .map(|(pane_id, size)| {
+                                    mux.get_pane(*pane_id)
+                                        .map(|pane| (pane, *size))
+                                        .ok_or_else(|| anyhow!("pane {pane_id} is gone"))
+                                })
+                                .collect::<anyhow::Result<Vec<_>>>()?;
+                            // Apply all pane sizes, then rebuild once.
+                            for (pane, size) in panes {
+                                pane.resize(size)?;
                             }
                             tab.rebuild_splits_sizes_from_contained_panes();
                             tab.log_runtime_invariant_errors("server.resize_tab");
@@ -2624,6 +2610,34 @@ async fn claude_box_after_pressing_end(
 /// How long Claude has to move its caret when End is pressed.
 const CLAUDE_END_KEY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Checks that a ResizeTab request sizes each of the tab's panes exactly
+/// once, with no empty size, so that it can be refused before any pane
+/// changes.
+fn validate_resize_tab(
+    tab_id: mux::tab::TabId,
+    tab_pane_ids: &HashSet<mux::pane::PaneId>,
+    pane_sizes: &[(mux::pane::PaneId, wakterm_term::TerminalSize)],
+) -> anyhow::Result<()> {
+    let requested = pane_sizes
+        .iter()
+        .map(|(pane_id, _)| *pane_id)
+        .collect::<HashSet<_>>();
+    if requested.len() != pane_sizes.len() || &requested != tab_pane_ids {
+        anyhow::bail!(
+            "resize_tab must size each pane of tab {tab_id} once: got {:?}, tab has {:?}",
+            pane_sizes.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            tab_pane_ids
+        );
+    }
+    if let Some((pane_id, size)) = pane_sizes
+        .iter()
+        .find(|(_, size)| size.rows == 0 || size.cols == 0)
+    {
+        anyhow::bail!("resize_tab gave pane {pane_id} an empty size {size:?}");
+    }
+    Ok(())
+}
+
 /// A request handler that holds its thread this long is logged with its
 /// line, since most run on the main thread, which then waits for it.
 const SLOW_HANDLER: Duration = Duration::from_millis(200);
@@ -2929,6 +2943,24 @@ async fn move_pane(
 
 #[cfg(test)]
 mod test {
+    #[test]
+    fn a_resize_must_size_each_pane_of_the_tab_once() {
+        let size = |cols, rows| wakterm_term::TerminalSize {
+            cols,
+            rows,
+            pixel_width: cols * 10,
+            pixel_height: rows * 20,
+            dpi: 96,
+        };
+        let tab: HashSet<mux::pane::PaneId> = [1, 2].iter().copied().collect();
+        assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24)), (2, size(40, 24))]).is_ok());
+        // A missing, repeated, unknown or empty-sized pane is refused.
+        assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24))]).is_err());
+        assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24)), (1, size(40, 24))]).is_err());
+        assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24)), (3, size(40, 24))]).is_err());
+        assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24)), (2, size(0, 24))]).is_err());
+    }
+
     use super::*;
 
     #[test]
