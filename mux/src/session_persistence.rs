@@ -726,10 +726,14 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
         .filter(|intent| intent.harness() == AgentHarness::Claude)
         .map(|intent| intent.metadata.declared_cwd.clone())
         .collect::<Vec<_>>();
+    let restore_started = Instant::now();
     let trust = promise::spawn::spawn_into_new_thread(move || {
         crate::agent::trust_claude_folders(claude_folders.iter().map(String::as_str))
     })
     .await;
+    let trust_took = restore_started.elapsed();
+    // How long each tab took, to name the slowest when the restore is done.
+    let mut tab_times = Vec::new();
     match trust {
         Ok(trusted) if !trusted.is_empty() => {
             log::info!("recorded Claude folder trust for {}", trusted.join(", "))
@@ -746,7 +750,8 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
         let mut restored_parked_tab_ids = Vec::new();
 
         for saved_tab in &saved_window.tabs {
-            match restore_tab(
+            let tab_started = Instant::now();
+            let restored = restore_tab(
                 domain,
                 &saved_tab,
                 default_size,
@@ -754,8 +759,9 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
                 &restore_intents,
                 &session.pane_tokens,
             )
-            .await
-            {
+            .await;
+            tab_times.push((tab_started.elapsed(), saved_tab.title.clone()));
+            match restored {
                 Ok(tab_id) => {
                     total_tabs += 1;
                     restored_tab_ids.push(tab_id);
@@ -783,7 +789,29 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
         }
     }
 
-    log::info!("Restored {} tabs from saved session", total_tabs);
+    let agents = restored_panes
+        .iter()
+        .filter(|pane_id| restore_intents.contains_key(pane_id))
+        .count();
+    tab_times.sort_by(|a, b| b.0.cmp(&a.0));
+    let slowest = tab_times
+        .iter()
+        .take(3)
+        .map(|(took, title)| format!("{title} {} ms", took.as_millis()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    log::info!(
+        "startup: restored {total_tabs} tabs with {} panes, {agents} of them agents, in {:.1} s: \
+         {} ms recording Claude folder trust, {:.1} s starting tabs; slowest {slowest}",
+        restored_panes.len(),
+        restore_started.elapsed().as_secs_f64(),
+        trust_took.as_millis(),
+        tab_times
+            .iter()
+            .map(|(took, _)| *took)
+            .sum::<Duration>()
+            .as_secs_f64(),
+    );
 
     // Clear the session file after successful restore
     if total_tabs > 0 {

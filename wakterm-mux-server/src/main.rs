@@ -106,7 +106,15 @@ fn main() {
     wakterm_blob_leases::clear_storage();
 }
 
+/// When this server process started, for timing its startup.
+static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+fn since_start() -> std::time::Duration {
+    STARTED.get_or_init(std::time::Instant::now).elapsed()
+}
+
 fn run() -> anyhow::Result<()> {
+    STARTED.get_or_init(std::time::Instant::now);
     env_bootstrap::bootstrap();
 
     //stats::Stats::init()?;
@@ -275,6 +283,10 @@ fn run() -> anyhow::Result<()> {
         log::error!("problem spawning listeners: {:?}", e);
         e
     })?;
+    log::info!(
+        "startup: accepting clients {} ms after the server started",
+        since_start().as_millis()
+    );
 
     // Set up signal handler to save session before exit
     #[cfg(unix)]
@@ -315,6 +327,9 @@ fn run() -> anyhow::Result<()> {
 
     // Logs when the main thread runs a task late, which delays every
     // request that needs it.
+    // The first task it runs on time after the server started marks when
+    // clients stop waiting for it.
+    static KEPT_UP: AtomicBool = AtomicBool::new(false);
     thread::spawn(|| loop {
         thread::sleep(std::time::Duration::from_secs(1));
         if SHUTDOWN_FLAG.load(std::sync::atomic::Ordering::Relaxed) {
@@ -325,6 +340,12 @@ fn run() -> anyhow::Result<()> {
             let late = queued.elapsed();
             if late >= std::time::Duration::from_millis(250) {
                 log::warn!("the main thread ran a task {} ms late", late.as_millis());
+            } else if !KEPT_UP.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                log::info!(
+                    "startup: the main thread keeps up with requests {:.1} s after the \
+                     server started",
+                    since_start().as_secs_f64()
+                );
             }
         })
         .detach();
@@ -398,6 +419,10 @@ async fn async_run(cmd: Option<CommandBuilder>) -> anyhow::Result<()> {
 
     if !have_panes_in_domain {
         // Try to restore a saved session first
+        log::info!(
+            "startup: restoring the saved session {} ms after the server started",
+            since_start().as_millis()
+        );
         let restored = match mux::session_persistence::restore_session(&domain).await {
             Ok(n) => n,
             Err(err) => {
