@@ -186,7 +186,10 @@ fn cached_process_snapshot(max_age: Duration) -> Option<Arc<LinuxProcessSnapshot
 
 /// How often the sampler reads the process trees that lookups ask for,
 /// counted from the end of one pass to the start of the next.
-const SAMPLE_INTERVAL: Duration = Duration::from_millis(300);
+/// Each pass reads every process's stat, whose cost the kernel sets by the
+/// threads it sums, whatever part is read, so passes are spaced out; a root
+/// looked up for the first time wakes the sampler at once.
+const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 /// A root nobody has looked up for this long is no longer sampled.
 const FORGET_ROOT_AFTER: Duration = Duration::from_secs(30);
 
@@ -267,10 +270,17 @@ impl TreeSampler {
                     .wants
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let (mut wants, _) = self
-                    .wake
-                    .wait_timeout_while(wants, SAMPLE_INTERVAL, |wants| !wants.new_root)
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                // With nothing to sample, wait for a lookup rather than poll.
+                let mut wants = if wants.roots.is_empty() {
+                    self.wake
+                        .wait_while(wants, |wants| !wants.new_root)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                } else {
+                    self.wake
+                        .wait_timeout_while(wants, SAMPLE_INTERVAL, |wants| !wants.new_root)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .0
+                };
                 wants.new_root = false;
                 wants
                     .roots
@@ -446,7 +456,7 @@ impl LocalProcessInfo {
     }
 
     /// The process tree rooted at `pid` as the background sampler last read
-    /// it, at most about `SAMPLE_INTERVAL` plus one pass old. Never reads
+    /// it, at most about a second plus one pass old. Never reads
     /// /proc on the calling thread, so it is safe on a thread serving other
     /// work. A root not looked up before is None until the sampler, woken by
     /// this lookup, has read it, and so is a process that has exited.
