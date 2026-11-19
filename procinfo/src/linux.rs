@@ -55,6 +55,11 @@ impl LinuxProcessSnapshot {
             }
         }
 
+        Self::scan()
+    }
+
+    /// Reads every process's stat.
+    fn scan() -> Self {
         let mut processes = HashMap::new();
         if let Ok(entries) = std::fs::read_dir("/proc") {
             for entry in entries.flatten() {
@@ -141,15 +146,7 @@ impl LinuxProcessSnapshot {
             name: info.name.clone(),
             executable: std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_default(),
             cwd: LocalProcessInfo::current_working_dir(pid as u32).unwrap_or_default(),
-            argv: std::fs::read(format!("/proc/{pid}/cmdline"))
-                .map(|data| {
-                    data.strip_suffix(&[0])
-                        .unwrap_or(&data)
-                        .split(|byte| *byte == 0)
-                        .map(|arg| String::from_utf8_lossy(arg).into_owned())
-                        .collect()
-                })
-                .unwrap_or_default(),
+            argv: read_argv(pid),
             start_time: info.starttime,
             status: info.status.as_str().into(),
             children,
@@ -185,6 +182,209 @@ fn cached_process_snapshot(max_age: Duration) -> Option<Arc<LinuxProcessSnapshot
         });
     }
     Some(snapshot)
+}
+
+/// How often the sampler reads the process trees that lookups ask for,
+/// counted from the end of one pass to the start of the next.
+const SAMPLE_INTERVAL: Duration = Duration::from_millis(300);
+/// A root nobody has looked up for this long is no longer sampled.
+const FORGET_ROOT_AFTER: Duration = Duration::from_secs(30);
+
+/// The process trees of the roots that lookups ask for, read by one
+/// background thread and published together, so that a lookup only reads
+/// memory. Each pass reads every process's stat, which is cheaper than
+/// following the asked-for trees through each thread's `children` list:
+/// agents run hundreds of threads. Executables and arguments are read once
+/// per process, working directories on each pass.
+struct TreeSampler {
+    wants: Mutex<SamplerWants>,
+    wake: std::sync::Condvar,
+    published: std::sync::RwLock<Arc<HashMap<pid_t, Option<LocalProcessInfo>>>>,
+}
+
+#[derive(Default)]
+struct SamplerWants {
+    /// Each root asked for, and when it was last asked for.
+    roots: HashMap<pid_t, Instant>,
+    /// A root was asked for that the sampler has not read yet.
+    new_root: bool,
+}
+
+/// A process's executable and arguments, which change only when it execs,
+/// which also renames it. Kept for as long as the process is sampled.
+#[derive(Clone)]
+struct ProcessImage {
+    starttime: u64,
+    name: String,
+    executable: PathBuf,
+    argv: Vec<String>,
+}
+
+/// When set, the sampler waits at this barrier before it publishes, twice,
+/// so a test can look up processes while a pass is in progress.
+#[cfg(test)]
+static SAMPLE_PAUSE: Mutex<Option<Arc<std::sync::Barrier>>> = Mutex::new(None);
+
+static TREE_SAMPLER: LazyLock<Arc<TreeSampler>> = LazyLock::new(|| {
+    let sampler = Arc::new(TreeSampler {
+        wants: Mutex::new(SamplerWants::default()),
+        wake: std::sync::Condvar::new(),
+        published: std::sync::RwLock::new(Arc::new(HashMap::new())),
+    });
+    let running = Arc::clone(&sampler);
+    std::thread::Builder::new()
+        .name("process-sampler".to_string())
+        .spawn(move || running.run())
+        .expect("failed to start the process sampler thread");
+    sampler
+});
+
+impl TreeSampler {
+    fn lookup(&self, pid: pid_t) -> Option<LocalProcessInfo> {
+        let published = Arc::clone(
+            &self
+                .published
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        let mut wants = self
+            .wants
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if wants.roots.insert(pid, Instant::now()).is_none() {
+            wants.new_root = true;
+            self.wake.notify_one();
+        }
+        drop(wants);
+        published.get(&pid).cloned().flatten()
+    }
+
+    fn run(&self) {
+        let mut images = HashMap::new();
+        loop {
+            let roots = {
+                let wants = self
+                    .wants
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let (mut wants, _) = self
+                    .wake
+                    .wait_timeout_while(wants, SAMPLE_INTERVAL, |wants| !wants.new_root)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                wants.new_root = false;
+                wants
+                    .roots
+                    .retain(|_, asked| asked.elapsed() < FORGET_ROOT_AFTER);
+                wants.roots.keys().copied().collect::<Vec<_>>()
+            };
+            // A pass that panics is logged and the thread keeps sampling,
+            // so lookups are not left with the last pass for good.
+            let pass = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let snapshot = LinuxProcessSnapshot::scan();
+                let mut seen = HashMap::new();
+                let trees = roots
+                    .into_iter()
+                    .map(|root| {
+                        let mut visited = HashSet::new();
+                        let tree = sample_tree(&snapshot, root, &mut visited, &images, &mut seen);
+                        (root, tree)
+                    })
+                    .collect::<HashMap<_, _>>();
+                (trees, seen)
+            }));
+            let trees = match pass {
+                Ok((trees, seen)) => {
+                    images = seen;
+                    trees
+                }
+                Err(_) => {
+                    log::error!("reading process trees panicked; reading them again");
+                    images.clear();
+                    std::thread::sleep(SAMPLE_INTERVAL);
+                    continue;
+                }
+            };
+            #[cfg(test)]
+            {
+                let pause = SAMPLE_PAUSE.lock().unwrap().clone();
+                if let Some(pause) = pause {
+                    pause.wait();
+                    pause.wait();
+                }
+            }
+            let previous = std::mem::replace(
+                &mut *self
+                    .published
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                Arc::new(trees),
+            );
+            drop(previous);
+        }
+    }
+}
+
+/// Builds the tree rooted at `pid` from `snapshot`, reusing the executable
+/// and arguments of processes `images` already holds and recording every
+/// process in `seen`. None when the process does not exist.
+fn sample_tree(
+    snapshot: &LinuxProcessSnapshot,
+    pid: pid_t,
+    visited: &mut HashSet<pid_t>,
+    images: &HashMap<pid_t, ProcessImage>,
+    seen: &mut HashMap<pid_t, ProcessImage>,
+) -> Option<LocalProcessInfo> {
+    if !visited.insert(pid) {
+        return None;
+    }
+    let stat = snapshot.processes.get(&pid)?;
+    let image = match images.get(&pid) {
+        Some(image) if image.starttime == stat.starttime && image.name == stat.name => {
+            image.clone()
+        }
+        _ => ProcessImage {
+            starttime: stat.starttime,
+            name: stat.name.clone(),
+            executable: std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_default(),
+            argv: read_argv(pid),
+        },
+    };
+    seen.insert(pid, image.clone());
+    let children = snapshot
+        .children
+        .get(&pid)
+        .into_iter()
+        .flatten()
+        .filter_map(|&child| {
+            sample_tree(snapshot, child, visited, images, seen)
+                .map(|process| (child as u32, process))
+        })
+        .collect();
+    Some(LocalProcessInfo {
+        pid: pid as u32,
+        ppid: stat.ppid as u32,
+        process_group: stat.process_group,
+        controlling_tty: stat.controlling_tty,
+        name: stat.name.clone(),
+        executable: image.executable,
+        cwd: LocalProcessInfo::current_working_dir(pid as u32).unwrap_or_default(),
+        argv: image.argv,
+        start_time: stat.starttime,
+        status: stat.status.as_str().into(),
+        children,
+    })
+}
+
+fn read_argv(pid: pid_t) -> Vec<String> {
+    std::fs::read(format!("/proc/{pid}/cmdline"))
+        .map(|data| {
+            data.strip_suffix(&[0])
+                .unwrap_or(&data)
+                .split(|byte| *byte == 0)
+                .map(|arg| String::from_utf8_lossy(arg).into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl From<&str> for LocalProcessStatus {
@@ -245,11 +445,13 @@ impl LocalProcessInfo {
         cached_process_snapshot(max_age)?.process(pid)
     }
 
-    /// Captures a new process snapshot when the cached one is older than
-    /// `max_age`. Calling this from another thread just before work that
-    /// reads cached process info keeps the capture off that work's thread.
-    pub fn refresh_cached_snapshot(max_age: Duration) {
-        cached_process_snapshot(max_age);
+    /// The process tree rooted at `pid` as the background sampler last read
+    /// it, at most about `SAMPLE_INTERVAL` plus one pass old. Never reads
+    /// /proc on the calling thread, so it is safe on a thread serving other
+    /// work. A root not looked up before is None until the sampler, woken by
+    /// this lookup, has read it, and so is a process that has exited.
+    pub fn with_root_pid_sampled(pid: u32) -> Option<Self> {
+        TREE_SAMPLER.lookup(pid as pid_t)
     }
 }
 
@@ -299,18 +501,129 @@ mod tests {
         assert_eq!(SNAPSHOT_CAPTURE_COUNT.load(Ordering::Relaxed), 2);
     }
 
+    /// Serializes the tests that pause the process-wide sampler.
+    static SAMPLER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// A child process killed and reaped when dropped.
+    struct Child(std::process::Child);
+
+    impl Drop for Child {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Lets a paused sampler finish its pass when dropped, so a failed
+    /// assertion cannot leave it waiting.
+    struct ResumeSampler(Arc<std::sync::Barrier>);
+
+    impl Drop for ResumeSampler {
+        fn drop(&mut self) {
+            *SAMPLE_PAUSE.lock().unwrap() = None;
+            self.0.wait();
+        }
+    }
+
+    fn spawn(script: &str) -> Child {
+        Child(
+            std::process::Command::new("sh")
+                .args(["-c", script])
+                .spawn()
+                .unwrap(),
+        )
+    }
+
+    /// Looks `pid` up on another thread, failing if the lookup blocks.
+    fn sampled(pid: u32) -> Option<LocalProcessInfo> {
+        let (sent, received) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sent.send(LocalProcessInfo::with_root_pid_sampled(pid));
+        });
+        received
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a sampled lookup blocked")
+    }
+
+    fn sampled_eventually(
+        pid: u32,
+        done: impl Fn(&Option<LocalProcessInfo>) -> bool,
+    ) -> Option<LocalProcessInfo> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let found = sampled(pid);
+            if done(&found) {
+                return found;
+            }
+            assert!(Instant::now() < deadline, "the sampler did not catch up");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn the_sampler_reads_a_trees_processes_and_their_exit() {
+        let mut child = spawn("sleep 30 & wait");
+        let pid = child.0.id();
+        let root = sampled_eventually(pid, |found| {
+            found
+                .as_ref()
+                .is_some_and(|root| root.children.values().any(|c| c.name == "sleep"))
+        })
+        .unwrap();
+        assert_eq!(root.pid, pid);
+        assert_eq!(root.name, "sh");
+        let sleep = root.children.values().next().unwrap();
+        assert_eq!(sleep.argv, ["sleep", "30"]);
+        assert_eq!(sleep.executable.file_name().unwrap(), "sleep");
+
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        sampled_eventually(pid, Option::is_none);
+    }
+
+    #[test]
+    fn a_sampled_lookup_never_waits_for_the_sampler_or_reads_proc() {
+        let _lock = SAMPLER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let _snapshot_lock = SNAPSHOT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let child = spawn("sleep 30");
+        let pid = child.0.id();
+        sampled_eventually(pid, Option::is_some);
+        SNAPSHOT_CAPTURE_COUNT.store(0, Ordering::Relaxed);
+
+        // While the sampler is held mid-pass, lookups answer from what it
+        // published last: a known root, and nothing for a new or dead one.
+        let pause = Arc::new(std::sync::Barrier::new(2));
+        *SAMPLE_PAUSE.lock().unwrap() = Some(Arc::clone(&pause));
+        pause.wait();
+        let resume = ResumeSampler(pause);
+        assert_eq!(sampled(pid).unwrap().pid, pid);
+        let other = spawn("sleep 30");
+        assert!(sampled(other.0.id()).is_none());
+        assert!(sampled(u32::MAX >> 2).is_none());
+        drop(resume);
+
+        sampled_eventually(other.0.id(), Option::is_some);
+        // Only the sampler read /proc: no lookup captured a snapshot.
+        assert_eq!(SNAPSHOT_CAPTURE_COUNT.load(Ordering::Relaxed), 0);
+    }
+
     #[test]
     fn a_capture_in_progress_does_not_hold_up_a_cached_lookup() {
         let _lock = SNAPSHOT_TEST_LOCK
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         let pid = std::process::id();
-        LocalProcessInfo::refresh_cached_snapshot(Duration::ZERO);
+        cached_process_snapshot(Duration::ZERO);
 
         let pause = Arc::new(std::sync::Barrier::new(2));
         *CAPTURE_PAUSE.lock().unwrap() = Some(Arc::clone(&pause));
-        let refresh =
-            std::thread::spawn(|| LocalProcessInfo::refresh_cached_snapshot(Duration::ZERO));
+        let refresh = std::thread::spawn(|| {
+            cached_process_snapshot(Duration::ZERO);
+        });
         pause.wait();
         *CAPTURE_PAUSE.lock().unwrap() = None;
 

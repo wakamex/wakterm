@@ -783,9 +783,6 @@ impl SessionHandler {
             Pdu::ListAgents(ListAgents {}) => {
                 let restricted =
                     matches!(self.authority, ConnectionAuthority::RestrictedLocal { .. });
-                // Each agent's process check reads the process snapshot;
-                // capture it on this connection's thread, not the main one.
-                mux::localpane::refresh_process_info();
                 spawn_into_main_thread(async move {
                     catch(
                         move || {
