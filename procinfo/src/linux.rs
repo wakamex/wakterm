@@ -395,6 +395,74 @@ fn sample_tree(
     })
 }
 
+/// The processes a direct read follows at most, so that a fork bomb in a
+/// pane cannot make one lookup read without end.
+const DIRECT_TREE_LIMIT: usize = 512;
+
+/// Reads the tree rooted at `pid` now, following each process's children
+/// through `/proc/<pid>/task/<tid>/children`, so that only the tree's own
+/// processes are read. None when the process does not exist, or when the
+/// kernel does not list children, in which case `Err` asks for a scan.
+fn read_tree_directly(
+    pid: pid_t,
+    visited: &mut HashSet<pid_t>,
+) -> Result<Option<LocalProcessInfo>, ()> {
+    if !visited.insert(pid) || visited.len() > DIRECT_TREE_LIMIT {
+        return Ok(None);
+    }
+    let Some(stat) = LinuxProcessSnapshot::read_stat(pid) else {
+        return Ok(None);
+    };
+    let tasks = match std::fs::read_dir(format!("/proc/{pid}/task")) {
+        Ok(tasks) => tasks,
+        Err(_) => return Ok(None),
+    };
+    let mut child_pids = Vec::new();
+    let mut listed = false;
+    for task in tasks.flatten() {
+        match std::fs::read_to_string(task.path().join("children")) {
+            Ok(list) => {
+                listed = true;
+                child_pids.extend(
+                    list.split_whitespace()
+                        .filter_map(|c| c.parse::<pid_t>().ok()),
+                );
+            }
+            // A thread that exited meanwhile has no children file.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {}
+        }
+    }
+    if !listed && std::fs::metadata(format!("/proc/{pid}/task/{pid}/children")).is_err() {
+        // The process still exists, so the kernel does not list children.
+        if LinuxProcessSnapshot::read_stat(pid).is_some() {
+            return Err(());
+        }
+        return Ok(None);
+    }
+    child_pids.sort_unstable();
+    child_pids.dedup();
+    let mut children = HashMap::new();
+    for child in child_pids {
+        if let Some(process) = read_tree_directly(child, visited)? {
+            children.insert(child as u32, process);
+        }
+    }
+    Ok(Some(LocalProcessInfo {
+        pid: pid as u32,
+        ppid: stat.ppid as u32,
+        process_group: stat.process_group,
+        controlling_tty: stat.controlling_tty,
+        name: stat.name.clone(),
+        executable: std::fs::read_link(format!("/proc/{pid}/exe")).unwrap_or_default(),
+        cwd: LocalProcessInfo::current_working_dir(pid as u32).unwrap_or_default(),
+        argv: read_argv(pid),
+        start_time: stat.starttime,
+        status: stat.status.as_str().into(),
+        children,
+    }))
+}
+
 fn read_argv(pid: pid_t) -> Vec<String> {
     std::fs::read(format!("/proc/{pid}/cmdline"))
         .map(|data| {
@@ -470,6 +538,17 @@ impl LocalProcessInfo {
     /// /proc on the calling thread, so it is safe on a thread serving other
     /// work. A root not looked up before is None until the sampler, woken by
     /// this lookup, has read it, and so is a process that has exited.
+    /// The process tree rooted at `pid` as it is now, read from that tree's
+    /// processes alone: a few milliseconds for a pane, where a snapshot of
+    /// every process on the host can take a second on a busy one.
+    pub fn with_root_pid_now(pid: u32) -> Option<Self> {
+        let mut visited = HashSet::new();
+        match read_tree_directly(pid as pid_t, &mut visited) {
+            Ok(process) => process,
+            Err(()) => Self::with_root_pid(pid),
+        }
+    }
+
     pub fn with_root_pid_sampled(pid: u32) -> Option<Self> {
         TREE_SAMPLER.lookup(pid as pid_t)
     }
@@ -638,6 +717,36 @@ mod tests {
         sampled_eventually(other.0.id(), Option::is_some);
         // Only the sampler read /proc: no lookup captured a snapshot.
         assert_eq!(SNAPSHOT_CAPTURE_COUNT.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_tree_read_now_has_its_processes_and_reads_no_snapshot() {
+        let _snapshot_lock = SNAPSHOT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let child = spawn("sleep 30 & sleep 31 & wait");
+        let pid = child.0.id();
+        SNAPSHOT_CAPTURE_COUNT.store(0, Ordering::Relaxed);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let root = loop {
+            let root = LocalProcessInfo::with_root_pid_now(pid).unwrap();
+            if root.children.len() == 2 || Instant::now() > deadline {
+                break root;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(root.pid, pid);
+        assert_eq!(root.name, "sh");
+        let mut argv = root
+            .children
+            .values()
+            .map(|child| child.argv.join(" "))
+            .collect::<Vec<_>>();
+        argv.sort();
+        assert_eq!(argv, ["sleep 30", "sleep 31"]);
+        assert_eq!(SNAPSHOT_CAPTURE_COUNT.load(Ordering::Relaxed), 0);
+        drop(child);
+        assert!(LocalProcessInfo::with_root_pid_now(u32::MAX >> 2).is_none());
     }
 
     #[test]
