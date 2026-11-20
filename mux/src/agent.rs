@@ -1382,6 +1382,10 @@ pub fn input_box_blocked(
     lines: &[wakterm_term::Line],
 ) -> Option<&'static str> {
     match harness {
+        // A box not found on screen is not known to hold anything.
+        AgentHarness::Opencode => crate::opencode::input_box(lines)
+            .filter(|text| !text.is_empty())
+            .map(|_| "the input box holds text the user is typing"),
         AgentHarness::Claude => claude_draft(lines)
             .is_some()
             .then_some("the input box holds text the user is typing"),

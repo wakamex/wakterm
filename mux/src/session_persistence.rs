@@ -2867,6 +2867,18 @@ mod test {
     fn an_agent_that_started_no_session_starts_again_with_its_launch_command() {
         let _test_lock = crate::TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
+        // agy and OpenCode both start their session only with the first
+        // input, so a fresh tab of either has seen no turn and no transcript.
+        fresh_tab_starts_again(&["agy", "--model", "gemini-4-carbon-medium"]);
+        fresh_tab_starts_again(&[
+            "opencode",
+            "--auto",
+            "--model",
+            "opencode-go/deepseek-v4.1-flash",
+        ]);
+    }
+
+    fn fresh_tab_starts_again(argv: &[&str]) {
         let source_mux = Arc::new(Mux::new(None));
         Mux::set_mux(&source_mux);
 
@@ -2878,10 +2890,8 @@ mod test {
         tab.assign_pane(&pane);
         source_mux.add_tab_and_active_pane(&tab).unwrap();
         source_mux.add_tab_to_window(&tab, window_id).unwrap();
-        // A fresh agy tab, which starts its conversation only with its first
-        // input, so Wakterm has seen no turn and no transcript for it.
         let mut metadata = sample_agent_metadata("fresh");
-        metadata.launch_cmd = "agy --model gemini-4-carbon-medium".to_string();
+        metadata.launch_cmd = argv.join(" ");
         metadata.adopted_pid = Some(4242);
         metadata.adopted_start_time = Some(7);
         source_mux
@@ -2922,11 +2932,7 @@ mod test {
         // bound to the new process once it starts.
         assert_eq!(
             commands.lock().unwrap().as_slice(),
-            expected_restored_spawn(vec![
-                "agy".to_string(),
-                "--model".to_string(),
-                "gemini-4-carbon-medium".to_string(),
-            ])
+            expected_restored_spawn(argv.iter().map(|arg| arg.to_string()).collect())
         );
         assert_eq!(
             command_dirs.lock().unwrap().as_slice(),

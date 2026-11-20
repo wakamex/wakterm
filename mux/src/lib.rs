@@ -77,6 +77,7 @@ pub mod memory_report;
 pub mod muse;
 pub mod muse_prompt;
 mod notification_rate;
+pub mod opencode;
 pub mod pane;
 pub mod renderable;
 pub mod session_persistence;
@@ -3862,8 +3863,7 @@ impl Mux {
             .as_ref()
             .is_some_and(|turn| turn.outcome == AgentObservedTurnOutcome::Running)
             && self.harness_idle_on_screen(&update.runtime.harness, update.pane_id);
-        let agy_waiting_for_first_input =
-            self.agy_waiting_for_first_input(update.pane_id, &update.runtime);
+        let waiting_for_first_input = self.waiting_for_first_input(update.pane_id, &update.runtime);
 
         let (before_title, after_title, session_identity_changed) = {
             let mut runtime_by_pane = self.agent_runtime_by_pane.write();
@@ -3901,7 +3901,7 @@ impl Mux {
             if idle_on_screen {
                 agent::end_turn_stopped_on_screen(runtime, previous_turn.as_ref(), Utc::now());
             }
-            if agy_waiting_for_first_input {
+            if waiting_for_first_input {
                 agent::mark_waiting_for_first_input(runtime);
             }
             finalize_runtime_snapshot(runtime);
@@ -4316,25 +4316,32 @@ impl Mux {
         })
     }
 
-    /// Whether the agy agent in the pane has no conversation yet and its
-    /// screen shows it waiting for input. agy starts its conversation, and
-    /// the transcript Wakterm observes, only with its first input, so until
-    /// then an empty box with its idle hint is the only record of its state.
-    pub(crate) fn agy_waiting_for_first_input(
+    /// Whether the agent in the pane has no session yet and its screen shows
+    /// it waiting for input. agy and OpenCode start their session, and the
+    /// records Wakterm observes, only with their first input, so until then
+    /// an empty input box is the only record of their state: agy's with its
+    /// idle hint, OpenCode's holding nothing but its placeholder.
+    pub(crate) fn waiting_for_first_input(
         &self,
         pane_id: PaneId,
         runtime: &AgentRuntimeSnapshot,
     ) -> bool {
-        runtime.harness == AgentHarness::Agy
-            && runtime.alive
-            && runtime.session_path.is_none()
-            && self.get_pane(pane_id).is_some_and(|pane| {
-                let dims = pane.get_dimensions();
-                let top = dims.physical_top;
-                let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
-                agent::agy_input_box(&lines)
-                    .is_some_and(|state| state.idle && !state.working && state.text.is_empty())
-            })
+        if !matches!(runtime.harness, AgentHarness::Agy | AgentHarness::Opencode)
+            || !runtime.alive
+            || runtime.session_path.is_some()
+        {
+            return false;
+        }
+        self.get_pane(pane_id).is_some_and(|pane| {
+            let dims = pane.get_dimensions();
+            let top = dims.physical_top;
+            let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
+            match runtime.harness {
+                AgentHarness::Agy => agent::agy_input_box(&lines)
+                    .is_some_and(|state| state.idle && !state.working && state.text.is_empty()),
+                _ => crate::opencode::input_box(&lines).is_some_and(|text| text.is_empty()),
+            }
+        })
     }
 
     /// Whether the agy pane's input box is empty.
@@ -8182,6 +8189,10 @@ mod test {
     const AGY_QUEUED_TITLE: &str = "agy queued";
     /// agy's feedback survey after a quota error ended the turn.
     const AGY_SURVEY_TITLE: &str = "agy survey";
+    /// A fresh OpenCode tab showing its placeholder, and one with text
+    /// typed into its box.
+    const OPENCODE_FRESH_TITLE: &str = "opencode fresh";
+    const OPENCODE_TYPED_TITLE: &str = "opencode typed";
     /// Devin's empty input box with its placeholder between turns and
     /// during one.
     const DEVIN_IDLE_TITLE: &str = "devin idle";
@@ -8500,6 +8511,23 @@ mod test {
                         line(">"),
                         line(&rule),
                         line(footer),
+                    ],
+                );
+            }
+            if self.title == OPENCODE_FRESH_TITLE || self.title == OPENCODE_TYPED_TITLE {
+                let typed = if self.title == OPENCODE_TYPED_TITLE {
+                    "  \u{2503}  half a thought"
+                } else {
+                    "  \u{2503}  Ask anything\u{2026} \"Fix a TODO in the codebase\""
+                };
+                return (
+                    lines.start,
+                    vec![
+                        line("  \u{2503}"),
+                        line(typed),
+                        line("  \u{2503}  Build auto DeepSeek V4.1 Flash"),
+                        line("  \u{2579}\u{2580}\u{2580}\u{2580}"),
+                        line("   /code/gta6"),
                     ],
                 );
             }
@@ -10025,6 +10053,63 @@ mod test {
         );
         installer.join().unwrap();
         reader.join().unwrap();
+    }
+
+    #[test]
+    fn a_fresh_opencode_tab_waits_for_its_first_input() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let mut runtimes = Vec::new();
+        for (id, title) in [(171, OPENCODE_FRESH_TITLE), (172, OPENCODE_TYPED_TITLE)] {
+            let pane = FakePane::new_detected(
+                id,
+                size,
+                domain.id,
+                title,
+                "/code/gta6",
+                "opencode",
+                &["opencode"],
+            );
+            let tab = Arc::new(Tab::new(&size));
+            tab.assign_pane(&pane);
+            mux.add_tab_and_active_pane(&tab).unwrap();
+            mux.add_tab_to_window(&tab, window_id).unwrap();
+            let mut metadata = sample_agent_metadata(title);
+            metadata.launch_cmd = "opencode --auto".to_string();
+            mux.set_agent_metadata(pane.pane_id(), metadata).unwrap();
+            let mut runtime = mux.agent_runtime_by_pane.read()[&pane.pane_id()].clone();
+            runtime.harness = crate::agent::AgentHarness::Opencode;
+            runtime.alive = true;
+            runtime.session_path = None;
+            runtimes.push((pane.pane_id(), runtime));
+        }
+        let (fresh, typed) = (&runtimes[0], &runtimes[1]);
+        // OpenCode starts its session with its first message, so an empty
+        // box is the only sign that a fresh tab waits for input.
+        assert!(mux.waiting_for_first_input(fresh.0, &fresh.1));
+        assert!(!mux.waiting_for_first_input(typed.0, &typed.1));
+        let mut with_session = fresh.1.clone();
+        with_session.session_path =
+            Some("opencode://session?db=/tmp/opencode.db&id=ses_x".to_string());
+        assert!(!mux.waiting_for_first_input(fresh.0, &with_session));
+        // Text typed into the box keeps a prompt from being written into it.
+        assert_eq!(
+            mux.agent_input_box(typed.0),
+            AgentInputBox::Blocked("the input box holds text the user is typing".to_string())
+        );
+        assert_eq!(mux.agent_input_box(fresh.0), AgentInputBox::Ready);
     }
 
     #[test]
