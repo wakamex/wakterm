@@ -1543,6 +1543,39 @@ impl SessionHandler {
                                 .iter()
                                 .map(|pane| pane.pane.pane_id())
                                 .collect::<HashSet<_>>();
+                            // A client resizes a zoomed tab by its zoomed pane alone,
+                            // and the tab sizes that pane and keeps the others' layout
+                            // for when it unzooms.
+                            if let (Some(zoomed), [(pane_id, size)]) =
+                                (tab.get_zoomed_pane(), pane_sizes.as_slice())
+                            {
+                                if zoomed.pane_id() == *pane_id {
+                                    validate_resize_tab(
+                                        tab_id,
+                                        &std::iter::once(*pane_id).collect(),
+                                        &pane_sizes,
+                                    )?;
+                                    let dims = zoomed.get_dimensions();
+                                    let unchanged = (
+                                        dims.cols,
+                                        dims.viewport_rows,
+                                        dims.pixel_width,
+                                        dims.pixel_height,
+                                        dims.dpi,
+                                    ) == (
+                                        size.cols,
+                                        size.rows,
+                                        size.pixel_width,
+                                        size.pixel_height,
+                                        size.dpi,
+                                    );
+                                    tab.resize(*size);
+                                    if !unchanged {
+                                        mux.notify_tab_resized(tab_id);
+                                    }
+                                    return Ok(Pdu::UnitResponse(UnitResponse {}));
+                                }
+                            }
                             validate_resize_tab(tab_id, &tab_pane_ids, &pane_sizes)?;
                             let panes = pane_sizes
                                 .iter()

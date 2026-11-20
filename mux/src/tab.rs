@@ -1520,9 +1520,14 @@ impl TabInner {
             return;
         }
 
-        if let Some(zoomed) = &self.zoomed {
+        if let Some(zoomed) = self.zoomed.clone() {
             self.size = size;
             zoomed.resize(size).ok();
+            // A client tells its server the zoomed pane's new size, which the
+            // server applies to its zoomed tab as a whole.
+            if send_resize {
+                zoomed.send_resize_batch(self.id, vec![(zoomed.pane_id(), size)]);
+            }
         } else {
             let dims = cell_dimensions(&size);
             let (min_x, min_y) = compute_min_size(self.pane.as_mut().unwrap());
@@ -3070,6 +3075,48 @@ mod test {
         assert_eq!(24, panes[2].height);
         assert_eq!(400, panes[2].pixel_width);
         assert_eq!(600, panes[2].pixel_height);
+    }
+
+    #[test]
+    fn resizing_a_zoomed_tab_sends_its_zoomed_pane_size() {
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 600,
+            dpi: 96,
+        };
+        let pane0 = RecordingPane::new(1, size);
+        let pane1 = RecordingPane::new(2, size);
+        let tab = Tab::new(&size);
+        tab.assign_pane(&(pane0.clone() as Arc<dyn Pane>));
+        tab.split_and_insert(
+            0,
+            SplitRequest {
+                direction: SplitDirection::Horizontal,
+                target_is_second: true,
+                size: SplitSize::Percent(50),
+                top_level: false,
+            },
+            pane1.clone() as Arc<dyn Pane>,
+        )
+        .unwrap();
+        tab.set_zoomed(true);
+        pane0.resize_batches.lock().clear();
+        pane1.resize_batches.lock().clear();
+
+        // A bigger font fits fewer cells in the same window.
+        let smaller = TerminalSize {
+            rows: 20,
+            cols: 66,
+            ..size
+        };
+        tab.resize(smaller);
+
+        let zoomed = tab.get_zoomed_pane().unwrap().pane_id();
+        let mut batches = pane0.resize_batches.lock().clone();
+        batches.extend(pane1.resize_batches.lock().iter().cloned());
+        assert_eq!(batches, [(tab.tab_id(), vec![(zoomed, smaller)])]);
     }
 
     #[test]
