@@ -75,12 +75,29 @@ mod imp {
     }
 
     pub fn protect_server() -> anyhow::Result<()> {
-        // Only a systemd service whose cgroup was delegated to this user
-        // may be rearranged; any other cgroup belongs to someone else.
+        // Only the main process of a systemd service whose cgroup was
+        // delegated to this user may rearrange that cgroup. Programs the
+        // server starts inherit its INVOCATION_ID, so a server started from
+        // a pane must not take the panes' cgroup for a service's: it is not
+        // named for a service, and systemd names the service's own process.
         if std::env::var_os("INVOCATION_ID").is_none() {
             return Ok(());
         }
+        if std::env::var("SYSTEMD_EXEC_PID")
+            .ok()
+            .and_then(|pid| pid.parse::<u32>().ok())
+            .is_some_and(|pid| pid != std::process::id())
+        {
+            return Ok(());
+        }
         let unit = own_cgroup()?;
+        if !unit
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".service"))
+        {
+            return Ok(());
+        }
         let owner = fs::metadata(unit.join("cgroup.subtree_control"))?.uid();
         if owner != unsafe { libc::getuid() } {
             return Ok(());
