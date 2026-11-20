@@ -331,9 +331,21 @@ fn run() -> anyhow::Result<()> {
     // clients stop waiting for it.
     static KEPT_UP: AtomicBool = AtomicBool::new(false);
     thread::spawn(|| loop {
+        let slept = std::time::Instant::now();
         thread::sleep(std::time::Duration::from_secs(1));
         if SHUTDOWN_FLAG.load(std::sync::atomic::Ordering::Relaxed) {
             break;
+        }
+        // This thread does nothing else, so waking late means the whole
+        // process, or the host, was held up rather than the main thread.
+        let overslept = slept
+            .elapsed()
+            .saturating_sub(std::time::Duration::from_secs(1));
+        if overslept >= std::time::Duration::from_millis(250) {
+            log::warn!(
+                "the watchdog thread woke {} ms late: the whole server process was held up",
+                overslept.as_millis()
+            );
         }
         let queued = std::time::Instant::now();
         promise::spawn::spawn_into_main_thread(async move {
