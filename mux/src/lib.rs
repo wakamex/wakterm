@@ -81,6 +81,7 @@ pub mod session_persistence;
 pub mod shell_integration;
 pub mod ssh;
 pub mod ssh_agent;
+pub mod startup_output;
 pub mod tab;
 pub mod termwiztermtab;
 pub mod tmux;
@@ -1027,6 +1028,12 @@ fn read_from_pane_pty(
         }
     }
 
+    // When this pane printed its first output, and whether it has drawn a
+    // first screen, for timing panes a startup restore starts.
+    let started = Instant::now();
+    let mut first_output = None;
+    let mut output_bytes = 0u64;
+    let mut screen_recorded = false;
     while !dead.load(Ordering::Relaxed) {
         match reader.read(&mut buf) {
             Ok(size) if size == 0 => {
@@ -1048,6 +1055,12 @@ fn read_from_pane_pty(
                     break;
                 }
                 progress.read.fetch_add(size as u64, Ordering::Release);
+                let first = *first_output.get_or_insert_with(|| started.elapsed());
+                output_bytes += size as u64;
+                if !screen_recorded && output_bytes >= crate::startup_output::SCREEN_BYTES {
+                    screen_recorded = true;
+                    crate::startup_output::record(pane_id, first, started.elapsed());
+                }
             }
         }
     }

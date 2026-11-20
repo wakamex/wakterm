@@ -308,6 +308,33 @@ fn build_saved_session(mux: &Mux) -> SavedSession {
     }
 }
 
+/// A name for a saved tab in the log: its title, or else its first pane's
+/// agent or working directory, since most tabs take their title from what
+/// runs in them.
+fn saved_tab_name(saved_tab: &SavedTab) -> String {
+    if !saved_tab.title.is_empty() {
+        return saved_tab.title.clone();
+    }
+    let Some(entry) = first_leaf_entry(&saved_tab.tree) else {
+        return "an empty tab".to_string();
+    };
+    entry
+        .agent_metadata
+        .as_ref()
+        .map(|metadata| metadata.name.clone())
+        .or_else(|| {
+            entry.working_dir.as_ref().and_then(|dir| {
+                dir.url
+                    .path()
+                    .trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .map(str::to_string)
+            })
+        })
+        .unwrap_or_else(|| format!("pane {}", entry.pane_id))
+}
+
 fn collect_pane_ids(node: &PaneNode, pane_ids: &mut Vec<PaneId>) {
     match node {
         PaneNode::Empty => {}
@@ -727,6 +754,7 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
         .map(|intent| intent.metadata.declared_cwd.clone())
         .collect::<Vec<_>>();
     let restore_started = Instant::now();
+    crate::startup_output::begin();
     let trust = promise::spawn::spawn_into_new_thread(move || {
         crate::agent::trust_claude_folders(claude_folders.iter().map(String::as_str))
     })
@@ -760,7 +788,7 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
                 &session.pane_tokens,
             )
             .await;
-            tab_times.push((tab_started.elapsed(), saved_tab.title.clone()));
+            tab_times.push((tab_started.elapsed(), saved_tab_name(saved_tab)));
             match restored {
                 Ok(tab_id) => {
                     total_tabs += 1;
@@ -793,6 +821,7 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
         .iter()
         .filter(|pane_id| restore_intents.contains_key(pane_id))
         .count();
+    crate::startup_output::expect(restored_panes.len());
     tab_times.sort_by(|a, b| b.0.cmp(&a.0));
     let slowest = tab_times
         .iter()
