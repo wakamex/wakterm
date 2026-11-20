@@ -491,7 +491,7 @@ pub struct SessionHandler {
 
 impl Drop for SessionHandler {
     fn drop(&mut self) {
-        mux::agent_input_lease::release_all(self.input_holder);
+        mux::agent_input_lease::revoke(self.input_holder);
         if let Some(client_id) = self.client_id.take() {
             let mux = Mux::get();
             mux.unregister_client(&client_id);
@@ -894,16 +894,23 @@ impl SessionHandler {
                 // sender cannot type into it meanwhile.
                 let holder = self.input_holder;
                 spawn_into_main_thread(async move {
-                    let result = match mux::agent_input_lease::acquire(pane_id, holder).await {
-                        Err(blocked) => Ok(PrepareAgentInputBoxResponse {
-                            blocked: Some(blocked),
-                            draft_stashed: false,
-                        }),
-                        Ok(()) => prepare_agent_input_box(pane_id).await,
-                    };
-                    if !result
-                        .as_ref()
-                        .is_ok_and(|prepared| prepared.blocked.is_none())
+                    let (taken, result) =
+                        match mux::agent_input_lease::acquire(pane_id, holder).await {
+                            Err(blocked) => (
+                                false,
+                                Ok(PrepareAgentInputBoxResponse {
+                                    blocked: Some(blocked),
+                                    draft_stashed: false,
+                                }),
+                            ),
+                            Ok(taken) => (taken, prepare_agent_input_box(pane_id).await),
+                        };
+                    // Only a lease this request took is given up, not one the
+                    // connection already held for a request still writing.
+                    if taken
+                        && !result
+                            .as_ref()
+                            .is_ok_and(|prepared| prepared.blocked.is_none())
                     {
                         mux::agent_input_lease::release(pane_id, holder);
                     }
