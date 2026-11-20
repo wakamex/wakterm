@@ -59,7 +59,14 @@ static GATES: Mutex<Option<Gates>> = Mutex::new(None);
 /// Starts gating, before a restore. `ranks` orders the saved panes whose
 /// agents will be restored: lower starts first.
 pub fn begin(ranks: HashMap<PaneId, (u8, usize)>) {
-    let dir = config::RUNTIME_DIR.join(format!("agent-start-{}", std::process::id()));
+    begin_in(
+        config::RUNTIME_DIR.join(format!("agent-start-{}", std::process::id())),
+        ranks,
+    );
+}
+
+/// Starts gating with the gate files in `dir`.
+fn begin_in(dir: PathBuf, ranks: HashMap<PaneId, (u8, usize)>) {
     let _ = std::fs::remove_dir_all(&dir);
     if let Err(err) = std::fs::create_dir_all(&dir) {
         log::warn!(
@@ -253,8 +260,9 @@ mod test {
             ranks.insert(pane, (1, pane));
         }
         ranks.insert(9, (2, 9));
-        begin(ranks);
-        let dir = GATES.lock().as_ref().unwrap().dir.clone();
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("gates");
+        begin_in(dir.clone(), ranks);
         for pane in 1..=10 {
             let gated = gate(pane, &format!("agent{pane}"), CommandBuilder::new("claude"));
             // Restored panes get new IDs.
@@ -283,6 +291,5 @@ mod test {
             screen_drawn(pane);
         }
         assert!(GATES.lock().is_none());
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }
