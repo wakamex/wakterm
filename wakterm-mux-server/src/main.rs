@@ -113,6 +113,54 @@ fn since_start() -> std::time::Duration {
     STARTED.get_or_init(std::time::Instant::now).elapsed()
 }
 
+/// Logs what the main thread is doing while a probe has waited `waited`
+/// for it: how many tasks it ran since the probe was queued, when it had
+/// run `ticks_then`, how many wait, and its kernel state, CPU time, page
+/// faults, context switches and the kernel function it waits in. A thread
+/// that ran nothing with tasks waiting and sleeps in its executor lost a
+/// wakeup; one that ran nothing and waits on a lock or I/O, or burns CPU,
+/// is in one long call; one that ran many is working through a queue.
+fn log_main_thread_state(waited: std::time::Duration, ticks_then: u64) {
+    let pid = std::process::id();
+    let stat = std::fs::read_to_string(format!("/proc/self/task/{pid}/stat")).unwrap_or_default();
+    let fields: Vec<&str> = stat
+        .rsplit_once(')')
+        .map(|(_, rest)| rest.split_whitespace().collect())
+        .unwrap_or_default();
+    let field = |index: usize| fields.get(index).copied().unwrap_or("?");
+    let status =
+        std::fs::read_to_string(format!("/proc/self/task/{pid}/status")).unwrap_or_default();
+    let switches = |key: &str| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix(key))
+            .map(str::trim)
+            .unwrap_or("?")
+            .to_string()
+    };
+    let wchan = std::fs::read_to_string(format!("/proc/self/task/{pid}/wchan")).unwrap_or_default();
+    log::warn!(
+        "the main thread has not run a probe for {} ms: it ran {} tasks since, {} wait; state {}, \
+         {} user and {} system ticks, {} major faults, {} waits and {} preemptions so far, \
+         waiting in {}",
+        waited.as_millis(),
+        promise::spawn::main_thread_ticks().saturating_sub(ticks_then),
+        promise::spawn::main_thread_queue_len()
+            .map_or_else(|| "?".to_string(), |len| len.to_string()),
+        field(0),
+        field(11),
+        field(12),
+        field(9),
+        switches("voluntary_ctxt_switches:"),
+        switches("nonvoluntary_ctxt_switches:"),
+        if wchan.trim().is_empty() || wchan.trim() == "0" {
+            "no kernel function"
+        } else {
+            wchan.trim()
+        },
+    );
+}
+
 fn run() -> anyhow::Result<()> {
     STARTED.get_or_init(std::time::Instant::now);
     env_bootstrap::bootstrap();
@@ -328,8 +376,11 @@ fn run() -> anyhow::Result<()> {
     // Logs when the main thread runs a task late, which delays every
     // request that needs it.
     // The first task it runs on time after the server started marks when
-    // clients stop waiting for it.
+    // clients stop waiting for it. One probe waits at a time; while it waits
+    // too long, the main thread's state is logged as it is then.
     static KEPT_UP: AtomicBool = AtomicBool::new(false);
+    static PROBE_QUEUED: std::sync::Mutex<Option<(std::time::Instant, u64)>> =
+        std::sync::Mutex::new(None);
     thread::spawn(|| loop {
         let slept = std::time::Instant::now();
         thread::sleep(std::time::Duration::from_secs(1));
@@ -347,8 +398,17 @@ fn run() -> anyhow::Result<()> {
                 overslept.as_millis()
             );
         }
+        let waiting = *PROBE_QUEUED.lock().unwrap();
+        if let Some((queued, ticks)) = waiting {
+            if queued.elapsed() >= std::time::Duration::from_millis(500) {
+                log_main_thread_state(queued.elapsed(), ticks);
+            }
+            continue;
+        }
         let queued = std::time::Instant::now();
+        *PROBE_QUEUED.lock().unwrap() = Some((queued, promise::spawn::main_thread_ticks()));
         promise::spawn::spawn_into_main_thread(async move {
+            *PROBE_QUEUED.lock().unwrap() = None;
             let late = queued.elapsed();
             if late >= std::time::Duration::from_millis(250) {
                 log::warn!("the main thread ran a task {} ms late", late.as_millis());
@@ -362,11 +422,6 @@ fn run() -> anyhow::Result<()> {
         })
         .detach();
     });
-
-    // Before any pane starts, so that each one joins the panes' cgroup.
-    if let Err(err) = mux::memory_protection::protect_server() {
-        log::warn!("the mux server's memory stays swappable: {err:#}");
-    }
 
     let activity = Activity::new();
 

@@ -146,9 +146,25 @@ pub struct SimpleExecutor {
     rx: Receiver<SpawnFunc>,
 }
 
+/// Tasks the main thread's executor has run, for telling a stalled main
+/// thread from one that runs a long queue.
+static MAIN_TICKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static MAIN_QUEUE: std::sync::OnceLock<flume::Sender<SpawnFunc>> = std::sync::OnceLock::new();
+
+/// How many tasks the main thread's executor has run.
+pub fn main_thread_ticks() -> u64 {
+    MAIN_TICKS.load(Ordering::Relaxed)
+}
+
+/// How many tasks wait for the main thread's executor, once it exists.
+pub fn main_thread_queue_len() -> Option<usize> {
+    MAIN_QUEUE.get().map(|tx| tx.len())
+}
+
 impl SimpleExecutor {
     pub fn new() -> Self {
         let (tx, rx) = unbounded();
+        let _ = MAIN_QUEUE.set(tx.clone());
 
         let tx_main = tx.clone();
         let tx_low = tx.clone();
@@ -175,7 +191,10 @@ impl SimpleExecutor {
 
     pub fn tick(&self) -> anyhow::Result<()> {
         match self.rx.recv() {
-            Ok(func) => func(),
+            Ok(func) => {
+                func();
+                MAIN_TICKS.fetch_add(1, Ordering::Relaxed);
+            }
             Err(err) => anyhow::bail!("while waiting for events: {:?}", err),
         };
         Ok(())
