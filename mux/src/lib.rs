@@ -385,8 +385,74 @@ impl PendingAgentArtifactEvents {
     }
 }
 
+/// A request to the OS watcher's thread.
+enum ArtifactWatchOp {
+    Watch(PathBuf),
+    Unwatch(PathBuf),
+    #[cfg(test)]
+    Flush(mpsc::Sender<()>),
+}
+
+/// The OS file watcher, driven from a thread of its own. Watching a root
+/// recursively walks its whole tree, such as years of Codex session
+/// directories, and the watcher answers each request only after its own
+/// thread has handled it; the main thread that asks must not wait for it.
+/// Requests are applied in the order they are sent.
+struct ArtifactWatches {
+    ops: mpsc::Sender<ArtifactWatchOp>,
+}
+
+impl ArtifactWatches {
+    fn spawn(mut watcher: RecommendedWatcher) -> Self {
+        let (ops, requests) = mpsc::channel::<ArtifactWatchOp>();
+        thread::Builder::new()
+            .name("agent-artifact-watches".to_string())
+            .spawn(move || {
+                while let Ok(op) = requests.recv() {
+                    match op {
+                        ArtifactWatchOp::Watch(root) => {
+                            if let Err(err) = watcher.watch(&root, RecursiveMode::Recursive) {
+                                log::debug!("unable to watch agent artifact root {root:?}: {err}");
+                            }
+                        }
+                        ArtifactWatchOp::Unwatch(root) => {
+                            if let Err(err) = watcher.unwatch(&root) {
+                                log::debug!(
+                                    "unable to unwatch agent artifact root {root:?}: {err}"
+                                );
+                            }
+                        }
+                        #[cfg(test)]
+                        ArtifactWatchOp::Flush(done) => {
+                            let _ = done.send(());
+                        }
+                    }
+                }
+            })
+            .expect("failed to start the agent artifact watch thread");
+        Self { ops }
+    }
+
+    fn watch(&self, root: &Path) {
+        let _ = self.ops.send(ArtifactWatchOp::Watch(root.to_path_buf()));
+    }
+
+    fn unwatch(&self, root: &Path) {
+        let _ = self.ops.send(ArtifactWatchOp::Unwatch(root.to_path_buf()));
+    }
+
+    /// Waits until every request sent so far has been applied.
+    #[cfg(test)]
+    fn flush(&self) {
+        let (done, wait) = mpsc::channel();
+        if self.ops.send(ArtifactWatchOp::Flush(done)).is_ok() {
+            let _ = wait.recv();
+        }
+    }
+}
+
 struct AgentArtifactWatcherState {
-    watcher: Option<RecommendedWatcher>,
+    watcher: Option<ArtifactWatches>,
     roots_by_pane: HashMap<PaneId, Vec<PathBuf>>,
     panes_by_root: HashMap<PathBuf, HashSet<PaneId>>,
     discovery_panes_by_root: HashMap<PathBuf, HashSet<PaneId>>,
@@ -445,7 +511,7 @@ impl AgentArtifactWatcherState {
             );
 
         let watcher = match watcher {
-            Ok(watcher) => Some(watcher),
+            Ok(watcher) => Some(ArtifactWatches::spawn(watcher)),
             Err(err) => {
                 log::warn!("unable to start agent artifact watcher: {err}");
                 None
@@ -474,6 +540,12 @@ impl AgentArtifactWatcherState {
             .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
             .collect::<Vec<_>>();
 
+        // Watching the same roots again would drop them and walk their trees
+        // once more; only the confirmed artifact may have changed.
+        if !roots.is_empty() && self.roots_by_pane.get(&pane_id) == Some(&roots) {
+            self.set_confirmed_artifact(pane_id, harness, session_path);
+            return;
+        }
         self.unwatch_pane(pane_id);
         if roots.is_empty() || self.watcher.is_none() {
             return;
@@ -483,13 +555,10 @@ impl AgentArtifactWatcherState {
         for root in roots {
             let first_watcher_for_root = !self.panes_by_root.contains_key(&root);
             if first_watcher_for_root {
-                let Some(watcher) = self.watcher.as_mut() else {
+                let Some(watcher) = self.watcher.as_ref() else {
                     return;
                 };
-                if let Err(err) = watcher.watch(&root, RecursiveMode::Recursive) {
-                    log::debug!("unable to watch agent artifact root {:?}: {err}", root);
-                    continue;
-                }
+                watcher.watch(&root);
             }
 
             self.panes_by_root
@@ -599,22 +668,15 @@ impl AgentArtifactWatcherState {
                 .unwrap_or(false);
             if remove_root {
                 self.panes_by_root.remove(&root);
-                if let Some(watcher) = self.watcher.as_mut() {
-                    if let Err(err) = watcher.unwatch(&root) {
-                        log::debug!("unable to unwatch agent artifact root {:?}: {err}", root);
-                    }
+                if let Some(watcher) = self.watcher.as_ref() {
+                    watcher.unwatch(&root);
                     // The OS keeps one watch per directory, so removing a
                     // recursive root also removes the watches of every root
                     // nested with it, such as a Claude project directory
                     // inside the projects directory. Register those again.
                     for other in self.panes_by_root.keys() {
                         if other.starts_with(&root) || root.starts_with(other) {
-                            if let Err(err) = watcher.watch(other, RecursiveMode::Recursive) {
-                                log::debug!(
-                                    "unable to rewatch agent artifact root {:?}: {err}",
-                                    other
-                                );
-                            }
+                            watcher.watch(other);
                         }
                     }
                 }
@@ -8048,11 +8110,12 @@ mod test {
         }) else {
             return;
         };
-        watcher.watcher = Some(os_watcher);
+        watcher.watcher = Some(ArtifactWatches::spawn(os_watcher));
         fn watch(watcher: &mut AgentArtifactWatcherState, pane_id: PaneId, root: &Path) {
             if !watcher.panes_by_root.contains_key(root) {
-                let os_watcher = watcher.watcher.as_mut().unwrap();
-                os_watcher.watch(root, RecursiveMode::Recursive).unwrap();
+                let watches = watcher.watcher.as_ref().unwrap();
+                watches.watch(root);
+                watches.flush();
             }
             watcher
                 .roots_by_pane
@@ -8066,7 +8129,8 @@ mod test {
         let (pane_inner, pane_outer) = (alloc_pane_id(), alloc_pane_id());
         watch(&mut watcher, pane_inner, &inner);
         watch(&mut watcher, pane_outer, &outer);
-        let sees_write = |dir: &Path| {
+        let sees_write = |watcher: &AgentArtifactWatcherState, dir: &Path| {
+            watcher.watcher.as_ref().unwrap().flush();
             while rx.try_recv().is_ok() {}
             std::fs::write(dir.join("session.jsonl"), "{}\n").unwrap();
             rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok()
@@ -8074,12 +8138,12 @@ mod test {
 
         // Removing the outer root keeps the inner root's events.
         watcher.unwatch_pane(pane_outer);
-        assert!(sees_write(&inner));
+        assert!(sees_write(&watcher, &inner));
 
         // Removing a nested root keeps the outer root's events inside it.
         watch(&mut watcher, pane_outer, &outer);
         watcher.unwatch_pane(pane_inner);
-        assert!(sees_write(&inner));
+        assert!(sees_write(&watcher, &inner));
     }
 
     #[test]
@@ -8089,10 +8153,10 @@ mod test {
         let pane_a = alloc_pane_id();
         let pane_b = alloc_pane_id();
         let mut watcher = AgentArtifactWatcherState::new();
-        let Some(os_watcher) = watcher.watcher.as_mut() else {
+        let Some(watches) = watcher.watcher.as_ref() else {
             return;
         };
-        os_watcher.watch(&root, RecursiveMode::Recursive).unwrap();
+        watches.watch(&root);
         watcher.roots_by_pane.insert(pane_a, vec![root.clone()]);
         watcher.roots_by_pane.insert(pane_b, vec![root.clone()]);
         watcher
