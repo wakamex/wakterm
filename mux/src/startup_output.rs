@@ -55,6 +55,7 @@ pub fn expect(panes: usize) {
 /// Records that a pane printed its first output `first` after it started
 /// and drew a first screen `screen` after it started.
 pub fn record(pane_id: PaneId, first: Duration, screen: Duration) {
+    crate::agent_start_gate::screen_drawn();
     let done = TRACKER.lock().as_mut().is_some_and(|tracker| {
         tracker.panes.push((pane_id, first, screen));
         tracker

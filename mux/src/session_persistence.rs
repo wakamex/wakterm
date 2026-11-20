@@ -755,6 +755,29 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
         .collect::<Vec<_>>();
     let restore_started = Instant::now();
     crate::startup_output::begin();
+    // Agents start a few at a time: those whose turn was interrupted, then
+    // those in tabs that were showing, then those in parked tabs.
+    let mut ranks = HashMap::new();
+    for saved_window in &session.windows {
+        for saved_tab in &saved_window.tabs {
+            let mut panes = Vec::new();
+            collect_pane_ids(&saved_tab.tree, &mut panes);
+            for pane_id in panes {
+                if let Some(intent) = restore_intents.get(&pane_id) {
+                    let class = if intent.turn_interrupted {
+                        0
+                    } else if !saved_tab.parked {
+                        1
+                    } else {
+                        2
+                    };
+                    let order = ranks.len();
+                    ranks.insert(pane_id, (class, order));
+                }
+            }
+        }
+    }
+    crate::agent_start_gate::begin(ranks);
     let trust = promise::spawn::spawn_into_new_thread(move || {
         crate::agent::trust_claude_folders(claude_folders.iter().map(String::as_str))
     })
@@ -822,6 +845,7 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
         .filter(|pane_id| restore_intents.contains_key(pane_id))
         .count();
     crate::startup_output::expect(restored_panes.len());
+    crate::agent_start_gate::seal();
     tab_times.sort_by(|a, b| b.0.cmp(&a.0));
     let slowest = tab_times
         .iter()
@@ -1199,7 +1223,10 @@ fn prepare_restore_for_entry(
     let mut prepared = prepare_agent_restore(intent, |request| {
         Mux::get().prepare_codex_app_server_launch(request)
     })?;
-    prepared.command = restored_harness_then_shell(prepared.command)?;
+    prepared.command = restored_harness_then_shell(crate::agent_start_gate::gate(
+        entry.pane_id,
+        prepared.command,
+    ))?;
     Ok(Some(prepared))
 }
 

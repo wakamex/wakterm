@@ -58,6 +58,7 @@ pub mod agent_freeze;
 pub mod agent_reminder;
 pub mod agent_request;
 pub mod agent_service;
+pub mod agent_start_gate;
 pub mod claude_menu;
 pub mod claude_question_keys;
 pub mod claude_question_screen;
