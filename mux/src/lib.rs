@@ -55,6 +55,7 @@ pub mod agent_admission;
 pub mod agent_approval;
 pub mod agent_event;
 pub mod agent_freeze;
+pub mod agent_input_lease;
 pub mod agent_reminder;
 pub mod agent_request;
 pub mod agent_service;

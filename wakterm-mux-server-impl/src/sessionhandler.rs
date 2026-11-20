@@ -484,10 +484,14 @@ pub struct SessionHandler {
     client_id: Option<Arc<ClientId>>,
     proxy_client_id: Option<ClientId>,
     authority: ConnectionAuthority,
+    /// Holds agent input box leases between this connection's
+    /// PrepareAgentInputBox and SubmitTypedInput.
+    input_holder: mux::agent_input_lease::Holder,
 }
 
 impl Drop for SessionHandler {
     fn drop(&mut self) {
+        mux::agent_input_lease::release_all(self.input_holder);
         if let Some(client_id) = self.client_id.take() {
             let mux = Mux::get();
             mux.unregister_client(&client_id);
@@ -508,6 +512,7 @@ impl SessionHandler {
             client_id: None,
             proxy_client_id: None,
             authority,
+            input_holder: mux::agent_input_lease::new_holder(),
         }
     }
 
@@ -885,15 +890,29 @@ impl SessionHandler {
                 .detach();
             }
             Pdu::PrepareAgentInputBox(PrepareAgentInputBox { pane_id }) => {
+                // The box is this connection's until it submits, so another
+                // sender cannot type into it meanwhile.
+                let holder = self.input_holder;
                 spawn_into_main_thread(async move {
-                    let result = prepare_agent_input_box(pane_id)
-                        .await
-                        .map(Pdu::PrepareAgentInputBoxResponse);
-                    send_response(result);
+                    let result = match mux::agent_input_lease::acquire(pane_id, holder).await {
+                        Err(blocked) => Ok(PrepareAgentInputBoxResponse {
+                            blocked: Some(blocked),
+                            draft_stashed: false,
+                        }),
+                        Ok(()) => prepare_agent_input_box(pane_id).await,
+                    };
+                    if !result
+                        .as_ref()
+                        .is_ok_and(|prepared| prepared.blocked.is_none())
+                    {
+                        mux::agent_input_lease::release(pane_id, holder);
+                    }
+                    send_response(result.map(Pdu::PrepareAgentInputBoxResponse));
                 })
                 .detach();
             }
             Pdu::SubmitTypedInput(SubmitTypedInput { pane_id }) => {
+                let holder = self.input_holder;
                 spawn_into_main_thread(async move {
                     let result = async {
                         wait_for_redraw(pane_id).await;
@@ -926,6 +945,7 @@ impl SessionHandler {
                         }))
                     }
                     .await;
+                    mux::agent_input_lease::release(pane_id, holder);
                     send_response(result);
                 })
                 .detach();
@@ -2270,10 +2290,18 @@ pub(crate) async fn admit_agent_prompt(
         return Ok(receipt);
     }
 
-    // Sets aside a draft in the input box that nobody is typing.
-    let blocked = match prepare_agent_input_box(candidate.pane_id).await {
-        Ok(prepared) => prepared.blocked,
-        Err(err) => Some(format!("the input box could not be prepared: {err:#}")),
+    // The input box is this admission's until the prompt is recorded, so
+    // no other sender's text joins it. Then a draft nobody is typing is set
+    // aside.
+    let (_input_box, blocked) = match mux::agent_input_lease::hold(candidate.pane_id).await {
+        Err(blocked) => (None, Some(blocked)),
+        Ok(held) => match prepare_agent_input_box(candidate.pane_id).await {
+            Ok(prepared) => (Some(held), prepared.blocked),
+            Err(err) => (
+                Some(held),
+                Some(format!("the input box could not be prepared: {err:#}")),
+            ),
+        },
     };
     if let Some(reason) = blocked {
         if let Err(err) =

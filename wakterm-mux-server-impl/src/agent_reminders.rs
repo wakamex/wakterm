@@ -80,6 +80,9 @@ async fn deliver(reminder: &AgentReminder) -> anyhow::Result<bool> {
     if pane.downcast_ref::<mux::localpane::LocalPane>().is_none() {
         return Ok(false);
     }
+    let _input_box = mux::agent_input_lease::hold(agent.pane_id)
+        .await
+        .map_err(|blocked| anyhow::anyhow!("{blocked}"))?;
     if let Some(reason) = crate::sessionhandler::prepare_agent_input_box(agent.pane_id)
         .await?
         .blocked
