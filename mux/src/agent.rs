@@ -1149,7 +1149,13 @@ pub fn native_restore_launch_command(
     process: &LocalProcessInfo,
 ) -> Option<String> {
     let process = harness_tui_process(harness, process)?;
-    let mut argv = if process.argv.is_empty() {
+    // An argument list read while a process execs, or one a program blanked,
+    // can be empty or hold one empty program name.
+    let mut argv = if process
+        .argv
+        .first()
+        .map_or(true, |program| program.is_empty())
+    {
         vec![process.executable.to_string_lossy().into_owned()]
     } else {
         process.argv.clone()
@@ -1157,15 +1163,16 @@ pub fn native_restore_launch_command(
     if !remove_native_resume_selector(harness, &mut argv) {
         return None;
     }
-    if argv.is_empty() {
+    if argv.first().map_or(true, |program| program.is_empty()) {
         return None;
     }
-    Some(
-        argv.iter()
-            .map(|arg| shell_words::quote(arg))
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
+    let command = argv
+        .iter()
+        .map(|arg| shell_words::quote(arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    // A command that does not run the harness could not restore it.
+    (infer_harness(&command, None) == *harness).then_some(command)
 }
 
 fn harness_process_is_compatible(
@@ -8557,6 +8564,22 @@ mod test {
             Some(
                 "/home/mihai/.local/bin/claude --dangerously-skip-permissions --add-dir /home/mihai --add-dir /code --add-dir .git"
             )
+        );
+    }
+
+    #[test]
+    fn a_blank_argument_list_is_not_saved_as_a_launch_command() {
+        // A Claude whose argument list read as one empty program name.
+        let blank = proc_info("claude", "/home/mihai/.local/bin/claude", &[""], 2, vec![]);
+        assert_eq!(
+            native_restore_launch_command(&AgentHarness::Claude, &blank).as_deref(),
+            Some("/home/mihai/.local/bin/claude")
+        );
+        // With no executable either, there is nothing to save.
+        let unknown = proc_info("claude", "", &[""], 2, vec![]);
+        assert_eq!(
+            native_restore_launch_command(&AgentHarness::Claude, &unknown),
+            None
         );
     }
 

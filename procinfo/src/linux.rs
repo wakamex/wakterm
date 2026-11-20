@@ -358,8 +358,16 @@ fn sample_tree(
         return None;
     }
     let stat = snapshot.processes.get(&pid)?;
+    // An empty argument list, as read while a process execs, is read again.
     let image = match images.get(&pid) {
-        Some(image) if image.starttime == stat.starttime && image.name == stat.name => {
+        Some(image)
+            if image.starttime == stat.starttime
+                && image.name == stat.name
+                && image
+                    .argv
+                    .first()
+                    .is_some_and(|program| !program.is_empty()) =>
+        {
             image.clone()
         }
         _ => ProcessImage {

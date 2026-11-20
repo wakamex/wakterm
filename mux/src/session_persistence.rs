@@ -1277,6 +1277,30 @@ fn prepare_agent_restore(
     intent: &SavedAgentRestoreIntent,
     prepare_managed: impl FnOnce(PrepareCodexLaunch) -> anyhow::Result<PreparedCodexLaunch>,
 ) -> anyhow::Result<PreparedAgentRestore> {
+    // A saved launch command that does not run the agent's harness, such
+    // as an empty one read from a process mid-exec, would fail the whole
+    // tab; the harness's own program resumes the session instead.
+    let harness = intent.harness();
+    let repaired;
+    let intent = if crate::agent::infer_harness(&intent.metadata.launch_cmd, None) != harness {
+        match crate::agent::default_launch_cmd_for_harness(&harness) {
+            Some(default) => {
+                log::warn!(
+                    "{} was saved with launch command {:?}, which does not run {harness:?}; \
+                     restoring it with {default:?}",
+                    intent.metadata.name,
+                    intent.metadata.launch_cmd
+                );
+                let mut fixed = intent.clone();
+                fixed.metadata.launch_cmd = default.to_string();
+                repaired = fixed;
+                &repaired
+            }
+            None => intent,
+        }
+    } else {
+        intent
+    };
     if intent.fresh_launch {
         let argv = shell_words::split(&intent.metadata.launch_cmd)
             .context("parsing agent launch command")?;
@@ -2130,6 +2154,33 @@ mod test {
         );
         assert!(argv[4].to_string_lossy().contains(&intent.session_id));
         assert!(argv[4].to_string_lossy().contains("launch supervisor"));
+    }
+
+    #[test]
+    fn a_saved_launch_command_that_is_not_the_harness_restores_with_its_program() {
+        // Read from a Claude process while it exec'd, its command was saved
+        // as one empty argument.
+        let mut metadata = sample_agent_metadata("blanked");
+        metadata.launch_cmd = "''".to_string();
+        let intent = SavedAgentRestoreIntent {
+            pane_id: 1,
+            harness: AgentHarness::Claude,
+            metadata,
+            session_id: "00000000-0000-4000-8000-000000000092".to_string(),
+            attention_seen_at: None,
+            turn_interrupted: false,
+            fresh_launch: false,
+        };
+        let restored =
+            prepare_agent_restore(&intent, |_| panic!("must not start a managed backend")).unwrap();
+        let argv = restored
+            .command
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(argv, ["claude", "--resume", &intent.session_id]);
+        assert_eq!(restored.intent.metadata.launch_cmd, "claude");
     }
 
     #[test]
