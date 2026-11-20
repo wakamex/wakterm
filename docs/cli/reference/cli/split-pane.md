@@ -30,9 +30,18 @@ $ wakterm cli split-pane --left --percent 30
 4
 ```
 
+A program given this way runs in the mux server's environment, as the default program does, rather than in the environment of the shell that ran this command. Variables set in the calling session, such as an activated virtual environment or the markers an agent sets for programs it runs, therefore do not follow into the new pane. Pass `--env KEY=VALUE` for a variable the program needs, or `--inherit-env` to run it with this command's whole environment:
+
+```
+$ wakterm cli split-pane --env RUST_LOG=debug -- cargo run
+$ wakterm cli split-pane --inherit-env -- python
+```
+
 The following options affect the behavior:
 
 * `--cwd CWD` - Specify the current working directory for the initially spawned program.
+* `--env KEY=VALUE` - Sets an environment variable for the program. Repeatable.
+* `--inherit-env` - Runs the program with the environment of the shell that ran this command, instead of the mux server's.
 * `--horizontal` - Equivalent to `--right`. If neither this nor any other direction is specified, the default is equivalent to `--bottom`.
 * `--pane-id` - Specifies the pane that should be split. See also [Targeting Panes](index.md#targeting-panes).
 

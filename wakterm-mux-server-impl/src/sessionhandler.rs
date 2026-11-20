@@ -2959,7 +2959,7 @@ async fn split_pane(split: SplitPane, client_id: Option<Arc<ClientId>>) -> anyho
         SplitSource::MovePane(move_pane_id)
     } else {
         SplitSource::Spawn {
-            command: split.command,
+            command: in_server_environment(split.command),
             command_dir: split.command_dir,
         }
     };
@@ -2976,6 +2976,21 @@ async fn split_pane(split: SplitPane, client_id: Option<Arc<ClientId>>) -> anyho
     }))
 }
 
+/// A client's command that carries none of the client's own environment,
+/// only variables set on purpose, runs in the server's environment, as a
+/// default shell does. One that carries the client's environment, as older
+/// clients and `--inherit-env` send, keeps it.
+fn in_server_environment(
+    command: Option<portable_pty::CommandBuilder>,
+) -> Option<portable_pty::CommandBuilder> {
+    command.map(|mut command| {
+        if command.has_no_base_env() {
+            command.rebase_env();
+        }
+        command
+    })
+}
+
 async fn domain_spawn_v2(spawn: SpawnV2, client_id: Option<Arc<ClientId>>) -> anyhow::Result<Pdu> {
     let mux = Mux::get();
     let _identity = mux.with_identity(client_id);
@@ -2984,7 +2999,7 @@ async fn domain_spawn_v2(spawn: SpawnV2, client_id: Option<Arc<ClientId>>) -> an
         .spawn_tab_or_window(
             spawn.window_id,
             spawn.domain,
-            spawn.command,
+            in_server_environment(spawn.command),
             spawn.command_dir,
             spawn.size,
             spawn.current_pane_id,
@@ -3057,6 +3072,30 @@ mod test {
     }
 
     use super::*;
+
+    #[test]
+    fn a_client_command_without_its_environment_runs_in_the_servers() {
+        use portable_pty::CommandBuilder;
+        let path = std::env::var_os("PATH").unwrap();
+
+        let mut bare = CommandBuilder::from_argv_without_env(vec!["true".into()]);
+        bare.env("EXPLICIT", "1");
+        let bare = in_server_environment(Some(bare)).unwrap();
+        assert_eq!(bare.get_env("PATH"), Some(path.as_os_str()));
+        assert_eq!(bare.get_env("EXPLICIT"), Some(std::ffi::OsStr::new("1")));
+
+        // A command carrying its client's environment, as older clients and
+        // --inherit-env send, keeps it.
+        let mut inherited = CommandBuilder::from_argv(vec!["true".into()]);
+        inherited.env("PATH", "/client/bin");
+        let inherited = in_server_environment(Some(inherited)).unwrap();
+        assert_eq!(
+            inherited.get_env("PATH"),
+            Some(std::ffi::OsStr::new("/client/bin"))
+        );
+
+        assert!(in_server_environment(None).is_none());
+    }
 
     #[test]
     fn output_settles_after_the_last_change_or_at_the_limit() {

@@ -4786,7 +4786,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__spawn)
-            opts="-h --pane-id --domain-name --window-id --new-window --cwd --workspace --help [PROG]..."
+            opts="-h --pane-id --domain-name --window-id --new-window --cwd --workspace --env --inherit-env --help [PROG]..."
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4815,6 +4815,10 @@ _wakterm() {
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
+                --env)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;
@@ -4823,7 +4827,7 @@ _wakterm() {
             return 0
             ;;
         wakterm__cli__split__pane)
-            opts="-h --pane-id --horizontal --left --right --top --bottom --top-level --cells --percent --cwd --move-pane-id --help [PROG]..."
+            opts="-h --pane-id --horizontal --left --right --top --bottom --top-level --cells --percent --cwd --move-pane-id --env --inherit-env --help [PROG]..."
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4849,6 +4853,10 @@ _wakterm() {
                     return 0
                     ;;
                 --move-pane-id)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --env)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

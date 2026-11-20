@@ -235,6 +235,35 @@ impl CommandBuilder {
         }
     }
 
+    /// Like `from_argv`, but with none of this process's environment: only
+    /// variables set later with `env`. A mux server given such a command
+    /// runs it in its own environment.
+    pub fn from_argv_without_env(args: Vec<OsString>) -> Self {
+        Self {
+            envs: BTreeMap::new(),
+            ..Self::from_argv(args)
+        }
+    }
+
+    /// Whether every variable was set explicitly, none taken from the
+    /// environment of the process that built the command.
+    pub fn has_no_base_env(&self) -> bool {
+        self.envs.values().all(|entry| !entry.is_from_base_env)
+    }
+
+    /// Replaces the variables taken from the environment of the process
+    /// that built the command with this process's own, keeping those set
+    /// explicitly with `env`.
+    pub fn rebase_env(&mut self) {
+        let mut envs = get_base_env();
+        for (key, entry) in std::mem::take(&mut self.envs) {
+            if !entry.is_from_base_env {
+                envs.insert(key, entry);
+            }
+        }
+        self.envs = envs;
+    }
+
     /// Set whether we should set the pty as the controlling terminal.
     /// The default is true, which is usually what you want, but you
     /// may need to set this to false if you are crossing container
@@ -773,6 +802,35 @@ fn is_cwd_relative_path<P: AsRef<Path>>(p: P) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_command_without_env_takes_the_rebasing_process_environment() {
+        let mut cmd = CommandBuilder::from_argv_without_env(vec!["true".into()]);
+        assert!(cmd.has_no_base_env());
+        assert_eq!(cmd.iter_full_env_as_str().count(), 0);
+        cmd.env("EXPLICIT", "1");
+        assert!(cmd.has_no_base_env());
+
+        cmd.rebase_env();
+        // This process's environment, as a server's would be, with the
+        // explicit variable on top of it.
+        assert!(!cmd.has_no_base_env());
+        assert_eq!(cmd.get_env("EXPLICIT"), Some(OsStr::new("1")));
+        let path = std::env::var_os("PATH").unwrap();
+        assert_eq!(cmd.get_env("PATH"), Some(path.as_os_str()));
+        assert_eq!(
+            cmd.iter_extra_env_as_str().collect::<Vec<_>>(),
+            [("EXPLICIT", "1")]
+        );
+
+        // A command that carries its builder's environment keeps it as is
+        // until rebased, and an explicit variable overrides a base one.
+        let mut inherited = CommandBuilder::from_argv(vec!["true".into()]);
+        assert!(!inherited.has_no_base_env());
+        inherited.env("PATH", "/explicit");
+        inherited.rebase_env();
+        assert_eq!(inherited.get_env("PATH"), Some(OsStr::new("/explicit")));
+    }
 
     #[cfg(unix)]
     #[test]

@@ -45,11 +45,55 @@ pub struct SpawnCommand {
     #[arg(long, requires = "new_window")]
     workspace: Option<String>,
 
+    /// Set an environment variable for PROG. Repeatable.
+    #[arg(long = "env", value_name = "KEY=VALUE", value_parser = parse_env_assignment, requires = "prog")]
+    env: Vec<(String, String)>,
+
+    /// Run PROG with this command's own environment, rather than the mux
+    /// server's.
+    #[arg(long, requires = "prog")]
+    inherit_env: bool,
+
     /// Instead of executing your shell, run PROG.
     /// For example: `wakterm cli spawn -- bash -l` will spawn bash
     /// as if it were a login shell.
+    /// PROG runs in the mux server's environment, as your shell would, plus
+    /// any `--env` variables; `--inherit-env` gives it this command's
+    /// environment instead.
     #[arg(value_parser, value_hint=ValueHint::CommandWithArguments, num_args=1..)]
     prog: Vec<OsString>,
+}
+
+/// Parses `KEY=VALUE` for `--env`.
+pub(crate) fn parse_env_assignment(assignment: &str) -> Result<(String, String), String> {
+    match assignment.split_once('=') {
+        Some((key, value)) if !key.is_empty() => Ok((key.to_string(), value.to_string())),
+        _ => Err(format!("expected KEY=VALUE, got {assignment:?}")),
+    }
+}
+
+/// The command a spawn or split runs: PROG with the `--env` variables, and
+/// with this process's environment only when `inherit_env` asks for it,
+/// otherwise none, so that the mux server runs it in its own. A caller's
+/// session state, such as the markers an agent sets for programs it runs,
+/// then does not follow into a new pane.
+pub(crate) fn command_for_prog(
+    prog: Vec<OsString>,
+    env: Vec<(String, String)>,
+    inherit_env: bool,
+) -> Option<CommandBuilder> {
+    if prog.is_empty() {
+        return None;
+    }
+    let mut command = if inherit_env {
+        CommandBuilder::from_argv(prog)
+    } else {
+        CommandBuilder::from_argv_without_env(prog)
+    };
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    Some(command)
 }
 
 impl SpawnCommand {
@@ -97,6 +141,8 @@ impl SpawnCommand {
             new_window,
             cwd,
             workspace,
+            env,
+            inherit_env,
             prog,
         } = self;
 
@@ -139,11 +185,7 @@ impl SpawnCommand {
             }),
             window_id,
             current_pane_id: pane_id,
-            command: if prog.is_empty() {
-                None
-            } else {
-                Some(CommandBuilder::from_argv(prog))
-            },
+            command: command_for_prog(prog, env, inherit_env),
             command_dir: resolve_relative_cwd(cwd)?,
             size,
             workspace,
@@ -211,6 +253,41 @@ mod test {
     }
 
     #[test]
+    fn a_spawned_prog_takes_the_server_environment_unless_asked_to_inherit() {
+        let parse = |args: &[&str]| {
+            let mut argv = vec!["spawn"];
+            argv.extend_from_slice(args);
+            <SpawnCommand as clap::CommandFactory>::command()
+                .trailing_var_arg(true)
+                .try_get_matches_from(argv)
+                .and_then(|matches| {
+                    <SpawnCommand as clap::FromArgMatches>::from_arg_matches(&matches)
+                })
+        };
+        // By default the command carries none of this process's
+        // environment, only variables set with --env.
+        let spawn = parse(&["--env", "FOO=bar", "--", "sh", "-c", "true"]).unwrap();
+        let command = super::command_for_prog(spawn.prog, spawn.env, spawn.inherit_env).unwrap();
+        assert!(command.has_no_base_env());
+        assert_eq!(
+            command.iter_extra_env_as_str().collect::<Vec<_>>(),
+            [("FOO", "bar")]
+        );
+        // --inherit-env carries it, with --env on top.
+        let spawn = parse(&["--inherit-env", "--env", "FOO=baz", "--", "true"]).unwrap();
+        let command = super::command_for_prog(spawn.prog, spawn.env, spawn.inherit_env).unwrap();
+        assert!(!command.has_no_base_env());
+        assert_eq!(command.get_env("FOO"), Some(std::ffi::OsStr::new("baz")));
+        assert_eq!(command.get_env("PATH"), std::env::var_os("PATH").as_deref());
+        // No PROG, no command; the flags need one.
+        let spawn = parse(&[]).unwrap();
+        assert!(super::command_for_prog(spawn.prog, spawn.env, spawn.inherit_env).is_none());
+        assert!(parse(&["--env", "FOO=bar"]).is_err());
+        assert!(parse(&["--env", "=bar", "--", "true"]).is_err());
+        assert!(parse(&["--env", "FOO", "--", "true"]).is_err());
+    }
+
+    #[test]
     fn run_uses_root_tab_size_from_current_pane_context() {
         let left = TerminalSize {
             rows: 40,
@@ -243,6 +320,8 @@ mod test {
                 new_window: false,
                 cwd: None,
                 workspace: None,
+                env: vec![],
+                inherit_env: false,
                 prog: vec![],
             }
             .run_with(
@@ -311,6 +390,8 @@ mod test {
                 new_window: false,
                 cwd: None,
                 workspace: None,
+                env: vec![],
+                inherit_env: false,
                 prog: vec![],
             }
             .run_with(
@@ -368,6 +449,8 @@ mod test {
                 new_window: true,
                 cwd: None,
                 workspace: None,
+                env: vec![],
+                inherit_env: false,
                 prog: vec![],
             }
             .run_with(

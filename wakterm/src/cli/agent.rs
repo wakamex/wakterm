@@ -479,7 +479,7 @@ impl SpawnAgentCommand {
 
         let prepared = if let Some(prepared) = self.prepared_override.as_ref() {
             PreparedAgentLaunch {
-                command: CommandBuilder::from_argv(
+                command: CommandBuilder::from_argv_without_env(
                     prepared.argv.iter().map(OsString::from).collect(),
                 ),
                 launch_cmd: prepared.session.executable.clone(),
@@ -1206,10 +1206,13 @@ fn path_to_string(path: &Path) -> String {
         .to_string()
 }
 
+/// The agent's command, without this process's environment, so the mux
+/// server runs it in its own, as it does a shell, and markers the calling
+/// session set for its own programs do not reach the new agent.
 fn command_builder_from_cmd(cmd: &str) -> anyhow::Result<CommandBuilder> {
     let argv = shell_words::split(cmd).context("parsing --cmd")?;
     anyhow::ensure!(!argv.is_empty(), "--cmd must not be empty");
-    Ok(CommandBuilder::from_argv(
+    Ok(CommandBuilder::from_argv_without_env(
         argv.into_iter().map(OsString::from).collect(),
     ))
 }

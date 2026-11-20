@@ -2,7 +2,6 @@ use crate::cli::resolve_relative_cwd;
 use clap::{Parser, ValueHint};
 use mux::pane::PaneId;
 use mux::tab::{SplitDirection, SplitRequest, SplitSize};
-use portable_pty::cmdbuilder::CommandBuilder;
 use std::ffi::OsString;
 use wakterm_client::client::Client;
 
@@ -60,9 +59,21 @@ pub struct SplitPane {
     #[arg(long, conflicts_with_all=&["cwd", "prog"])]
     move_pane_id: Option<PaneId>,
 
+    /// Set an environment variable for PROG. Repeatable.
+    #[arg(long = "env", value_name = "KEY=VALUE", value_parser = crate::cli::spawn_command::parse_env_assignment, requires = "prog")]
+    env: Vec<(String, String)>,
+
+    /// Run PROG with this command's own environment, rather than the mux
+    /// server's.
+    #[arg(long, requires = "prog")]
+    inherit_env: bool,
+
     /// Instead of executing your shell, run PROG.
     /// For example: `wakterm cli split-pane -- bash -l` will spawn bash
     /// as if it were a login shell.
+    /// PROG runs in the mux server's environment, as your shell would, plus
+    /// any `--env` variables; `--inherit-env` gives it this command's
+    /// environment instead.
     #[arg(value_parser, value_hint=ValueHint::CommandWithArguments, num_args=1..)]
     prog: Vec<OsString>,
 }
@@ -127,12 +138,11 @@ impl SplitPane {
                 pane_id,
                 split_request,
                 domain: config::keyassignment::SpawnTabDomain::CurrentPaneDomain,
-                command: if self.prog.is_empty() {
-                    None
-                } else {
-                    let builder = CommandBuilder::from_argv(self.prog);
-                    Some(builder)
-                },
+                command: crate::cli::spawn_command::command_for_prog(
+                    self.prog,
+                    self.env,
+                    self.inherit_env,
+                ),
                 command_dir: resolve_relative_cwd(self.cwd)?,
                 move_pane_id: self.move_pane_id,
                 tab_size,

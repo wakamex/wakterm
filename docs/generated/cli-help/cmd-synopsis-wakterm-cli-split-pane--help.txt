@@ -4,7 +4,7 @@ Outputs the pane-id for the newly created pane on success
 Usage: wakterm cli split-pane [OPTIONS] [PROG]...
 
 Arguments:
-  [PROG]...  Instead of executing your shell, run PROG. For example: `wakterm cli split-pane -- bash -l` will spawn bash as if it were a login shell
+  [PROG]...  Instead of executing your shell, run PROG. For example: `wakterm cli split-pane -- bash -l` will spawn bash as if it were a login shell. PROG runs in the mux server's environment, as your shell would, plus any `--env` variables; `--inherit-env` gives it this command's environment instead
 
 Options:
       --pane-id <PANE_ID>            Specify the pane that should be split. The default is to use the current pane based on the environment variable WAKTERM_PANE
@@ -18,4 +18,6 @@ Options:
       --percent <PERCENT>            Specify the number of cells that the new split should have, expressed as a percentage of the available space
       --cwd <CWD>                    Specify the current working directory for the initially spawned program
       --move-pane-id <MOVE_PANE_ID>  Instead of spawning a new command, move the specified pane into the newly created split
+      --env <KEY=VALUE>              Set an environment variable for PROG. Repeatable
+      --inherit-env                  Run PROG with this command's own environment, rather than the mux server's
   -h, --help                         Print help

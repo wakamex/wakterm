@@ -791,15 +791,17 @@ _arguments "${_arguments_options[@]}" : \
 '(--cells)--percent=[Specify the number of cells that the new split should have, expressed as a percentage of the available space]:PERCENT:_default' \
 '--cwd=[Specify the current working directory for the initially spawned program]:CWD:_files -/' \
 '(--cwd)--move-pane-id=[Instead of spawning a new command, move the specified pane into the newly created split]:MOVE_PANE_ID:_default' \
+'*--env=[Set an environment variable for PROG. Repeatable]:KEY=VALUE:_default' \
 '(--left --right --top --bottom)--horizontal[Equivalent to \`--right\`. If neither this nor any other direction is specified, the default is equivalent to \`--bottom\`]' \
 '(--right --top --bottom)--left[Split horizontally, with the new pane on the left]' \
 '(--left --top --bottom)--right[Split horizontally, with the new pane on the right]' \
 '(--left --right --bottom)--top[Split vertically, with the new pane on the top]' \
 '(--left --right --top)--bottom[Split vertically, with the new pane on the bottom]' \
 '--top-level[Rather than splitting the active pane, split the entire window]' \
+'--inherit-env[Run PROG with this command'\''s own environment, rather than the mux server'\''s]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'*::prog -- Instead of executing your shell, run PROG. For example\: `wakterm cli split-pane -- bash -l` will spawn bash as if it were a login shell:_cmdambivalent' \
+'*::prog -- Instead of executing your shell, run PROG. For example\: `wakterm cli split-pane -- bash -l` will spawn bash as if it were a login shell. PROG runs in the mux server'\''s environment, as your shell would, plus any `--env` variables; `--inherit-env` gives it this command'\''s environment instead:_cmdambivalent' \
 && ret=0
 ;;
 (spawn)
@@ -809,10 +811,12 @@ _arguments "${_arguments_options[@]}" : \
 '(--workspace --new-window)--window-id=[Specify the window into which to spawn a tab. If omitted, the window associated with the current pane is used. Cannot be used with \`--workspace\` or \`--new-window\`]:WINDOW_ID:_default' \
 '--cwd=[Specify the current working directory for the initially spawned program]:CWD:_files -/' \
 '--workspace=[When creating a new window, override the default workspace name with the provided name.  The default name is "default". Requires \`--new-window\`]:WORKSPACE:_default' \
+'*--env=[Set an environment variable for PROG. Repeatable]:KEY=VALUE:_default' \
 '--new-window[Spawn into a new window, rather than a new tab]' \
+'--inherit-env[Run PROG with this command'\''s own environment, rather than the mux server'\''s]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'*::prog -- Instead of executing your shell, run PROG. For example\: `wakterm cli spawn -- bash -l` will spawn bash as if it were a login shell:_cmdambivalent' \
+'*::prog -- Instead of executing your shell, run PROG. For example\: `wakterm cli spawn -- bash -l` will spawn bash as if it were a login shell. PROG runs in the mux server'\''s environment, as your shell would, plus any `--env` variables; `--inherit-env` gives it this command'\''s environment instead:_cmdambivalent' \
 && ret=0
 ;;
 (send-text)

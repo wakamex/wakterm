@@ -33,9 +33,18 @@ $ wakterm cli spawn -- bash -l
 3
 ```
 
+A program given this way runs in the mux server's environment, as the default program does, rather than in the environment of the shell that ran this command. Variables set in the calling session, such as an activated virtual environment or the markers an agent sets for programs it runs, therefore do not follow into the new pane. Pass `--env KEY=VALUE` for a variable the program needs, or `--inherit-env` to run it with this command's whole environment:
+
+```
+$ wakterm cli spawn --env RUST_LOG=debug -- cargo run
+$ wakterm cli spawn --inherit-env -- python
+```
+
 The following options affect the behavior:
 
 * `--cwd CWD` - Specifies the current working directory that should be set for the spawned program
+* `--env KEY=VALUE` - Sets an environment variable for the program. Repeatable.
+* `--inherit-env` - Runs the program with the environment of the shell that ran this command, instead of the mux server's.
 * `--domain-name DOMAIN_NAME` - Spawn into the named multiplexer domain. The default is to spawn into the domain of the current pane.
 * `--new-window` - Spawns the tab into a window of its own.
 * `--workspace WORKSPACE` - when using `--new-window`, set the workspace name rather than using the default name of `"default"`.
