@@ -3,9 +3,12 @@ use std::sync::OnceLock;
 static VERSION: OnceLock<&'static str> = OnceLock::new();
 static TRIPLE: OnceLock<&'static str> = OnceLock::new();
 
+/// Records this build's version and target triple. Later calls keep the
+/// first values, so a program may record them before parsing its arguments
+/// and again while bootstrapping.
 pub fn assign_version_info(version: &'static str, triple: &'static str) {
-    VERSION.set(version).unwrap();
-    TRIPLE.set(triple).unwrap();
+    VERSION.get_or_init(|| version);
+    TRIPLE.get_or_init(|| triple);
 }
 
 pub fn wakterm_version() -> &'static str {

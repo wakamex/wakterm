@@ -1222,6 +1222,8 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
+    // Before parsing, which answers --version.
+    env_bootstrap::assign_version_info();
     let opts = Opt::parse();
 
     // This is a bit gross.

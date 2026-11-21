@@ -206,11 +206,17 @@ fn register_lua_modules() {
     }
 }
 
-pub fn bootstrap() {
+/// Records this build's version, which `--version` prints, so a program
+/// that parses its arguments before `bootstrap` calls this first.
+pub fn assign_version_info() {
     config::assign_version_info(
         wakterm_version::wakterm_version(),
         wakterm_version::wakterm_target_triple(),
     );
+}
+
+pub fn bootstrap() {
+    assign_version_info();
     setup_logger();
     register_panic_hook();
 
