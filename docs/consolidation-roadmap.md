@@ -14,7 +14,7 @@ When a commit advances or settles an item, update its status here in the same co
 2. The possible regressions R2, R5, R6 and R9, each a short check against the code.
 3. The harness table in item 7, before a tenth harness overflows the tab navigator's icon range.
 4. Items 1, 4 and 6, one at a time, each starting with its check.
-5. Items 2, 3 and 8, and the remaining regressions.
+5. Items 2, 3, 8 and 9, and the remaining regressions.
 
 ## 1. Prompt delivery runs through four separate paths
 
@@ -109,6 +109,18 @@ Evidence: `c762814bf` and `bba72352b` (a missing machine ID and a poisoned envir
 General change: pass host access in through a small interface with an in-memory version for unit tests, scope pane ID counters to each mux, and keep real `/proc` and process tests in a small tagged Linux suite. A single sanitized base environment built at mux startup would also replace the variable-by-variable scrubbing in `5eac174ec`, `d40862b83` and `84190a623`.
 
 Check first: count the users of the environment lock and the tests that start `sleep` or `sh` in `mux/src/`, and how many of them test logic rather than `/proc` parsing.
+
+Status: `unverified`
+
+## 9. One pane can exhaust the host's memory
+
+Problem: every program the mux starts shares one unlimited `wakterm-panes` cgroup, so a single runaway program can use all of the host's memory and swap. On 2026-11-21 an agent's test grew to about 20 GB on the 31 GB host twice; before each out-of-memory kill the whole host stalled for minutes swapping, with a load average of 265, which stalled every agent and client. The mux server itself stayed responsive in its no-swap cgroup.
+
+Evidence: kernel out-of-memory kills of `block_probe-251` at 17:38:30 and 17:43:00 on 2026-11-21, both charged to `wakterm-panes`; `6207c1241` created that cgroup without a limit.
+
+General change: give `wakterm-panes` a `memory.high` some gigabytes below the host's RAM, set by `protect_server` from the host's memory size, so the kernel reclaims and slows the panes as a group before the host as a whole runs short. A runaway program then slows the agents and fails on its own limits instead of freezing the machine. A per-pane or per-agent limit is a later refinement only if one agent slowing the others proves to be a problem.
+
+Check first: measure the panes' normal combined peak over a few days from `wakterm-panes`' `memory.peak` and `memory.current`, and confirm a limit above that peak leaves headroom for the host's other services; then reproduce a runaway allocation in a pane with the limit set and compare host responsiveness with and without it.
 
 Status: `unverified`
 
