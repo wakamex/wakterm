@@ -691,6 +691,8 @@ pub struct TermWindow {
 
     created: Instant,
     pending_tab_switch_paint_trace: Option<(Instant, TabId, usize)>,
+    /// The tab last painted, which `fit_newly_shown_tab` has checked.
+    last_shown_tab: Option<TabId>,
 
     pub last_frame_duration: Duration,
     last_fps_check_time: Instant,
@@ -955,6 +957,7 @@ impl TermWindow {
         let myself = Self {
             created: Instant::now(),
             pending_tab_switch_paint_trace: None,
+            last_shown_tab: None,
             connection_name,
             last_fps_check_time: Instant::now(),
             num_frames: 0,
@@ -3940,6 +3943,30 @@ impl TermWindow {
         self.pane_state(pane.pane_id()).viewport = None;
     }
 
+    /// Sizes a tab to the window when it is painted after another tab, in
+    /// case its size fell out of step with the window's, as it can after the
+    /// GUI applies a size from the server. Only when the shown tab changes,
+    /// so that two clients whose windows differ in size, showing the same
+    /// tab, do not resize it back and forth. The first tab a window shows is
+    /// sized by the window's own setup.
+    pub(crate) fn fit_newly_shown_tab(&mut self) {
+        let Some(tab) = self.get_active_mux_tab() else {
+            return;
+        };
+        let (size, window) = (tab.get_size(), self.terminal_size);
+        if shown_tab_needs_fitting(&mut self.last_shown_tab, tab.tab_id(), size, window) {
+            log::info!(
+                "tab {} is {}x{} in a {}x{} window; resizing it to the window",
+                tab.tab_id(),
+                size.cols,
+                size.rows,
+                window.cols,
+                window.rows
+            );
+            tab.resize(window);
+        }
+    }
+
     fn get_active_mux_tab(&self) -> Option<Arc<Tab>> {
         let mux = Mux::get();
         mux.get_active_tab_for_window_for_current_identity(self.mux_window_id)
@@ -4485,5 +4512,76 @@ mod test {
         let tab = tab_info("", Some("wezterm"));
         let pane = pane_with_title("wezterm");
         assert_eq!(default_window_title(Some(&tab), Some(&pane), 1), "wezterm");
+    }
+}
+
+/// Whether the tab about to be painted, `tab_id` of size `tab`, needs
+/// resizing to the `window`: only when it differs from the tab painted
+/// last, recorded in `last_shown`, and from the window's size.
+fn shown_tab_needs_fitting(
+    last_shown: &mut Option<TabId>,
+    tab_id: TabId,
+    tab: TerminalSize,
+    window: TerminalSize,
+) -> bool {
+    if last_shown
+        .replace(tab_id)
+        .map_or(true, |shown| shown == tab_id)
+    {
+        return false;
+    }
+    let cells = |size: TerminalSize| (size.rows, size.cols, size.pixel_width, size.pixel_height);
+    window.rows > 0 && window.cols > 0 && cells(tab) != cells(window)
+}
+
+#[cfg(test)]
+mod shown_tab_test {
+    use super::*;
+
+    fn size(cols: usize, rows: usize) -> TerminalSize {
+        TerminalSize {
+            cols,
+            rows,
+            pixel_width: cols * 8,
+            pixel_height: rows * 18,
+            dpi: 96,
+        }
+    }
+
+    #[test]
+    fn a_tab_is_fitted_to_the_window_when_shown_after_another() {
+        let window = size(228, 63);
+        let mut last_shown = None;
+        // The first tab a window shows is left to the window's setup.
+        assert!(!shown_tab_needs_fitting(
+            &mut last_shown,
+            1,
+            size(238, 57),
+            window
+        ));
+        // Painting the same tab again never resizes it, so clients with
+        // different window sizes do not take turns resizing it.
+        assert!(!shown_tab_needs_fitting(
+            &mut last_shown,
+            1,
+            size(238, 57),
+            window
+        ));
+        // Switching to a tab of another size fits it; one of the window's
+        // size is left alone.
+        assert!(shown_tab_needs_fitting(
+            &mut last_shown,
+            2,
+            size(238, 57),
+            window
+        ));
+        assert!(!shown_tab_needs_fitting(&mut last_shown, 3, window, window));
+        // A window not sized yet resizes nothing.
+        assert!(!shown_tab_needs_fitting(
+            &mut last_shown,
+            4,
+            size(80, 24),
+            size(0, 0)
+        ));
     }
 }

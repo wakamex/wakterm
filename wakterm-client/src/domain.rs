@@ -199,6 +199,8 @@ impl ParkedTabsOutbox {
 struct ResizeTabSendState {
     in_flight: bool,
     pending: Option<Vec<(PaneId, TerminalSize)>>,
+    /// The local mirror of the remote tab.
+    local_tab_id: TabId,
 }
 
 /// The newest pane sizes of each remote tab not yet sent, one request in
@@ -207,12 +209,20 @@ struct ResizeTabSendState {
 #[derive(Default)]
 struct ResizeTabOutbox {
     tabs: HashMap<TabId, ResizeTabSendState>,
+    /// Remote tabs resized again after a refusal, and not accepted since.
+    retried: HashSet<TabId>,
 }
 
 impl ResizeTabOutbox {
-    fn queue(&mut self, tab_id: TabId, pane_sizes: Vec<(PaneId, TerminalSize)>) -> bool {
+    fn queue(
+        &mut self,
+        tab_id: TabId,
+        local_tab_id: TabId,
+        pane_sizes: Vec<(PaneId, TerminalSize)>,
+    ) -> bool {
         let state = self.tabs.entry(tab_id).or_default();
         state.pending = Some(pane_sizes);
+        state.local_tab_id = local_tab_id;
         if state.in_flight {
             false
         } else {
@@ -663,13 +673,14 @@ impl ClientInner {
     pub(crate) fn queue_resize_tab(
         self: &Arc<Self>,
         remote_tab_id: TabId,
+        local_tab_id: TabId,
         pane_sizes: Vec<(PaneId, TerminalSize)>,
     ) {
-        let should_start = self
-            .resize_tab_outbox
-            .lock()
-            .unwrap()
-            .queue(remote_tab_id, pane_sizes);
+        let should_start =
+            self.resize_tab_outbox
+                .lock()
+                .unwrap()
+                .queue(remote_tab_id, local_tab_id, pane_sizes);
         if !should_start {
             return;
         }
@@ -696,11 +707,67 @@ impl ClientInner {
             };
             if let Err(err) = self.client.resize_tab(request).await {
                 log::error!("failed to resize remote tab {remote_tab_id}: {err:#}");
-                self.resize_tab_outbox.lock().unwrap().abort(remote_tab_id);
-                self.request_resync();
+                let local_tab_id = {
+                    let mut outbox = self.resize_tab_outbox.lock().unwrap();
+                    let local_tab_id = outbox.tabs.get(&remote_tab_id).map(|s| s.local_tab_id);
+                    outbox.abort(remote_tab_id);
+                    local_tab_id
+                };
+                match local_tab_id {
+                    Some(local_tab_id) => self.resync_then_refit(remote_tab_id, local_tab_id),
+                    None => self.request_resync(),
+                }
                 return;
             }
+            self.resize_tab_outbox
+                .lock()
+                .unwrap()
+                .retried
+                .remove(&remote_tab_id);
         }
+    }
+
+    /// For a tab whose sizes the server refused, or whose panes had no
+    /// remote mapping: reconciles from the server, then sizes the tab once
+    /// more as this client wanted it, on the fresh layout. Otherwise the tab
+    /// keeps the server's old size until the window changes size again.
+    /// One retry until the server accepts the tab's sizes again, so a tab
+    /// it keeps refusing is left as it is rather than retried forever.
+    pub(crate) fn resync_then_refit(self: &Arc<Self>, remote_tab_id: TabId, local_tab_id: TabId) {
+        let retry = self
+            .resize_tab_outbox
+            .lock()
+            .unwrap()
+            .retried
+            .insert(remote_tab_id);
+        let local_domain_id = self.local_domain_id;
+        promise::spawn::spawn_into_main_thread(async move {
+            let mux = Mux::try_get().ok_or_else(|| anyhow!("no more mux"))?;
+            // The refused request changed nothing, so the mirror still has
+            // the newest size this client asked for, until the resync.
+            let wanted = mux.get_tab(local_tab_id).map(|tab| tab.get_size());
+            let domain = mux
+                .get_domain(local_domain_id)
+                .ok_or_else(|| anyhow!("no such domain {}", local_domain_id))?;
+            let domain = domain
+                .downcast_ref::<ClientDomain>()
+                .ok_or_else(|| anyhow!("domain {} is not a ClientDomain", local_domain_id))?;
+            domain.resync().await?;
+            if !retry {
+                log::warn!(
+                    "remote tab {remote_tab_id} was refused again after a resync; \
+                     leaving it at the server's size"
+                );
+                return Ok(());
+            }
+            if let (Some(tab), Some(wanted)) = (mux.get_tab(local_tab_id), wanted) {
+                if tab.get_size() != wanted {
+                    tab.resize(wanted);
+                }
+            }
+            anyhow::Ok(())
+        })
+        .detach();
     }
 
     /// Reconciles this domain's mirror from the server.
@@ -3503,10 +3570,100 @@ mod test {
         assert!(domain.process_remote_tab_order(1, &[101]).is_err());
     }
 
+    /// Answers the test client's requests as a server would whose only
+    /// tab is 120x40, refusing the first `refusals` tab resizes, and
+    /// returns the sizes each resize asked for.
+    fn serve_resizes(
+        executor: &promise::spawn::SimpleExecutor,
+        requests: &smol::channel::Receiver<crate::client::ReaderMessage>,
+        refusals: &mut usize,
+    ) -> Vec<Vec<(PaneId, TerminalSize)>> {
+        let mut resizes = Vec::new();
+        loop {
+            while executor.tick_timeout(std::time::Duration::ZERO).unwrap() {}
+            let Ok(message) = requests.try_recv() else {
+                return resizes;
+            };
+            let crate::client::ReaderMessage::SendPdu { pdu, promise } = message else {
+                continue;
+            };
+            let reply = match pdu {
+                codec::Pdu::ResizeTab(request) => {
+                    resizes.push(request.pane_sizes);
+                    if *refusals > 0 {
+                        *refusals -= 1;
+                        Err(anyhow!("resize_tab must size each pane once"))
+                    } else {
+                        Ok(codec::Pdu::UnitResponse(codec::UnitResponse {}))
+                    }
+                }
+                codec::Pdu::ListPanes(_) => Ok(codec::Pdu::ListPanesResponse(panes_response(
+                    vec![leaf(1, 101, 1001, size(120, 40), true)],
+                    101,
+                    1001,
+                ))),
+                codec::Pdu::GetPaneStatus(_) => Ok(codec::Pdu::GetPaneStatusResponse(
+                    codec::GetPaneStatusResponse {
+                        sampled_at_ms: 0,
+                        agents: Vec::new(),
+                        tab_rss_bytes: HashMap::new(),
+                        codex_process_memory: None,
+                    },
+                )),
+                _ => Err(anyhow!("not served by this test")),
+            };
+            promise.try_send(reply).ok();
+        }
+    }
+
+    #[test]
+    fn a_refused_tab_resize_is_sent_once_more_after_a_resync() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let mux = Arc::new(Mux::new(None));
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+        let (_window_id, tab_id, requests) = mirrored_window_with_requests(&mux);
+        let cells = |sizes: &[Vec<(PaneId, TerminalSize)>]| {
+            sizes
+                .iter()
+                .map(|panes| {
+                    panes
+                        .iter()
+                        .map(|(_, s)| (s.cols, s.rows))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        serve_resizes(&executor, &requests, &mut 0);
+
+        // Refused once: the client resyncs, which puts the server's 120x40
+        // back in the mirror, then asks for its own size again.
+        mux.get_tab(tab_id).unwrap().resize(size(100, 30));
+        let sent = serve_resizes(&executor, &requests, &mut 1);
+        assert_eq!(cells(&sent), [vec![(100, 30)], vec![(100, 30)]]);
+        assert_eq!(mux.get_tab(tab_id).unwrap().get_size().cols, 100);
+
+        // Refused again after its retry: it stops at the server's size
+        // rather than asking forever.
+        mux.get_tab(tab_id).unwrap().resize(size(90, 30));
+        let sent = serve_resizes(&executor, &requests, &mut 2);
+        assert_eq!(cells(&sent), [vec![(90, 30)], vec![(90, 30)]]);
+        assert_eq!(mux.get_tab(tab_id).unwrap().get_size().cols, 120);
+
+        // An accepted resize makes the next refusal worth a retry again.
+        mux.get_tab(tab_id).unwrap().resize(size(80, 30));
+        let sent = serve_resizes(&executor, &requests, &mut 0);
+        assert_eq!(cells(&sent), [vec![(80, 30)]]);
+        mux.get_tab(tab_id).unwrap().resize(size(70, 30));
+        let sent = serve_resizes(&executor, &requests, &mut 1);
+        assert_eq!(cells(&sent), [vec![(70, 30)], vec![(70, 30)]]);
+    }
+
     #[test]
     fn resize_tab_outbox_keeps_only_the_newest_sizes_while_one_is_in_flight() {
         let mut outbox = ResizeTabOutbox::default();
-        assert!(outbox.queue(7, vec![(70, size(80, 24))]));
+        assert!(outbox.queue(7, 17, vec![(70, size(80, 24))]));
         assert_eq!(
             outbox.take_next_or_finish(7),
             Some(vec![(70, size(80, 24))])
@@ -3516,19 +3673,19 @@ mod test {
         // request carries the last of them, and tabs do not wait on each
         // other.
         for cols in 81..=120 {
-            assert!(!outbox.queue(7, vec![(70, size(cols, 24))]));
+            assert!(!outbox.queue(7, 17, vec![(70, size(cols, 24))]));
         }
-        assert!(outbox.queue(8, vec![(80, size(100, 30))]));
+        assert!(outbox.queue(8, 18, vec![(80, size(100, 30))]));
         assert_eq!(
             outbox.take_next_or_finish(7),
             Some(vec![(70, size(120, 24))])
         );
         assert_eq!(outbox.take_next_or_finish(7), None);
-        assert!(outbox.queue(7, vec![(70, size(90, 24))]));
+        assert!(outbox.queue(7, 17, vec![(70, size(90, 24))]));
 
         // A failed send leaves nothing in flight.
         outbox.abort(8);
-        assert!(outbox.queue(8, vec![(80, size(90, 30))]));
+        assert!(outbox.queue(8, 18, vec![(80, size(90, 30))]));
     }
 
     #[test]

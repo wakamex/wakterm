@@ -484,7 +484,7 @@ impl Pane for ClientPane {
         Ok(())
     }
 
-    fn send_resize_batch(&self, _tab_id: mux::tab::TabId, pane_sizes: Vec<(PaneId, TerminalSize)>) {
+    fn send_resize_batch(&self, tab_id: mux::tab::TabId, pane_sizes: Vec<(PaneId, TerminalSize)>) {
         let pane_sizes = translate_resize_batch(pane_sizes, |local_pane_id| {
             Mux::try_get()
                 .and_then(|mux| mux.get_pane(local_pane_id))
@@ -494,8 +494,11 @@ impl Pane for ClientPane {
                 })
         });
         match pane_sizes {
-            Some(pane_sizes) => self.client.queue_resize_tab(self.remote_tab_id, pane_sizes),
-            None => self.client.request_resync(),
+            Some(pane_sizes) => {
+                self.client
+                    .queue_resize_tab(self.remote_tab_id, tab_id, pane_sizes)
+            }
+            None => self.client.resync_then_refit(self.remote_tab_id, tab_id),
         }
     }
 
