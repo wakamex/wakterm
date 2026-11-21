@@ -8,6 +8,10 @@ details owned by another Wakterm component. Include a negative guarantee or a
 cross-component mechanism only when readers need it to use or implement the
 documented contract correctly.
 
+## Consolidation roadmap
+
+[docs/consolidation-roadmap.md](docs/consolidation-roadmap.md) tracks classes of problems being fixed one symptom at a time and the general change planned for each. When a commit advances or settles one of its items, update that item's status in the same commit.
+
 ## Derived files
 
 After changing CLI arguments or help text, key assignments, or default key bindings, run `make update-derived` and commit the regenerated completions, CLI help, key tables, and `docs/guides/configuration/default-keys.md` with the change. CI runs `make check-derived` and fails on stale files, but only after a push.

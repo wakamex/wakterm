@@ -1,0 +1,136 @@
+# Replacing repeated local fixes with general ones
+
+This page tracks classes of problems that Wakterm's commit history shows being fixed one symptom at a time, and the general change that would remove each class. Each item lists the commits that show the pattern, the general change, the cheapest check to run before building it, and its status.
+
+The items come from reading the fork's commit messages through 2026-11-21. An item marked `unverified` has not yet been checked against the code; its check comes first, and an item whose check shows the pattern is not real, or that the general change would not help, is marked `dropped` with the reason rather than built.
+
+Status values: `unverified`, `confirmed` (the check found the problem), `in progress`, `done` (with commits), `dropped` (with the reason).
+
+When a commit advances or settles an item, update its status here in the same commit.
+
+## Order of work
+
+1. The main-thread blocking check in item 5, because it is small and shows at once whether blocking work still reaches the mux main thread.
+2. The possible regressions R2, R5, R6 and R9, each a short check against the code.
+3. The harness table in item 7, before a tenth harness overflows the tab navigator's icon range.
+4. Items 1, 4 and 6, one at a time, each starting with its check.
+5. Items 2, 3 and 8, and the remaining regressions.
+
+## 1. Prompt delivery runs through four separate paths
+
+Problem: admission, `wakterm cli agent send`, reminders and interrupted-turn resume each type into an agent's input box with their own checks, retries and refusals. The CLI path is split across several requests, so the server grew protocol data units (PDUs) for each step, and the paths raced into the same box until a lease held across requests serialized them, which then needed its own fixes.
+
+Evidence: `71a9135c9` and `9db2dc4d1` (`agent send` checked fewer startup phases than admission and typed into Claude's trust prompt), `f7be4c10a` (two Enter-retry loops), `ca51bee96` and `d77045130` (`SubmitTypedInput` and `PrepareAgentInputBox` added so the CLI could reach server-side checks), `3a1ea620b` and `f85a060ef` (`taken_back` added because the two paths reported a rollback differently), `6a8d65d24` (the CLI polled `ListAgents` every 50 ms), `6b5bea585` and `e9779b974` (the input lease and its three bugs).
+
+General change: one server-side delivery operation that every caller uses with policy options, serialized per pane by an in-process lock released when the delivery ends. It would delete `PrepareAgentInputBox`, `SubmitTypedInput`, `taken_back`, the connection-held lease with its expiry and revocation, and the CLI's own retry and polling loops.
+
+Check first: list every path that writes a prompt into a pane and compare their pre-checks, retries and refusal codes. If no caller needs to run its own logic between preparing the box and pressing Enter, the split across requests has no purpose.
+
+Status: `unverified`
+
+## 2. Two readers interpret each harness's session data
+
+Problem: the status observer and the event projector each parse a harness's transcript or database, and they disagree about when a turn ends. Observations are also copied into runtime state field by field, and fields were repeatedly lost in the copy.
+
+Evidence: `79e9261d6` (Claude turns ended on tool requests in one reader and on `end_turn` in the other), `d7751d483` and `f669795a5` (the same ZCode and Devin fixes made in both readers), `e9b1a1a54` and `143d44103` (admission and the freezer acted on one reader before the other caught up), `324cf6909` and `537f4cd00` (an idle-report settle timer, then a `reply_owed` flag when it was not enough), `db21bec2f`, `ea23a4dcd`, `f5c9bf813` and `0544ea5b0` (fields dropped or wiped in field-by-field copies). `60ccd4c5b` moved return-final tracking onto provider events and shows the direction.
+
+General change: one projector per harness that emits the durable events and a single turn snapshot from the same parse, stored as one replaced value, with presentation state such as `seen_at` kept apart so replacing runtime state cannot wipe it. Admission, the freezer, return-final and tab badges read the one snapshot.
+
+Check first: compare the record parsing for each harness between `mux/src/agent.rs` and `mux/src/agent_event.rs`, and time seeding the projector from the tail of a large Claude transcript. Worth building if most of the parsing is duplicated and tail seeding stays in the sub-millisecond range `431300ac0` measured.
+
+Status: `unverified`
+
+## 3. Notifications both redraw views and trigger requests
+
+Problem: the client sent requests to the server from handlers of mux notifications, and some mux setters notified even when nothing changed, so applying server state echoed back to the server. Each kind of echo loop was found and fixed separately.
+
+Evidence: `76a169534`, `69fcd28fa`, `daa899b9b`, `a9612626d` and `c13210850` (tab resize echoes, including a two-second timing heuristic later removed), `f499f5776`, `d967c5548`, `3f7b4ad82` and `5486543a6` (focus echoes), `d71160004` and `6e151d79f` (a title loop of about 1,000 round trips a second that froze the Windows GUI), `8e94dd7ae` (a one-second delay to break title echoes), `c05924b01` (workspace echoes), `091f95b92` (a detector for notification loops), `66244d50f` (a resize that changed nothing still notified every client).
+
+General change: the client never sends a request from a notification handler; every user or Lua change goes through an explicit domain method, as titles and workspaces already do. Every mux setter notifies only when the stored value changes.
+
+Check first: find every notification handler in `wakterm-client/src/` that sends a request, and every `notify` in `mux/src/` that is not behind a changed-value check. If none remain, this item is done.
+
+Status: `unverified`
+
+## 4. Clients compute every pane's size when resizing a tab
+
+Problem: on a window, font or zoom resize, the client computes each pane's size and sends the list. The server must then validate the pane set, the client must map local pane IDs to remote ones, zoomed tabs need an exception, and a refused list leaves the tab at the wrong size.
+
+Evidence: `f39b4cc6a` and `5adbc17be` (per-pane batches), `5d94a7885` (`SplitPane.tab_size` for stale sizes), `a5a49b0a8` and `c1deb1a22` (unmapped pane IDs), `bbad72266` and `66244d50f` (validation), `bb981b7b4` (the zoomed-tab exception), `30ca3f1ab` (logging refusals), `e64bc130c` (a retry after resync and a refit when a tab is shown).
+
+General change: for viewport, font and zoom resizes, the client reports only the tab's outer size and the server computes the pane layout from its own tree. Divider drags keep a separate request that sets split ratios. This deletes the client's pane-size collection and ID mapping for these resizes, the server's pane-set exceptions, the retry, the refit and `SplitPane.tab_size`, and gives a place for a rule about which client's size wins.
+
+Check first: after `30ca3f1ab` is deployed, read the server's refused-resize log over several days of use with more than one client. If refusals and size fights stop, the existing fixes suffice.
+
+Status: `unverified`
+
+## 5. Blocking work and lock-order deadlocks on the mux main thread
+
+Problem: blocking reads and lock inversions on the mux main thread were found one outage at a time and moved or fixed individually.
+
+Evidence: `1a9b10dbb`, `455f3cb9d`, `2ff8f7c9d` and `7c9f73db4` (lock-order inversions and re-entry, one hanging `SetClientId` for up to 50 minutes), `6a8d65d24`, `72667323a`, `dcb2d8bd3`, `1055be667`, `ad42b4ccc` and `87ded88ba` (main-thread stalls from `/proc` scans, the `.claude.json` lock and the file watcher). `ad42b4ccc` still reads a pane's process tree from `/proc` on the main thread.
+
+General change: mark the mux main thread and assert, in debug and test builds, that blocking helpers (`/proc` reads, file locks, SQLite, watcher control, process spawns) do not run on it. Merge state that is always changed together, such as agent metadata and runtime, under one lock, and check lock order in debug builds.
+
+Check first: add the main-thread assertion to those helpers and run the tests and some live restore and client traffic. No hits means the one-by-one moves caught everything; hits show what remains.
+
+Status: `unverified`
+
+## 6. Freezing idle agents fights prompt delivery
+
+Problem: idle agents are frozen in control groups (cgroups) to save memory, and a thawing agent is slow to accept input, so delivery grew longer waits and retries. Managed Codex prompts are still typed into the pane even though Wakterm holds its app-server connection.
+
+Evidence: `3e6b477f2` (freezing, after 44 idle Claudes held 7.5 GB), `ca51bee96` and `6193c7a89` (an output-settle wait stretched to 10 s for thawing agents), `71e475cea` (a thawed Claude was frozen again with the prompt in its box), `e17eea6b7` (Enter retries stretched to 3 minutes during compaction), `143d44103`, `bbad72266`, `495510c23` and `448f92d20` (waits for a discarded draft stretched to 30 s), `74544e791` and `91850619b` (managed Codex prompts checked by reading the screen, and a 10-minute watcher that presses Enter on a steer left in the composer).
+
+General change: deliver managed Codex prompts and steers through the app-server connection. Keep parked restored agents dormant, with their identity saved and no process, and start them when the tab is viewed or unparked, when a prompt or reminder arrives, or when an interrupted turn is resumed, instead of running and freezing them.
+
+Check first: send one `turn/start` and one `turn/steer` to a live managed Codex pane over the app-server connection and see whether its TUI shows them cleanly; and measure the memory and swap held by parked versus unparked agents, and how often parked tabs wake, over a day.
+
+Status: `unverified`
+
+## 7. Harness support is spread across separate lists
+
+Problem: each harness's matchers, commands, help text, icons and special behavior are listed separately, and adding a harness repeatedly missed one of them. The tab navigator encodes every combination of harness icons as its own code point, 2^N of them, in the Unicode [Private Use Area](https://www.unicode.org/faq/private_use.html) (PUA): nine harnesses use 511 of the 534 free code points there, so a tenth will not fit.
+
+Evidence: `3db8d82cb`, `c5e0d343f`, `a5e87898f` and `da16c158c` (the icon range collided with powerline glyphs, missed a harness, and moved again), `ec21d4730`, `1deaa801a` and `fa70c30bd` (lists that missed Devin or ZCode), `8309050f5` and `42426c349` (exemptions for harnesses that survive a mux restart), `4a990a7dc`, `53f36ef5d`, `d90d2151c` and `a87b11b60` (four fixes for a fresh agent with no session until its first input), `c152548c1` and `20d3ec1f5` (argument matching that took OpenCode for Claude, and a misspelled variable).
+
+General change: one harness enum with a table of each harness's capabilities and exhaustive matches without wildcard arms, so a new harness fails to compile wherever a case is missing. Draw a tab's harness icons side by side, one code point per harness.
+
+Check first: confirm the navigator can draw two or three icon cells for a tab, and count harness name literals outside the parsers.
+
+Status: `unverified`
+
+## 8. Agent logic reads the host directly
+
+Problem: agent, restore and gate code reads the environment, `/proc`, `/etc/machine-id` and the runtime directory, uses process-wide counters, and starts real child processes in tests, which breaks CI on Nix, macOS and Windows about twice a week.
+
+Evidence: `c762814bf` and `bba72352b` (a missing machine ID and a poisoned environment lock failing dozens of tests), `d70428695` and `24f12f8e7` (process-wide counters and schedulers), `d83f89bce` and `b0f110226` (the real runtime directory and shell), `14739d293`, `9e702c57d`, `d05a08251` and `9f97fbe45` (tests that spawn `sleep` or a shell), `7db413127`, `78146f0ea`, `a4f5097ed`, `670ab2f44`, `276492934` and `29d692d6f` (platform assumptions), `8724c9d2f` and `d5f8d5521` (timer granularity and SQLite under parallel tests).
+
+General change: pass host access in through a small interface with an in-memory version for unit tests, scope pane ID counters to each mux, and keep real `/proc` and process tests in a small tagged Linux suite. A single sanitized base environment built at mux startup would also replace the variable-by-variable scrubbing in `5eac174ec`, `d40862b83` and `84190a623`.
+
+Check first: count the users of the environment lock and the tests that start `sleep` or `sh` in `mux/src/`, and how many of them test logic rather than `/proc` parsing.
+
+Status: `unverified`
+
+## Possible regressions
+
+Fixes that a later commit appears to have undone, or a change that may have broken an earlier one.
+
+| ID | Possible regression | Check | Status |
+| --- | --- | --- | --- |
+| R1 | The process sampler keeps a process's old executable and arguments after it calls `exec` with non-empty arguments; `4d547c837` re-reads them only when they were empty. | Read the sampler's cache rule; test a shell that `exec`s another program. | `unverified` |
+| R2 | `535b1864b` cut a retried admission's wait for an in-flight request from 5 minutes to 10 s during a hang whose cause `6164b44c3` then fixed, and the wait was not restored, though `e17eea6b7` lets an admission run for 3 minutes. | Read the current wait and whether a retry within 3 minutes gets a real receipt. | `unverified` |
+| R3 | `a6635ed71` removed `1ec92f99b`'s guard against typing into Claude's `!` shell mode without another check for that mode. | Put Claude in `!` mode and see whether admission types into it. | `unverified` |
+| R4 | `2fe9827e7` replaced following Claude's `continued-in` records, and a fork made while the window stays attached may no longer be followed. | Fork a Claude session in place and see whether the observer follows it. | `unverified` |
+| R5 | `6867187d1` compares a finished turn with when the window first saw the tab parked, so a turn that ends while the GUI is disconnected never unparks its tab. | Read where the parked time is recorded and test a turn that ends while disconnected. | `unverified` |
+| R6 | `118b6e944` sends End to a Claude pane to learn whether its input box is empty, which moves the user's cursor during a read-only check. | Read when the probe runs and whether it can fire while the user is typing. | `unverified` |
+| R7 | The macOS draw throttle disabled in `1f30d77b9` and the invalidate fast path reverted in `f132de6b6` were not redone. | Decide whether macOS still needs them. | `unverified` |
+| R8 | `ActivateNextTabNeedingAttention`'s command description may still disagree with its behavior after `434610d3b`, `48168a424` and `74b9e1bbb`. | Compare the description with the code. | `unverified` |
+| R9 | `ba4aff4fb` added fields to serialized agent events and approval resolutions without bumping `CODEC_VERSION`. | Compare the codec version history with protocol type changes since. | `unverified` |
+| R10 | The `protect_server` startup call, lost between `6207c1241` and `51fc0490b`, is guarded only by a warning in `deploy.sh`. | Decide whether a startup assertion or test should guard it. | `unverified` |
+
+## Ideas weighed against the history
+
+- Server-computed tab sizing: the history supports it; it is item 4.
+- Starting panes directly in their cgroup with `clone3`'s `CLONE_INTO_CGROUP`: the history shows no memory problem from joining the panes' cgroup after fork. The reason to consider it is the restore time since the protection returned (3.0 s before, 11.0 s on 2026-11-21); measure where that time goes before building anything.
+- Starting parked agents only when viewed: the history supports dormant parked agents, but they must also start for prompts, reminders and interrupted-turn resumes; it is part of item 6.
