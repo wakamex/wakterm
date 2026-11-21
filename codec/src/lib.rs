@@ -318,6 +318,49 @@ pub struct DecodedPdu {
 /// If the serialized size is larger than this, then we'll consider compressing it
 const COMPRESS_THRESH: usize = 32;
 
+/// Serializes a `Range` as its `(start, end)` pair. The encoding writes a
+/// struct's fields in order without their names, so the bytes are the same
+/// as a `Range`'s; the pair only keeps the protocol's shape description from
+/// confusing ranges of different index types, which serde all names `Range`.
+mod range_pair {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::ops::Range;
+
+    pub fn serialize<T: Serialize, S: Serializer>(
+        range: &Range<T>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        (&range.start, &range.end).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Range<T>, D::Error> {
+        let (start, end) = <(T, T)>::deserialize(deserializer)?;
+        Ok(start..end)
+    }
+}
+
+/// `range_pair` for a list of ranges.
+mod range_pairs {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::ops::Range;
+
+    pub fn serialize<T: Serialize, S: Serializer>(
+        ranges: &[Range<T>],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(ranges.iter().map(|range| (&range.start, &range.end)))
+    }
+
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<Range<T>>, D::Error> {
+        let pairs = Vec::<(T, T)>::deserialize(deserializer)?;
+        Ok(pairs.into_iter().map(|(start, end)| start..end).collect())
+    }
+}
+
 fn serialize<T: serde::Serialize>(t: &T) -> Result<(Vec<u8>, bool), Error> {
     let mut uncompressed = Vec::new();
     let mut encode = varbincode::Serializer::new(&mut uncompressed);
@@ -402,6 +445,23 @@ macro_rules! pdu {
                         }
                     ,)*
                 }
+            }
+
+            /// Traces the serialized shape of every PDU's type, each named
+            /// with its PDU identifier, returning the PDUs that could not be
+            /// traced with the reason.
+            #[cfg(test)]
+            pub(crate) fn trace_shapes(
+                tracer: &mut serde_reflection::Tracer,
+                samples: &serde_reflection::Samples,
+            ) -> Vec<(&'static str, String)> {
+                let mut failed = Vec::new();
+                $(
+                    if let Err(err) = tracer.trace_type::<$name>(samples) {
+                        failed.push((stringify!($name), err.to_string()));
+                    }
+                )*
+                failed
             }
 
             pub fn pdu_name(&self) -> &'static str {
@@ -1421,6 +1481,7 @@ pub struct GetPaneRenderChangesResponse {
     pub alt_screen_active: bool,
     pub cursor_position: StableCursorPosition,
     pub dimensions: RenderableDimensions,
+    #[serde(with = "range_pairs")]
     pub dirty_lines: Vec<Range<StableRowIndex>>,
     pub title: String,
     pub working_dir: Option<SerdeUrl>,
@@ -1435,12 +1496,14 @@ pub struct GetPaneRenderChangesResponse {
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 pub struct GetLines {
     pub pane_id: PaneId,
+    #[serde(with = "range_pairs")]
     pub lines: Vec<Range<StableRowIndex>>,
 }
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 struct CellCoordinates {
     line_idx: usize,
+    #[serde(with = "range_pair")]
     cols: Range<usize>,
 }
 
@@ -1624,6 +1687,7 @@ pub struct EraseScrollbackRequest {
 pub struct SearchScrollbackRequest {
     pub pane_id: PaneId,
     pub pattern: mux::pane::Pattern,
+    #[serde(with = "range_pair")]
     pub range: Range<StableRowIndex>,
     pub limit: Option<u32>,
 }
@@ -1650,6 +1714,134 @@ pub struct GetImageCellResponse {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    /// Traces the serialized shape of every PDU into one registry: each
+    /// struct's fields in order and each enum's variants in order, which is
+    /// what the encoding depends on. An enum nested in a PDU shows one more
+    /// variant each time its unfinished mark is cleared and the PDUs are
+    /// traced again, so the trace repeats until every enum is complete.
+    fn protocol_shapes() -> serde_reflection::Registry {
+        let mut enums = std::collections::BTreeSet::<String>::new();
+        loop {
+            // The tracer feeds every string these values: a timestamp for
+            // borrowed strings and a URL for owned ones, which parse.
+            let mut tracer = serde_reflection::Tracer::new(
+                serde_reflection::TracerConfig::default()
+                    .record_samples_for_structs(true)
+                    .default_borrowed_str_value("1970-01-01T00:00:00Z")
+                    .default_string_value("file:///".to_string()),
+            );
+            let mut samples = serde_reflection::Samples::new();
+            // The palette insists on its 256 entries.
+            tracer
+                .trace_value(&mut samples, &wakterm_term::color::ColorPalette::default())
+                .unwrap();
+            loop {
+                let failed = Pdu::trace_shapes(&mut tracer, &samples);
+                assert!(
+                    failed.is_empty(),
+                    "PDUs that could not be traced: {:?}",
+                    failed
+                );
+                let mut unfinished = false;
+                for name in &enums {
+                    unfinished |= tracer.check_incomplete_enum(name).is_some();
+                }
+                if !unfinished {
+                    break;
+                }
+            }
+            match tracer.registry() {
+                Ok(registry) => return registry,
+                Err(serde_reflection::Error::MissingVariants(missing)) => {
+                    let known = enums.len();
+                    enums.extend(missing);
+                    assert!(
+                        enums.len() > known,
+                        "tracing made no progress on {:?}",
+                        enums
+                    );
+                }
+                Err(err) => panic!("tracing the protocol failed: {}", err),
+            }
+        }
+    }
+
+    /// The protocol's traced shapes, with the codec version they belong to.
+    const PROTOCOL_SHAPES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/protocol-shapes.json");
+
+    // Serde reads an `OsString` as a Unix or a Windows variant depending on
+    // the platform, so the recorded shapes are those traced on Unix.
+    #[cfg(unix)]
+    #[test]
+    fn a_protocol_change_comes_with_a_codec_version_bump() {
+        let shapes = serde_json::to_value(protocol_shapes()).unwrap();
+        let recorded: serde_json::Value = std::fs::read_to_string(PROTOCOL_SHAPES)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let recorded_version = recorded["codec_version"].as_u64();
+        let changed = recorded["shapes"] != shapes;
+        let bumped = recorded_version != Some(CODEC_VERSION as u64);
+        if changed && !bumped && recorded_version.is_some() {
+            panic!(
+                "the protocol's types changed but CODEC_VERSION is still {}; \
+                 a client and server built on either side of this change would pass the \
+                 version check and then misread each other. Bump CODEC_VERSION, then run \
+                 this test with WAKTERM_UPDATE_PROTOCOL_SHAPES=1 to record the new shapes.",
+                CODEC_VERSION
+            );
+        }
+        if changed || bumped {
+            if std::env::var_os("WAKTERM_UPDATE_PROTOCOL_SHAPES").is_none() {
+                panic!(
+                    "{} does not record codec version {}'s \
+                     shapes; run this test with WAKTERM_UPDATE_PROTOCOL_SHAPES=1 to record them",
+                    PROTOCOL_SHAPES, CODEC_VERSION
+                );
+            }
+            let file = serde_json::json!({
+                "codec_version": CODEC_VERSION,
+                "shapes": shapes,
+            });
+            std::fs::write(
+                PROTOCOL_SHAPES,
+                serde_json::to_string_pretty(&file).unwrap() + "\n",
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn a_range_encodes_as_its_pair() {
+        #[derive(Serialize)]
+        struct Plain {
+            one: Range<StableRowIndex>,
+            many: Vec<Range<StableRowIndex>>,
+        }
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Paired {
+            #[serde(with = "range_pair")]
+            one: Range<StableRowIndex>,
+            #[serde(with = "range_pairs")]
+            many: Vec<Range<StableRowIndex>>,
+        }
+        let plain = Plain {
+            one: -3..300,
+            many: vec![0..1, 70_000..70_002],
+        };
+        let paired = Paired {
+            one: -3..300,
+            many: vec![0..1, 70_000..70_002],
+        };
+        let bytes = serialize(&paired).unwrap();
+        assert_eq!(serialize(&plain).unwrap(), bytes);
+        assert_eq!(
+            deserialize::<Paired, _>(bytes.0.as_slice(), bytes.1).unwrap(),
+            paired
+        );
+    }
+
     use mux::tab::{PaneEntry, SplitDirection, SplitDirectionAndSize};
     use std::collections::HashMap;
 

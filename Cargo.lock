@@ -849,6 +849,8 @@ dependencies = [
  "portable-pty",
  "rangeset",
  "serde",
+ "serde-reflection",
+ "serde_json",
  "smol",
  "termwiz",
  "thiserror 1.0.69",
@@ -1585,6 +1587,15 @@ name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
+
+[[package]]
+name = "erased-discriminant"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1a6df962265a53221f29081896c412ef325c17fa7d638cd9578febe53d3c82c"
+dependencies = [
+ "typeid",
+]
 
 [[package]]
 name = "erased-serde"
@@ -5156,6 +5167,20 @@ dependencies = [
  "serde_yaml",
  "toml 0.8.23",
  "wakterm-dynamic",
+]
+
+[[package]]
+name = "serde-reflection"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b5da1e701056e29fcd3508529fda5cc3df8b5299d56a89dee0deb048e733b9a"
+dependencies = [
+ "erased-discriminant",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "typeid",
 ]
 
 [[package]]

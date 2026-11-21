@@ -1,0 +1,3693 @@
+{
+  "codec_version": 74,
+  "shapes": {
+    "AcknowledgeAgentAttention": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        }
+      ]
+    },
+    "ActivatePaneDirection": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "direction": {
+            "TYPENAME": "PaneDirection"
+          }
+        }
+      ]
+    },
+    "AdjustPaneSize": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "direction": {
+            "TYPENAME": "PaneDirection"
+          }
+        },
+        {
+          "amount": "U64"
+        }
+      ]
+    },
+    "AdmitAgentPrompt": {
+      "STRUCT": [
+        {
+          "request": {
+            "TYPENAME": "AgentPromptAdmissionRequest"
+          }
+        }
+      ]
+    },
+    "AdmitAgentPromptResponse": {
+      "STRUCT": [
+        {
+          "receipt": {
+            "TYPENAME": "AgentAdmissionReceipt"
+          }
+        }
+      ]
+    },
+    "AgentAdmissionReceipt": {
+      "STRUCT": [
+        {
+          "schema": "STR"
+        },
+        {
+          "request_id": "STR"
+        },
+        {
+          "status": {
+            "TYPENAME": "AgentAdmissionStatus"
+          }
+        },
+        {
+          "definitive": "BOOL"
+        },
+        {
+          "prompt_written": {
+            "OPTION": "BOOL"
+          }
+        },
+        {
+          "agent_id": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "incarnation_id": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "return_final": "BOOL"
+        },
+        {
+          "request": {
+            "OPTION": {
+              "TYPENAME": "AgentRequest"
+            }
+          }
+        },
+        {
+          "detail": {
+            "OPTION": "STR"
+          }
+        }
+      ]
+    },
+    "AgentAdmissionStatus": {
+      "ENUM": {
+        "0": {
+          "accepted": "UNIT"
+        },
+        "1": {
+          "busy": "UNIT"
+        },
+        "2": {
+          "unsupported": "UNIT"
+        },
+        "3": {
+          "unavailable": "UNIT"
+        },
+        "4": {
+          "stale_incarnation": "UNIT"
+        },
+        "5": {
+          "invalid": "UNIT"
+        },
+        "6": {
+          "observer_failure": "UNIT"
+        },
+        "7": {
+          "internal_failure": "UNIT"
+        },
+        "8": {
+          "indeterminate": "UNIT"
+        }
+      }
+    },
+    "AgentApiCapabilities": {
+      "STRUCT": [
+        {
+          "schema": "STR"
+        },
+        {
+          "api_major": "U32"
+        },
+        {
+          "capabilities": {
+            "SEQ": "STR"
+          }
+        }
+      ]
+    },
+    "AgentApprovalAnswer": {
+      "STRUCT": [
+        {
+          "question": "U32"
+        },
+        {
+          "choices": {
+            "SEQ": "STR"
+          }
+        },
+        {
+          "text": {
+            "OPTION": "STR"
+          }
+        }
+      ]
+    },
+    "AgentApprovalChoice": {
+      "STRUCT": [
+        {
+          "id": "STR"
+        },
+        {
+          "label": "STR"
+        },
+        {
+          "description": {
+            "OPTION": "STR"
+          }
+        }
+      ]
+    },
+    "AgentApprovalQuestion": {
+      "STRUCT": [
+        {
+          "index": "U32"
+        },
+        {
+          "header": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "question": "STR"
+        },
+        {
+          "multi_select": "BOOL"
+        },
+        {
+          "options": {
+            "SEQ": {
+              "TYPENAME": "AgentApprovalChoice"
+            }
+          }
+        }
+      ]
+    },
+    "AgentApprovalRequest": {
+      "STRUCT": [
+        {
+          "schema": "STR"
+        },
+        {
+          "kind": "STR"
+        },
+        {
+          "request_id": "STR"
+        },
+        {
+          "agent_id": "STR"
+        },
+        {
+          "incarnation_id": "STR"
+        },
+        {
+          "turn_id": "STR"
+        },
+        {
+          "item_id": "STR"
+        },
+        {
+          "observed_at": "STR"
+        },
+        {
+          "prompt": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "reason": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "command": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "cwd": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "choices": {
+            "SEQ": {
+              "TYPENAME": "AgentApprovalChoice"
+            }
+          }
+        },
+        {
+          "questions": {
+            "SEQ": {
+              "TYPENAME": "AgentApprovalQuestion"
+            }
+          }
+        }
+      ]
+    },
+    "AgentApprovalResolution": {
+      "STRUCT": [
+        {
+          "schema": "STR"
+        },
+        {
+          "request_id": "STR"
+        },
+        {
+          "agent_id": "STR"
+        },
+        {
+          "incarnation_id": "STR"
+        },
+        {
+          "choice_id": "STR"
+        },
+        {
+          "resolved": "BOOL"
+        }
+      ]
+    },
+    "AgentApprovalResolutionRequest": {
+      "STRUCT": [
+        {
+          "request_id": "STR"
+        },
+        {
+          "agent_id": "STR"
+        },
+        {
+          "incarnation_id": "STR"
+        },
+        {
+          "choice_id": "STR"
+        },
+        {
+          "answers": {
+            "SEQ": {
+              "TYPENAME": "AgentApprovalAnswer"
+            }
+          }
+        }
+      ]
+    },
+    "AgentBackgroundJob": {
+      "STRUCT": [
+        {
+          "job_id": "STR"
+        },
+        {
+          "session_id": "STR"
+        },
+        {
+          "hint": "STR"
+        }
+      ]
+    },
+    "AgentCatalog": {
+      "STRUCT": [
+        {
+          "schema": "STR"
+        },
+        {
+          "as_of_event_sequence": "U64"
+        },
+        {
+          "agents": {
+            "SEQ": {
+              "TYPENAME": "AgentCatalogEntry"
+            }
+          }
+        }
+      ]
+    },
+    "AgentCatalogEntry": {
+      "STRUCT": [
+        {
+          "agent_id": "STR"
+        },
+        {
+          "incarnation_id": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "pane_id": "U64"
+        },
+        {
+          "name": "STR"
+        },
+        {
+          "harness": "STR"
+        },
+        {
+          "status": "STR"
+        },
+        {
+          "turn_state": "STR"
+        },
+        {
+          "alive": "BOOL"
+        },
+        {
+          "observed_at": "STR"
+        }
+      ]
+    },
+    "AgentEvent": {
+      "STRUCT": [
+        {
+          "sequence": "U64"
+        },
+        {
+          "event_id": "STR"
+        },
+        {
+          "kind": {
+            "TYPENAME": "AgentEventKind"
+          }
+        },
+        {
+          "agent_id": "STR"
+        },
+        {
+          "incarnation_id": "STR"
+        },
+        {
+          "observed_at": "STR"
+        },
+        {
+          "turn_id": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "lifecycle": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "reason": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "turn_state": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "text": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "outcome": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "recoverable": {
+            "OPTION": "BOOL"
+          }
+        },
+        {
+          "detail": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "approval": {
+            "OPTION": {
+              "TYPENAME": "AgentApprovalRequest"
+            }
+          }
+        },
+        {
+          "input_sha256": {
+            "OPTION": "STR"
+          }
+        }
+      ]
+    },
+    "AgentEventKind": {
+      "ENUM": {
+        "4294967287": {
+          "agent_lifecycle": "UNIT"
+        }
+      }
+    },
+    "AgentEventPage": {
+      "STRUCT": [
+        {
+          "schema": "STR"
+        },
+        {
+          "status": {
+            "TYPENAME": "AgentEventStatus"
+          }
+        },
+        {
+          "requested_after_sequence": "U64"
+        },
+        {
+          "oldest_available_sequence": "U64"
+        },
+        {
+          "latest_sequence": "U64"
+        },
+        {
+          "next_after_sequence": {
+            "OPTION": "U64"
+          }
+        },
+        {
+          "events": {
+            "SEQ": {
+              "TYPENAME": "AgentEvent"
+            }
+          }
+        },
+        {
+          "recovery": {
+            "OPTION": {
+              "TYPENAME": "AgentEventRecovery"
+            }
+          }
+        }
+      ]
+    },
+    "AgentEventRecovery": {
+      "STRUCT": [
+        {
+          "kind": "STR"
+        },
+        {
+          "catalog_as_of_sequence": "U64"
+        }
+      ]
+    },
+    "AgentEventStatus": {
+      "ENUM": {
+        "0": {
+          "ok": "UNIT"
+        },
+        "1": {
+          "cursor_too_old": "UNIT"
+        }
+      }
+    },
+    "AgentHarness": {
+      "ENUM": {
+        "0": {
+          "Unknown": "UNIT"
+        },
+        "1": {
+          "Agy": "UNIT"
+        },
+        "2": {
+          "Claude": "UNIT"
+        },
+        "3": {
+          "Codex": "UNIT"
+        },
+        "4": {
+          "Gemini": "UNIT"
+        },
+        "5": {
+          "Opencode": "UNIT"
+        },
+        "6": {
+          "Zcode": "UNIT"
+        },
+        "7": {
+          "Devin": "UNIT"
+        },
+        "8": {
+          "Muse": "UNIT"
+        },
+        "9": {
+          "Endchat": "UNIT"
+        }
+      }
+    },
+    "AgentMetadata": {
+      "STRUCT": [
+        {
+          "agent_id": "STR"
+        },
+        {
+          "name": "STR"
+        },
+        {
+          "launch_cmd": "STR"
+        },
+        {
+          "declared_cwd": "STR"
+        },
+        {
+          "adopted_pid": {
+            "OPTION": "U32"
+          }
+        },
+        {
+          "adopted_start_time": {
+            "OPTION": "U64"
+          }
+        },
+        {
+          "created_at": "STR"
+        },
+        {
+          "repo_root": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "worktree": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "branch": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "managed_checkout": "BOOL"
+        },
+        {
+          "codex_app_server": {
+            "OPTION": {
+              "TYPENAME": "CodexAppServerSession"
+            }
+          }
+        },
+        {
+          "launch_supervisor": {
+            "OPTION": "STR"
+          }
+        }
+      ]
+    },
+    "AgentMetadataChanged": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "metadata": {
+            "OPTION": {
+              "TYPENAME": "AgentMetadata"
+            }
+          }
+        }
+      ]
+    },
+    "AgentObservedTurn": {
+      "STRUCT": [
+        {
+          "provider_turn_id": "STR"
+        },
+        {
+          "outcome": {
+            "TYPENAME": "AgentObservedTurnOutcome"
+          }
+        },
+        {
+          "started_at": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "completed_at": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "started_cursor": {
+            "OPTION": "U64"
+          }
+        },
+        {
+          "latest_cursor": {
+            "OPTION": "U64"
+          }
+        },
+        {
+          "primary_user_message_sha256": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "user_message_count": "U32"
+        },
+        {
+          "final_message": {
+            "OPTION": "STR"
+          }
+        }
+      ]
+    },
+    "AgentObservedTurnOutcome": {
+      "ENUM": {
+        "4294967293": {
+          "running": "UNIT"
+        }
+      }
+    },
+    "AgentOrigin": {
+      "ENUM": {
+        "4294967293": {
+          "adopted": "UNIT"
+        }
+      }
+    },
+    "AgentOutputEvent": {
+      "STRUCT": [
+        {
+          "event_id": "STR"
+        },
+        {
+          "kind": {
+            "TYPENAME": "AgentOutputEventKind"
+          }
+        },
+        {
+          "turn_id": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "timestamp": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "text": "STR"
+        }
+      ]
+    },
+    "AgentOutputEventKind": {
+      "ENUM": {
+        "4294967295": {
+          "assistant_message": "UNIT"
+        }
+      }
+    },
+    "AgentOutputPage": {
+      "STRUCT": [
+        {
+          "schema": "STR"
+        },
+        {
+          "status": {
+            "TYPENAME": "AgentOutputStatus"
+          }
+        },
+        {
+          "agent_id": "STR"
+        },
+        {
+          "session_id": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "baseline": "BOOL"
+        },
+        {
+          "events": {
+            "SEQ": {
+              "TYPENAME": "AgentOutputEvent"
+            }
+          }
+        },
+        {
+          "next_cursor": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "has_more": "BOOL"
+        },
+        {
+          "detail": {
+            "OPTION": "STR"
+          }
+        }
+      ]
+    },
+    "AgentOutputStatus": {
+      "ENUM": {
+        "0": {
+          "ok": "UNIT"
+        },
+        "1": {
+          "cursor_invalid": "UNIT"
+        },
+        "2": {
+          "session_changed": "UNIT"
+        },
+        "3": {
+          "observer_unavailable": "UNIT"
+        },
+        "4": {
+          "unsupported_harness": "UNIT"
+        }
+      }
+    },
+    "AgentPromptAdmissionRequest": {
+      "STRUCT": [
+        {
+          "request_id": "STR"
+        },
+        {
+          "agent_id": "STR"
+        },
+        {
+          "incarnation_id": "STR"
+        },
+        {
+          "prompt": "STR"
+        },
+        {
+          "paste": "BOOL"
+        },
+        {
+          "return_final": "BOOL"
+        },
+        {
+          "timeout_ms": "U64"
+        }
+      ]
+    },
+    "AgentReminder": {
+      "STRUCT": [
+        {
+          "id": "STR"
+        },
+        {
+          "agent_id": "STR"
+        },
+        {
+          "message": "STR"
+        },
+        {
+          "due_at": "STR"
+        },
+        {
+          "every_seconds": {
+            "OPTION": "U64"
+          }
+        },
+        {
+          "created_at": "STR"
+        },
+        {
+          "last_error": {
+            "OPTION": "STR"
+          }
+        }
+      ]
+    },
+    "AgentReminderResponse": {
+      "STRUCT": [
+        {
+          "reminder": {
+            "TYPENAME": "AgentReminder"
+          }
+        }
+      ]
+    },
+    "AgentRequest": {
+      "STRUCT": [
+        {
+          "request_id": "STR"
+        },
+        {
+          "target_agent_id": "STR"
+        },
+        {
+          "target_agent_name": "STR"
+        },
+        {
+          "target_pane_id": "U64"
+        },
+        {
+          "target_harness": {
+            "TYPENAME": "AgentHarness"
+          }
+        },
+        {
+          "correlation": {
+            "TYPENAME": "AgentRequestCorrelation"
+          }
+        },
+        {
+          "target_incarnation_id": "STR"
+        },
+        {
+          "target_pid": "U32"
+        },
+        {
+          "target_process_start_time": "U64"
+        },
+        {
+          "target_session_path": "STR"
+        },
+        {
+          "baseline_provider_turn_id": "STR"
+        },
+        {
+          "baseline_cursor": "U64"
+        },
+        {
+          "reconciled_event_sequence": "U64"
+        },
+        {
+          "baseline_user_message_count": "U32"
+        },
+        {
+          "submission_sha256": "STR"
+        },
+        {
+          "prompt_sha256": "STR"
+        },
+        {
+          "submission_paste": "BOOL"
+        },
+        {
+          "timeout_ms": "U64"
+        },
+        {
+          "state": {
+            "TYPENAME": "AgentRequestState"
+          }
+        },
+        {
+          "provider_turn_id": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "created_at": "STR"
+        },
+        {
+          "updated_at": "STR"
+        },
+        {
+          "deadline_at": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "completed_at": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "final_message": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "detail": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "terminal_event_sequence": {
+            "OPTION": "U64"
+          }
+        }
+      ]
+    },
+    "AgentRequestCorrelation": {
+      "ENUM": {
+        "0": {
+          "observed_pty": "UNIT"
+        },
+        "1": {
+          "codex_app_server_events": "UNIT"
+        },
+        "2": {
+          "provider_events": "UNIT"
+        }
+      }
+    },
+    "AgentRequestState": {
+      "ENUM": {
+        "0": {
+          "registered": "UNIT"
+        },
+        "1": {
+          "submitted": "UNIT"
+        },
+        "2": {
+          "bound": "UNIT"
+        },
+        "3": {
+          "completed": "UNIT"
+        },
+        "4": {
+          "aborted": "UNIT"
+        },
+        "5": {
+          "timed_out": "UNIT"
+        },
+        "6": {
+          "cancelled": "UNIT"
+        },
+        "7": {
+          "delivery_failed": "UNIT"
+        },
+        "8": {
+          "indeterminate": "UNIT"
+        }
+      }
+    },
+    "AgentRuntimeSnapshot": {
+      "STRUCT": [
+        {
+          "harness": {
+            "TYPENAME": "AgentHarness"
+          }
+        },
+        {
+          "transport": {
+            "TYPENAME": "AgentTransport"
+          }
+        },
+        {
+          "status": {
+            "TYPENAME": "AgentStatus"
+          }
+        },
+        {
+          "turn_state": {
+            "TYPENAME": "AgentTurnState"
+          }
+        },
+        {
+          "alive": "BOOL"
+        },
+        {
+          "foreground_process_name": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "tty_name": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "last_input_at": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "last_output_at": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "last_progress_at": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "last_turn_completed_at": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "observed_turn": {
+            "OPTION": {
+              "TYPENAME": "AgentObservedTurn"
+            }
+          }
+        },
+        {
+          "observed_at": "STR"
+        },
+        {
+          "session_path": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "progress_summary": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "harness_mode": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "turn_phase": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "attention_reason": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "terminal_progress": {
+            "TYPENAME": "Progress"
+          }
+        },
+        {
+          "observer_error": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "background_job": {
+            "OPTION": {
+              "TYPENAME": "AgentBackgroundJob"
+            }
+          }
+        }
+      ]
+    },
+    "AgentSnapshot": {
+      "STRUCT": [
+        {
+          "metadata": {
+            "TYPENAME": "AgentMetadata"
+          }
+        },
+        {
+          "runtime": {
+            "TYPENAME": "AgentRuntimeSnapshot"
+          }
+        },
+        {
+          "pane_id": "U64"
+        },
+        {
+          "tab_id": "U64"
+        },
+        {
+          "window_id": "U64"
+        },
+        {
+          "workspace": "STR"
+        },
+        {
+          "domain_id": "U64"
+        },
+        {
+          "origin": {
+            "TYPENAME": "AgentOrigin"
+          }
+        },
+        {
+          "detection_source": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "needs_attention": "BOOL"
+        }
+      ]
+    },
+    "AgentStatus": {
+      "ENUM": {
+        "4294967291": {
+          "Starting": "UNIT"
+        }
+      }
+    },
+    "AgentTabBadgeState": {
+      "STRUCT": [
+        {
+          "waiting_on_user": "BOOL"
+        },
+        {
+          "needs_attention": "BOOL"
+        }
+      ]
+    },
+    "AgentTransport": {
+      "ENUM": {
+        "4294967293": {
+          "PlainPty": "UNIT"
+        }
+      }
+    },
+    "AgentTurnState": {
+      "ENUM": {
+        "4294967293": {
+          "Unknown": "UNIT"
+        }
+      }
+    },
+    "Alert": {
+      "ENUM": {
+        "0": {
+          "Bell": "UNIT"
+        },
+        "1": {
+          "ToastNotification": {
+            "STRUCT": [
+              {
+                "title": {
+                  "OPTION": "STR"
+                }
+              },
+              {
+                "body": "STR"
+              },
+              {
+                "focus": "BOOL"
+              }
+            ]
+          }
+        },
+        "2": {
+          "CurrentWorkingDirectoryChanged": "UNIT"
+        },
+        "3": {
+          "IconTitleChanged": {
+            "NEWTYPE": {
+              "OPTION": "STR"
+            }
+          }
+        },
+        "4": {
+          "WindowTitleChanged": {
+            "NEWTYPE": "STR"
+          }
+        },
+        "5": {
+          "TabTitleChanged": {
+            "NEWTYPE": {
+              "OPTION": "STR"
+            }
+          }
+        },
+        "6": {
+          "PaletteChanged": "UNIT"
+        },
+        "7": {
+          "SetUserVar": {
+            "STRUCT": [
+              {
+                "name": "STR"
+              },
+              {
+                "value": "STR"
+              }
+            ]
+          }
+        },
+        "8": {
+          "OutputSinceFocusLost": "UNIT"
+        },
+        "9": {
+          "Progress": {
+            "NEWTYPE": {
+              "TYPENAME": "Progress"
+            }
+          }
+        }
+      }
+    },
+    "CancelAgentReminder": {
+      "STRUCT": [
+        {
+          "id": "STR"
+        }
+      ]
+    },
+    "CancelAgentReminderResponse": {
+      "STRUCT": [
+        {
+          "cancelled": "BOOL"
+        }
+      ]
+    },
+    "CancelAgentRequest": {
+      "STRUCT": [
+        {
+          "request_id": "STR"
+        }
+      ]
+    },
+    "CancelAgentRequestResponse": {
+      "STRUCT": [
+        {
+          "request": {
+            "TYPENAME": "AgentRequest"
+          }
+        }
+      ]
+    },
+    "Cell": {
+      "STRUCT": [
+        {
+          "text": "STR"
+        },
+        {
+          "attrs": {
+            "TYPENAME": "CellAttributes"
+          }
+        }
+      ]
+    },
+    "CellAttributes": {
+      "STRUCT": [
+        {
+          "attributes": "U32"
+        },
+        {
+          "foreground": {
+            "TYPENAME": "SmallColor"
+          }
+        },
+        {
+          "background": {
+            "TYPENAME": "SmallColor"
+          }
+        },
+        {
+          "fat": {
+            "OPTION": {
+              "TYPENAME": "FatAttributes"
+            }
+          }
+        }
+      ]
+    },
+    "CellCoordinates": {
+      "STRUCT": [
+        {
+          "line_idx": "U64"
+        },
+        {
+          "cols": {
+            "TUPLEARRAY": {
+              "CONTENT": "U64",
+              "SIZE": 2
+            }
+          }
+        }
+      ]
+    },
+    "CellStorage": {
+      "ENUM": {
+        "4294967294": {
+          "V": {
+            "NEWTYPE": {
+              "TYPENAME": "VecStorage"
+            }
+          }
+        }
+      }
+    },
+    "ClearAgentMetadata": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        }
+      ]
+    },
+    "ClientId": {
+      "STRUCT": [
+        {
+          "hostname": "STR"
+        },
+        {
+          "username": "STR"
+        },
+        {
+          "pid": "U32"
+        },
+        {
+          "epoch": "U64"
+        },
+        {
+          "id": "U64"
+        },
+        {
+          "ssh_auth_sock": {
+            "OPTION": "STR"
+          }
+        }
+      ]
+    },
+    "ClientInfo": {
+      "STRUCT": [
+        {
+          "client_id": {
+            "TYPENAME": "ClientId"
+          }
+        },
+        {
+          "view_id": {
+            "TYPENAME": "ClientViewId"
+          }
+        },
+        {
+          "connected_at": "I64"
+        },
+        {
+          "active_workspace": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "last_input": "I64"
+        },
+        {
+          "focused_pane_id": {
+            "OPTION": "U64"
+          }
+        }
+      ]
+    },
+    "ClientTabViewState": {
+      "STRUCT": [
+        {
+          "active_pane_id": {
+            "OPTION": "U64"
+          }
+        }
+      ]
+    },
+    "ClientViewId": {
+      "NEWTYPESTRUCT": "STR"
+    },
+    "ClientWindowViewState": {
+      "STRUCT": [
+        {
+          "active_tab_id": {
+            "OPTION": "U64"
+          }
+        },
+        {
+          "last_active_tab_id": {
+            "OPTION": "U64"
+          }
+        },
+        {
+          "tabs": {
+            "MAP": {
+              "KEY": "U64",
+              "VALUE": {
+                "TYPENAME": "ClientTabViewState"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ClipboardSelection": {
+      "ENUM": {
+        "0": {
+          "Clipboard": "UNIT"
+        },
+        "1": {
+          "PrimarySelection": "UNIT"
+        }
+      }
+    },
+    "CodexAppServerSession": {
+      "STRUCT": [
+        {
+          "thread_id": "STR"
+        },
+        {
+          "session_id": "STR"
+        },
+        {
+          "executable": "STR"
+        },
+        {
+          "version": "STR"
+        },
+        {
+          "tui_args": {
+            "SEQ": "STR"
+          }
+        }
+      ]
+    },
+    "CodexProcessMemory": {
+      "STRUCT": [
+        {
+          "sampled_at_ms": "U64"
+        },
+        {
+          "process_count": "U32"
+        },
+        {
+          "pss_bytes": {
+            "OPTION": "U64"
+          }
+        }
+      ]
+    },
+    "ColorAttribute": {
+      "ENUM": {
+        "4294967292": {
+          "TrueColorWithPaletteFallback": {
+            "TUPLE": [
+              {
+                "TYPENAME": "SrgbaTuple"
+              },
+              "U8"
+            ]
+          }
+        }
+      }
+    },
+    "ColorPalette": {
+      "STRUCT": [
+        {
+          "colors": {
+            "SEQ": {
+              "TYPENAME": "SrgbaTuple"
+            }
+          }
+        },
+        {
+          "foreground": {
+            "TYPENAME": "SrgbaTuple"
+          }
+        },
+        {
+          "background": {
+            "TYPENAME": "SrgbaTuple"
+          }
+        },
+        {
+          "cursor_fg": {
+            "TYPENAME": "SrgbaTuple"
+          }
+        },
+        {
+          "cursor_bg": {
+            "TYPENAME": "SrgbaTuple"
+          }
+        },
+        {
+          "cursor_border": {
+            "TYPENAME": "SrgbaTuple"
+          }
+        },
+        {
+          "selection_fg": {
+            "TYPENAME": "SrgbaTuple"
+          }
+        },
+        {
+          "selection_bg": {
+            "TYPENAME": "SrgbaTuple"
+          }
+        },
+        {
+          "scrollbar_thumb": {
+            "TYPENAME": "SrgbaTuple"
+          }
+        },
+        {
+          "split": {
+            "TYPENAME": "SrgbaTuple"
+          }
+        }
+      ]
+    },
+    "CommandBuilder": {
+      "STRUCT": [
+        {
+          "args": {
+            "SEQ": {
+              "TYPENAME": "OsString"
+            }
+          }
+        },
+        {
+          "envs": {
+            "MAP": {
+              "KEY": {
+                "TYPENAME": "OsString"
+              },
+              "VALUE": {
+                "TYPENAME": "EnvEntry"
+              }
+            }
+          }
+        },
+        {
+          "cwd": {
+            "OPTION": {
+              "TYPENAME": "OsString"
+            }
+          }
+        },
+        {
+          "umask": {
+            "OPTION": "U32"
+          }
+        },
+        {
+          "controlling_tty": "BOOL"
+        }
+      ]
+    },
+    "CreateAgentReminder": {
+      "STRUCT": [
+        {
+          "reminder": {
+            "TYPENAME": "AgentReminder"
+          }
+        }
+      ]
+    },
+    "CursorShape": {
+      "ENUM": {
+        "0": {
+          "Default": "UNIT"
+        },
+        "1": {
+          "BlinkingBlock": "UNIT"
+        },
+        "2": {
+          "SteadyBlock": "UNIT"
+        },
+        "3": {
+          "BlinkingUnderline": "UNIT"
+        },
+        "4": {
+          "SteadyUnderline": "UNIT"
+        },
+        "5": {
+          "BlinkingBar": "UNIT"
+        },
+        "6": {
+          "SteadyBar": "UNIT"
+        }
+      }
+    },
+    "CursorVisibility": {
+      "ENUM": {
+        "0": {
+          "Hidden": "UNIT"
+        },
+        "1": {
+          "Visible": "UNIT"
+        }
+      }
+    },
+    "EnvEntry": {
+      "STRUCT": [
+        {
+          "is_from_base_env": "BOOL"
+        },
+        {
+          "preferred_key": {
+            "TYPENAME": "OsString"
+          }
+        },
+        {
+          "value": {
+            "TYPENAME": "OsString"
+          }
+        }
+      ]
+    },
+    "EraseScrollbackRequest": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "erase_mode": {
+            "TYPENAME": "ScrollbackEraseMode"
+          }
+        }
+      ]
+    },
+    "ErrorResponse": {
+      "STRUCT": [
+        {
+          "reason": "STR"
+        }
+      ]
+    },
+    "FatAttributes": {
+      "STRUCT": [
+        {
+          "hyperlink": {
+            "OPTION": {
+              "TYPENAME": "Hyperlink"
+            }
+          }
+        },
+        {
+          "image": {
+            "SEQ": {
+              "TYPENAME": "ImageCell"
+            }
+          }
+        },
+        {
+          "underline_color": {
+            "TYPENAME": "ColorAttribute"
+          }
+        },
+        {
+          "foreground": {
+            "TYPENAME": "ColorAttribute"
+          }
+        },
+        {
+          "background": {
+            "TYPENAME": "ColorAttribute"
+          }
+        }
+      ]
+    },
+    "GetAgentApiCapabilities": {
+      "STRUCT": []
+    },
+    "GetAgentApiCapabilitiesResponse": {
+      "STRUCT": [
+        {
+          "capabilities": {
+            "TYPENAME": "AgentApiCapabilities"
+          }
+        }
+      ]
+    },
+    "GetAgentRequest": {
+      "STRUCT": [
+        {
+          "request_id": "STR"
+        }
+      ]
+    },
+    "GetAgentRequestResponse": {
+      "STRUCT": [
+        {
+          "request": {
+            "OPTION": {
+              "TYPENAME": "AgentRequest"
+            }
+          }
+        }
+      ]
+    },
+    "GetClientList": "UNITSTRUCT",
+    "GetClientListResponse": {
+      "STRUCT": [
+        {
+          "clients": {
+            "SEQ": {
+              "TYPENAME": "ClientInfo"
+            }
+          }
+        }
+      ]
+    },
+    "GetCodecVersion": {
+      "STRUCT": []
+    },
+    "GetCodecVersionResponse": {
+      "STRUCT": [
+        {
+          "codec_vers": "U64"
+        },
+        {
+          "version_string": "STR"
+        },
+        {
+          "executable_path": "STR"
+        },
+        {
+          "config_file_path": {
+            "OPTION": "STR"
+          }
+        }
+      ]
+    },
+    "GetImageCell": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "line_idx": "I64"
+        },
+        {
+          "cell_idx": "U64"
+        },
+        {
+          "data_hash": {
+            "TUPLEARRAY": {
+              "CONTENT": "U8",
+              "SIZE": 32
+            }
+          }
+        }
+      ]
+    },
+    "GetImageCellResponse": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "data": {
+            "OPTION": {
+              "TYPENAME": "ImageData"
+            }
+          }
+        }
+      ]
+    },
+    "GetLines": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "lines": {
+            "SEQ": {
+              "TUPLEARRAY": {
+                "CONTENT": "I64",
+                "SIZE": 2
+              }
+            }
+          }
+        }
+      ]
+    },
+    "GetLinesResponse": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "lines": {
+            "TYPENAME": "SerializedLines"
+          }
+        }
+      ]
+    },
+    "GetPaneDirection": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "direction": {
+            "TYPENAME": "PaneDirection"
+          }
+        }
+      ]
+    },
+    "GetPaneDirectionResponse": {
+      "STRUCT": [
+        {
+          "pane_id": {
+            "OPTION": "U64"
+          }
+        }
+      ]
+    },
+    "GetPaneRenderChanges": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        }
+      ]
+    },
+    "GetPaneRenderChangesResponse": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "mouse_grabbed": "BOOL"
+        },
+        {
+          "alt_screen_active": "BOOL"
+        },
+        {
+          "cursor_position": {
+            "TYPENAME": "StableCursorPosition"
+          }
+        },
+        {
+          "dimensions": {
+            "TYPENAME": "RenderableDimensions"
+          }
+        },
+        {
+          "dirty_lines": {
+            "SEQ": {
+              "TUPLEARRAY": {
+                "CONTENT": "I64",
+                "SIZE": 2
+              }
+            }
+          }
+        },
+        {
+          "title": "STR"
+        },
+        {
+          "working_dir": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "bonus_lines": {
+            "TYPENAME": "SerializedLines"
+          }
+        },
+        {
+          "input_serial": {
+            "OPTION": {
+              "TYPENAME": "InputSerial"
+            }
+          }
+        },
+        {
+          "seqno": "U64"
+        }
+      ]
+    },
+    "GetPaneRenderableDimensions": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        }
+      ]
+    },
+    "GetPaneRenderableDimensionsResponse": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "cursor_position": {
+            "TYPENAME": "StableCursorPosition"
+          }
+        },
+        {
+          "dimensions": {
+            "TYPENAME": "RenderableDimensions"
+          }
+        }
+      ]
+    },
+    "GetPaneStatus": {
+      "STRUCT": []
+    },
+    "GetPaneStatusResponse": {
+      "STRUCT": [
+        {
+          "sampled_at_ms": "U64"
+        },
+        {
+          "agents": {
+            "SEQ": {
+              "TYPENAME": "AgentSnapshot"
+            }
+          }
+        },
+        {
+          "tab_rss_bytes": {
+            "MAP": {
+              "KEY": "U64",
+              "VALUE": "U64"
+            }
+          }
+        },
+        {
+          "codex_process_memory": {
+            "OPTION": {
+              "TYPENAME": "CodexProcessMemory"
+            }
+          }
+        }
+      ]
+    },
+    "GetTlsCreds": {
+      "STRUCT": []
+    },
+    "GetTlsCredsResponse": {
+      "STRUCT": [
+        {
+          "ca_cert_pem": "STR"
+        },
+        {
+          "client_cert_pem": "STR"
+        }
+      ]
+    },
+    "Hyperlink": {
+      "STRUCT": [
+        {
+          "params": {
+            "MAP": {
+              "KEY": "STR",
+              "VALUE": "STR"
+            }
+          }
+        },
+        {
+          "uri": "STR"
+        },
+        {
+          "implicit": "BOOL"
+        }
+      ]
+    },
+    "ImageCell": {
+      "STRUCT": [
+        {
+          "top_left": {
+            "TYPENAME": "TextureCoordinate"
+          }
+        },
+        {
+          "bottom_right": {
+            "TYPENAME": "TextureCoordinate"
+          }
+        },
+        {
+          "data": {
+            "TYPENAME": "ImageData"
+          }
+        },
+        {
+          "z_index": "I32"
+        },
+        {
+          "padding_left": "U16"
+        },
+        {
+          "padding_top": "U16"
+        },
+        {
+          "padding_right": "U16"
+        },
+        {
+          "padding_bottom": "U16"
+        },
+        {
+          "image_id": {
+            "OPTION": "U32"
+          }
+        },
+        {
+          "placement_id": {
+            "OPTION": "U32"
+          }
+        }
+      ]
+    },
+    "ImageData": {
+      "STRUCT": [
+        {
+          "data": {
+            "TYPENAME": "ImageDataType"
+          }
+        },
+        {
+          "hash": {
+            "TUPLEARRAY": {
+              "CONTENT": "U8",
+              "SIZE": 32
+            }
+          }
+        }
+      ]
+    },
+    "ImageDataType": {
+      "ENUM": {
+        "4294967292": {
+          "EncodedFile": {
+            "NEWTYPE": {
+              "SEQ": "U8"
+            }
+          }
+        }
+      }
+    },
+    "InputSerial": {
+      "NEWTYPESTRUCT": "U64"
+    },
+    "KeyCode": {
+      "ENUM": {
+        "0": {
+          "Char": {
+            "NEWTYPE": "CHAR"
+          }
+        },
+        "1": {
+          "Hyper": "UNIT"
+        },
+        "10": {
+          "Escape": "UNIT"
+        },
+        "11": {
+          "LeftShift": "UNIT"
+        },
+        "12": {
+          "RightShift": "UNIT"
+        },
+        "13": {
+          "Control": "UNIT"
+        },
+        "14": {
+          "LeftControl": "UNIT"
+        },
+        "15": {
+          "RightControl": "UNIT"
+        },
+        "16": {
+          "Alt": "UNIT"
+        },
+        "17": {
+          "LeftAlt": "UNIT"
+        },
+        "18": {
+          "RightAlt": "UNIT"
+        },
+        "19": {
+          "Menu": "UNIT"
+        },
+        "2": {
+          "Super": "UNIT"
+        },
+        "20": {
+          "LeftMenu": "UNIT"
+        },
+        "21": {
+          "RightMenu": "UNIT"
+        },
+        "22": {
+          "Pause": "UNIT"
+        },
+        "23": {
+          "CapsLock": "UNIT"
+        },
+        "24": {
+          "PageUp": "UNIT"
+        },
+        "25": {
+          "PageDown": "UNIT"
+        },
+        "26": {
+          "End": "UNIT"
+        },
+        "27": {
+          "Home": "UNIT"
+        },
+        "28": {
+          "LeftArrow": "UNIT"
+        },
+        "29": {
+          "RightArrow": "UNIT"
+        },
+        "3": {
+          "Meta": "UNIT"
+        },
+        "30": {
+          "UpArrow": "UNIT"
+        },
+        "31": {
+          "DownArrow": "UNIT"
+        },
+        "32": {
+          "Select": "UNIT"
+        },
+        "33": {
+          "Print": "UNIT"
+        },
+        "34": {
+          "Execute": "UNIT"
+        },
+        "35": {
+          "PrintScreen": "UNIT"
+        },
+        "36": {
+          "Insert": "UNIT"
+        },
+        "37": {
+          "Delete": "UNIT"
+        },
+        "38": {
+          "Help": "UNIT"
+        },
+        "39": {
+          "LeftWindows": "UNIT"
+        },
+        "4": {
+          "Cancel": "UNIT"
+        },
+        "40": {
+          "RightWindows": "UNIT"
+        },
+        "41": {
+          "Applications": "UNIT"
+        },
+        "42": {
+          "Sleep": "UNIT"
+        },
+        "43": {
+          "Numpad0": "UNIT"
+        },
+        "44": {
+          "Numpad1": "UNIT"
+        },
+        "45": {
+          "Numpad2": "UNIT"
+        },
+        "46": {
+          "Numpad3": "UNIT"
+        },
+        "47": {
+          "Numpad4": "UNIT"
+        },
+        "48": {
+          "Numpad5": "UNIT"
+        },
+        "49": {
+          "Numpad6": "UNIT"
+        },
+        "5": {
+          "Backspace": "UNIT"
+        },
+        "50": {
+          "Numpad7": "UNIT"
+        },
+        "51": {
+          "Numpad8": "UNIT"
+        },
+        "52": {
+          "Numpad9": "UNIT"
+        },
+        "53": {
+          "Multiply": "UNIT"
+        },
+        "54": {
+          "Add": "UNIT"
+        },
+        "55": {
+          "Separator": "UNIT"
+        },
+        "56": {
+          "Subtract": "UNIT"
+        },
+        "57": {
+          "Decimal": "UNIT"
+        },
+        "58": {
+          "Divide": "UNIT"
+        },
+        "59": {
+          "Function": {
+            "NEWTYPE": "U8"
+          }
+        },
+        "6": {
+          "Tab": "UNIT"
+        },
+        "60": {
+          "NumLock": "UNIT"
+        },
+        "61": {
+          "ScrollLock": "UNIT"
+        },
+        "62": {
+          "Copy": "UNIT"
+        },
+        "63": {
+          "Cut": "UNIT"
+        },
+        "64": {
+          "Paste": "UNIT"
+        },
+        "65": {
+          "BrowserBack": "UNIT"
+        },
+        "66": {
+          "BrowserForward": "UNIT"
+        },
+        "67": {
+          "BrowserRefresh": "UNIT"
+        },
+        "68": {
+          "BrowserStop": "UNIT"
+        },
+        "69": {
+          "BrowserSearch": "UNIT"
+        },
+        "7": {
+          "Clear": "UNIT"
+        },
+        "70": {
+          "BrowserFavorites": "UNIT"
+        },
+        "71": {
+          "BrowserHome": "UNIT"
+        },
+        "72": {
+          "VolumeMute": "UNIT"
+        },
+        "73": {
+          "VolumeDown": "UNIT"
+        },
+        "74": {
+          "VolumeUp": "UNIT"
+        },
+        "75": {
+          "MediaNextTrack": "UNIT"
+        },
+        "76": {
+          "MediaPrevTrack": "UNIT"
+        },
+        "77": {
+          "MediaStop": "UNIT"
+        },
+        "78": {
+          "MediaPlayPause": "UNIT"
+        },
+        "79": {
+          "ApplicationLeftArrow": "UNIT"
+        },
+        "8": {
+          "Enter": "UNIT"
+        },
+        "80": {
+          "ApplicationRightArrow": "UNIT"
+        },
+        "81": {
+          "ApplicationUpArrow": "UNIT"
+        },
+        "82": {
+          "ApplicationDownArrow": "UNIT"
+        },
+        "83": {
+          "KeyPadHome": "UNIT"
+        },
+        "84": {
+          "KeyPadEnd": "UNIT"
+        },
+        "85": {
+          "KeyPadPageUp": "UNIT"
+        },
+        "86": {
+          "KeyPadPageDown": "UNIT"
+        },
+        "87": {
+          "KeyPadBegin": "UNIT"
+        },
+        "88": {
+          "InternalPasteStart": "UNIT"
+        },
+        "89": {
+          "InternalPasteEnd": "UNIT"
+        },
+        "9": {
+          "Shift": "UNIT"
+        }
+      }
+    },
+    "KeyEvent": {
+      "STRUCT": [
+        {
+          "key": {
+            "TYPENAME": "KeyCode"
+          }
+        },
+        {
+          "modifiers": {
+            "TYPENAME": "Modifiers"
+          }
+        }
+      ]
+    },
+    "KillPane": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        }
+      ]
+    },
+    "Line": {
+      "STRUCT": [
+        {
+          "cells": {
+            "TYPENAME": "CellStorage"
+          }
+        },
+        {
+          "zones": {
+            "SEQ": {
+              "TYPENAME": "ZoneRange"
+            }
+          }
+        },
+        {
+          "seqno": "U64"
+        },
+        {
+          "bits": {
+            "TYPENAME": "LineBits"
+          }
+        }
+      ]
+    },
+    "LineBits": {
+      "NEWTYPESTRUCT": "U16"
+    },
+    "LineHyperlink": {
+      "STRUCT": [
+        {
+          "link": {
+            "TYPENAME": "Hyperlink"
+          }
+        },
+        {
+          "coords": {
+            "SEQ": {
+              "TYPENAME": "CellCoordinates"
+            }
+          }
+        }
+      ]
+    },
+    "ListAgentApiCatalog": {
+      "STRUCT": []
+    },
+    "ListAgentApiCatalogResponse": {
+      "STRUCT": [
+        {
+          "catalog": {
+            "TYPENAME": "AgentCatalog"
+          }
+        }
+      ]
+    },
+    "ListAgentReminders": {
+      "STRUCT": []
+    },
+    "ListAgentRemindersResponse": {
+      "STRUCT": [
+        {
+          "reminders": {
+            "SEQ": {
+              "TYPENAME": "AgentReminder"
+            }
+          }
+        }
+      ]
+    },
+    "ListAgentRequestEvents": {
+      "STRUCT": [
+        {
+          "after_sequence": "U64"
+        },
+        {
+          "limit": "U64"
+        }
+      ]
+    },
+    "ListAgentRequestEventsResponse": {
+      "STRUCT": [
+        {
+          "requests": {
+            "SEQ": {
+              "TYPENAME": "AgentRequest"
+            }
+          }
+        }
+      ]
+    },
+    "ListAgents": {
+      "STRUCT": []
+    },
+    "ListAgentsCached": {
+      "STRUCT": []
+    },
+    "ListAgentsCachedResponse": {
+      "STRUCT": [
+        {
+          "agents": {
+            "SEQ": {
+              "TYPENAME": "AgentSnapshot"
+            }
+          }
+        }
+      ]
+    },
+    "ListAgentsResponse": {
+      "STRUCT": [
+        {
+          "agents": {
+            "SEQ": {
+              "TYPENAME": "AgentSnapshot"
+            }
+          }
+        }
+      ]
+    },
+    "ListPanes": {
+      "STRUCT": []
+    },
+    "ListPanesResponse": {
+      "STRUCT": [
+        {
+          "tabs": {
+            "SEQ": {
+              "TYPENAME": "PaneNode"
+            }
+          }
+        },
+        {
+          "tab_titles": {
+            "SEQ": "STR"
+          }
+        },
+        {
+          "effective_tab_titles": {
+            "SEQ": "STR"
+          }
+        },
+        {
+          "tab_badges": {
+            "SEQ": {
+              "TYPENAME": "AgentTabBadgeState"
+            }
+          }
+        },
+        {
+          "agents": {
+            "SEQ": {
+              "TYPENAME": "AgentSnapshot"
+            }
+          }
+        },
+        {
+          "tab_rss_bytes": {
+            "MAP": {
+              "KEY": "U64",
+              "VALUE": "U64"
+            }
+          }
+        },
+        {
+          "parked_tab_ids": {
+            "SEQ": "U64"
+          }
+        },
+        {
+          "window_titles": {
+            "MAP": {
+              "KEY": "U64",
+              "VALUE": "STR"
+            }
+          }
+        },
+        {
+          "client_window_view_state": {
+            "MAP": {
+              "KEY": "U64",
+              "VALUE": {
+                "TYPENAME": "ClientWindowViewState"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "LivenessResponse": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "is_alive": "BOOL"
+        }
+      ]
+    },
+    "Modifiers": {
+      "STRUCT": [
+        {
+          "bits": "U16"
+        }
+      ]
+    },
+    "MouseButton": {
+      "ENUM": {
+        "0": {
+          "Left": "UNIT"
+        },
+        "1": {
+          "Middle": "UNIT"
+        },
+        "2": {
+          "Right": "UNIT"
+        },
+        "3": {
+          "WheelUp": {
+            "NEWTYPE": "U64"
+          }
+        },
+        "4": {
+          "WheelDown": {
+            "NEWTYPE": "U64"
+          }
+        },
+        "5": {
+          "WheelLeft": {
+            "NEWTYPE": "U64"
+          }
+        },
+        "6": {
+          "WheelRight": {
+            "NEWTYPE": "U64"
+          }
+        },
+        "7": {
+          "None": "UNIT"
+        }
+      }
+    },
+    "MouseEvent": {
+      "STRUCT": [
+        {
+          "kind": {
+            "TYPENAME": "MouseEventKind"
+          }
+        },
+        {
+          "x": "U64"
+        },
+        {
+          "y": "I64"
+        },
+        {
+          "x_pixel_offset": "I64"
+        },
+        {
+          "y_pixel_offset": "I64"
+        },
+        {
+          "button": {
+            "TYPENAME": "MouseButton"
+          }
+        },
+        {
+          "modifiers": {
+            "TYPENAME": "Modifiers"
+          }
+        }
+      ]
+    },
+    "MouseEventKind": {
+      "ENUM": {
+        "0": {
+          "Press": "UNIT"
+        },
+        "1": {
+          "Release": "UNIT"
+        },
+        "2": {
+          "Move": "UNIT"
+        }
+      }
+    },
+    "MovePaneToNewTab": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "window_id": {
+            "OPTION": "U64"
+          }
+        },
+        {
+          "workspace_for_new_window": {
+            "OPTION": "STR"
+          }
+        }
+      ]
+    },
+    "MovePaneToNewTabResponse": {
+      "STRUCT": [
+        {
+          "tab_id": "U64"
+        },
+        {
+          "window_id": "U64"
+        }
+      ]
+    },
+    "NotifyAlert": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "alert": {
+            "TYPENAME": "Alert"
+          }
+        }
+      ]
+    },
+    "OsString": {
+      "ENUM": {
+        "4294967294": {
+          "Unix": {
+            "NEWTYPE": {
+              "SEQ": "U8"
+            }
+          }
+        }
+      }
+    },
+    "PaneDirection": {
+      "ENUM": {
+        "0": {
+          "Up": "UNIT"
+        },
+        "1": {
+          "Down": "UNIT"
+        },
+        "2": {
+          "Left": "UNIT"
+        },
+        "3": {
+          "Right": "UNIT"
+        },
+        "4": {
+          "Next": "UNIT"
+        },
+        "5": {
+          "Prev": "UNIT"
+        }
+      }
+    },
+    "PaneFocused": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        }
+      ]
+    },
+    "PaneNode": {
+      "ENUM": {
+        "4294967293": {
+          "Empty": "UNIT"
+        }
+      }
+    },
+    "PaneRemoved": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        }
+      ]
+    },
+    "ParkedTabsChanged": {
+      "STRUCT": [
+        {
+          "window_id": "U64"
+        },
+        {
+          "tab_ids": {
+            "SEQ": "U64"
+          }
+        },
+        {
+          "parked_tab_ids": {
+            "SEQ": "U64"
+          }
+        }
+      ]
+    },
+    "Pattern": {
+      "ENUM": {
+        "0": {
+          "CaseSensitiveString": {
+            "NEWTYPE": "STR"
+          }
+        },
+        "1": {
+          "CaseInSensitiveString": {
+            "NEWTYPE": "STR"
+          }
+        },
+        "2": {
+          "Regex": {
+            "NEWTYPE": "STR"
+          }
+        }
+      }
+    },
+    "Ping": {
+      "STRUCT": []
+    },
+    "Pong": {
+      "STRUCT": []
+    },
+    "PrepareAgentInputBox": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        }
+      ]
+    },
+    "PrepareAgentInputBoxResponse": {
+      "STRUCT": [
+        {
+          "blocked": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "draft_stashed": "BOOL"
+        }
+      ]
+    },
+    "PrepareCodexLaunch": {
+      "STRUCT": [
+        {
+          "name": "STR"
+        },
+        {
+          "cwd": "STR"
+        },
+        {
+          "resume_thread_id": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "tui_args": {
+            "SEQ": "STR"
+          }
+        }
+      ]
+    },
+    "PreparedCodexLaunch": {
+      "STRUCT": [
+        {
+          "argv": {
+            "SEQ": "STR"
+          }
+        },
+        {
+          "session": {
+            "TYPENAME": "CodexAppServerSession"
+          }
+        }
+      ]
+    },
+    "Progress": {
+      "ENUM": {
+        "4294967292": {
+          "None": "UNIT"
+        },
+        "4294967293": {
+          "Percentage": {
+            "NEWTYPE": "U8"
+          }
+        },
+        "4294967294": {
+          "Error": {
+            "NEWTYPE": "U8"
+          }
+        }
+      }
+    },
+    "PromoteCodexAppServer": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "thread_id": "STR"
+        }
+      ]
+    },
+    "Range": {
+      "STRUCT": [
+        {
+          "start": "U16"
+        },
+        {
+          "end": "U16"
+        }
+      ]
+    },
+    "ReadAgentEvents": {
+      "STRUCT": [
+        {
+          "after_sequence": "U64"
+        },
+        {
+          "limit": "U32"
+        },
+        {
+          "wait_ms": "U32"
+        }
+      ]
+    },
+    "ReadAgentEventsResponse": {
+      "STRUCT": [
+        {
+          "page": {
+            "TYPENAME": "AgentEventPage"
+          }
+        }
+      ]
+    },
+    "ReadAgentOutput": {
+      "STRUCT": [
+        {
+          "agent_id": "STR"
+        },
+        {
+          "cursor": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "limit": "U32"
+        }
+      ]
+    },
+    "ReadAgentOutputResponse": {
+      "STRUCT": [
+        {
+          "page": {
+            "TYPENAME": "AgentOutputPage"
+          }
+        }
+      ]
+    },
+    "RenameWorkspace": {
+      "STRUCT": [
+        {
+          "old_workspace": "STR"
+        },
+        {
+          "new_workspace": "STR"
+        }
+      ]
+    },
+    "RenderableDimensions": {
+      "STRUCT": [
+        {
+          "cols": "U64"
+        },
+        {
+          "viewport_rows": "U64"
+        },
+        {
+          "scrollback_rows": "U64"
+        },
+        {
+          "physical_top": "I64"
+        },
+        {
+          "scrollback_top": "I64"
+        },
+        {
+          "dpi": "U32"
+        },
+        {
+          "pixel_width": "U64"
+        },
+        {
+          "pixel_height": "U64"
+        },
+        {
+          "reverse_video": "BOOL"
+        }
+      ]
+    },
+    "Resize": {
+      "STRUCT": [
+        {
+          "containing_tab_id": "U64"
+        },
+        {
+          "pane_id": "U64"
+        },
+        {
+          "size": {
+            "TYPENAME": "TerminalSize"
+          }
+        }
+      ]
+    },
+    "ResizeTab": {
+      "STRUCT": [
+        {
+          "tab_id": "U64"
+        },
+        {
+          "pane_sizes": {
+            "SEQ": {
+              "TUPLE": [
+                "U64",
+                {
+                  "TYPENAME": "TerminalSize"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "ResolveAgentApproval": {
+      "STRUCT": [
+        {
+          "resolution": {
+            "TYPENAME": "AgentApprovalResolutionRequest"
+          }
+        }
+      ]
+    },
+    "ResolveAgentApprovalResponse": {
+      "STRUCT": [
+        {
+          "resolution": {
+            "TYPENAME": "AgentApprovalResolution"
+          }
+        }
+      ]
+    },
+    "RotatePanes": {
+      "STRUCT": [
+        {
+          "tab_id": "U64"
+        },
+        {
+          "clockwise": "BOOL"
+        }
+      ]
+    },
+    "ScrollbackEraseMode": {
+      "ENUM": {
+        "0": {
+          "ScrollbackOnly": "UNIT"
+        },
+        "1": {
+          "ScrollbackAndViewport": "UNIT"
+        }
+      }
+    },
+    "SearchResult": {
+      "STRUCT": [
+        {
+          "start_y": "I64"
+        },
+        {
+          "start_x": "U64"
+        },
+        {
+          "end_y": "I64"
+        },
+        {
+          "end_x": "U64"
+        },
+        {
+          "match_id": "U64"
+        }
+      ]
+    },
+    "SearchScrollbackRequest": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "pattern": {
+            "TYPENAME": "Pattern"
+          }
+        },
+        {
+          "range": {
+            "TUPLEARRAY": {
+              "CONTENT": "I64",
+              "SIZE": 2
+            }
+          }
+        },
+        {
+          "limit": {
+            "OPTION": "U32"
+          }
+        }
+      ]
+    },
+    "SearchScrollbackResponse": {
+      "STRUCT": [
+        {
+          "results": {
+            "SEQ": {
+              "TYPENAME": "SearchResult"
+            }
+          }
+        }
+      ]
+    },
+    "SemanticType": {
+      "ENUM": {
+        "4294967293": {
+          "Output": "UNIT"
+        }
+      }
+    },
+    "SendKeyDown": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "event": {
+            "TYPENAME": "KeyEvent"
+          }
+        },
+        {
+          "input_serial": {
+            "TYPENAME": "InputSerial"
+          }
+        }
+      ]
+    },
+    "SendMouseEvent": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "event": {
+            "TYPENAME": "MouseEvent"
+          }
+        }
+      ]
+    },
+    "SendPaste": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "data": "STR"
+        }
+      ]
+    },
+    "SerializedImageCell": {
+      "STRUCT": [
+        {
+          "line_idx": "I64"
+        },
+        {
+          "cell_idx": "U64"
+        },
+        {
+          "top_left": {
+            "TYPENAME": "TextureCoordinate"
+          }
+        },
+        {
+          "bottom_right": {
+            "TYPENAME": "TextureCoordinate"
+          }
+        },
+        {
+          "data_hash": {
+            "TUPLEARRAY": {
+              "CONTENT": "U8",
+              "SIZE": 32
+            }
+          }
+        },
+        {
+          "z_index": "I32"
+        },
+        {
+          "padding_left": "U16"
+        },
+        {
+          "padding_top": "U16"
+        },
+        {
+          "padding_right": "U16"
+        },
+        {
+          "padding_bottom": "U16"
+        },
+        {
+          "image_id": {
+            "OPTION": "U32"
+          }
+        },
+        {
+          "placement_id": {
+            "OPTION": "U32"
+          }
+        }
+      ]
+    },
+    "SerializedLines": {
+      "STRUCT": [
+        {
+          "lines": {
+            "SEQ": {
+              "TUPLE": [
+                "I64",
+                {
+                  "TYPENAME": "Line"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "hyperlinks": {
+            "SEQ": {
+              "TYPENAME": "LineHyperlink"
+            }
+          }
+        },
+        {
+          "images": {
+            "SEQ": {
+              "TYPENAME": "SerializedImageCell"
+            }
+          }
+        }
+      ]
+    },
+    "SetAgentMetadata": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "metadata": {
+            "TYPENAME": "AgentMetadata"
+          }
+        }
+      ]
+    },
+    "SetClientActiveTab": {
+      "STRUCT": [
+        {
+          "window_id": "U64"
+        },
+        {
+          "tab_id": "U64"
+        }
+      ]
+    },
+    "SetClipboard": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "clipboard": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "selection": {
+            "TYPENAME": "ClipboardSelection"
+          }
+        }
+      ]
+    },
+    "SetFocusedPane": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        }
+      ]
+    },
+    "SetPalette": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "palette": {
+            "TYPENAME": "ColorPalette"
+          }
+        }
+      ]
+    },
+    "SetPaneZoomed": {
+      "STRUCT": [
+        {
+          "containing_tab_id": "U64"
+        },
+        {
+          "pane_id": "U64"
+        },
+        {
+          "zoomed": "BOOL"
+        }
+      ]
+    },
+    "SetParkedTabs": {
+      "STRUCT": [
+        {
+          "window_id": "U64"
+        },
+        {
+          "tab_ids": {
+            "SEQ": "U64"
+          }
+        },
+        {
+          "parked_tab_ids": {
+            "SEQ": "U64"
+          }
+        }
+      ]
+    },
+    "SetTabOrder": {
+      "STRUCT": [
+        {
+          "window_id": "U64"
+        },
+        {
+          "tab_ids": {
+            "SEQ": "U64"
+          }
+        }
+      ]
+    },
+    "SetWindowWorkspace": {
+      "STRUCT": [
+        {
+          "window_id": "U64"
+        },
+        {
+          "workspace": "STR"
+        }
+      ]
+    },
+    "SmallColor": {
+      "ENUM": {
+        "4294967294": {
+          "Default": "UNIT"
+        }
+      }
+    },
+    "SpawnResponse": {
+      "STRUCT": [
+        {
+          "tab_id": "U64"
+        },
+        {
+          "pane_id": "U64"
+        },
+        {
+          "window_id": "U64"
+        },
+        {
+          "size": {
+            "TYPENAME": "TerminalSize"
+          }
+        }
+      ]
+    },
+    "SpawnTabDomain": {
+      "ENUM": {
+        "0": {
+          "DefaultDomain": "UNIT"
+        },
+        "1": {
+          "CurrentPaneDomain": "UNIT"
+        },
+        "2": {
+          "DomainName": {
+            "NEWTYPE": "STR"
+          }
+        },
+        "3": {
+          "DomainId": {
+            "NEWTYPE": "U64"
+          }
+        }
+      }
+    },
+    "SpawnV2": {
+      "STRUCT": [
+        {
+          "domain": {
+            "TYPENAME": "SpawnTabDomain"
+          }
+        },
+        {
+          "window_id": {
+            "OPTION": "U64"
+          }
+        },
+        {
+          "current_pane_id": {
+            "OPTION": "U64"
+          }
+        },
+        {
+          "command": {
+            "OPTION": {
+              "TYPENAME": "CommandBuilder"
+            }
+          }
+        },
+        {
+          "command_dir": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "size": {
+            "TYPENAME": "TerminalSize"
+          }
+        },
+        {
+          "workspace": "STR"
+        }
+      ]
+    },
+    "SplitDirection": {
+      "ENUM": {
+        "0": {
+          "Horizontal": "UNIT"
+        },
+        "1": {
+          "Vertical": "UNIT"
+        }
+      }
+    },
+    "SplitPane": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "split_request": {
+            "TYPENAME": "SplitRequest"
+          }
+        },
+        {
+          "command": {
+            "OPTION": {
+              "TYPENAME": "CommandBuilder"
+            }
+          }
+        },
+        {
+          "command_dir": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "domain": {
+            "TYPENAME": "SpawnTabDomain"
+          }
+        },
+        {
+          "move_pane_id": {
+            "OPTION": "U64"
+          }
+        },
+        {
+          "tab_size": {
+            "OPTION": {
+              "TYPENAME": "TerminalSize"
+            }
+          }
+        }
+      ]
+    },
+    "SplitRequest": {
+      "STRUCT": [
+        {
+          "direction": {
+            "TYPENAME": "SplitDirection"
+          }
+        },
+        {
+          "target_is_second": "BOOL"
+        },
+        {
+          "top_level": "BOOL"
+        },
+        {
+          "size": {
+            "TYPENAME": "SplitSize"
+          }
+        }
+      ]
+    },
+    "SplitSize": {
+      "ENUM": {
+        "0": {
+          "Cells": {
+            "NEWTYPE": "U64"
+          }
+        },
+        "1": {
+          "Percent": {
+            "NEWTYPE": "U8"
+          }
+        }
+      }
+    },
+    "SrgbaTuple": {
+      "TUPLESTRUCT": [
+        "F32",
+        "F32",
+        "F32",
+        "F32"
+      ]
+    },
+    "StableCursorPosition": {
+      "STRUCT": [
+        {
+          "x": "U64"
+        },
+        {
+          "y": "I64"
+        },
+        {
+          "shape": {
+            "TYPENAME": "CursorShape"
+          }
+        },
+        {
+          "visibility": {
+            "TYPENAME": "CursorVisibility"
+          }
+        }
+      ]
+    },
+    "SubmitAgentRequest": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "request_id": "STR"
+        },
+        {
+          "prompt": "STR"
+        },
+        {
+          "paste": "BOOL"
+        },
+        {
+          "timeout_ms": "U64"
+        }
+      ]
+    },
+    "SubmitAgentRequestResponse": {
+      "STRUCT": [
+        {
+          "request": {
+            "TYPENAME": "AgentRequest"
+          }
+        }
+      ]
+    },
+    "SubmitTypedInput": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        }
+      ]
+    },
+    "SubmitTypedInputResponse": {
+      "STRUCT": [
+        {
+          "taken_back": {
+            "OPTION": "STR"
+          }
+        }
+      ]
+    },
+    "TabAddedToWindow": {
+      "STRUCT": [
+        {
+          "tab_id": "U64"
+        },
+        {
+          "window_id": "U64"
+        }
+      ]
+    },
+    "TabOrderChanged": {
+      "STRUCT": [
+        {
+          "window_id": "U64"
+        },
+        {
+          "tab_ids": {
+            "SEQ": "U64"
+          }
+        }
+      ]
+    },
+    "TabResized": {
+      "STRUCT": [
+        {
+          "tab_id": "U64"
+        }
+      ]
+    },
+    "TerminalSize": {
+      "STRUCT": [
+        {
+          "rows": "U64"
+        },
+        {
+          "cols": "U64"
+        },
+        {
+          "pixel_width": "U64"
+        },
+        {
+          "pixel_height": "U64"
+        },
+        {
+          "dpi": "U32"
+        }
+      ]
+    },
+    "TextureCoordinate": {
+      "STRUCT": [
+        {
+          "x": "F32"
+        },
+        {
+          "y": "F32"
+        }
+      ]
+    },
+    "UnitResponse": {
+      "STRUCT": []
+    },
+    "VecStorage": {
+      "STRUCT": [
+        {
+          "cells": {
+            "SEQ": {
+              "TYPENAME": "Cell"
+            }
+          }
+        }
+      ]
+    },
+    "WindowTitleChanged": {
+      "STRUCT": [
+        {
+          "window_id": "U64"
+        },
+        {
+          "title": "STR"
+        }
+      ]
+    },
+    "WindowWorkspaceChanged": {
+      "STRUCT": [
+        {
+          "window_id": "U64"
+        },
+        {
+          "workspace": "STR"
+        }
+      ]
+    },
+    "WriteToPane": {
+      "STRUCT": [
+        {
+          "pane_id": "U64"
+        },
+        {
+          "data": {
+            "SEQ": "U8"
+          }
+        }
+      ]
+    },
+    "ZoneRange": {
+      "STRUCT": [
+        {
+          "semantic_type": {
+            "TYPENAME": "SemanticType"
+          }
+        },
+        {
+          "range": {
+            "TYPENAME": "Range"
+          }
+        }
+      ]
+    }
+  }
+}

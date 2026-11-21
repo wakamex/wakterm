@@ -22,7 +22,7 @@ To bring the fork changelog and docs current with `main`, find the ending commit
 
 ## Mux protocol types
 
-The mux protocol encodes structs field by field without field names, so the reader must see exactly the fields the writer wrote. Do not use `skip_serializing_if` or other conditional serialization on any type that crosses the protocol, including types from other crates embedded in a PDU, such as agent events and snapshots. After changing such a type, run `cargo test -p codec` as well as the owning crate's tests, and keep the codec round-trip tests covering the new field both empty and set.
+The mux protocol encodes structs field by field without field names, so the reader must see exactly the fields the writer wrote. Do not use `skip_serializing_if` or other conditional serialization on any type that crosses the protocol, including types from other crates embedded in a PDU, such as agent events and snapshots. After changing such a type, run `cargo test -p codec` as well as the owning crate's tests, and keep the codec round-trip tests covering the new field both empty and set. Any change to the shape of a type that crosses the protocol, such as a field or an enum variant added, removed or reordered, needs a `CODEC_VERSION` bump: the codec test `a_protocol_change_comes_with_a_codec_version_bump` compares the traced shapes with `codec/protocol-shapes.json` and fails until the version is bumped and the file is regenerated with `WAKTERM_UPDATE_PROTOCOL_SHAPES=1 cargo test -p codec`.
 
 ## Default key bindings
 
