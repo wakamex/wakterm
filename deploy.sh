@@ -152,7 +152,28 @@ restart_via_user_service() {
         systemctl --user restart "$unit"
         echo "  Restarted $unit"
     fi
+    check_server_protection "$unit"
     return 0
+}
+
+# A service that delegates its cgroup should have its server in the
+# no-swap child cgroup within seconds of starting; say so loudly if not,
+# since the server then swaps under memory pressure and stalls.
+check_server_protection() {
+    local unit=$1 pid cgroup
+    [ "$(systemctl --user show "$unit" -p Delegate --value)" = yes ] || return 0
+    for _ in $(seq 1 20); do
+        pid=$(systemctl --user show "$unit" -p MainPID --value)
+        cgroup=$(cat "/proc/$pid/cgroup" 2>/dev/null || true)
+        case "$cgroup" in
+            */wakterm-server)
+                echo "  The mux server runs in its no-swap cgroup"
+                return 0
+                ;;
+        esac
+        sleep 0.5
+    done
+    echo "  WARNING: the mux server is not in its no-swap cgroup (${cgroup:-no cgroup}); its memory can swap"
 }
 
 echo "=== Step 1: Build ==="
