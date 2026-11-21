@@ -971,6 +971,7 @@ impl AgentEventWriter {
         metadata: &AgentMetadata,
         runtime: &AgentRuntimeSnapshot,
     ) -> anyhow::Result<Option<AgentEventRuntimeUpdate>> {
+        let _blocking = crate::main_thread_blocking::blocking("writing agent events");
         let result = self
             .store
             .observe_agent_inner(&mut self.conn, metadata, runtime);
@@ -984,6 +985,7 @@ impl AgentEventWriter {
         observed_at: DateTime<Utc>,
         reason: &str,
     ) -> anyhow::Result<()> {
+        let _blocking = crate::main_thread_blocking::blocking("writing agent events");
         let result =
             self.store
                 .record_unavailable_inner(&mut self.conn, metadata, observed_at, reason);
@@ -997,6 +999,7 @@ impl AgentEventWriter {
         runtime: &AgentRuntimeSnapshot,
         message: &Value,
     ) -> anyhow::Result<()> {
+        let _blocking = crate::main_thread_blocking::blocking("writing agent events");
         let result = (|| {
             self.store
                 .observe_agent_inner(&mut self.conn, metadata, runtime)?;
@@ -1022,6 +1025,7 @@ impl AgentEventWriter {
         shown_at: DateTime<Utc>,
         menu: &crate::claude_menu::ClaudeMenu,
     ) -> anyhow::Result<()> {
+        let _blocking = crate::main_thread_blocking::blocking("writing agent events");
         let Some(incarnation) = incarnation_id(metadata) else {
             return Ok(());
         };
@@ -1064,6 +1068,7 @@ impl AgentEventWriter {
         shown_at: DateTime<Utc>,
         question: &crate::claude_question_screen::ScreenQuestion,
     ) -> anyhow::Result<()> {
+        let _blocking = crate::main_thread_blocking::blocking("writing agent events");
         let Some(incarnation) = incarnation_id(metadata) else {
             return Ok(());
         };
@@ -1113,6 +1118,7 @@ impl AgentEventWriter {
         shown_at: DateTime<Utc>,
         prompt: &crate::devin_prompt::DevinPrompt,
     ) -> anyhow::Result<()> {
+        let _blocking = crate::main_thread_blocking::blocking("writing agent events");
         let Some(incarnation) = incarnation_id(metadata) else {
             return Ok(());
         };

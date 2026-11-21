@@ -697,7 +697,11 @@ impl Pane for LocalPane {
             // Most lookups run on the main thread, which the background
             // sampler's last reading answers without touching /proc.
             return match policy {
-                CachePolicy::FetchImmediate => LocalProcessInfo::with_root_pid_now(pid as u32),
+                CachePolicy::FetchImmediate => {
+                    let _blocking =
+                        crate::main_thread_blocking::blocking("reading a pane's process tree");
+                    LocalProcessInfo::with_root_pid_now(pid as u32)
+                }
                 CachePolicy::AllowStale => LocalProcessInfo::with_root_pid_sampled(pid as u32),
             };
         }
@@ -1266,6 +1270,8 @@ impl LocalPane {
 
             if expired {
                 log::trace!("CachedProcInfo expired, refresh");
+                let _blocking =
+                    crate::main_thread_blocking::blocking("refreshing a pane's process tree");
                 #[cfg(target_os = "linux")]
                 let root = LocalProcessInfo::with_root_pid_now(*pid)?;
                 #[cfg(not(target_os = "linux"))]

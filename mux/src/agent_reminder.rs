@@ -52,7 +52,8 @@ impl AgentReminderStore {
         Self { path }
     }
 
-    fn connect(&self) -> anyhow::Result<Connection> {
+    #[track_caller]
+    fn connect(&self) -> anyhow::Result<crate::main_thread_blocking::Timed<Connection>> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -67,7 +68,10 @@ impl AgentReminderStore {
                  record_json TEXT NOT NULL
              );",
         )?;
-        Ok(conn)
+        Ok(crate::main_thread_blocking::timed(
+            "using the agent reminder database",
+            conn,
+        ))
     }
 
     /// Adds or replaces a reminder.

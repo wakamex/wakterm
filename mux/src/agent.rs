@@ -2655,6 +2655,7 @@ pub fn trust_claude_folders<'a>(
         return Ok(Vec::new());
     }
 
+    let _blocking = crate::main_thread_blocking::blocking("recording Claude folder trust");
     let lock = config.with_file_name(".claude.json.lock");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     while let Err(err) = fs::create_dir(&lock) {
@@ -3350,6 +3351,8 @@ fn claude_session_owned_by_process(
             hostname::get()?.to_string_lossy().to_lowercase()
         );
         let start = start_time.to_string();
+        let _blocking =
+            crate::main_thread_blocking::blocking("checking whether a process still runs");
         let still_running = procinfo::LocalProcessInfo::with_root_pid(pid)
             .map(|process| process.start_time)
             == Some(start_time);
@@ -3644,6 +3647,7 @@ fn observe_opencode(
     updated_after: Option<DateTime<Utc>>,
     exact_session: Option<&str>,
 ) -> anyhow::Result<Option<HarnessObservation>> {
+    let _blocking = crate::main_thread_blocking::blocking("reading an OpenCode session database");
     let Some(db_path) = opencode_schema_db_path(harness, pid) else {
         return Ok(None);
     };
@@ -4067,6 +4071,7 @@ fn describe_pending_opencode_observer(
     cwd: &str,
     updated_after: Option<DateTime<Utc>>,
 ) -> anyhow::Result<Option<String>> {
+    let _blocking = crate::main_thread_blocking::blocking("reading an OpenCode session database");
     let Some(db_path) = opencode_schema_db_path(harness, pid) else {
         return Ok(None);
     };
@@ -4641,6 +4646,7 @@ fn remote_codex_tui_session(
     let (Some(process_id), Some(process_start_time)) = (process_id, process_start_time) else {
         return Ok(None);
     };
+    let _blocking = crate::main_thread_blocking::blocking("reading a Codex process tree");
     let Some(remote) = LocalProcessInfo::with_root_pid(process_id)
         .as_ref()
         .and_then(remote_codex_tui)

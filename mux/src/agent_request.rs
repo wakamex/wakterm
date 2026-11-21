@@ -536,7 +536,8 @@ impl AgentRequestStore {
         Ok(())
     }
 
-    fn connect(&self) -> anyhow::Result<Connection> {
+    #[track_caller]
+    fn connect(&self) -> anyhow::Result<crate::main_thread_blocking::Timed<Connection>> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
@@ -556,7 +557,10 @@ impl AgentRequestStore {
                  request_id TEXT NOT NULL UNIQUE REFERENCES agent_request(request_id)
              );",
         )?;
-        Ok(conn)
+        Ok(crate::main_thread_blocking::timed(
+            "using the agent request database",
+            conn,
+        ))
     }
 
     pub fn create(&self, request: &AgentRequest) -> anyhow::Result<(AgentRequest, bool)> {

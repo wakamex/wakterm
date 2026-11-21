@@ -72,6 +72,7 @@ pub mod devin_prompt;
 pub mod domain;
 pub mod endchat;
 pub mod localpane;
+pub mod main_thread_blocking;
 pub mod memory_protection;
 pub mod memory_report;
 pub mod muse;
