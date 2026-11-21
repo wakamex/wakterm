@@ -1530,90 +1530,106 @@ impl SessionHandler {
                 spawn_into_main_thread(async move {
                     catch(
                         move || {
-                            let mux = Mux::get();
-                            let _identity = mux.with_identity(client_id);
-                            let tab = mux
-                                .get_tab(tab_id)
-                                .ok_or_else(|| anyhow!("no such tab {}", tab_id))?;
-                            // The request must size exactly the tab's panes, each
-                            // once, before any of them changes; the client
-                            // reconciles from the server when it is refused.
-                            let tab_pane_ids = tab
-                                .iter_panes_ignoring_zoom()
-                                .iter()
-                                .map(|pane| pane.pane.pane_id())
-                                .collect::<HashSet<_>>();
-                            // A client resizes a zoomed tab by its zoomed pane alone,
-                            // and the tab sizes that pane and keeps the others' layout
-                            // for when it unzooms.
-                            if let (Some(zoomed), [(pane_id, size)]) =
-                                (tab.get_zoomed_pane(), pane_sizes.as_slice())
-                            {
-                                if zoomed.pane_id() == *pane_id {
-                                    validate_resize_tab(
-                                        tab_id,
-                                        &std::iter::once(*pane_id).collect(),
-                                        &pane_sizes,
-                                    )?;
-                                    let dims = zoomed.get_dimensions();
-                                    let unchanged = (
+                            // A refused resize leaves the tab at its old size until
+                            // the client sends another, so say which and why.
+                            let sender = client_id.as_ref().map_or_else(
+                                || "an unidentified client".to_string(),
+                                |id| format!("{} pid {}", id.hostname, id.pid),
+                            );
+                            let pane_ids = pane_sizes.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+                            let result = (move || -> anyhow::Result<Pdu> {
+                                let mux = Mux::get();
+                                let _identity = mux.with_identity(client_id);
+                                let tab = mux
+                                    .get_tab(tab_id)
+                                    .ok_or_else(|| anyhow!("no such tab {}", tab_id))?;
+                                // The request must size exactly the tab's panes, each
+                                // once, before any of them changes; the client
+                                // reconciles from the server when it is refused.
+                                let tab_pane_ids = tab
+                                    .iter_panes_ignoring_zoom()
+                                    .iter()
+                                    .map(|pane| pane.pane.pane_id())
+                                    .collect::<HashSet<_>>();
+                                // A client resizes a zoomed tab by its zoomed pane alone,
+                                // and the tab sizes that pane and keeps the others' layout
+                                // for when it unzooms.
+                                if let (Some(zoomed), [(pane_id, size)]) =
+                                    (tab.get_zoomed_pane(), pane_sizes.as_slice())
+                                {
+                                    if zoomed.pane_id() == *pane_id {
+                                        validate_resize_tab(
+                                            tab_id,
+                                            &std::iter::once(*pane_id).collect(),
+                                            &pane_sizes,
+                                        )?;
+                                        let dims = zoomed.get_dimensions();
+                                        let unchanged = (
+                                            dims.cols,
+                                            dims.viewport_rows,
+                                            dims.pixel_width,
+                                            dims.pixel_height,
+                                            dims.dpi,
+                                        ) == (
+                                            size.cols,
+                                            size.rows,
+                                            size.pixel_width,
+                                            size.pixel_height,
+                                            size.dpi,
+                                        );
+                                        tab.resize(*size);
+                                        if !unchanged {
+                                            mux.notify_tab_resized(tab_id);
+                                        }
+                                        return Ok(Pdu::UnitResponse(UnitResponse {}));
+                                    }
+                                }
+                                validate_resize_tab(tab_id, &tab_pane_ids, &pane_sizes)?;
+                                let panes = pane_sizes
+                                    .iter()
+                                    .map(|(pane_id, size)| {
+                                        mux.get_pane(*pane_id)
+                                            .map(|pane| (pane, *size))
+                                            .ok_or_else(|| anyhow!("pane {pane_id} is gone"))
+                                    })
+                                    .collect::<anyhow::Result<Vec<_>>>()?;
+                                // Apply all pane sizes, then rebuild once. A request
+                                // that changes no pane's size changes nothing to
+                                // tell the other clients about.
+                                let changed = panes.iter().any(|(pane, size)| {
+                                    let dims = pane.get_dimensions();
+                                    (
                                         dims.cols,
                                         dims.viewport_rows,
                                         dims.pixel_width,
                                         dims.pixel_height,
                                         dims.dpi,
-                                    ) == (
+                                    ) != (
                                         size.cols,
                                         size.rows,
                                         size.pixel_width,
                                         size.pixel_height,
                                         size.dpi,
-                                    );
-                                    tab.resize(*size);
-                                    if !unchanged {
-                                        mux.notify_tab_resized(tab_id);
-                                    }
+                                    )
+                                });
+                                for (pane, size) in panes {
+                                    pane.resize(size)?;
+                                }
+                                if !changed {
                                     return Ok(Pdu::UnitResponse(UnitResponse {}));
                                 }
+                                tab.rebuild_splits_sizes_from_contained_panes();
+                                tab.log_runtime_invariant_errors("server.resize_tab");
+                                mux.notify_tab_resized(tab_id);
+                                Ok(Pdu::UnitResponse(UnitResponse {}))
+                            })();
+                            if let Err(err) = &result {
+                                log::warn!(
+                                    "refused to resize tab {tab_id} for {sender}, \
+                                     sizing panes {pane_ids:?}: {err:#}"
+                                );
                             }
-                            validate_resize_tab(tab_id, &tab_pane_ids, &pane_sizes)?;
-                            let panes = pane_sizes
-                                .iter()
-                                .map(|(pane_id, size)| {
-                                    mux.get_pane(*pane_id)
-                                        .map(|pane| (pane, *size))
-                                        .ok_or_else(|| anyhow!("pane {pane_id} is gone"))
-                                })
-                                .collect::<anyhow::Result<Vec<_>>>()?;
-                            // Apply all pane sizes, then rebuild once. A request
-                            // that changes no pane's size changes nothing to
-                            // tell the other clients about.
-                            let changed = panes.iter().any(|(pane, size)| {
-                                let dims = pane.get_dimensions();
-                                (
-                                    dims.cols,
-                                    dims.viewport_rows,
-                                    dims.pixel_width,
-                                    dims.pixel_height,
-                                    dims.dpi,
-                                ) != (
-                                    size.cols,
-                                    size.rows,
-                                    size.pixel_width,
-                                    size.pixel_height,
-                                    size.dpi,
-                                )
-                            });
-                            for (pane, size) in panes {
-                                pane.resize(size)?;
-                            }
-                            if !changed {
-                                return Ok(Pdu::UnitResponse(UnitResponse {}));
-                            }
-                            tab.rebuild_splits_sizes_from_contained_panes();
-                            tab.log_runtime_invariant_errors("server.resize_tab");
-                            mux.notify_tab_resized(tab_id);
-                            Ok(Pdu::UnitResponse(UnitResponse {}))
+                            result
                         },
                         send_response,
                     )
