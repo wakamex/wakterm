@@ -1,9 +1,8 @@
 ## Installing from source
 
-If your system is not covered by the pre-built packages, you can build wakterm from source. wakterm runs on Linux, macOS, Windows 10 or later, and modern Unix systems.
+No pre-built release of wakterm has been published yet, so this is how to install it. wakterm runs on Linux, macOS, Windows 10 or later, and modern Unix systems.
 
-- Install [rustup](https://www.rust-lang.org/tools/install) to get the Rust toolchain on your system.
-- Rust 1.71 or later is required.
+- Install [rustup](https://www.rust-lang.org/tools/install) to get the Rust toolchain on your system, and keep it current with `rustup update`.
 - Build in release mode with `cargo build --release`.
 - Run it via `cargo run --release --bin wakterm` or `target/release/wakterm`.
 
@@ -22,6 +21,8 @@ $ cargo run --release --bin wakterm -- start
 ```
 
 If you see an error about `zlib`, make sure you initialized the git submodules with `git submodule update --init --recursive`.
+
+On Linux and other Unix systems, `./install.sh` copies the built `wakterm`, `wakterm-gui` and `wakterm-mux-server` into `~/.local/bin`, or into `/usr/local/bin` with `--system`, and `--desktop` also installs the application launcher and icon. `./install-user-service.sh` then runs the mux server as a systemd user service, so sessions outlive the GUI.
 
 ### Building without Wayland support on Unix systems
 

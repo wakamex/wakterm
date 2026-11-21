@@ -10,17 +10,18 @@ Historical fork notes: [CHANGELOG-FORK.md](CHANGELOG-FORK.md)
 
 ## Installation
 
-See [wakterm.org/installation](https://wakterm.org/installation) for Linux (`.rpm`, `.deb`, `.tar.xz`), macOS ([Homebrew](https://brew.sh/) tap `wakamex/tap` and `.zip`), Windows ([Scoop](https://scoop.sh/) bucket `wakamex/scoop-bucket`, `setup.exe`, and `.zip`), and building from source.
-
-### Verifying a release download
-
-Every asset on [GitHub Releases](https://github.com/wakamex/wakterm/releases) is published with `SHA256SUMS` and a build provenance attestation. Verify a downloaded file with [GitHub CLI](https://cli.github.com/):
+No pre-built release has been published yet, so wakterm is installed by building it from source. On Linux:
 
 ```sh
-gh attestation verify ASSET --repo wakamex/wakterm \
-  --signer-workflow wakamex/release-actions/.github/workflows/binary-release.yml
-gh release verify-asset vX.Y.Z ASSET --repo wakamex/wakterm
+git clone --recursive https://github.com/wakamex/wakterm.git
+cd wakterm
+./get-deps                  # installs the system development libraries
+cargo build --release
+./install.sh                # copies wakterm, wakterm-gui and wakterm-mux-server into ~/.local/bin
+./install-user-service.sh   # optional: runs the mux server as a systemd user service
 ```
+
+The build needs a current Rust toolchain from [rustup](https://rustup.rs/). [Building from source](docs/install/source.md) covers Windows, macOS, building without Wayland, and other details; `./install.sh --help` lists its options, such as `--system` for `/usr/local/bin` and `--desktop` for the application launcher.
 
 ## License
 
