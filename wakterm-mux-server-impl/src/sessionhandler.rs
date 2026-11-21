@@ -3092,12 +3092,14 @@ mod test {
     #[test]
     fn a_client_command_without_its_environment_runs_in_the_servers() {
         use portable_pty::CommandBuilder;
-        let path = std::env::var_os("PATH").unwrap();
+        // The server's own base environment, which on Windows takes PATH
+        // from the registry rather than from this process.
+        let server = CommandBuilder::from_argv(vec!["true".into()]);
 
         let mut bare = CommandBuilder::from_argv_without_env(vec!["true".into()]);
         bare.env("EXPLICIT", "1");
         let bare = in_server_environment(Some(bare)).unwrap();
-        assert_eq!(bare.get_env("PATH"), Some(path.as_os_str()));
+        assert_eq!(bare.get_env("PATH"), server.get_env("PATH"));
         assert_eq!(bare.get_env("EXPLICIT"), Some(std::ffi::OsStr::new("1")));
 
         // A command carrying its client's environment, as older clients and

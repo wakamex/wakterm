@@ -816,8 +816,10 @@ mod tests {
         // explicit variable on top of it.
         assert!(!cmd.has_no_base_env());
         assert_eq!(cmd.get_env("EXPLICIT"), Some(OsStr::new("1")));
-        let path = std::env::var_os("PATH").unwrap();
-        assert_eq!(cmd.get_env("PATH"), Some(path.as_os_str()));
+        // The base environment a new command gets, which on Windows takes
+        // PATH from the registry rather than from this process.
+        let base = CommandBuilder::from_argv(vec!["true".into()]);
+        assert_eq!(cmd.get_env("PATH"), base.get_env("PATH"));
         assert_eq!(
             cmd.iter_extra_env_as_str().collect::<Vec<_>>(),
             [("EXPLICIT", "1")]

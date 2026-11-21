@@ -278,7 +278,8 @@ mod test {
         let command = super::command_for_prog(spawn.prog, spawn.env, spawn.inherit_env).unwrap();
         assert!(!command.has_no_base_env());
         assert_eq!(command.get_env("FOO"), Some(std::ffi::OsStr::new("baz")));
-        assert_eq!(command.get_env("PATH"), std::env::var_os("PATH").as_deref());
+        let base = portable_pty::cmdbuilder::CommandBuilder::from_argv(vec!["true".into()]);
+        assert_eq!(command.get_env("PATH"), base.get_env("PATH"));
         // No PROG, no command; the flags need one.
         let spawn = parse(&[]).unwrap();
         assert!(super::command_for_prog(spawn.prog, spawn.env, spawn.inherit_env).is_none());
