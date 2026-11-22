@@ -136,6 +136,35 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// Reports a turn that waits for a background task as working, rather than
+/// waiting, when all its steps predate the agy process `started`.
+fn end_wait_from_before(details: &mut HarnessObservationDetails, started: Option<DateTime<Utc>>) {
+    if details.turn_phase.as_deref() == Some(BACKGROUND_TASK_PHASE)
+        && details
+            .updated_at
+            .zip(started)
+            .is_some_and(|(at, started)| at < started)
+    {
+        details.turn_phase = Some("working".to_string());
+    }
+}
+
+/// When the adopted agy process started.
+fn process_started_at(
+    process_id: Option<u32>,
+    process_start_time: Option<u64>,
+) -> Option<DateTime<Utc>> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::agent::linux_process_started_at(process_id, process_start_time).map(DateTime::from)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (process_id, process_start_time);
+        None
+    }
+}
+
 /// When agy recorded a step.
 pub(crate) fn record_time(record: &Value) -> Option<DateTime<Utc>> {
     record
@@ -312,7 +341,15 @@ pub(crate) fn observe(
         return Ok(None);
     };
     let modified_at = DateTime::<Utc>::from(fs::metadata(&transcript)?.modified()?);
-    let details = read_last_observation(&transcript)?;
+    let mut details = read_last_observation(&transcript)?;
+    // A background task runs under the agy process that started it, so a
+    // turn whose steps all predate the current process, as after a restore,
+    // waits for a task that is gone; the turn then stops like any other a
+    // restart interrupted.
+    end_wait_from_before(
+        &mut details,
+        process_started_at(process_id, process_start_time),
+    );
     Ok(Some(HarnessObservation::from_details(
         &transcript,
         details,
@@ -750,4 +787,39 @@ pub(crate) fn expire_background_wait(
     state.turn_id = Some(turn_id);
     state.turn_state = Some("waiting_on_user".to_string());
     vec![final_event, state]
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn a_wait_from_before_the_process_started_is_no_longer_a_wait() {
+        let at = Utc::now();
+        let waiting = || HarnessObservationDetails {
+            progress_summary: None,
+            harness_mode: None,
+            turn_phase: Some(BACKGROUND_TASK_PHASE.to_string()),
+            updated_at: Some(at),
+            turn_state: AgentTurnState::WaitingOnAgent,
+            last_turn_completed_at: None,
+            observed_turn: None,
+        };
+        let phase = |started| {
+            let mut details = waiting();
+            end_wait_from_before(&mut details, started);
+            details.turn_phase
+        };
+        // The process that started the task still runs.
+        assert_eq!(
+            phase(Some(at - Duration::minutes(1))).as_deref(),
+            Some(BACKGROUND_TASK_PHASE)
+        );
+        assert_eq!(phase(None).as_deref(), Some(BACKGROUND_TASK_PHASE));
+        // A restored process cannot be running the task.
+        assert_eq!(
+            phase(Some(at + Duration::minutes(1))).as_deref(),
+            Some("working")
+        );
+    }
 }
