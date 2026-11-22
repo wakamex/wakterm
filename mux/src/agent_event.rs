@@ -2670,70 +2670,59 @@ fn project_muse(
             .map(str::to_string)
             .unwrap_or_else(|| format!("offset-{offset}"));
         let record_key = format!("muse:{}:{id}", cursor.source_id);
-        let open_turn = cursor.current_turn_id.clone().filter(|_| cursor.turn_open);
-        let owns = |cursor: &JsonlCursor, run_id: &str| {
-            open_turn.as_deref() == Some(run_id)
-                || cursor.steer_runs.iter().any(|run| run == run_id)
+        let Some(record) = crate::muse::parse(record) else {
+            return Ok(Vec::new());
         };
-        Ok(match crate::muse::parse(record) {
-            Some(crate::muse::Record::Input { intent_id, text }) => {
+        let mut tracker = crate::muse::TurnTracker {
+            turn_id: cursor.current_turn_id.clone(),
+            open: cursor.turn_open,
+            steer_runs: std::mem::take(&mut cursor.steer_runs),
+            queued_steers: std::mem::take(&mut cursor.queued_steers),
+        };
+        let open_turn = tracker.open_turn();
+        let step = tracker.step(record);
+        cursor.current_turn_id = tracker.turn_id;
+        cursor.turn_open = tracker.open;
+        cursor.steer_runs = tracker.steer_runs;
+        cursor.queued_steers = tracker.queued_steers;
+        Ok(match step {
+            crate::muse::TurnStep::Steered { text } => vec![input_accepted(
+                format!("{record_key}:input"),
+                timestamp,
+                open_turn,
+                crate::agent::message_sha256(&text),
+                false,
+            )],
+            crate::muse::TurnStep::Started { turn_id, text } => {
                 let sha256 = crate::agent::message_sha256(&text);
-                if let Some(turn_id) = open_turn {
-                    vec![input_accepted(
-                        format!("{record_key}:input"),
-                        timestamp,
-                        Some(turn_id),
-                        sha256,
-                        false,
-                    )]
-                } else {
-                    cursor.current_turn_id = Some(intent_id.clone());
-                    cursor.last_assistant_text = None;
-                    cursor.turn_open = true;
-                    cursor.steer_runs.clear();
-                    cursor.queued_steers.clear();
-                    let mut started = PendingEvent::new(
-                        format!("{record_key}:started"),
-                        AgentEventKind::TurnStarted,
-                        timestamp,
-                    );
-                    started.turn_id = Some(intent_id.clone());
-                    started.input_sha256 = Some(sha256.clone());
-                    let accepted = input_accepted(
-                        format!("{record_key}:input"),
-                        timestamp,
-                        Some(intent_id.clone()),
-                        sha256,
-                        false,
-                    );
-                    let mut state = PendingEvent::new(
-                        format!("{record_key}:state"),
-                        AgentEventKind::TurnStateChanged,
-                        timestamp,
-                    );
-                    state.turn_id = Some(intent_id);
-                    state.turn_state = Some("waiting_on_agent".to_string());
-                    vec![started, accepted, state]
-                }
+                cursor.last_assistant_text = None;
+                let mut started = PendingEvent::new(
+                    format!("{record_key}:started"),
+                    AgentEventKind::TurnStarted,
+                    timestamp,
+                );
+                started.turn_id = Some(turn_id.clone());
+                started.input_sha256 = Some(sha256.clone());
+                let accepted = input_accepted(
+                    format!("{record_key}:input"),
+                    timestamp,
+                    Some(turn_id.clone()),
+                    sha256,
+                    false,
+                );
+                let mut state = PendingEvent::new(
+                    format!("{record_key}:state"),
+                    AgentEventKind::TurnStateChanged,
+                    timestamp,
+                );
+                state.turn_id = Some(turn_id);
+                state.turn_state = Some("waiting_on_agent".to_string());
+                vec![started, accepted, state]
             }
-            Some(crate::muse::Record::SteerQueued { run_id, item_id }) if owns(cursor, &run_id) => {
-                cursor.queued_steers.push(item_id);
-                Vec::new()
-            }
-            Some(crate::muse::Record::SteerDrained { run_id, item_id })
-                if cursor.queued_steers.contains(&item_id) =>
-            {
-                cursor.queued_steers.retain(|queued| *queued != item_id);
-                if !owns(cursor, &run_id) {
-                    cursor.steer_runs.push(run_id);
-                }
-                Vec::new()
-            }
-            Some(crate::muse::Record::ApprovalRequested {
-                run_id,
+            crate::muse::TurnStep::ApprovalRequested {
                 action_id,
                 command: Some(command),
-            }) if owns(cursor, &run_id) => {
+            } => {
                 let turn_id = open_turn.clone().unwrap_or_default();
                 crate::muse_prompt::approval_request(
                     metadata, &turn_id, &action_id, &command, timestamp,
@@ -2750,7 +2739,7 @@ fn project_muse(
                 })
                 .unwrap_or_default()
             }
-            Some(crate::muse::Record::Assistant { run_id, text }) if owns(cursor, &run_id) => {
+            crate::muse::TurnStep::Reply { text } => {
                 let text = text.trim().to_string();
                 if text.is_empty() {
                     Vec::new()
@@ -2766,9 +2755,7 @@ fn project_muse(
                     vec![message]
                 }
             }
-            Some(crate::muse::Record::Terminal { run_id, completed })
-                if owns(cursor, &run_id) && cursor.queued_steers.is_empty() =>
-            {
+            crate::muse::TurnStep::Ended { completed } => {
                 let mut final_event = PendingEvent::new(
                     format!("{record_key}:final"),
                     AgentEventKind::TurnFinal,
@@ -2787,10 +2774,11 @@ fn project_muse(
                 );
                 state.turn_id = open_turn;
                 state.turn_state = Some("waiting_on_user".to_string());
-                cursor.turn_open = false;
                 vec![final_event, state]
             }
-            _ => Vec::new(),
+            crate::muse::TurnStep::ApprovalRequested { command: None, .. }
+            | crate::muse::TurnStep::ApprovalDecided { .. }
+            | crate::muse::TurnStep::Other => Vec::new(),
         })
     }) {
         Ok(events) => events,
@@ -3630,6 +3618,37 @@ mod tests {
             .map(|event| event.input_sha256.clone())
             .collect();
         assert_eq!(hashes.len(), count(AgentEventKind::InputAccepted));
+    }
+
+    #[test]
+    fn muse_observer_and_projector_agree_on_a_turn_with_a_blank_reply() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().join("01a1738a-c72f-7c81-909d-36e0e636494d");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        fs::write(&path, "").unwrap();
+        let cursor = project_muse(&path, None, &metadata("muse")).unwrap().cursor;
+        let mut log = crate::muse::fixture::Log {
+            path: &path,
+            at: 1_792_939_838_000_000,
+        };
+        log.input("r1", "Summarize the diff");
+        log.reply("r1", "Two files changed");
+        // A blank reply does not replace the turn's text for either reader.
+        log.reply("r1", "  ");
+        log.end("r1", "completed");
+        let view = crate::muse::read_turn(&path).unwrap();
+        let events = project_muse(&path, Some(cursor), &metadata("muse"))
+            .unwrap()
+            .events;
+        let final_event = events
+            .iter()
+            .find(|event| event.kind == AgentEventKind::TurnFinal)
+            .unwrap();
+        assert_eq!(view.reply.as_deref(), Some("Two files changed"));
+        assert_eq!(final_event.text.as_deref(), view.reply.as_deref());
+        assert_eq!(final_event.turn_id, view.turn_id);
+        assert_eq!(view.ended, Some(true));
     }
 
     #[test]

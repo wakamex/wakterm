@@ -329,15 +329,112 @@ pub(crate) struct TurnView {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-impl TurnView {
+/// What a record does to the turn it arrives in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TurnStep {
+    /// Input with no turn open starts one.
+    Started {
+        turn_id: String,
+        text: String,
+    },
+    /// Input while a turn is open steers it.
+    Steered {
+        text: String,
+    },
+    /// A reply from a run of the open turn, or a run answering its steers.
+    Reply {
+        text: String,
+    },
+    ApprovalRequested {
+        action_id: String,
+        command: Option<String>,
+    },
+    ApprovalDecided {
+        action_id: String,
+    },
+    /// The turn's own final run ended, with nothing still queued.
+    Ended {
+        completed: bool,
+    },
+    /// Anything else, including steer bookkeeping.
+    Other,
+}
+
+/// Whether a Muse turn is open and which runs belong to it, by the one rule
+/// both of Wakterm's readers of a session log follow: the observer from the
+/// start of the log, the event projector from where its cursor left off.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TurnTracker {
+    pub turn_id: Option<String>,
+    pub open: bool,
+    /// Runs answering input the user sent while the turn ran.
+    pub steer_runs: Vec<String>,
+    /// Queued items not yet handed to a run. The turn ends with a run of
+    /// its own once nothing is queued.
+    pub queued_steers: Vec<String>,
+}
+
+impl TurnTracker {
+    /// The turn that is open, if one is.
+    pub(crate) fn open_turn(&self) -> Option<String> {
+        self.turn_id.clone().filter(|_| self.open)
+    }
+
     fn owns(&self, run_id: &str) -> bool {
-        self.turn_id.as_deref() == Some(run_id) || self.steer_runs.iter().any(|run| run == run_id)
+        (self.open && self.turn_id.as_deref() == Some(run_id))
+            || self.steer_runs.iter().any(|run| run == run_id)
+    }
+
+    pub(crate) fn step(&mut self, record: Record) -> TurnStep {
+        match record {
+            Record::Input { intent_id, text } => {
+                if self.open {
+                    TurnStep::Steered { text }
+                } else {
+                    *self = TurnTracker {
+                        turn_id: Some(intent_id.clone()),
+                        open: true,
+                        ..TurnTracker::default()
+                    };
+                    TurnStep::Started {
+                        turn_id: intent_id,
+                        text,
+                    }
+                }
+            }
+            Record::SteerQueued { run_id, item_id } if self.owns(&run_id) => {
+                self.queued_steers.push(item_id);
+                TurnStep::Other
+            }
+            Record::SteerDrained { run_id, item_id } if self.queued_steers.contains(&item_id) => {
+                self.queued_steers.retain(|queued| *queued != item_id);
+                if !self.owns(&run_id) {
+                    self.steer_runs.push(run_id);
+                }
+                TurnStep::Other
+            }
+            Record::Assistant { run_id, text } if self.owns(&run_id) => TurnStep::Reply { text },
+            Record::ApprovalRequested {
+                run_id,
+                action_id,
+                command,
+            } if self.owns(&run_id) => TurnStep::ApprovalRequested { action_id, command },
+            Record::ApprovalDecided { action_id, .. } => TurnStep::ApprovalDecided { action_id },
+            Record::Terminal { run_id, completed }
+                if self.owns(&run_id) && self.queued_steers.is_empty() =>
+            {
+                self.open = false;
+                TurnStep::Ended { completed }
+            }
+            _ => TurnStep::Other,
+        }
     }
 }
 
 /// Reads a session log into the view of its latest turn.
 pub(crate) fn read_turn(log: &Path) -> anyhow::Result<TurnView> {
     let mut view = TurnView::default();
+    let mut tracker = TurnTracker::default();
     for line in std::fs::read_to_string(log)?.lines() {
         let Ok(record) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -346,53 +443,37 @@ pub(crate) fn read_turn(log: &Path) -> anyhow::Result<TurnView> {
         if at.is_some() {
             view.updated_at = at;
         }
-        match parse(&record) {
-            Some(Record::Input { intent_id, text }) => {
-                if view.turn_id.is_some() && view.ended.is_none() {
-                    view.inputs += 1;
-                } else {
-                    view = TurnView {
-                        turn_id: Some(intent_id),
-                        input: Some(text),
-                        started_at: at,
-                        inputs: 1,
-                        updated_at: at,
-                        ..TurnView::default()
-                    };
-                }
+        let Some(record) = parse(&record) else {
+            continue;
+        };
+        match tracker.step(record) {
+            TurnStep::Started { turn_id, text } => {
+                view = TurnView {
+                    turn_id: Some(turn_id),
+                    input: Some(text),
+                    started_at: at,
+                    inputs: 1,
+                    updated_at: at,
+                    ..TurnView::default()
+                };
             }
-            Some(Record::Assistant { run_id, text }) if view.owns(&run_id) => {
-                view.reply = Some(text);
+            TurnStep::Steered { .. } => view.inputs += 1,
+            // A blank reply does not replace the turn's earlier text.
+            TurnStep::Reply { text } if !text.trim().is_empty() => view.reply = Some(text),
+            TurnStep::ApprovalRequested { action_id, .. } => view.pending_approvals.push(action_id),
+            TurnStep::ApprovalDecided { action_id } => {
+                view.pending_approvals
+                    .retain(|pending| *pending != action_id);
             }
-            Some(Record::SteerQueued { run_id, item_id }) if view.owns(&run_id) => {
-                view.queued_steers.push(item_id);
-            }
-            Some(Record::SteerDrained { run_id, item_id })
-                if view.queued_steers.contains(&item_id) =>
-            {
-                view.queued_steers.retain(|queued| *queued != item_id);
-                if !view.owns(&run_id) {
-                    view.steer_runs.push(run_id);
-                }
-            }
-            Some(Record::Terminal { run_id, completed })
-                if view.owns(&run_id) && view.queued_steers.is_empty() =>
-            {
+            TurnStep::Ended { completed } => {
                 view.ended = Some(completed);
                 view.ended_at = at;
                 view.pending_approvals.clear();
             }
-            Some(Record::ApprovalRequested {
-                run_id, action_id, ..
-            }) if view.owns(&run_id) => {
-                view.pending_approvals.push(action_id);
-            }
-            Some(Record::ApprovalDecided { action_id, .. }) => {
-                view.pending_approvals
-                    .retain(|pending| *pending != action_id);
-            }
-            _ => {}
+            TurnStep::Reply { .. } | TurnStep::Other => {}
         }
+        view.steer_runs = tracker.steer_runs.clone();
+        view.queued_steers = tracker.queued_steers.clone();
     }
     Ok(view)
 }
