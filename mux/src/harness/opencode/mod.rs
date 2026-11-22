@@ -305,7 +305,7 @@ pub(crate) fn select_session(
     Ok(selected)
 }
 
-fn read_last_observation(
+pub(crate) fn read_last_observation(
     connection: &Connection,
     db_path: &Path,
     session_id: &str,
@@ -704,8 +704,10 @@ pub(crate) fn project(
                 .unwrap_or_else(|| {
                     DateTime::from_timestamp_millis(time_created).unwrap_or_else(Utc::now)
                 });
-            if let Some(error) = message.get("error") {
-                // A provider failure ends the step without a final answer.
+            let failed = message.get("error");
+            if let Some(error) = failed {
+                // A provider failure ends the turn without an answer; its
+                // message is kept for diagnosis but not passed on.
                 let detail = error
                     .pointer("/data/message")
                     .or_else(|| error.get("message"))
@@ -718,8 +720,6 @@ pub(crate) fn project(
                     Some(turn_id.to_string()),
                     detail,
                 ));
-                cursor.last_final_message_rowid = rowid;
-                continue;
             }
             let mut final_event = PendingEvent::new(
                 format!("opencode:{source_id}:{message_id}:final"),
@@ -727,10 +727,19 @@ pub(crate) fn project(
                 timestamp,
             );
             final_event.turn_id = Some(turn_id.to_string());
-            final_event.outcome = Some("completed".to_string());
-            final_event.text = text
-                .map(|text| text.trim().to_string())
-                .filter(|text| !text.is_empty());
+            if failed.is_some() {
+                final_event.outcome = Some("aborted".to_string());
+                final_event.reason = Some("provider_failure".to_string());
+                final_event.detail = Some(
+                    "The provider reported an error, so the turn ended without a reply."
+                        .to_string(),
+                );
+            } else {
+                final_event.outcome = Some("completed".to_string());
+                final_event.text = text
+                    .map(|text| text.trim().to_string())
+                    .filter(|text| !text.is_empty());
+            }
             events.push(final_event);
             let mut state = PendingEvent::new(
                 format!("opencode:{source_id}:{message_id}:state"),

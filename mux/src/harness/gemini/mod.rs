@@ -378,7 +378,7 @@ pub(crate) fn read_conversation(path: &Path) -> anyhow::Result<Conversation> {
     })
 }
 
-fn read_last_observation(path: &Path) -> anyhow::Result<HarnessObservationDetails> {
+pub(crate) fn read_last_observation(path: &Path) -> anyhow::Result<HarnessObservationDetails> {
     let conversation = read_conversation(path)?;
     let mut summary = None;
     let mut last_user_at = None;

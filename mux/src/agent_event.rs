@@ -2743,6 +2743,10 @@ pub(crate) fn extract_text(content: Option<&Value>) -> Option<String> {
 /// notifications and reminders; it continues the current turn.
 
 #[cfg(test)]
+#[path = "agent_event_replay.rs"]
+mod replay;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -3169,7 +3173,7 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
-    fn metadata(harness: &str) -> AgentMetadata {
+    pub(super) fn metadata(harness: &str) -> AgentMetadata {
         AgentMetadata {
             agent_id: format!("agent-{harness}"),
             name: harness.to_string(),
@@ -5741,7 +5745,7 @@ mod tests {
     }
 
     #[test]
-    fn zcode_skips_injected_prompts_and_reports_provider_failures_once() {
+    fn zcode_skips_injected_prompts_and_ends_a_turn_once_on_a_provider_failure() {
         let temp = TempDir::new().unwrap();
         let provider_db = temp.path().join("db.sqlite");
         let conn = create_opencode_db(&provider_db);
@@ -5805,7 +5809,20 @@ mod tests {
             failures[0].detail.as_deref(),
             Some("Usage limit reached for 5 hour")
         );
-        assert!(of_kind(AgentEventKind::TurnFinal).is_empty());
+        // The turn ends there, as the status observer says, without passing
+        // the provider's message on.
+        let finals = of_kind(AgentEventKind::TurnFinal);
+        assert_eq!(finals.len(), 1);
+        assert_eq!(finals[0].turn_id.as_deref(), Some("z-prompt"));
+        assert_eq!(finals[0].outcome.as_deref(), Some("aborted"));
+        assert_eq!(finals[0].reason.as_deref(), Some("provider_failure"));
+        assert!(!finals[0].detail.as_deref().unwrap().contains("Usage limit"));
+        assert_eq!(finals[0].text, None);
+        let states = of_kind(AgentEventKind::TurnStateChanged);
+        assert_eq!(
+            states.last().unwrap().turn_state.as_deref(),
+            Some("waiting_on_user")
+        );
     }
 
     #[test]
