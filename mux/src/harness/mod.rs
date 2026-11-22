@@ -2,6 +2,7 @@
 //! reads and answers its screen. The facts every harness has, such as its
 //! programs and launch command, are in `crate::agent::HarnessSpec`.
 
+pub mod agy;
 pub mod devin;
 pub mod gemini;
 pub mod muse;

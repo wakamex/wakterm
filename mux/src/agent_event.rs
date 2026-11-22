@@ -1669,14 +1669,15 @@ fn initial_jsonl_cursor(
     source_id: String,
 ) -> anyhow::Result<JsonlCursor> {
     let offset = complete_jsonl_tail(path)?;
-    let (current_turn_id, current_prompt_id) = latest_jsonl_turn(path, provider, &source_id)?;
+    let (current_turn_id, current_prompt_id, turn_open) =
+        latest_jsonl_turn(path, provider, &source_id)?;
     Ok(JsonlCursor {
         source_id,
         offset,
         checkpoint_sha256: checkpoint_sha256(path, offset)?,
         current_turn_id,
         last_assistant_text: None,
-        turn_open: false,
+        turn_open,
         pending_turn_start: None,
         current_prompt_id,
         turn_before_gap: None,
@@ -1716,15 +1717,17 @@ fn complete_jsonl_tail(path: &Path) -> anyhow::Result<u64> {
     }
 }
 
-/// The latest turn ID in a provider session, with Claude's `promptId` for it.
+/// The latest turn ID in a provider session, with Claude's `promptId` for it,
+/// and for agy whether that turn is still open.
 fn latest_jsonl_turn(
     path: &Path,
     provider: &str,
     source_id: &str,
-) -> anyhow::Result<(Option<String>, Option<String>)> {
+) -> anyhow::Result<(Option<String>, Option<String>, bool)> {
     let reader = BufReader::new(fs::File::open(path)?);
     let mut current = None;
     let mut prompt_id = None;
+    let mut agy = crate::harness::agy::TurnTracker::default();
     for line in reader.lines() {
         let record: Value = match serde_json::from_str(&line?) {
             Ok(record) => record,
@@ -1746,13 +1749,17 @@ fn latest_jsonl_turn(
                     .and_then(Value::as_str)
                     .map(str::to_string);
             }
-            "agy" if record.get("type").and_then(Value::as_str) == Some("USER_INPUT") => {
-                current = agy_turn_id(source_id, &record);
-            }
+            "agy" => match agy.step(&record) {
+                crate::harness::agy::TurnStep::StartedByUser
+                | crate::harness::agy::TurnStep::StartedBySystem => {
+                    current = crate::harness::agy::turn_id(source_id, &record);
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
-    Ok((current, prompt_id))
+    Ok((current, prompt_id, agy.open))
 }
 
 /// When a new session file is armed at its end because the previous file
@@ -2449,21 +2456,6 @@ fn project_claude(
     })
 }
 
-/// The agy turn a user input record starts, named by its conversation and
-/// step so that each input is its own turn.
-fn agy_turn_id(conversation_id: &str, record: &Value) -> Option<String> {
-    let step = record.get("step_index")?.as_u64()?;
-    Some(format!("{conversation_id}:{step}"))
-}
-
-/// The text the user sent, which agy records between USER_REQUEST tags
-/// ahead of metadata it appends.
-fn agy_user_request(content: &str) -> Option<&str> {
-    let start = content.find("<USER_REQUEST>")? + "<USER_REQUEST>".len();
-    let end = content[start..].find("</USER_REQUEST>")? + start;
-    Some(content[start..end].trim())
-}
-
 /// Projects agy's step log. The observer binds the trimmed transcript,
 /// whose long fields can be truncated, so events come from its full
 /// sibling when agy writes one.
@@ -2502,14 +2494,19 @@ fn project_agy(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<Pr
             .map(|step| step.to_string())
             .unwrap_or_else(|| format!("offset-{offset}"));
         let record_key = format!("agy:{}:{step}", cursor.source_id);
-        match record.get("type").and_then(Value::as_str) {
-            Some("USER_INPUT") => {
-                let Some(turn_id) = agy_turn_id(&cursor.source_id, record) else {
+        let mut tracker = crate::harness::agy::TurnTracker {
+            open: cursor.turn_open,
+        };
+        let step_kind = tracker.step(record);
+        match step_kind {
+            crate::harness::agy::TurnStep::StartedByUser
+            | crate::harness::agy::TurnStep::StartedBySystem => {
+                let Some(turn_id) = crate::harness::agy::turn_id(&cursor.source_id, record) else {
                     return Ok(vec![observer_failure(
                         format!("{record_key}:missing-turn"),
                         timestamp,
                         None,
-                        "agy user input lacks a step index",
+                        "agy step lacks a step index",
                     )]);
                 };
                 cursor.current_turn_id = Some(turn_id.clone());
@@ -2521,10 +2518,11 @@ fn project_agy(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<Pr
                     timestamp,
                 );
                 started.turn_id = Some(turn_id.clone());
-                started.input_sha256 = record
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .and_then(agy_user_request)
+                // A turn a system notice starts has no user input.
+                started.input_sha256 = (step_kind == crate::harness::agy::TurnStep::StartedByUser)
+                    .then(|| record.get("content").and_then(Value::as_str))
+                    .flatten()
+                    .and_then(crate::harness::agy::user_request)
                     .map(crate::agent::message_sha256);
                 let accepted = started.input_sha256.clone().map(|sha256| {
                     input_accepted(
@@ -2547,39 +2545,33 @@ fn project_agy(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<Pr
                     .flatten()
                     .collect())
             }
-            Some("PLANNER_RESPONSE")
-                if record.get("status").and_then(Value::as_str) == Some("DONE") =>
+            _ if record.get("type").and_then(Value::as_str) == Some("PLANNER_RESPONSE")
+                && record.get("status").and_then(Value::as_str) == Some("DONE") =>
             {
                 let Some(turn_id) = cursor.current_turn_id.clone() else {
                     return Ok(Vec::new());
                 };
-                let Some(text) = record
+                let text = record
                     .get("content")
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|text| !text.is_empty())
-                    .map(str::to_string)
-                else {
-                    return Ok(Vec::new());
-                };
-                cursor.last_assistant_text = Some(text.clone());
-                let mut message = PendingEvent::new(
-                    format!("{record_key}:message"),
-                    AgentEventKind::AssistantMessage,
-                    timestamp,
-                );
-                message.turn_id = Some(turn_id.clone());
-                message.text = Some(text.clone());
-                let mut events = vec![message];
-                // A response that calls no tools ends the turn. Its tool
-                // calls are recorded as text, empty when there are none.
-                let calls_tools = record.get("tool_calls").is_some_and(|calls| match calls {
-                    Value::Array(calls) => !calls.is_empty(),
-                    Value::String(calls) => !matches!(calls.trim(), "" | "[]"),
-                    Value::Null => false,
-                    _ => true,
-                });
-                if !calls_tools && cursor.turn_open {
+                    .map(str::to_string);
+                let mut events = Vec::new();
+                if let Some(text) = &text {
+                    cursor.last_assistant_text = Some(text.clone());
+                    let mut message = PendingEvent::new(
+                        format!("{record_key}:message"),
+                        AgentEventKind::AssistantMessage,
+                        timestamp,
+                    );
+                    message.turn_id = Some(turn_id.clone());
+                    message.text = Some(text.clone());
+                    events.push(message);
+                }
+                // A response without text that calls no tools still ends
+                // the turn, without a final answer.
+                if step_kind == crate::harness::agy::TurnStep::Ended {
                     let mut final_event = PendingEvent::new(
                         format!("{record_key}:final"),
                         AgentEventKind::TurnFinal,
@@ -2587,7 +2579,7 @@ fn project_agy(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<Pr
                     );
                     final_event.turn_id = Some(turn_id.clone());
                     final_event.outcome = Some("completed".to_string());
-                    final_event.text = Some(text);
+                    final_event.text = text;
                     let mut state = PendingEvent::new(
                         format!("{record_key}:final-state"),
                         AgentEventKind::TurnStateChanged,
@@ -4107,6 +4099,99 @@ mod tests {
             .iter()
             .position(|kind| *kind == AgentEventKind::TurnFinal);
         assert!(first_start < first_final);
+    }
+
+    #[test]
+    fn agy_projects_a_turn_a_system_notice_starts_and_an_empty_final() {
+        let temp = TempDir::new().unwrap();
+        let logs = temp
+            .path()
+            .join("brain")
+            .join("conversation-3")
+            .join(".system_generated")
+            .join("logs");
+        fs::create_dir_all(&logs).unwrap();
+        let record = |step: u64, kind: &str, status: &str, fields: serde_json::Value| {
+            let mut record = serde_json::json!({"step_index": step, "type": kind,
+                "status": status, "created_at": "2026-10-05T06:00:00Z"});
+            record
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            record.to_string() + "\n"
+        };
+        let session = logs.join("transcript.jsonl");
+        fs::write(&session, "").unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("agy-notice");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Agy,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        append(
+            &session,
+            &(record(
+                1,
+                "USER_INPUT",
+                "DONE",
+                serde_json::json!({"content": "<USER_REQUEST>\nscan\n</USER_REQUEST>"}),
+            ) + &record(
+                2,
+                "GENERIC",
+                "ERROR",
+                serde_json::json!({"content": "failed"}),
+            ) + &record(
+                3,
+                "PLANNER_RESPONSE",
+                "DONE",
+                serde_json::json!({"content": "Launched."}),
+            ) + &record(
+                4,
+                "SYSTEM_MESSAGE",
+                "DONE",
+                serde_json::json!({"content": "The scan finished."}),
+            ) + &record(
+                5,
+                "PLANNER_RESPONSE",
+                "DONE",
+                serde_json::json!({"content": ""}),
+            )),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let page = store.read_page(after, 100).unwrap();
+        let of_kind = |kind: AgentEventKind| {
+            page.events
+                .iter()
+                .filter(|event| event.kind == kind)
+                .collect::<Vec<_>>()
+        };
+        // The error step ends nothing; the response without tool calls ends
+        // the user's turn, and the notice starts one that its empty
+        // response ends without a final answer.
+        let started = of_kind(AgentEventKind::TurnStarted);
+        let finals = of_kind(AgentEventKind::TurnFinal);
+        assert_eq!(
+            started
+                .iter()
+                .map(|event| event.turn_id.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("conversation-3:1"), Some("conversation-3:4")]
+        );
+        assert!(started[0].input_sha256.is_some());
+        assert_eq!(started[1].input_sha256, None);
+        assert_eq!(
+            finals
+                .iter()
+                .map(|event| (event.turn_id.as_deref(), event.text.as_deref()))
+                .collect::<Vec<_>>(),
+            [
+                (Some("conversation-3:1"), Some("Launched.")),
+                (Some("conversation-3:4"), None)
+            ]
+        );
     }
 
     #[test]

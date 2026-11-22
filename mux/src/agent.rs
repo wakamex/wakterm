@@ -2344,42 +2344,42 @@ fn read_last_agy_observation(path: &Path) -> anyhow::Result<HarnessObservationDe
         .and_then(Path::file_name)
         .and_then(|name| name.to_str())
         .unwrap_or("agy");
-    let mut latest_record = None;
-    let mut latest_cursor = None;
-    let mut latest_at = None;
-    let mut user_record = None;
-    // The last step before the current turn's input, which ended the
-    // previous turn.
+    // The steps from the latest user input on, read back from the end, and
+    // the last step before it, which ended the previous turn.
+    let mut tail = Vec::new();
+    let mut found_input = false;
     let mut previous_turn_end = None;
-
     visit_lines_reverse(path, |line| {
         let Ok(record) = serde_json::from_str::<Value>(line) else {
             return Ok(false);
         };
         let record_type = record.get("type").and_then(Value::as_str);
-        let record_at = record
-            .get("created_at")
-            .and_then(Value::as_str)
-            .and_then(parse_rfc3339_timestamp);
-        if user_record.is_some() {
+        if found_input {
             if record_type == Some("SYSTEM_MESSAGE") {
                 return Ok(false);
             }
-            previous_turn_end = record_at;
+            previous_turn_end = record
+                .get("created_at")
+                .and_then(Value::as_str)
+                .and_then(parse_rfc3339_timestamp);
             return Ok(true);
         }
-        if latest_record.is_none() && record_type != Some("SYSTEM_MESSAGE") {
-            latest_cursor = record.get("step_index").and_then(Value::as_u64);
-            latest_at = record_at;
-            latest_record = Some(record.clone());
-        }
-        if record_type == Some("USER_INPUT") {
-            user_record = Some(record);
-        }
+        found_input = record_type == Some("USER_INPUT");
+        tail.push(record);
         Ok(false)
     })?;
-
-    let Some(latest) = latest_record else {
+    tail.reverse();
+    let created_at = |record: &Value| {
+        record
+            .get("created_at")
+            .and_then(Value::as_str)
+            .and_then(parse_rfc3339_timestamp)
+    };
+    let latest = tail
+        .iter()
+        .rev()
+        .find(|record| record.get("type").and_then(Value::as_str) != Some("SYSTEM_MESSAGE"));
+    let Some(latest) = latest else {
         return Ok(HarnessObservationDetails {
             progress_summary: None,
             harness_mode: None,
@@ -2390,7 +2390,33 @@ fn read_last_agy_observation(path: &Path) -> anyhow::Result<HarnessObservationDe
             observed_turn: None,
         });
     };
-    let Some(user) = user_record else {
+    let latest_at = created_at(latest);
+    let latest_cursor = latest.get("step_index").and_then(Value::as_u64);
+
+    // The turn the steps show by the rule the event projector follows: the
+    // latest turn's start, by the user or by a system notice, and its end.
+    let mut tracker = crate::harness::agy::TurnTracker::default();
+    let mut start: Option<(&Value, bool)> = None;
+    let mut end: Option<&Value> = None;
+    let mut last_end_at = previous_turn_end;
+    for record in &tail {
+        match tracker.step(record) {
+            crate::harness::agy::TurnStep::StartedByUser => {
+                start = Some((record, true));
+                end = None;
+            }
+            crate::harness::agy::TurnStep::StartedBySystem => {
+                start = Some((record, false));
+                end = None;
+            }
+            crate::harness::agy::TurnStep::Ended => {
+                end = Some(record);
+                last_end_at = created_at(record).or(last_end_at);
+            }
+            crate::harness::agy::TurnStep::Other => {}
+        }
+    }
+    let Some((start, by_user)) = start else {
         return Ok(HarnessObservationDetails {
             progress_summary: None,
             harness_mode: None,
@@ -2401,81 +2427,51 @@ fn read_last_agy_observation(path: &Path) -> anyhow::Result<HarnessObservationDe
             observed_turn: None,
         });
     };
-
-    let user_cursor = user.get("step_index").and_then(Value::as_u64);
-    let user_at = user
-        .get("created_at")
-        .and_then(Value::as_str)
-        .and_then(parse_rfc3339_timestamp);
-    let user_message = user
-        .get("content")
-        .and_then(Value::as_str)
-        .map(str::trim)
+    let start_cursor = start.get("step_index").and_then(Value::as_u64);
+    let user_message = by_user
+        .then(|| start.get("content").and_then(Value::as_str))
+        .flatten()
+        .and_then(crate::harness::agy::user_request)
         .filter(|message| !message.is_empty());
-    let status = latest.get("status").and_then(Value::as_str);
-    let final_message = (latest.get("type").and_then(Value::as_str) == Some("PLANNER_RESPONSE")
-        && status == Some("DONE")
-        && latest
-            .get("tool_calls")
-            .and_then(Value::as_array)
-            .map(Vec::is_empty)
-            .unwrap_or(true))
-    .then(|| latest.get("content").and_then(Value::as_str))
-    .flatten()
-    .map(str::trim)
-    .filter(|message| !message.is_empty())
-    .map(str::to_string);
-    let aborted = matches!(
-        status,
-        Some("ERROR" | "CANCELED" | "CANCELLED" | "INTERRUPTED" | "HALTED" | "INVALID")
-    );
-    let (outcome, turn_state, completed_at, turn_phase) = if final_message.is_some() {
+    let final_message = end
+        .and_then(|end| end.get("content").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_string);
+    let completed_at = end.and_then(created_at);
+    let (outcome, turn_state, turn_phase) = if end.is_some() {
         (
             AgentObservedTurnOutcome::Completed,
             AgentTurnState::WaitingOnUser,
-            latest_at,
-            Some("final_answer".to_string()),
-        )
-    } else if aborted {
-        (
-            AgentObservedTurnOutcome::Aborted,
-            AgentTurnState::WaitingOnUser,
-            latest_at,
-            Some("aborted".to_string()),
+            "final_answer",
         )
     } else {
         (
             AgentObservedTurnOutcome::Running,
             AgentTurnState::WaitingOnAgent,
-            None,
-            Some("working".to_string()),
+            "working",
         )
     };
-    let provider_turn_id = format!(
-        "{conversation_id}:{}",
-        user_cursor
-            .map(|cursor| cursor.to_string())
-            .unwrap_or_else(|| "current".to_string())
-    );
-    let progress_summary = final_message.as_deref().map(truncate_summary);
+    let provider_turn_id = crate::harness::agy::turn_id(conversation_id, start)
+        .unwrap_or_else(|| format!("{conversation_id}:current"));
 
     Ok(HarnessObservationDetails {
-        progress_summary,
+        progress_summary: final_message.as_deref().map(truncate_summary),
         harness_mode: None,
-        turn_phase,
+        turn_phase: Some(turn_phase.to_string()),
         updated_at: latest_at,
         turn_state,
-        // While a turn runs, the latest completed turn is the previous one.
-        last_turn_completed_at: completed_at.or(previous_turn_end),
+        // While a turn runs, the latest completed turn is an earlier one.
+        last_turn_completed_at: completed_at.or(last_end_at),
         observed_turn: Some(AgentObservedTurn {
             provider_turn_id,
             outcome,
-            started_at: user_at,
+            started_at: created_at(start),
             completed_at,
-            started_cursor: user_cursor,
+            started_cursor: start_cursor,
             latest_cursor,
             primary_user_message_sha256: user_message.map(message_sha256),
-            user_message_count: 1,
+            user_message_count: u32::from(by_user),
             final_message,
         }),
     })
@@ -7178,6 +7174,99 @@ mod test {
     }
 
     #[test]
+    fn an_agy_turn_survives_errors_and_a_system_notice_starts_another() {
+        let temp = TempDir::new().unwrap();
+        let step = |index: u64, kind: &str, status: &str, extra: serde_json::Value| {
+            let mut record = serde_json::json!({
+                "step_index": index,
+                "type": kind,
+                "status": status,
+                "created_at": format!("2026-08-22T16:00:{index:02}Z"),
+            });
+            record
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            record
+        };
+        let input = step(
+            1,
+            "USER_INPUT",
+            "DONE",
+            serde_json::json!({"content": "<USER_REQUEST>\nScan the dates\n</USER_REQUEST>"}),
+        );
+        let tool_step = step(
+            2,
+            "PLANNER_RESPONSE",
+            "DONE",
+            serde_json::json!({"tool_calls": [{"name": "Run"}]}),
+        );
+        // A step that errors does not end the turn: agy goes on after it.
+        let error = step(
+            3,
+            "GENERIC",
+            "ERROR",
+            serde_json::json!({"content": "failed"}),
+        );
+        let mut steps = vec![input, tool_step, error];
+        let observe = |steps: &[serde_json::Value]| {
+            let transcript = write_agy_transcript(temp.path(), "conversation-2", steps);
+            read_last_agy_observation(&transcript).unwrap()
+        };
+        assert_eq!(observe(&steps).turn_state, AgentTurnState::WaitingOnAgent);
+
+        // A response without tool calls, recorded as empty text, ends it.
+        steps.push(step(
+            4,
+            "PLANNER_RESPONSE",
+            "DONE",
+            serde_json::json!({"content": "Launched the scan.", "tool_calls": ""}),
+        ));
+        let answered = observe(&steps);
+        assert_eq!(answered.turn_state, AgentTurnState::WaitingOnUser);
+        let turn = answered.observed_turn.unwrap();
+        assert_eq!(turn.provider_turn_id, "conversation-2:1");
+        assert_eq!(turn.final_message.as_deref(), Some("Launched the scan."));
+        assert_eq!(
+            turn.primary_user_message_sha256.as_deref(),
+            Some(message_sha256("Scan the dates").as_str())
+        );
+
+        // A system notice, such as the scan finishing, wakes agy: a turn of
+        // its own, with no user input, until a response ends it.
+        steps.push(step(
+            5,
+            "SYSTEM_MESSAGE",
+            "DONE",
+            serde_json::json!({"content": "The scan finished."}),
+        ));
+        steps.push(step(
+            6,
+            "PLANNER_RESPONSE",
+            "DONE",
+            serde_json::json!({"tool_calls": [{"name": "ViewFile"}]}),
+        ));
+        let woken = observe(&steps);
+        assert_eq!(woken.turn_state, AgentTurnState::WaitingOnAgent);
+        let turn = woken.observed_turn.unwrap();
+        assert_eq!(turn.provider_turn_id, "conversation-2:5");
+        assert_eq!(turn.user_message_count, 0);
+        assert_eq!(turn.primary_user_message_sha256, None);
+        steps.push(step(
+            7,
+            "PLANNER_RESPONSE",
+            "DONE",
+            serde_json::json!({"content": "Found 12 dates."}),
+        ));
+        let done = observe(&steps);
+        assert_eq!(done.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(
+            done.observed_turn.unwrap().final_message.as_deref(),
+            Some("Found 12 dates.")
+        );
+    }
+
+    #[test]
     fn observes_agy_running_and_completed_turns_from_transcript() {
         let temp = TempDir::new().unwrap();
         let transcript = write_agy_transcript(
@@ -7190,7 +7279,7 @@ mod test {
                     "status": "DONE",
                     "source": "USER_EXPLICIT",
                     "created_at": "2026-08-22T16:00:00Z",
-                    "content": "Fix the lifecycle"
+                    "content": "<USER_REQUEST>\nFix the lifecycle\n</USER_REQUEST>\n<ADDITIONAL_METADATA>cwd</ADDITIONAL_METADATA>"
                 }),
                 serde_json::json!({
                     "step_index": 11,
