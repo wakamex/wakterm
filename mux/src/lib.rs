@@ -4249,7 +4249,7 @@ impl Mux {
         let dims = pane.get_dimensions();
         let top = dims.physical_top;
         let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
-        if harness == AgentHarness::Agy && agent::agy_feedback_survey(&lines) {
+        if harness == AgentHarness::Agy && crate::harness::agy::feedback_survey(&lines) {
             return AgentInputBox::AgySurvey;
         }
         let Some(reason) = agent::input_box_blocked(&harness, &lines) else {
@@ -4313,7 +4313,7 @@ impl Mux {
             let dims = pane.get_dimensions();
             let top = dims.physical_top;
             let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
-            agent::agy_input_box(&lines)
+            crate::harness::agy::input_box(&lines)
         };
         let Some(state) = screen(&pane).filter(|state| state.working) else {
             return Ok(false);
@@ -4338,8 +4338,8 @@ impl Mux {
             let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
             match harness {
                 AgentHarness::Agy => {
-                    agent::agy_input_box(&lines).is_some_and(|state| state.idle)
-                        || agent::agy_feedback_survey(&lines)
+                    crate::harness::agy::input_box(&lines).is_some_and(|state| state.idle)
+                        || crate::harness::agy::feedback_survey(&lines)
                 }
                 _ => crate::harness::devin::input_box(&lines)
                     .is_some_and(|state| state.text.is_empty() && !state.working),
@@ -4368,7 +4368,7 @@ impl Mux {
             let top = dims.physical_top;
             let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
             match runtime.harness {
-                AgentHarness::Agy => agent::agy_input_box(&lines)
+                AgentHarness::Agy => crate::harness::agy::input_box(&lines)
                     .is_some_and(|state| state.idle && !state.working && state.text.is_empty()),
                 _ => {
                     crate::harness::opencode::input_box(&lines).is_some_and(|text| text.is_empty())
@@ -4383,7 +4383,7 @@ impl Mux {
             let dims = pane.get_dimensions();
             let top = dims.physical_top;
             let (_, lines) = pane.get_lines(top..top + dims.viewport_rows as isize);
-            agent::agy_input_box(&lines).is_some_and(|state| state.text.is_empty())
+            crate::harness::agy::input_box(&lines).is_some_and(|state| state.text.is_empty())
         })
     }
 

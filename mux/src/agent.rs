@@ -6,7 +6,6 @@ use anyhow::Context;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use portable_pty::CommandBuilder;
 use procinfo::LocalProcessInfo;
-use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -1489,8 +1488,8 @@ pub fn input_box_blocked(
             .then_some("the input box holds text the user is typing"),
         AgentHarness::Codex => (!codex_input_box_empty(lines))
             .then_some("Codex's input box is not empty or not on screen"),
-        AgentHarness::Agy => match agy_input_box(lines) {
-            None if agy_feedback_survey(lines) => {
+        AgentHarness::Agy => match crate::harness::agy::input_box(lines) {
+            None if crate::harness::agy::feedback_survey(lines) => {
                 Some("agy's feedback survey has the keyboard and would take the message as answers")
             }
             None => Some("agy's input box is not on screen"),
@@ -1530,126 +1529,6 @@ pub fn input_box_blocked(
         },
         _ => None,
     }
-}
-
-/// Whether the pane shows agy's feedback survey, "How's the CLI experience
-/// so far?" with its numbered choices, above agy's idle hint. agy shows it
-/// in place of the input box once a turn has ended, and the digit keys
-/// answer it.
-pub fn agy_feedback_survey(lines: &[wakterm_term::Line]) -> bool {
-    let lines: Vec<String> = lines
-        .iter()
-        .map(|line| line.as_str().trim().to_string())
-        .filter(|line| !line.is_empty())
-        .collect();
-    let Some(question) = lines
-        .iter()
-        .rposition(|line| line.starts_with("How's the CLI experience so far?"))
-    else {
-        return false;
-    };
-    // The question, its choices and the footer close the screen.
-    matches!(
-        &lines[question + 1..],
-        [choices, footer] if choices.contains("[0] Skip") && footer == "? for shortcuts"
-    )
-}
-
-/// agy's input box as its pane shows it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AgyInputBox {
-    /// The text in the box, its lines joined with newlines.
-    pub text: String,
-    /// How many screen lines the box's text takes.
-    pub rows: usize,
-    /// Whether the footer under the box says a turn is running.
-    pub working: bool,
-    /// Whether the footer shows agy's idle hint, "? for shortcuts". agy
-    /// shows one hint at a time and "esc to cancel" has the lowest
-    /// priority: a queued message, a second-press prompt, bash or code
-    /// search mode, or a transient hint replaces it while the turn keeps
-    /// running. The idle hint appears only when no turn runs and no other
-    /// hint is shown.
-    pub idle: bool,
-    /// Whether the footer shows agy holding messages for its next turn,
-    /// "Press up to edit queued messages".
-    pub queued: bool,
-    /// The messages agy holds for its next turn, from the `▸` rows it draws
-    /// right above the box, as far as each row shows.
-    pub queued_inputs: Vec<String>,
-}
-
-/// Reads agy's input box from the pane's visible lines: the lowest line that
-/// starts with `>` right below a rule, and the lines under it up to the next
-/// rule. agy's bottom line reads "esc to cancel" while a turn runs.
-/// agy 1.5 draws a placeholder in the empty box, such as "Auto mode: edits
-/// & safe commands auto-approved", in grey (ANSI bright black); it is not
-/// the box's text. Typed or pasted text is drawn in the default color.
-pub fn agy_input_box(lines: &[wakterm_term::Line]) -> Option<AgyInputBox> {
-    let plain = |line: &wakterm_term::Line| line.as_str().trim_end().to_string();
-    // The box's text without its grey placeholder; agy draws its rules and
-    // hints in the same grey, so only the box's own rows are read this way.
-    let typed = |line: &wakterm_term::Line| {
-        line.visible_cells()
-            .map(|cell| {
-                if cell.attrs().foreground() == wakterm_term::color::ColorAttribute::PaletteIndex(8)
-                {
-                    " ".repeat(cell.width())
-                } else {
-                    cell.str().to_string()
-                }
-            })
-            .collect::<String>()
-            .trim()
-            .to_string()
-    };
-    let is_rule = |line: &str| line.trim_start().starts_with('\u{2500}');
-    let screen = lines;
-    let lines: Vec<String> = screen.iter().map(plain).collect();
-    let prompt = (1..lines.len())
-        .rev()
-        .find(|&i| is_rule(&lines[i - 1]) && lines[i].starts_with('>'))?;
-    let end = (prompt + 1..lines.len()).find(|&i| is_rule(&lines[i]))?;
-    let mut content = vec![typed(&screen[prompt])
-        .strip_prefix('>')
-        .unwrap_or_default()
-        .trim()
-        .to_string()];
-    content.extend(screen[prompt + 1..end].iter().map(typed));
-    while content.last().is_some_and(String::is_empty) && content.len() > 1 {
-        content.pop();
-    }
-    // The hint is on agy's bottom line. Panels such as the commands a turn
-    // runs can sit between the box and it, and hold any text.
-    let footer = lines[end + 1..]
-        .iter()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .map(String::as_str)
-        .unwrap_or_default();
-    let working = footer.contains("esc to cancel");
-    let idle = footer.contains("? for shortcuts");
-    let queued = footer.contains("to edit queued messages");
-    let mut queued_inputs: Vec<String> = lines[..prompt - 1]
-        .iter()
-        .rev()
-        .map_while(|line| line.trim_start().strip_prefix('\u{25b8}'))
-        .map(|row| {
-            row.trim()
-                .trim_end_matches("(alt+m to send immediately)")
-                .trim()
-                .to_string()
-        })
-        .collect();
-    queued_inputs.reverse();
-    Some(AgyInputBox {
-        rows: content.len(),
-        text: content.join("\n").trim().to_string(),
-        working,
-        idle,
-        queued,
-        queued_inputs,
-    })
 }
 
 /// Whether the pane's visible lines show Codex's input box, enabled and
@@ -1865,7 +1744,7 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
     };
 
     let observed = match observing_harness {
-        AgentHarness::Agy => observe_agy(
+        AgentHarness::Agy => crate::harness::agy::observe(
             cwd,
             runtime.session_path.as_deref(),
             runtime.observer_started_at,
@@ -2050,7 +1929,7 @@ pub fn pending_observer_detail(
         return Some("waiting for Claude's exact process and namespace session record".to_string());
     }
     match runtime.harness {
-        AgentHarness::Agy => describe_pending_agy_observer(cwd, updated_after)
+        AgentHarness::Agy => crate::harness::agy::describe_pending(cwd, updated_after)
             .ok()
             .flatten(),
         AgentHarness::Claude => {
@@ -2226,255 +2105,6 @@ fn observe_endchat(
         last_turn_completed_at: ended.map(|ended| ended.ended_at),
         observed_turn,
     }))
-}
-
-fn observe_agy(
-    _cwd: &str,
-    preferred_session: Option<&str>,
-    _updated_after: Option<DateTime<Utc>>,
-    process_id: Option<u32>,
-    process_start_time: Option<u64>,
-    expected_conversation_id: Option<&str>,
-) -> anyhow::Result<Option<HarnessObservation>> {
-    let Some(root) = agy_root() else {
-        return Ok(None);
-    };
-    let Some(transcript) = agy_session_owned_by_process(
-        &root,
-        process_id,
-        process_start_time,
-        preferred_session,
-        expected_conversation_id,
-    )?
-    else {
-        return Ok(None);
-    };
-    let modified_at = DateTime::<Utc>::from(fs::metadata(&transcript)?.modified()?);
-    let details = read_last_agy_observation(&transcript)?;
-    Ok(Some(HarnessObservation::from_details(
-        &transcript,
-        details,
-        modified_at,
-    )))
-}
-
-#[cfg(target_os = "linux")]
-fn agy_session_owned_by_process(
-    root: &Path,
-    process_id: Option<u32>,
-    process_start_time: Option<u64>,
-    preferred_session: Option<&str>,
-    expected_conversation_id: Option<&str>,
-) -> anyhow::Result<Option<PathBuf>> {
-    let (Some(process_id), Some(process_start_time)) = (process_id, process_start_time) else {
-        return Ok(None);
-    };
-    if linux_process_started_at(Some(process_id), Some(process_start_time)).is_none() {
-        return Ok(None);
-    }
-
-    let presence_root = root.join("presence");
-    let canonical_presence_root = presence_root
-        .canonicalize()
-        .unwrap_or_else(|_| presence_root.clone());
-    let canonical_preferred = preferred_session
-        .map(Path::new)
-        .map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
-    let mut candidates = Vec::new();
-
-    let Ok(entries) = fs::read_dir(format!("/proc/{process_id}/fd")) else {
-        return Ok(None);
-    };
-    for entry in entries.flatten() {
-        let Ok(path) = fs::read_link(entry.path()) else {
-            continue;
-        };
-        let canonical_path = path.canonicalize().unwrap_or(path);
-        if canonical_path.parent() != Some(canonical_presence_root.as_path())
-            || canonical_path.extension().and_then(|ext| ext.to_str()) != Some("lock")
-        {
-            continue;
-        }
-        let Some(conversation_id) = canonical_path.file_stem().and_then(|name| name.to_str())
-        else {
-            continue;
-        };
-        if !is_uuid(conversation_id) {
-            continue;
-        }
-        if expected_conversation_id.is_some_and(|expected| expected != conversation_id) {
-            continue;
-        }
-        let transcript = root
-            .join("brain")
-            .join(conversation_id)
-            .join(".system_generated")
-            .join("logs")
-            .join("transcript.jsonl");
-        if !transcript.is_file() {
-            continue;
-        }
-        let canonical_transcript = transcript.canonicalize().unwrap_or(transcript);
-        if canonical_preferred.as_ref() == Some(&canonical_transcript) {
-            return Ok(Some(canonical_transcript));
-        }
-        candidates.push(canonical_transcript);
-    }
-
-    candidates.sort_unstable();
-    candidates.dedup();
-    Ok((candidates.len() == 1).then(|| candidates.remove(0)))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn agy_session_owned_by_process(
-    _root: &Path,
-    _process_id: Option<u32>,
-    _process_start_time: Option<u64>,
-    _preferred_session: Option<&str>,
-    _expected_conversation_id: Option<&str>,
-) -> anyhow::Result<Option<PathBuf>> {
-    Ok(None)
-}
-
-fn read_last_agy_observation(path: &Path) -> anyhow::Result<HarnessObservationDetails> {
-    let conversation_id = path
-        .ancestors()
-        .nth(3)
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
-        .unwrap_or("agy");
-    // The steps from the latest user input on, read back from the end, and
-    // the last step before it, which ended the previous turn.
-    let mut tail = Vec::new();
-    let mut found_input = false;
-    let mut previous_turn_end = None;
-    visit_lines_reverse(path, |line| {
-        let Ok(record) = serde_json::from_str::<Value>(line) else {
-            return Ok(false);
-        };
-        let record_type = record.get("type").and_then(Value::as_str);
-        if found_input {
-            if record_type == Some("SYSTEM_MESSAGE") {
-                return Ok(false);
-            }
-            previous_turn_end = record
-                .get("created_at")
-                .and_then(Value::as_str)
-                .and_then(parse_rfc3339_timestamp);
-            return Ok(true);
-        }
-        found_input = record_type == Some("USER_INPUT");
-        tail.push(record);
-        Ok(false)
-    })?;
-    tail.reverse();
-    let created_at = |record: &Value| {
-        record
-            .get("created_at")
-            .and_then(Value::as_str)
-            .and_then(parse_rfc3339_timestamp)
-    };
-    let latest = tail
-        .iter()
-        .rev()
-        .find(|record| record.get("type").and_then(Value::as_str) != Some("SYSTEM_MESSAGE"));
-    let Some(latest) = latest else {
-        return Ok(HarnessObservationDetails {
-            progress_summary: None,
-            harness_mode: None,
-            turn_phase: None,
-            updated_at: None,
-            turn_state: AgentTurnState::Unknown,
-            last_turn_completed_at: None,
-            observed_turn: None,
-        });
-    };
-    let latest_at = created_at(latest);
-    let latest_cursor = latest.get("step_index").and_then(Value::as_u64);
-
-    // The turn the steps show by the rule the event projector follows: the
-    // latest turn's start, by the user or by a system notice, and its end.
-    let mut tracker = crate::harness::agy::TurnTracker::default();
-    let mut start: Option<(&Value, bool)> = None;
-    let mut end: Option<&Value> = None;
-    let mut last_end_at = previous_turn_end;
-    for record in &tail {
-        match tracker.step(record) {
-            crate::harness::agy::TurnStep::StartedByUser => {
-                start = Some((record, true));
-                end = None;
-            }
-            crate::harness::agy::TurnStep::StartedBySystem => {
-                start = Some((record, false));
-                end = None;
-            }
-            crate::harness::agy::TurnStep::Ended => {
-                end = Some(record);
-                last_end_at = created_at(record).or(last_end_at);
-            }
-            crate::harness::agy::TurnStep::Other => {}
-        }
-    }
-    let Some((start, by_user)) = start else {
-        return Ok(HarnessObservationDetails {
-            progress_summary: None,
-            harness_mode: None,
-            turn_phase: None,
-            updated_at: latest_at,
-            turn_state: AgentTurnState::Unknown,
-            last_turn_completed_at: None,
-            observed_turn: None,
-        });
-    };
-    let start_cursor = start.get("step_index").and_then(Value::as_u64);
-    let user_message = by_user
-        .then(|| start.get("content").and_then(Value::as_str))
-        .flatten()
-        .and_then(crate::harness::agy::user_request)
-        .filter(|message| !message.is_empty());
-    let final_message = end
-        .and_then(|end| end.get("content").and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|message| !message.is_empty())
-        .map(str::to_string);
-    let completed_at = end.and_then(created_at);
-    let (outcome, turn_state, turn_phase) = if end.is_some() {
-        (
-            AgentObservedTurnOutcome::Completed,
-            AgentTurnState::WaitingOnUser,
-            "final_answer",
-        )
-    } else {
-        (
-            AgentObservedTurnOutcome::Running,
-            AgentTurnState::WaitingOnAgent,
-            "working",
-        )
-    };
-    let provider_turn_id = crate::harness::agy::turn_id(conversation_id, start)
-        .unwrap_or_else(|| format!("{conversation_id}:current"));
-
-    Ok(HarnessObservationDetails {
-        progress_summary: final_message.as_deref().map(truncate_summary),
-        harness_mode: None,
-        turn_phase: Some(turn_phase.to_string()),
-        updated_at: latest_at,
-        turn_state,
-        // While a turn runs, the latest completed turn is an earlier one.
-        last_turn_completed_at: completed_at.or(last_end_at),
-        observed_turn: Some(AgentObservedTurn {
-            provider_turn_id,
-            outcome,
-            started_at: created_at(start),
-            completed_at,
-            started_cursor: start_cursor,
-            latest_cursor,
-            primary_user_message_sha256: user_message.map(message_sha256),
-            user_message_count: u32::from(by_user),
-            final_message,
-        }),
-    })
 }
 
 pub(crate) fn is_uuid(value: &str) -> bool {
@@ -3711,20 +3341,6 @@ fn describe_pending_claude_observer(
     }))
 }
 
-fn describe_pending_agy_observer(
-    _cwd: &str,
-    _updated_after: Option<DateTime<Utc>>,
-) -> anyhow::Result<Option<String>> {
-    let Some(root) = agy_root() else {
-        return Ok(None);
-    };
-    Ok(Some(if root.join("presence").is_dir() {
-        "agy process has not exposed a matching conversation transcript yet".to_string()
-    } else {
-        "agy conversation storage has not appeared yet".to_string()
-    }))
-}
-
 fn describe_pending_codex_observer(
     cwd: &str,
     pid: Option<u32>,
@@ -3838,12 +3454,6 @@ fn process_environment_value(pid: Option<u32>, variable: &str) -> Option<Option<
     }
 }
 
-fn agy_root() -> Option<PathBuf> {
-    std::env::var_os("WAKTERM_AGENT_AGY_DIR")
-        .map(PathBuf::from)
-        .or_else(|| home_dir().map(|home| home.join(".gemini").join("antigravity-cli")))
-}
-
 fn codex_sessions_root() -> Option<PathBuf> {
     codex_sessions_root_for(None)
 }
@@ -3953,7 +3563,9 @@ pub fn native_resume_command(
 
 pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> Vec<PathBuf> {
     let paths = match harness {
-        AgentHarness::Agy => agy_root().map(|root| vec![root.join("presence"), root.join("brain")]),
+        AgentHarness::Agy => {
+            crate::harness::agy::root().map(|root| vec![root.join("presence"), root.join("brain")])
+        }
         AgentHarness::Claude => claude_sessions_root().map(|root| {
             let project = root.join(claude_project_dir_name(cwd));
             let mut paths = if project.is_dir() {
@@ -4161,7 +3773,7 @@ pub fn restorable_session_id(
 }
 
 #[cfg(target_os = "linux")]
-fn linux_process_started_at(
+pub(crate) fn linux_process_started_at(
     process_id: Option<u32>,
     expected_start_time: Option<u64>,
 ) -> Option<std::time::SystemTime> {
@@ -4689,7 +4301,7 @@ fn read_transcript_view(
     Ok(view)
 }
 
-fn visit_lines_reverse(
+pub(crate) fn visit_lines_reverse(
     path: &Path,
     mut visitor: impl FnMut(&str) -> anyhow::Result<bool>,
 ) -> anyhow::Result<()> {
@@ -5273,6 +4885,7 @@ fn normalize_declared_cwd(cwd: &str) -> String {
 mod test {
     use super::*;
     use chrono::{Datelike, TimeZone};
+    use rusqlite::{params, Connection};
     use std::collections::HashMap;
     use std::io::Write;
     use std::path::PathBuf;
@@ -6554,7 +6167,7 @@ mod test {
         };
         let rule = "\u{2500}".repeat(20);
         let idle = screen(&["  earlier reply", &rule, ">", &rule, "? for shortcuts"]);
-        let state = agy_input_box(&idle).unwrap();
+        let state = crate::harness::agy::input_box(&idle).unwrap();
         assert_eq!(
             (state.text.as_str(), state.working, state.idle),
             ("", false, true)
@@ -6564,7 +6177,7 @@ mod test {
         // agy holds a message typed during a turn and sends it on its own
         // once the turn ends, so a working agy takes a message.
         let working = screen(&["  Running command...", &rule, ">", &rule, "esc to cancel"]);
-        let state = agy_input_box(&working).unwrap();
+        let state = crate::harness::agy::input_box(&working).unwrap();
         assert!(state.working && !state.idle);
         assert_eq!(input_box_blocked(&AgentHarness::Agy, &working), None);
         // As agy 1.5.7 draws messages it holds for its next turn.
@@ -6577,7 +6190,7 @@ mod test {
             &rule,
             "  Press up to edit queued messages          auto \u{00b7} Gemini 4 Argon",
         ]);
-        let state = agy_input_box(&queued).unwrap();
+        let state = crate::harness::agy::input_box(&queued).unwrap();
         assert!(state.queued && !state.working && !state.idle);
         assert_eq!(
             state.queued_inputs,
@@ -6591,7 +6204,7 @@ mod test {
         // waits for input.
         for hint in ["press ctrl+b again to send command to background", ""] {
             let unclear = screen(&["  Running command...", &rule, ">", &rule, hint]);
-            let state = agy_input_box(&unclear).unwrap();
+            let state = crate::harness::agy::input_box(&unclear).unwrap();
             assert!(!state.working && !state.idle && !state.queued, "{hint}");
             assert!(
                 input_box_blocked(&AgentHarness::Agy, &unclear).is_some(),
@@ -6607,7 +6220,7 @@ mod test {
             &rule,
             "",
         ]);
-        let state = agy_input_box(&draft).unwrap();
+        let state = crate::harness::agy::input_box(&draft).unwrap();
         assert_eq!(state.text, "if the breakdown is by model\nfamily");
         assert_eq!(state.rows, 2);
         assert_eq!(
@@ -6631,7 +6244,7 @@ mod test {
             grey_line(&rule),
             grey_line("? for shortcuts"),
         ];
-        let state = agy_input_box(&placeholder).unwrap();
+        let state = crate::harness::agy::input_box(&placeholder).unwrap();
         assert_eq!(
             (state.text.as_str(), state.working, state.idle),
             ("", false, true)
@@ -6648,7 +6261,7 @@ mod test {
             &rule,
             "esc to cancel                                    auto \u{00b7} Gemini 4 Carbon",
         ]);
-        let state = agy_input_box(&panel).unwrap();
+        let state = crate::harness::agy::input_box(&panel).unwrap();
         assert!(state.working && !state.idle);
         let idle_panel = screen(&[
             &rule,
@@ -6658,10 +6271,13 @@ mod test {
             &rule,
             "? for shortcuts",
         ]);
-        assert!(agy_input_box(&idle_panel).unwrap().idle);
+        assert!(crate::harness::agy::input_box(&idle_panel).unwrap().idle);
 
         // A quoted line in the transcript is not the box.
-        assert_eq!(agy_input_box(&screen(&["> quoted", "text"])), None);
+        assert_eq!(
+            crate::harness::agy::input_box(&screen(&["> quoted", "text"])),
+            None
+        );
         assert_eq!(
             input_box_blocked(&AgentHarness::Agy, &[]),
             Some("agy's input box is not on screen")
@@ -6673,7 +6289,7 @@ mod test {
             "",
             "? for shortcuts",
         ]);
-        assert!(agy_feedback_survey(&survey));
+        assert!(crate::harness::agy::feedback_survey(&survey));
         assert!(input_box_blocked(&AgentHarness::Agy, &survey)
             .is_some_and(|reason| reason.contains("feedback survey")));
         // An earlier survey scrolled above a later input box is not shown.
@@ -6685,7 +6301,7 @@ mod test {
             &rule,
             "? for shortcuts",
         ]);
-        assert!(!agy_feedback_survey(&answered));
+        assert!(!crate::harness::agy::feedback_survey(&answered));
     }
 
     #[test]
@@ -6999,7 +6615,7 @@ mod test {
         // Each harness Wakterm reads, under its key in the spec, and the
         // location Wakterm reads for a harness process.
         let resolvers: [(&str, fn(Option<u32>) -> Option<PathBuf>); 9] = [
-            ("agy", |_| agy_root()),
+            ("agy", |_| crate::harness::agy::root()),
             ("claude", claude_sessions_root_for),
             ("codex", codex_sessions_root_for),
             ("devin", crate::harness::devin::db_path_for),
@@ -7211,7 +6827,7 @@ mod test {
         let mut steps = vec![input, tool_step, error];
         let observe = |steps: &[serde_json::Value]| {
             let transcript = write_agy_transcript(temp.path(), "conversation-2", steps);
-            read_last_agy_observation(&transcript).unwrap()
+            crate::harness::agy::read_last_observation(&transcript).unwrap()
         };
         assert_eq!(observe(&steps).turn_state, AgentTurnState::WaitingOnAgent);
 
@@ -7300,7 +6916,7 @@ mod test {
             ],
         );
 
-        let running = read_last_agy_observation(&transcript).unwrap();
+        let running = crate::harness::agy::read_last_observation(&transcript).unwrap();
         assert_eq!(running.turn_state, AgentTurnState::WaitingOnAgent);
         assert_eq!(running.turn_phase.as_deref(), Some("working"));
         let turn = running.observed_turn.unwrap();
@@ -7333,7 +6949,7 @@ mod test {
         )
         .unwrap();
 
-        let completed = read_last_agy_observation(&transcript).unwrap();
+        let completed = crate::harness::agy::read_last_observation(&transcript).unwrap();
         assert_eq!(completed.turn_state, AgentTurnState::WaitingOnUser);
         assert_eq!(completed.turn_phase.as_deref(), Some("final_answer"));
         assert_eq!(
@@ -7387,7 +7003,7 @@ mod test {
         let _malformed_lock = std::fs::File::create(presence_dir.join("not-a-uuid.lock")).unwrap();
         let process = LocalProcessInfo::with_root_pid(std::process::id()).unwrap();
 
-        let observed = agy_session_owned_by_process(
+        let observed = crate::harness::agy::session_owned_by_process(
             temp.path(),
             Some(process.pid),
             Some(process.start_time),
@@ -7396,7 +7012,7 @@ mod test {
         )
         .unwrap();
         assert_eq!(observed.as_deref(), Some(transcript.as_path()));
-        assert!(agy_session_owned_by_process(
+        assert!(crate::harness::agy::session_owned_by_process(
             temp.path(),
             Some(process.pid),
             Some(process.start_time + 1),
@@ -7411,7 +7027,7 @@ mod test {
         let second_lock =
             std::fs::File::create(presence_dir.join(format!("{second_conversation_id}.lock")))
                 .unwrap();
-        assert!(agy_session_owned_by_process(
+        assert!(crate::harness::agy::session_owned_by_process(
             temp.path(),
             Some(process.pid),
             Some(process.start_time),
@@ -7421,7 +7037,7 @@ mod test {
         .unwrap()
         .is_none());
         assert_eq!(
-            agy_session_owned_by_process(
+            crate::harness::agy::session_owned_by_process(
                 temp.path(),
                 Some(process.pid),
                 Some(process.start_time),
@@ -7432,7 +7048,7 @@ mod test {
             .as_deref(),
             Some(transcript.as_path())
         );
-        assert!(agy_session_owned_by_process(
+        assert!(crate::harness::agy::session_owned_by_process(
             temp.path(),
             Some(process.pid),
             Some(process.start_time),
@@ -7442,7 +7058,7 @@ mod test {
         .unwrap()
         .is_none());
         assert_eq!(
-            agy_session_owned_by_process(
+            crate::harness::agy::session_owned_by_process(
                 temp.path(),
                 Some(process.pid),
                 Some(process.start_time),
@@ -8614,7 +8230,7 @@ mod test {
         .concat();
         fs::write(&path, &finished).unwrap();
         let first_end = Utc.with_ymd_and_hms(2026, 10, 17, 12, 1, 0).unwrap();
-        let done = read_last_agy_observation(&path).unwrap();
+        let done = crate::harness::agy::read_last_observation(&path).unwrap();
         assert!(matches!(done.turn_state, AgentTurnState::WaitingOnUser));
         assert_eq!(done.last_turn_completed_at, Some(first_end));
 
@@ -8637,7 +8253,7 @@ mod test {
                 + &step(5, "GENERIC", "2026-10-17T12:03:10Z", serde_json::json!({})),
         )
         .unwrap();
-        let running = read_last_agy_observation(&path).unwrap();
+        let running = crate::harness::agy::read_last_observation(&path).unwrap();
         assert!(matches!(running.turn_state, AgentTurnState::WaitingOnAgent));
         assert_eq!(running.last_turn_completed_at, Some(first_end));
         assert_eq!(running.observed_turn.unwrap().completed_at, None);

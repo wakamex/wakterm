@@ -2084,14 +2084,13 @@ impl SendAgentCommand {
                 )
                 .await?;
                 let queued = !first_line.is_empty()
-                    && mux::agent::agy_input_box(&read_screen(agent.pane_id).await?).is_some_and(
-                        |state| {
+                    && mux::harness::agy::input_box(&read_screen(agent.pane_id).await?)
+                        .is_some_and(|state| {
                             state
                                 .queued_inputs
                                 .iter()
                                 .any(|row| shown_as_queued(row, &first_line))
-                        },
-                    );
+                        });
                 let acknowledgement = match acknowledgement {
                     Some(acknowledgement) if acknowledgement.acknowledged => acknowledgement,
                     _ if queued => AgentSendAcknowledgement {
