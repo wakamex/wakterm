@@ -738,7 +738,14 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         let root = loop {
             let root = LocalProcessInfo::with_root_pid_now(pid).unwrap();
-            if root.children.len() == 2 || Instant::now() > deadline {
+            // Each child shows the shell's command line until it has
+            // finished starting sleep.
+            let started = root.children.len() == 2
+                && root
+                    .children
+                    .values()
+                    .all(|child| child.argv.first().is_some_and(|arg| arg == "sleep"));
+            if started || Instant::now() > deadline {
                 break root;
             }
             std::thread::sleep(Duration::from_millis(20));
