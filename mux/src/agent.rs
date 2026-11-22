@@ -1890,7 +1890,7 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
                 .filter(|expected| expected.harness == AgentHarness::Codex)
                 .map(|expected| expected.session_id.as_str()),
         ),
-        AgentHarness::Gemini => observe_gemini(
+        AgentHarness::Gemini => crate::harness::gemini::observe(
             cwd,
             metadata.adopted_pid,
             runtime.session_path.as_deref(),
@@ -2064,7 +2064,7 @@ pub fn pending_observer_detail(
                 .flatten()
         }
         AgentHarness::Gemini => {
-            describe_pending_gemini_observer(cwd, metadata.adopted_pid, updated_after)
+            crate::harness::gemini::describe_pending(cwd, metadata.adopted_pid, updated_after)
                 .ok()
                 .flatten()
         }
@@ -2100,7 +2100,7 @@ pub(crate) struct HarnessObservation {
 impl HarnessObservation {
     /// Falls back to the session file's modification time when the reader
     /// found no more specific progress time.
-    fn from_details(
+    pub(crate) fn from_details(
         session_path: &Path,
         details: HarnessObservationDetails,
         modified_at: DateTime<Utc>,
@@ -2147,14 +2147,14 @@ impl TranscriptView {
 }
 
 #[derive(Debug)]
-struct HarnessObservationDetails {
-    progress_summary: Option<String>,
-    harness_mode: Option<String>,
-    turn_phase: Option<String>,
-    updated_at: Option<DateTime<Utc>>,
-    turn_state: AgentTurnState,
-    last_turn_completed_at: Option<DateTime<Utc>>,
-    observed_turn: Option<AgentObservedTurn>,
+pub(crate) struct HarnessObservationDetails {
+    pub progress_summary: Option<String>,
+    pub harness_mode: Option<String>,
+    pub turn_phase: Option<String>,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub turn_state: AgentTurnState,
+    pub last_turn_completed_at: Option<DateTime<Utc>>,
+    pub observed_turn: Option<AgentObservedTurn>,
 }
 
 /// Observes an endchat chat through its profile directory, which the
@@ -3659,79 +3659,6 @@ fn observe_codex(
     )))
 }
 
-fn observe_gemini(
-    cwd: &str,
-    pid: Option<u32>,
-    preferred_session: Option<&str>,
-    updated_after: Option<DateTime<Utc>>,
-) -> anyhow::Result<Option<HarnessObservation>> {
-    let Some(root) = gemini_root_for(pid) else {
-        return Ok(None);
-    };
-    let project_dirs = gemini_project_dirs(&root, cwd)?;
-    if project_dirs.is_empty() {
-        return Ok(None);
-    }
-
-    if let Some(preferred_session) = preferred_session {
-        let preferred_path = preferred_gemini_session_path(Path::new(preferred_session));
-        if preferred_path.is_file() {
-            let modified_at = DateTime::<Utc>::from(fs::metadata(&preferred_path)?.modified()?);
-            if updated_after
-                .map(|cutoff| modified_at >= cutoff)
-                .unwrap_or(true)
-            {
-                let details = read_last_gemini_observation(&preferred_path)?;
-                return Ok(Some(HarnessObservation::from_details(
-                    &preferred_path,
-                    details,
-                    modified_at,
-                )));
-            }
-        }
-    }
-
-    let prefer_earliest = updated_after.is_some();
-    let mut selected: Option<(PathBuf, DateTime<Utc>)> = None;
-    for project_dir in project_dirs {
-        let chats_dir = project_dir.join("chats");
-        if !chats_dir.is_dir() {
-            continue;
-        }
-
-        for entry in fs::read_dir(&chats_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !is_gemini_session_file(&path) {
-                continue;
-            }
-            let modified_at = DateTime::<Utc>::from(entry.metadata()?.modified()?);
-            if updated_after
-                .map(|cutoff| modified_at < cutoff)
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            match &selected {
-                Some((_, existing_modified))
-                    if (prefer_earliest && *existing_modified <= modified_at)
-                        || (!prefer_earliest && *existing_modified >= modified_at) => {}
-                _ => selected = Some((path, modified_at)),
-            }
-        }
-    }
-
-    let Some((session, modified_at)) = selected else {
-        return Ok(None);
-    };
-    let details = read_last_gemini_observation(&session)?;
-    Ok(Some(HarnessObservation::from_details(
-        &session,
-        details,
-        modified_at,
-    )))
-}
-
 /// Claude names a project's transcript directory after its working
 /// directory, with every character other than an ASCII letter or digit
 /// replaced by `-`.
@@ -3855,60 +3782,6 @@ fn describe_pending_codex_observer(
     }))
 }
 
-fn describe_pending_gemini_observer(
-    cwd: &str,
-    pid: Option<u32>,
-    updated_after: Option<DateTime<Utc>>,
-) -> anyhow::Result<Option<String>> {
-    let Some(root) = gemini_root_for(pid) else {
-        return Ok(None);
-    };
-    let project_dirs = gemini_project_dirs(&root, cwd)?;
-    if project_dirs.is_empty() {
-        return Ok(Some(
-            "gemini project directory has not appeared yet".to_string(),
-        ));
-    }
-
-    let mut has_session = false;
-    let mut has_recent_session = false;
-    for project_dir in project_dirs {
-        let chats_dir = project_dir.join("chats");
-        if !chats_dir.is_dir() {
-            continue;
-        }
-
-        for entry in fs::read_dir(&chats_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !is_gemini_session_file(&path) {
-                continue;
-            }
-            has_session = true;
-            let modified_at = DateTime::<Utc>::from(entry.metadata()?.modified()?);
-            if updated_after
-                .map(|cutoff| modified_at >= cutoff)
-                .unwrap_or(true)
-            {
-                has_recent_session = true;
-                break;
-            }
-        }
-
-        if has_recent_session {
-            break;
-        }
-    }
-
-    Ok(Some(if has_recent_session {
-        "gemini session file exists but observer has not attached yet".to_string()
-    } else if has_session {
-        "gemini project directory exists but no new chat session file appeared yet".to_string()
-    } else {
-        "gemini project directory exists but no chat session file appeared yet".to_string()
-    }))
-}
-
 fn claude_sessions_root() -> Option<PathBuf> {
     claude_sessions_root_for(None)
 }
@@ -3992,21 +3865,6 @@ fn codex_sessions_root_for(pid: Option<u32>) -> Option<PathBuf> {
                 home_dir().map(|home| home.join(".codex")),
             )
             .map(|home| home.join("sessions"))
-        })
-}
-
-fn gemini_root() -> Option<PathBuf> {
-    gemini_root_for(None)
-}
-
-/// Where the Gemini CLI process `pid` keeps its files: `.gemini` under the
-/// directory its environment's GEMINI_CLI_HOME names, which stands in for
-/// the user's home, else under the home.
-fn gemini_root_for(pid: Option<u32>) -> Option<PathBuf> {
-    std::env::var_os("WAKTERM_AGENT_GEMINI_DIR")
-        .map(PathBuf::from)
-        .or_else(|| {
-            harness_dir(pid, "GEMINI_CLI_HOME", home_dir()).map(|home| home.join(".gemini"))
         })
 }
 
@@ -4113,8 +3971,8 @@ pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> V
             paths
         }),
         AgentHarness::Codex => codex_sessions_root().map(|root| vec![root]),
-        AgentHarness::Gemini => gemini_root().map(|root| {
-            let project_dirs = gemini_project_dirs(&root, cwd).unwrap_or_default();
+        AgentHarness::Gemini => crate::harness::gemini::root().map(|root| {
+            let project_dirs = crate::harness::gemini::project_dirs(&root, cwd).unwrap_or_default();
             if project_dirs.is_empty() {
                 vec![root]
             } else {
@@ -4534,7 +4392,7 @@ fn parse_record_timestamp(record: &Value) -> Option<DateTime<Utc>> {
         .and_then(parse_rfc3339_timestamp)
 }
 
-fn parse_rfc3339_timestamp(ts: &str) -> Option<DateTime<Utc>> {
+pub(crate) fn parse_rfc3339_timestamp(ts: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(ts)
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
@@ -4555,193 +4413,7 @@ pub(crate) fn cwd_lookup_variants(cwd: &str) -> Vec<String> {
     candidates
 }
 
-fn gemini_project_id(root: &Path, cwd: &str) -> anyhow::Result<Option<String>> {
-    let registry_path = root.join("projects.json");
-    if !registry_path.is_file() {
-        return Ok(None);
-    }
-
-    let registry: Value = serde_json::from_reader(fs::File::open(registry_path)?)?;
-    let Some(projects) = registry.get("projects").and_then(Value::as_object) else {
-        return Ok(None);
-    };
-
-    for candidate in cwd_lookup_variants(cwd) {
-        if let Some(project_id) = projects.get(&candidate).and_then(Value::as_str) {
-            let project_id = project_id.trim();
-            if !project_id.is_empty() {
-                return Ok(Some(project_id.to_string()));
-            }
-        }
-    }
-
-    Ok(None)
-}
-
-fn gemini_project_dirs(root: &Path, cwd: &str) -> anyhow::Result<Vec<PathBuf>> {
-    let mut dirs = vec![];
-    let mut seen = std::collections::HashSet::new();
-    let tmp_root = root.join("tmp");
-
-    if let Some(project_id) = gemini_project_id(root, cwd)? {
-        let path = tmp_root.join(project_id);
-        if path.is_dir() && seen.insert(path.clone()) {
-            dirs.push(path);
-        }
-    }
-
-    if !tmp_root.is_dir() {
-        return Ok(dirs);
-    }
-
-    let variants = cwd_lookup_variants(cwd);
-    for entry in fs::read_dir(&tmp_root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-
-        let Some(project_root) = gemini_project_root(&path)? else {
-            continue;
-        };
-        if variants.iter().any(|candidate| candidate == &project_root) && seen.insert(path.clone())
-        {
-            dirs.push(path);
-        }
-    }
-
-    Ok(dirs)
-}
-
-fn gemini_project_root(project_dir: &Path) -> anyhow::Result<Option<String>> {
-    let root_file = project_dir.join(".project_root");
-    if !root_file.is_file() {
-        return Ok(None);
-    }
-
-    let root = fs::read_to_string(root_file)?;
-    let root = root.trim().trim_end_matches('/').to_string();
-    if root.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(root))
-    }
-}
-
-fn is_gemini_session_file(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| {
-            name.starts_with("session-") && (name.ends_with(".json") || name.ends_with(".jsonl"))
-        })
-        .unwrap_or(false)
-}
-
-fn preferred_gemini_session_path(path: &Path) -> PathBuf {
-    if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
-        let migrated = PathBuf::from(format!("{}l", path.to_string_lossy()));
-        if migrated.is_file() {
-            return migrated;
-        }
-    }
-    path.to_path_buf()
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct GeminiConversation {
-    pub session_id: Option<String>,
-    pub last_updated: Option<DateTime<Utc>>,
-    pub messages: Vec<Value>,
-}
-
-pub(crate) fn read_gemini_conversation(path: &Path) -> anyhow::Result<GeminiConversation> {
-    if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
-        let record: Value = serde_json::from_reader(fs::File::open(path)?)?;
-        return Ok(GeminiConversation {
-            session_id: record
-                .get("sessionId")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            last_updated: record
-                .get("lastUpdated")
-                .and_then(Value::as_str)
-                .and_then(parse_rfc3339_timestamp),
-            messages: record
-                .get("messages")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default(),
-        });
-    }
-
-    const MAX_GEMINI_RECORD_BYTES: u64 = 4 * 1024 * 1024;
-    let mut reader = BufReader::new(fs::File::open(path)?);
-    let mut line = Vec::new();
-    let mut session_id = None;
-    let mut last_updated = None;
-    let mut messages = Vec::<Value>::new();
-    let mut message_index = std::collections::HashMap::<String, usize>::new();
-
-    loop {
-        line.clear();
-        let read = reader
-            .by_ref()
-            .take(MAX_GEMINI_RECORD_BYTES + 1)
-            .read_until(b'\n', &mut line)?;
-        if read == 0 {
-            break;
-        }
-        anyhow::ensure!(
-            read as u64 <= MAX_GEMINI_RECORD_BYTES,
-            "Gemini session record exceeds the {MAX_GEMINI_RECORD_BYTES}-byte bound"
-        );
-        if !line.ends_with(b"\n") {
-            break;
-        }
-        let record: Value = serde_json::from_slice(&line)?;
-        let metadata = record.get("$set").unwrap_or(&record);
-        if let Some(value) = metadata
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-        {
-            session_id = Some(value.to_string());
-        }
-        if let Some(value) = metadata
-            .get("lastUpdated")
-            .and_then(Value::as_str)
-            .and_then(parse_rfc3339_timestamp)
-        {
-            last_updated = Some(value);
-        }
-
-        let Some(id) = record
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-        else {
-            continue;
-        };
-        if record.get("type").and_then(Value::as_str).is_none() {
-            continue;
-        }
-        if let Some(index) = message_index.get(id).copied() {
-            messages[index] = record;
-        } else {
-            message_index.insert(id.to_string(), messages.len());
-            messages.push(record);
-        }
-    }
-
-    Ok(GeminiConversation {
-        session_id,
-        last_updated,
-        messages,
-    })
-}
-
-fn extract_message_text(content: &Value) -> Option<String> {
+pub(crate) fn extract_message_text(content: &Value) -> Option<String> {
     if let Some(text) = content.as_str() {
         let text = text.trim();
         if !text.is_empty() {
@@ -4767,56 +4439,6 @@ fn extract_message_text(content: &Value) -> Option<String> {
     } else {
         Some(parts.join("\n"))
     }
-}
-
-fn read_last_gemini_observation(path: &Path) -> anyhow::Result<HarnessObservationDetails> {
-    let conversation = read_gemini_conversation(path)?;
-    let mut summary = None;
-    let mut last_user_at = None;
-    let mut last_assistant_at = None;
-    // Whether the latest turn is still open, and when the latest one ended,
-    // by the rule the event projector follows.
-    let mut turn_open = false;
-    let mut last_turn_completed_at = None;
-    for message in &conversation.messages {
-        let timestamp = message
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .and_then(parse_rfc3339_timestamp);
-        if crate::harness::gemini::starts_turn(message) {
-            last_user_at = timestamp.or(last_user_at);
-            turn_open = true;
-        } else if message.get("type").and_then(Value::as_str) == Some("gemini") {
-            last_assistant_at = timestamp.or(last_assistant_at);
-            if let Some(content) = message.get("content").and_then(extract_message_text) {
-                summary = Some(truncate_summary(&content));
-            }
-            if crate::harness::gemini::ends_turn(message) {
-                turn_open = false;
-                last_turn_completed_at = timestamp.or(last_turn_completed_at);
-            }
-        }
-    }
-
-    let turn_state = if turn_open {
-        AgentTurnState::WaitingOnAgent
-    } else if last_turn_completed_at.is_some() || last_assistant_at.is_some() {
-        AgentTurnState::WaitingOnUser
-    } else {
-        AgentTurnState::Unknown
-    };
-    Ok(HarnessObservationDetails {
-        progress_summary: summary,
-        harness_mode: None,
-        turn_phase: None,
-        updated_at: conversation
-            .last_updated
-            .or(last_assistant_at)
-            .or(last_user_at),
-        turn_state,
-        last_turn_completed_at,
-        observed_turn: None,
-    })
 }
 
 /// The text of a Claude user record, or None for a record that carries only
@@ -7389,7 +7011,7 @@ mod test {
                 crate::endchat::profile_dir("main", "/")
                     .and_then(|main| main.parent().map(Path::to_path_buf))
             }),
-            ("gemini", gemini_root_for),
+            ("gemini", crate::harness::gemini::root_for),
             ("muse", crate::harness::muse::data_dir_for),
             ("opencode", crate::harness::opencode::db_path),
             ("zcode", |_| zcode_db_path()),
@@ -8579,7 +8201,7 @@ mod test {
         let observed = observe_claude(cwd, pid, None, None, None).unwrap();
         let claude_root = claude_sessions_root_for(pid);
         let codex_root = codex_sessions_root_for(pid);
-        let gemini = gemini_root_for(pid);
+        let gemini = crate::harness::gemini::root_for(pid);
         let opencode = crate::harness::opencode::db_path(pid);
         let devin = crate::harness::devin::db_path_for(pid);
         harness.kill().unwrap();
@@ -10105,7 +9727,9 @@ mod test {
         };
         let observe = || {
             set_env_path("WAKTERM_AGENT_GEMINI_DIR", temp.path());
-            let observed = observe_gemini(cwd, None, None, None).unwrap().unwrap();
+            let observed = crate::harness::gemini::observe(cwd, None, None, None)
+                .unwrap()
+                .unwrap();
             remove_env_var("WAKTERM_AGENT_GEMINI_DIR");
             observed
         };
@@ -10153,7 +9777,9 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_GEMINI_DIR", temp.path());
-        let observed = observe_gemini(cwd, None, None, None).unwrap().unwrap();
+        let observed = crate::harness::gemini::observe(cwd, None, None, None)
+            .unwrap()
+            .unwrap();
         remove_env_var("WAKTERM_AGENT_GEMINI_DIR");
 
         assert_eq!(observed.progress_summary.as_deref(), Some("all good"));
@@ -10199,7 +9825,9 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_GEMINI_DIR", temp.path());
-        let observed = observe_gemini(cwd, None, None, None).unwrap().unwrap();
+        let observed = crate::harness::gemini::observe(cwd, None, None, None)
+            .unwrap()
+            .unwrap();
         remove_env_var("WAKTERM_AGENT_GEMINI_DIR");
 
         assert_eq!(
@@ -10232,7 +9860,10 @@ mod test {
         )
         .unwrap();
 
-        assert_eq!(preferred_gemini_session_path(&legacy), migrated);
+        assert_eq!(
+            crate::harness::gemini::preferred_session_path(&legacy),
+            migrated
+        );
     }
 
     #[test]
@@ -10248,7 +9879,7 @@ mod test {
         )
         .unwrap();
 
-        let error = read_gemini_conversation(&session).unwrap_err();
+        let error = crate::harness::gemini::read_conversation(&session).unwrap_err();
         assert!(error.to_string().contains("exceeds the 4194304-byte bound"));
     }
 
@@ -10273,7 +9904,7 @@ mod test {
         .unwrap();
 
         set_env_path("WAKTERM_AGENT_GEMINI_DIR", temp.path());
-        let observed = observe_gemini("/tmp/project-e", None, None, None)
+        let observed = crate::harness::gemini::observe("/tmp/project-e", None, None, None)
             .unwrap()
             .unwrap();
         remove_env_var("WAKTERM_AGENT_GEMINI_DIR");

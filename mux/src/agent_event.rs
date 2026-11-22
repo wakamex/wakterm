@@ -1,6 +1,5 @@
 use crate::agent::{
-    read_gemini_conversation, AgentHarness, AgentMetadata, AgentObservedTurnOutcome,
-    AgentRuntimeSnapshot, AgentTurnState,
+    AgentHarness, AgentMetadata, AgentObservedTurnOutcome, AgentRuntimeSnapshot, AgentTurnState,
 };
 use crate::agent_admission::incarnation_id;
 use crate::agent_approval::AgentApprovalRequest;
@@ -106,7 +105,7 @@ enum ProviderCursor {
     Codex(JsonlCursor),
     Claude(JsonlCursor),
     Agy(JsonlCursor),
-    Gemini(GeminiCursor),
+    Gemini(crate::harness::gemini::Cursor),
     Opencode(crate::harness::opencode::Cursor),
     Devin(crate::harness::devin::Cursor),
     Muse(JsonlCursor),
@@ -204,16 +203,6 @@ impl PendingTurnStart {
         state.turn_state = Some("waiting_on_agent".to_string());
         [started, state]
     }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct GeminiCursor {
-    source_id: String,
-    index: usize,
-    last_id: Option<String>,
-    current_turn_id: Option<String>,
-    #[serde(default)]
-    checkpoint_sha256: String,
 }
 
 /// An event a harness's projector found, before it is stored.
@@ -1865,7 +1854,7 @@ fn read_new_jsonl(
     Ok(events)
 }
 
-fn event_time(record: &Value) -> DateTime<Utc> {
+pub(crate) fn event_time(record: &Value) -> DateTime<Utc> {
     record_time(record).unwrap_or_else(Utc::now)
 }
 
@@ -2674,6 +2663,18 @@ fn project_muse(
     })
 }
 
+fn project_gemini(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<ProjectedEvents> {
+    let cursor = match cursor {
+        Some(ProviderCursor::Gemini(cursor)) => Some(cursor),
+        _ => None,
+    };
+    let (cursor, events) = crate::harness::gemini::project(path, cursor)?;
+    Ok(ProjectedEvents {
+        cursor: ProviderCursor::Gemini(cursor),
+        events,
+    })
+}
+
 fn project_opencode(
     session_path: &str,
     cursor: Option<ProviderCursor>,
@@ -2722,182 +2723,6 @@ pub(crate) fn devin_turn_ids_for_test(
         .filter_map(|event| event.turn_id.clone())
         .collect();
     (turns, DevinTestCursor(projected.cursor))
-}
-
-fn project_gemini(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<ProjectedEvents> {
-    let conversation = read_gemini_conversation(path)?;
-    let source_id = conversation
-        .session_id
-        .context("Gemini session lacks an exact provider session id")?
-        .to_string();
-    let messages = &conversation.messages;
-    let mut cursor = match cursor {
-        Some(ProviderCursor::Gemini(cursor)) if cursor.source_id == source_id => cursor,
-        Some(_) => {
-            return reset_gemini_projection(&source_id, messages, true);
-        }
-        None => {
-            return Ok(ProjectedEvents {
-                cursor: ProviderCursor::Gemini(GeminiCursor {
-                    source_id,
-                    index: messages.len(),
-                    last_id: messages
-                        .last()
-                        .and_then(|message| message.get("id"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
-                    current_turn_id: latest_gemini_turn(messages),
-                    checkpoint_sha256: gemini_checkpoint_sha256(messages, messages.len())?,
-                }),
-                events: Vec::new(),
-            })
-        }
-    };
-    let checkpoint_matches = cursor.checkpoint_sha256.is_empty()
-        || gemini_checkpoint_sha256(messages, cursor.index)
-            .is_ok_and(|checkpoint| checkpoint == cursor.checkpoint_sha256);
-    if cursor.index > messages.len()
-        || (cursor.index > 0
-            && messages[cursor.index - 1].get("id").and_then(Value::as_str)
-                != cursor.last_id.as_deref())
-        || !checkpoint_matches
-    {
-        return reset_gemini_projection(&source_id, messages, false);
-    }
-    let mut events = Vec::new();
-    for message in &messages[cursor.index..] {
-        let timestamp = event_time(message);
-        let Some(message_id) = message
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-        else {
-            events.push(observer_failure(
-                format!("gemini:{}:missing-message-id:{}", source_id, cursor.index),
-                timestamp,
-                cursor.current_turn_id.clone(),
-                "Gemini message lacks an exact provider message id",
-            ));
-            cursor.index += 1;
-            continue;
-        };
-        let record_key = format!("gemini:{source_id}:{message_id}");
-        match message.get("type").and_then(Value::as_str) {
-            _ if crate::harness::gemini::starts_turn(message) => {
-                cursor.current_turn_id = Some(message_id.to_string());
-                let mut started = PendingEvent::new(
-                    format!("{record_key}:started"),
-                    AgentEventKind::TurnStarted,
-                    timestamp,
-                );
-                started.turn_id = Some(message_id.to_string());
-                events.push(started);
-                let mut state = PendingEvent::new(
-                    format!("{record_key}:state"),
-                    AgentEventKind::TurnStateChanged,
-                    timestamp,
-                );
-                state.turn_id = Some(message_id.to_string());
-                state.turn_state = Some("waiting_on_agent".to_string());
-                events.push(state);
-            }
-            Some("gemini") => {
-                let Some(turn_id) = cursor.current_turn_id.clone() else {
-                    events.push(observer_failure(
-                        format!("{record_key}:missing-turn"),
-                        timestamp,
-                        None,
-                        "Gemini response lacks an exact preceding provider user turn",
-                    ));
-                    cursor.index += 1;
-                    cursor.last_id = Some(message_id.to_string());
-                    continue;
-                };
-                let text = extract_text(message.get("content"));
-                let has_tool_calls = !crate::harness::gemini::ends_turn(message);
-                if let Some(text) = text.as_ref() {
-                    let mut output = PendingEvent::new(
-                        format!("{record_key}:message"),
-                        AgentEventKind::AssistantMessage,
-                        timestamp,
-                    );
-                    output.turn_id = Some(turn_id.clone());
-                    output.text = Some(text.clone());
-                    events.push(output);
-                }
-                if has_tool_calls {
-                    cursor.index += 1;
-                    cursor.last_id = Some(message_id.to_string());
-                    continue;
-                }
-                let mut final_event = PendingEvent::new(
-                    format!("{record_key}:final"),
-                    AgentEventKind::TurnFinal,
-                    timestamp,
-                );
-                final_event.turn_id = Some(turn_id.clone());
-                final_event.outcome = Some("completed".to_string());
-                final_event.text = text;
-                events.push(final_event);
-                let mut state = PendingEvent::new(
-                    format!("{record_key}:state"),
-                    AgentEventKind::TurnStateChanged,
-                    timestamp,
-                );
-                state.turn_id = Some(turn_id);
-                state.turn_state = Some("waiting_on_user".to_string());
-                events.push(state);
-            }
-            Some("error") => {
-                let detail = extract_text(message.get("content"))
-                    .unwrap_or_else(|| "Gemini emitted a provider error".to_string());
-                events.push(observer_failure(
-                    format!("{record_key}:provider-error"),
-                    timestamp,
-                    cursor.current_turn_id.clone(),
-                    &detail,
-                ));
-            }
-            _ => {}
-        }
-        cursor.index += 1;
-        cursor.last_id = Some(message_id.to_string());
-    }
-    cursor.checkpoint_sha256 = gemini_checkpoint_sha256(messages, cursor.index)?;
-    Ok(ProjectedEvents {
-        cursor: ProviderCursor::Gemini(cursor),
-        events,
-    })
-}
-
-fn latest_gemini_turn(messages: &[Value]) -> Option<String> {
-    messages
-        .iter()
-        .rev()
-        .find(|message| message.get("type").and_then(Value::as_str) == Some("user"))
-        .and_then(|message| message.get("id"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-fn gemini_checkpoint_sha256(messages: &[Value], index: usize) -> anyhow::Result<String> {
-    anyhow::ensure!(
-        index <= messages.len(),
-        "Gemini cursor exceeds message history"
-    );
-    let relevant = messages[..index]
-        .iter()
-        .map(|message| {
-            serde_json::json!({
-                "id": message.get("id"),
-                "type": message.get("type"),
-                "timestamp": message.get("timestamp"),
-                "content": message.get("content"),
-                "toolCalls": message.get("toolCalls"),
-            })
-        })
-        .collect::<Vec<_>>();
-    Ok(digest(&serde_json::to_vec(&relevant)?))
 }
 
 /// Reads on from where a reset armed the cursor, so that a replacing
@@ -2987,39 +2812,7 @@ fn reset_jsonl_projection(
     })
 }
 
-fn reset_gemini_projection(
-    source_id: &str,
-    messages: &[Value],
-    session_changed: bool,
-) -> anyhow::Result<ProjectedEvents> {
-    let detail = if session_changed {
-        "confirmed Gemini provider session changed; a new tail baseline was armed"
-    } else {
-        "Gemini provider session was rewritten; a new tail baseline was armed"
-    };
-    let checkpoint_sha256 = gemini_checkpoint_sha256(messages, messages.len())?;
-    Ok(ProjectedEvents {
-        cursor: ProviderCursor::Gemini(GeminiCursor {
-            source_id: source_id.to_string(),
-            index: messages.len(),
-            last_id: messages
-                .last()
-                .and_then(|message| message.get("id"))
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            current_turn_id: latest_gemini_turn(messages),
-            checkpoint_sha256: checkpoint_sha256.clone(),
-        }),
-        events: vec![observer_failure(
-            format!("gemini:{source_id}:baseline-reset:{checkpoint_sha256}"),
-            Utc::now(),
-            None,
-            detail,
-        )],
-    })
-}
-
-fn extract_text(content: Option<&Value>) -> Option<String> {
+pub(crate) fn extract_text(content: Option<&Value>) -> Option<String> {
     let content = content?;
     if let Some(text) = content
         .as_str()
