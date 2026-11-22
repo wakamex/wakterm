@@ -1572,6 +1572,30 @@ pub fn codex_input_box_holds_text(lines: &[wakterm_term::Line]) -> bool {
         && cells.any(|cell| !cell.str().trim().is_empty() && !dimmed(&cell))
 }
 
+/// What an agent's pane shows that its harness's records do not.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AgentScreen {
+    /// The screen shows the harness waiting for input while its records
+    /// show a turn running.
+    pub turn_stopped: bool,
+    /// The harness has no session yet and its screen shows it waiting for
+    /// input.
+    pub waiting_for_first_input: bool,
+}
+
+impl AgentScreen {
+    /// Applies what the screen shows to an observation, given the turn the
+    /// agent's previous observation showed.
+    pub fn apply(self, runtime: &mut AgentRuntimeSnapshot, previous: Option<&AgentObservedTurn>) {
+        if self.turn_stopped {
+            end_turn_stopped_on_screen(runtime, previous, Utc::now());
+        }
+        if self.waiting_for_first_input {
+            mark_waiting_for_first_input(runtime);
+        }
+    }
+}
+
 /// Ends the observed turn as aborted when the harness's screen shows it is no
 /// longer running, though its transcript recorded no end. The turn keeps the
 /// stop time it was first seen with, so later refreshes of the same stopped
@@ -6935,6 +6959,13 @@ mod test {
         ];
         let waiting = observe(&steps);
         assert_eq!(waiting.turn_state, AgentTurnState::WaitingOnAgent);
+        // Its phase tells the mux that agy's idle prompt meanwhile does not
+        // mean the turn stopped.
+        assert_eq!(
+            waiting.turn_phase.as_deref(),
+            Some(crate::harness::agy::BACKGROUND_TASK_PHASE)
+        );
+        assert_eq!(observe(&steps[..3]).turn_phase.as_deref(), Some("working"));
         assert_eq!(waiting.observed_turn.unwrap().final_message, None);
         // A command agy runs in the background is waited for the same way.
         let mut command = steps.clone();

@@ -25,6 +25,7 @@ use wakterm_term::Line;
 const BAR: &str = "\u{2503}";
 const BOTTOM: char = '\u{2579}';
 const SEPARATOR: &str = "\u{b7}";
+const INTERRUPT_HINT: &str = "esc interrupt";
 const PLACEHOLDERS: [&str; 2] = ["Ask anything\u{2026}", "Run a command\u{2026}"];
 
 /// A notification or reminder OpenCode injects as a user message, which
@@ -80,9 +81,7 @@ fn bar_background(line: &Line) -> Option<ColorAttribute> {
 /// placeholder, or None when the box is not on screen.
 pub fn input_box(lines: &[Line]) -> Option<String> {
     let plain: Vec<String> = lines.iter().map(|line| line.as_str().to_string()).collect();
-    let mode_row = (0..plain.len().saturating_sub(1)).rev().find(|&i| {
-        plain[i].trim_start().starts_with(BAR) && plain[i + 1].trim_start().starts_with(BOTTOM)
-    })?;
+    let mode_row = mode_row(&plain)?;
     let background = bar_background(&lines[mode_row])?;
     let muted = lines[mode_row]
         .visible_cells()
@@ -116,6 +115,27 @@ pub fn input_box(lines: &[Line]) -> Option<String> {
         return Some(String::new());
     }
     Some(text)
+}
+
+/// The input box's last row, which shows its mode and model, just above the
+/// box's bottom edge.
+fn mode_row(plain: &[String]) -> Option<usize> {
+    (0..plain.len().saturating_sub(1)).rev().find(|&i| {
+        plain[i].trim_start().starts_with(BAR) && plain[i + 1].trim_start().starts_with(BOTTOM)
+    })
+}
+
+/// Whether OpenCode's screen shows a turn running: under its input box, in
+/// place of the folder, it shows a spinner and how to interrupt the turn.
+/// None when the box is not on screen.
+pub fn working(lines: &[Line]) -> Option<bool> {
+    let plain: Vec<String> = lines.iter().map(|line| line.as_str().to_string()).collect();
+    let mode_row = mode_row(&plain)?;
+    Some(
+        plain[mode_row + 2..]
+            .iter()
+            .any(|line| line.contains(INTERRUPT_HINT)),
+    )
 }
 
 pub(crate) fn observe(
@@ -880,6 +900,16 @@ mod test {
             ]
         };
         assert_eq!(input_box(&screen(&[])).as_deref(), Some(""));
+        // While a turn runs, a spinner and the interrupt hint replace the
+        // folder under the box; the hint elsewhere on screen is not it.
+        let mut running = screen(&[]);
+        *running.last_mut().unwrap() =
+            row(&[("   \u{2b1d}\u{2b1d}\u{2b1d}  esc interrupt", muted, page)]);
+        assert_eq!(working(&running), Some(true));
+        let mut quoted = screen(&[]);
+        quoted.insert(0, row(&[("  press esc interrupt to stop", text, page)]));
+        assert_eq!(working(&quoted), Some(false));
+        assert_eq!(working(&[row(&[("$ ls", text, page)])]), None);
         assert_eq!(
             input_box(&screen(&[("Ask anything\u{2026} \"Fix a TODO\"", muted)])).as_deref(),
             Some("")

@@ -203,9 +203,11 @@ impl AgentAdmissionCandidate {
             self.runtime.status = AgentStatus::Exited;
             return self;
         }
+        let previous = self.runtime.observed_turn.clone();
         refresh_runtime_from_harness(&mut self.runtime, &self.metadata);
-        if crate::Mux::get().waiting_for_first_input(self.pane_id, &self.runtime) {
-            crate::agent::mark_waiting_for_first_input(&mut self.runtime);
+        let screen = crate::Mux::get().agent_screen(self.pane_id, &self.runtime);
+        if screen != crate::agent::AgentScreen::default() {
+            screen.apply(&mut self.runtime, previous.as_ref());
             crate::agent::finalize_runtime_snapshot(&mut self.runtime);
         }
         self

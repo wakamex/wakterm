@@ -36,6 +36,9 @@ pub(crate) enum TurnStep {
 /// background task before it ends with that answer. Of 338 such waits in
 /// 499 agy transcripts, all but one ended within 30 minutes.
 pub(crate) const BACKGROUND_WAIT_LIMIT: Duration = Duration::minutes(30);
+/// The turn phase agy's observer reports while a turn waits for the notice
+/// of a background task, after an interim answer.
+pub const BACKGROUND_TASK_PHASE: &str = "background_task";
 
 /// Whether an agy turn runs, by the one rule both of Wakterm's readers of a
 /// transcript follow: the observer from the latest user input, the event
@@ -523,7 +526,13 @@ pub(crate) fn read_last_observation(path: &Path) -> anyhow::Result<HarnessObserv
         (
             AgentObservedTurnOutcome::Running,
             AgentTurnState::WaitingOnAgent,
-            "working",
+            // agy shows its idle prompt while it waits for a background
+            // task's notice, though the turn goes on.
+            if tracker.waiting_since.is_some() {
+                BACKGROUND_TASK_PHASE
+            } else {
+                "working"
+            },
         )
     };
     let provider_turn_id =

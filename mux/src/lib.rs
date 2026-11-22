@@ -3880,19 +3880,9 @@ impl Mux {
             return;
         }
 
-        // A harness can stop a turn without recording its end: agy on an
-        // error it only shows in the pane, such as a quota or safety-filter
-        // block, or a turn a restart interrupted, and Devin when the user
-        // interrupts it while it generates. Its screen then shows it waiting
-        // for input. Read before locking runtimes, which reading the pane
-        // must not nest inside.
-        let idle_on_screen = update
-            .runtime
-            .observed_turn
-            .as_ref()
-            .is_some_and(|turn| turn.outcome == AgentObservedTurnOutcome::Running)
-            && self.harness_idle_on_screen(&update.runtime.harness, update.pane_id);
-        let waiting_for_first_input = self.waiting_for_first_input(update.pane_id, &update.runtime);
+        // Read before locking runtimes, which reading the pane must not nest
+        // inside.
+        let screen = self.agent_screen(update.pane_id, &update.runtime);
 
         let (before_title, after_title, session_identity_changed) = {
             let mut runtime_by_pane = self.agent_runtime_by_pane.write();
@@ -3927,12 +3917,7 @@ impl Mux {
             runtime.last_progress_at = runtime
                 .last_progress_at
                 .max(update.runtime.last_progress_at);
-            if idle_on_screen {
-                agent::end_turn_stopped_on_screen(runtime, previous_turn.as_ref(), Utc::now());
-            }
-            if waiting_for_first_input {
-                agent::mark_waiting_for_first_input(runtime);
-            }
+            screen.apply(runtime, previous_turn.as_ref());
             finalize_runtime_snapshot(runtime);
             runtime.status = derive_runtime_status(runtime);
             (
@@ -4328,8 +4313,38 @@ impl Mux {
     /// with its idle hint, or the feedback survey it shows after a turn
     /// ends; Devin shows its empty input box with the placeholder it uses
     /// between turns. Other harnesses are not read.
+    /// What the agent's pane shows that its harness's records do not, for
+    /// an observation of those records. The observer and prompt admission
+    /// both apply it, so that they judge an agent alike.
+    pub(crate) fn agent_screen(
+        &self,
+        pane_id: PaneId,
+        runtime: &AgentRuntimeSnapshot,
+    ) -> agent::AgentScreen {
+        // A harness can stop a turn without recording its end: agy on an
+        // error it only shows in the pane, such as a quota or safety-filter
+        // block, or a turn a restart interrupted, and Devin when the user
+        // interrupts it while it generates, and OpenCode and Devin when a
+        // restart interrupts them. Its
+        // screen then shows it waiting for input, as agy's also does while a
+        // turn waits for a background task, which does not stop it.
+        let turn_stopped = runtime
+            .observed_turn
+            .as_ref()
+            .is_some_and(|turn| turn.outcome == AgentObservedTurnOutcome::Running)
+            && runtime.turn_phase.as_deref() != Some(crate::harness::agy::BACKGROUND_TASK_PHASE)
+            && self.harness_idle_on_screen(&runtime.harness, pane_id);
+        agent::AgentScreen {
+            turn_stopped,
+            waiting_for_first_input: self.waiting_for_first_input(pane_id, runtime),
+        }
+    }
+
     fn harness_idle_on_screen(&self, harness: &AgentHarness, pane_id: PaneId) -> bool {
-        if !matches!(harness, AgentHarness::Agy | AgentHarness::Devin) {
+        if !matches!(
+            harness,
+            AgentHarness::Agy | AgentHarness::Devin | AgentHarness::Opencode
+        ) {
             return false;
         }
         self.get_pane(pane_id).is_some_and(|pane| {
@@ -4340,6 +4355,10 @@ impl Mux {
                 AgentHarness::Agy => {
                     crate::harness::agy::input_box(&lines).is_some_and(|state| state.idle)
                         || crate::harness::agy::feedback_survey(&lines)
+                }
+                AgentHarness::Opencode => {
+                    crate::harness::opencode::input_box(&lines).is_some_and(|text| text.is_empty())
+                        && crate::harness::opencode::working(&lines) == Some(false)
                 }
                 _ => crate::harness::devin::input_box(&lines)
                     .is_some_and(|state| state.text.is_empty() && !state.working),
