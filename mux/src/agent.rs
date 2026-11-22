@@ -6988,6 +6988,30 @@ mod test {
             expired.observed_turn.unwrap().final_message.as_deref(),
             Some("Started it.")
         );
+
+        // A notice that comes after the limit starts a turn of its own, as
+        // it does for the event projector, rather than continuing the turn
+        // that ran out, however late the steps are read.
+        let mut late = stale.to_vec();
+        late.push(step(
+            3,
+            "SYSTEM_MESSAGE",
+            "DONE",
+            &old(36),
+            serde_json::json!({"content": "The command finished."}),
+        ));
+        late.push(step(
+            4,
+            "PLANNER_RESPONSE",
+            "DONE",
+            &old(37),
+            serde_json::json!({"content": "It finished."}),
+        ));
+        let woken = observe(&late);
+        assert_eq!(woken.turn_state, AgentTurnState::WaitingOnUser);
+        let turn = woken.observed_turn.unwrap();
+        assert_eq!(turn.provider_turn_id, "conversation-4:3");
+        assert_eq!(turn.final_message.as_deref(), Some("It finished."));
     }
 
     #[test]

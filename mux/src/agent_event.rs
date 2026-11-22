@@ -4225,6 +4225,60 @@ mod tests {
             .map(|event| (event.turn_id.as_deref(), event.text.as_deref()))
             .collect::<Vec<_>>();
         assert_eq!(finals, [(Some("conversation-5:6"), Some("Started it."))]);
+
+        // Read in one pass, a notice after the limit still finds the turn
+        // ended at the limit, and starts one of its own.
+        let after = store.latest_sequence();
+        append(
+            &session,
+            &(record(
+                9,
+                "USER_INPUT",
+                "DONE",
+                31,
+                serde_json::json!({"content": "<USER_REQUEST>\nonce more\n</USER_REQUEST>"}),
+            ) + &record(
+                10,
+                "GENERIC",
+                "RUNNING",
+                31,
+                serde_json::json!({"content": "background"}),
+            ) + &record(
+                11,
+                "PLANNER_RESPONSE",
+                "DONE",
+                31,
+                serde_json::json!({"content": "Running it."}),
+            ) + &record(
+                12,
+                "SYSTEM_MESSAGE",
+                "DONE",
+                0,
+                serde_json::json!({"content": "done"}),
+            ) + &record(
+                13,
+                "PLANNER_RESPONSE",
+                "DONE",
+                0,
+                serde_json::json!({"content": "It finished."}),
+            )),
+        );
+        // Not read since the 30 minutes ran out: the steps carry the time.
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let page = store.read_page(after, 100).unwrap();
+        let finals = page
+            .events
+            .iter()
+            .filter(|event| event.kind == AgentEventKind::TurnFinal)
+            .map(|event| (event.turn_id.as_deref(), event.text.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            finals,
+            [
+                (Some("conversation-5:9"), Some("Running it.")),
+                (Some("conversation-5:12"), Some("It finished."))
+            ]
+        );
     }
 
     #[test]

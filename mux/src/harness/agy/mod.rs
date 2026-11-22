@@ -84,12 +84,9 @@ impl TurnTracker {
                 if self.open && status == Some("DONE") && !calls_tools(record) =>
             {
                 if self.pending > 0 {
-                    self.waiting_since = record
-                        .get("created_at")
-                        .and_then(Value::as_str)
-                        .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
-                        .map(|at| at.with_timezone(&Utc))
-                        .or(Some(Utc::now()));
+                    // agy dates every step; one it did not would wait for
+                    // its notice without a limit rather than reset one.
+                    self.waiting_since = record_time(record);
                     TurnStep::Interim
                 } else {
                     *self = TurnTracker::default();
@@ -102,7 +99,10 @@ impl TurnTracker {
 
     /// Ends a turn that has waited past `BACKGROUND_WAIT_LIMIT` since its
     /// interim answer, returning whether it did. The turn ends with that
-    /// answer; a notice that comes later starts a turn of its own.
+    /// answer; a notice that comes later starts a turn of its own. Readers
+    /// call this with each step's own time before stepping it, so that a
+    /// wait that ran out between two steps ends there however late they read
+    /// them, and with the clock once they have read every step.
     pub(crate) fn expire(&mut self, now: DateTime<Utc>) -> bool {
         let expired = self.open
             && self
@@ -113,6 +113,15 @@ impl TurnTracker {
         }
         expired
     }
+}
+
+/// When agy recorded a step.
+pub(crate) fn record_time(record: &Value) -> Option<DateTime<Utc>> {
+    record
+        .get("created_at")
+        .and_then(Value::as_str)
+        .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+        .map(|at| at.with_timezone(&Utc))
 }
 
 /// Whether a response calls tools. agy records its tool calls as a list,
@@ -434,6 +443,10 @@ pub(crate) fn read_last_observation(path: &Path) -> anyhow::Result<HarnessObserv
     let mut interim: Option<&Value> = None;
     let mut last_end_at = previous_turn_end;
     for record in &tail {
+        if record_time(record).is_some_and(|at| tracker.expire(at)) {
+            end = interim;
+            last_end_at = interim.and_then(created_at).or(last_end_at);
+        }
         match tracker.step(record) {
             TurnStep::StartedByUser => {
                 start = Some((record, true));
@@ -554,6 +567,10 @@ pub(crate) fn project_record(
         .map(|step| step.to_string())
         .unwrap_or_else(|| format!("offset-{offset}"));
     let record_key = format!("agy:{}:{step}", cursor.source_id);
+    // A wait that ran out before this step ends its turn first.
+    let mut expired = record_time(record)
+        .map(|at| expire_background_wait(cursor, at))
+        .unwrap_or_default();
     let mut tracker = TurnTracker {
         open: cursor.turn_open,
         pending: cursor.background_pending,
@@ -562,101 +579,105 @@ pub(crate) fn project_record(
     let step_kind = tracker.step(record);
     cursor.background_pending = tracker.pending;
     cursor.background_waiting_since = tracker.waiting_since;
-    match step_kind {
-        TurnStep::StartedByUser | TurnStep::StartedBySystem => {
-            let Some(turn_id) = turn_id(&cursor.source_id, record) else {
-                return Ok(vec![observer_failure(
-                    format!("{record_key}:missing-turn"),
-                    timestamp,
-                    None,
-                    "agy step lacks a step index",
-                )]);
-            };
-            cursor.current_turn_id = Some(turn_id.clone());
-            cursor.last_assistant_text = None;
-            cursor.turn_open = true;
-            let mut started = PendingEvent::new(
-                format!("{record_key}:started"),
-                AgentEventKind::TurnStarted,
-                timestamp,
-            );
-            started.turn_id = Some(turn_id.clone());
-            // A turn a system notice starts has no user input.
-            started.input_sha256 = (step_kind == TurnStep::StartedByUser)
-                .then(|| record.get("content").and_then(Value::as_str))
-                .flatten()
-                .and_then(user_request)
-                .map(crate::agent::message_sha256);
-            let accepted = started.input_sha256.clone().map(|sha256| {
-                input_accepted(
-                    format!("{record_key}:input"),
-                    timestamp,
-                    Some(turn_id.clone()),
-                    sha256,
-                    false,
-                )
-            });
-            let mut state = PendingEvent::new(
-                format!("{record_key}:state"),
-                AgentEventKind::TurnStateChanged,
-                timestamp,
-            );
-            state.turn_id = Some(turn_id);
-            state.turn_state = Some("waiting_on_agent".to_string());
-            Ok(vec![Some(started), accepted, Some(state)]
-                .into_iter()
-                .flatten()
-                .collect())
-        }
-        _ if record.get("type").and_then(Value::as_str) == Some("PLANNER_RESPONSE")
-            && record.get("status").and_then(Value::as_str) == Some("DONE") =>
-        {
-            let Some(turn_id) = cursor.current_turn_id.clone() else {
-                return Ok(Vec::new());
-            };
-            let text = record
-                .get("content")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-                .map(str::to_string);
-            let mut events = Vec::new();
-            if let Some(text) = &text {
-                cursor.last_assistant_text = Some(text.clone());
-                let mut message = PendingEvent::new(
-                    format!("{record_key}:message"),
-                    AgentEventKind::AssistantMessage,
+    let events = (|| -> anyhow::Result<Vec<PendingEvent>> {
+        match step_kind {
+            TurnStep::StartedByUser | TurnStep::StartedBySystem => {
+                let Some(turn_id) = turn_id(&cursor.source_id, record) else {
+                    return Ok(vec![observer_failure(
+                        format!("{record_key}:missing-turn"),
+                        timestamp,
+                        None,
+                        "agy step lacks a step index",
+                    )]);
+                };
+                cursor.current_turn_id = Some(turn_id.clone());
+                cursor.last_assistant_text = None;
+                cursor.turn_open = true;
+                let mut started = PendingEvent::new(
+                    format!("{record_key}:started"),
+                    AgentEventKind::TurnStarted,
                     timestamp,
                 );
-                message.turn_id = Some(turn_id.clone());
-                message.text = Some(text.clone());
-                events.push(message);
-            }
-            // A response without text that calls no tools still ends
-            // the turn, without a final answer.
-            if step_kind == TurnStep::Ended {
-                let mut final_event = PendingEvent::new(
-                    format!("{record_key}:final"),
-                    AgentEventKind::TurnFinal,
-                    timestamp,
-                );
-                final_event.turn_id = Some(turn_id.clone());
-                final_event.outcome = Some("completed".to_string());
-                final_event.text = text;
+                started.turn_id = Some(turn_id.clone());
+                // A turn a system notice starts has no user input.
+                started.input_sha256 = (step_kind == TurnStep::StartedByUser)
+                    .then(|| record.get("content").and_then(Value::as_str))
+                    .flatten()
+                    .and_then(user_request)
+                    .map(crate::agent::message_sha256);
+                let accepted = started.input_sha256.clone().map(|sha256| {
+                    input_accepted(
+                        format!("{record_key}:input"),
+                        timestamp,
+                        Some(turn_id.clone()),
+                        sha256,
+                        false,
+                    )
+                });
                 let mut state = PendingEvent::new(
-                    format!("{record_key}:final-state"),
+                    format!("{record_key}:state"),
                     AgentEventKind::TurnStateChanged,
                     timestamp,
                 );
                 state.turn_id = Some(turn_id);
-                state.turn_state = Some("waiting_on_user".to_string());
-                events.extend([final_event, state]);
-                cursor.turn_open = false;
+                state.turn_state = Some("waiting_on_agent".to_string());
+                Ok(vec![Some(started), accepted, Some(state)]
+                    .into_iter()
+                    .flatten()
+                    .collect())
             }
-            Ok(events)
+            _ if record.get("type").and_then(Value::as_str) == Some("PLANNER_RESPONSE")
+                && record.get("status").and_then(Value::as_str) == Some("DONE") =>
+            {
+                let Some(turn_id) = cursor.current_turn_id.clone() else {
+                    return Ok(Vec::new());
+                };
+                let text = record
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string);
+                let mut events = Vec::new();
+                if let Some(text) = &text {
+                    cursor.last_assistant_text = Some(text.clone());
+                    let mut message = PendingEvent::new(
+                        format!("{record_key}:message"),
+                        AgentEventKind::AssistantMessage,
+                        timestamp,
+                    );
+                    message.turn_id = Some(turn_id.clone());
+                    message.text = Some(text.clone());
+                    events.push(message);
+                }
+                // A response without text that calls no tools still ends
+                // the turn, without a final answer.
+                if step_kind == TurnStep::Ended {
+                    let mut final_event = PendingEvent::new(
+                        format!("{record_key}:final"),
+                        AgentEventKind::TurnFinal,
+                        timestamp,
+                    );
+                    final_event.turn_id = Some(turn_id.clone());
+                    final_event.outcome = Some("completed".to_string());
+                    final_event.text = text;
+                    let mut state = PendingEvent::new(
+                        format!("{record_key}:final-state"),
+                        AgentEventKind::TurnStateChanged,
+                        timestamp,
+                    );
+                    state.turn_id = Some(turn_id);
+                    state.turn_state = Some("waiting_on_user".to_string());
+                    events.extend([final_event, state]);
+                    cursor.turn_open = false;
+                }
+                Ok(events)
+            }
+            _ => Ok(Vec::new()),
         }
-        _ => Ok(Vec::new()),
-    }
+    })()?;
+    expired.extend(events);
+    Ok(expired)
 }
 
 /// The events that end an agy turn whose wait for a background task's

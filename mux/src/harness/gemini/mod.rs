@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 /// Whether a message starts a turn: input the user sent. Gemini also
 /// records a tool's result as a user message, whose parts are all
 /// `functionResponse`, and opens a session with a user message of injected
-/// context; neither is input. Both of Wakterm's readers of a session follow
+/// context; neither is input, and neither is a message whose text is empty. Both of Wakterm's readers of a session follow
 /// this and `ends_turn`.
 pub(crate) fn starts_turn(message: &Value) -> bool {
     if message.get("type").and_then(Value::as_str) != Some("user") {
@@ -34,9 +34,10 @@ pub(crate) fn starts_turn(message: &Value) -> bool {
             .collect(),
         _ => Vec::new(),
     };
-    texts
-        .iter()
-        .any(|text| !text.trim_start().starts_with("<session_context>"))
+    texts.iter().any(|text| {
+        let text = text.trim();
+        !text.is_empty() && !text.starts_with("<session_context>")
+    })
 }
 
 /// Whether a message ends its turn: a reply from Gemini that calls no tools.
@@ -643,4 +644,33 @@ fn reset_projection(
             detail,
         )],
     ))
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn only_a_user_message_with_text_of_its_own_starts_a_turn() {
+        let user = |content: Value| serde_json::json!({"type": "user", "content": content});
+        assert!(starts_turn(&user(
+            serde_json::json!([{"text": "run the tests"}])
+        )));
+        assert!(starts_turn(&user(serde_json::json!("run the tests"))));
+        // A tool's result, the injected context, and empty text are not
+        // input.
+        assert!(!starts_turn(&user(
+            serde_json::json!([{"functionResponse": {"id": "run"}}])
+        )));
+        assert!(!starts_turn(&user(
+            serde_json::json!([{"text": "<session_context>\nGemini CLI"}])
+        )));
+        assert!(!starts_turn(&user(
+            serde_json::json!([{"text": "  "}, {"functionResponse": {"id": "run"}}])
+        )));
+        assert!(!starts_turn(&user(serde_json::json!(""))));
+        assert!(!starts_turn(
+            &serde_json::json!({"type": "gemini", "content": "hi"})
+        ));
+    }
 }
