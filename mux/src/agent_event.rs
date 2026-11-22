@@ -113,15 +113,15 @@ enum ProviderCursor {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct JsonlCursor {
-    source_id: String,
+pub(crate) struct JsonlCursor {
+    pub source_id: String,
     offset: u64,
     checkpoint_sha256: String,
-    current_turn_id: Option<String>,
-    last_assistant_text: Option<String>,
+    pub current_turn_id: Option<String>,
+    pub last_assistant_text: Option<String>,
     /// Whether the current Claude turn has started without a final reply.
     #[serde(default)]
-    turn_open: bool,
+    pub turn_open: bool,
     /// A Codex turn whose start waits for its first user input, so that
     /// `turn_started` can carry the input's hash.
     #[serde(default)]
@@ -155,9 +155,9 @@ struct JsonlCursor {
     /// Muse runs answering input sent during the open turn, and the queued
     /// items of such input not yet handed to a run.
     #[serde(default)]
-    steer_runs: Vec<String>,
+    pub steer_runs: Vec<String>,
     #[serde(default)]
-    queued_steers: Vec<String>,
+    pub queued_steers: Vec<String>,
     /// The keys of the questions Claude asked in the open turn, reported
     /// from its transcript or its screen, so that each is requested once.
     #[serde(default)]
@@ -2645,7 +2645,7 @@ fn project_muse(
     cursor: Option<ProviderCursor>,
     metadata: &AgentMetadata,
 ) -> anyhow::Result<ProjectedEvents> {
-    let source_id = crate::muse::session_id_of(path)
+    let source_id = crate::harness::muse::session_id_of(path)
         .context("Muse session log is outside a session directory")?;
     let mut cursor = match cursor {
         Some(ProviderCursor::Muse(cursor)) if cursor.source_id == source_id => cursor,
@@ -2663,123 +2663,14 @@ fn project_muse(
         }
     };
     let events = match read_new_jsonl(path, &mut cursor, |offset, record, cursor| {
-        let timestamp = crate::muse::recorded_at(record).unwrap_or_else(Utc::now);
+        let timestamp = crate::harness::muse::recorded_at(record).unwrap_or_else(Utc::now);
         let id = record
             .get("id")
             .and_then(Value::as_str)
             .map(str::to_string)
             .unwrap_or_else(|| format!("offset-{offset}"));
         let record_key = format!("muse:{}:{id}", cursor.source_id);
-        let Some(record) = crate::muse::parse(record) else {
-            return Ok(Vec::new());
-        };
-        let mut tracker = crate::muse::TurnTracker {
-            turn_id: cursor.current_turn_id.clone(),
-            open: cursor.turn_open,
-            steer_runs: std::mem::take(&mut cursor.steer_runs),
-            queued_steers: std::mem::take(&mut cursor.queued_steers),
-        };
-        let open_turn = tracker.open_turn();
-        let step = tracker.step(record);
-        cursor.current_turn_id = tracker.turn_id;
-        cursor.turn_open = tracker.open;
-        cursor.steer_runs = tracker.steer_runs;
-        cursor.queued_steers = tracker.queued_steers;
-        Ok(match step {
-            crate::muse::TurnStep::Steered { text } => vec![input_accepted(
-                format!("{record_key}:input"),
-                timestamp,
-                open_turn,
-                crate::agent::message_sha256(&text),
-                false,
-            )],
-            crate::muse::TurnStep::Started { turn_id, text } => {
-                let sha256 = crate::agent::message_sha256(&text);
-                cursor.last_assistant_text = None;
-                let mut started = PendingEvent::new(
-                    format!("{record_key}:started"),
-                    AgentEventKind::TurnStarted,
-                    timestamp,
-                );
-                started.turn_id = Some(turn_id.clone());
-                started.input_sha256 = Some(sha256.clone());
-                let accepted = input_accepted(
-                    format!("{record_key}:input"),
-                    timestamp,
-                    Some(turn_id.clone()),
-                    sha256,
-                    false,
-                );
-                let mut state = PendingEvent::new(
-                    format!("{record_key}:state"),
-                    AgentEventKind::TurnStateChanged,
-                    timestamp,
-                );
-                state.turn_id = Some(turn_id);
-                state.turn_state = Some("waiting_on_agent".to_string());
-                vec![started, accepted, state]
-            }
-            crate::muse::TurnStep::ApprovalRequested {
-                action_id,
-                command: Some(command),
-            } => {
-                let turn_id = open_turn.clone().unwrap_or_default();
-                crate::muse_prompt::approval_request(
-                    metadata, &turn_id, &action_id, &command, timestamp,
-                )
-                .map(|approval| {
-                    let mut event = PendingEvent::new(
-                        format!("{record_key}:approval"),
-                        AgentEventKind::ApprovalRequested,
-                        timestamp,
-                    );
-                    event.turn_id = open_turn.clone();
-                    event.approval = Some(approval);
-                    vec![event]
-                })
-                .unwrap_or_default()
-            }
-            crate::muse::TurnStep::Reply { text } => {
-                let text = text.trim().to_string();
-                if text.is_empty() {
-                    Vec::new()
-                } else {
-                    cursor.last_assistant_text = Some(text.clone());
-                    let mut message = PendingEvent::new(
-                        format!("{record_key}:message"),
-                        AgentEventKind::AssistantMessage,
-                        timestamp,
-                    );
-                    message.turn_id = open_turn;
-                    message.text = Some(text);
-                    vec![message]
-                }
-            }
-            crate::muse::TurnStep::Ended { completed } => {
-                let mut final_event = PendingEvent::new(
-                    format!("{record_key}:final"),
-                    AgentEventKind::TurnFinal,
-                    timestamp,
-                );
-                final_event.turn_id = open_turn.clone();
-                final_event.outcome =
-                    Some(if completed { "completed" } else { "aborted" }.to_string());
-                final_event.text = completed
-                    .then(|| cursor.last_assistant_text.clone())
-                    .flatten();
-                let mut state = PendingEvent::new(
-                    format!("{record_key}:final-state"),
-                    AgentEventKind::TurnStateChanged,
-                    timestamp,
-                );
-                state.turn_id = open_turn;
-                state.turn_state = Some("waiting_on_user".to_string());
-                vec![final_event, state]
-            }
-            crate::muse::TurnStep::ApprovalRequested { command: None, .. }
-            | crate::muse::TurnStep::ApprovalDecided { .. }
-            | crate::muse::TurnStep::Other => Vec::new(),
-        })
+        crate::harness::muse::project_record(record, &record_key, timestamp, cursor, metadata)
     }) {
         Ok(events) => events,
         Err(err) if err.to_string().contains("truncated or rewritten") => {
@@ -3628,7 +3519,7 @@ mod tests {
         let path = dir.join("session.jsonl");
         fs::write(&path, "").unwrap();
         let cursor = project_muse(&path, None, &metadata("muse")).unwrap().cursor;
-        let mut log = crate::muse::fixture::Log {
+        let mut log = crate::harness::muse::fixture::Log {
             path: &path,
             at: 1_792_939_838_000_000,
         };
@@ -3637,7 +3528,7 @@ mod tests {
         // A blank reply does not replace the turn's text for either reader.
         log.reply("r1", "  ");
         log.end("r1", "completed");
-        let view = crate::muse::read_turn(&path).unwrap();
+        let view = crate::harness::muse::read_turn(&path).unwrap();
         let events = project_muse(&path, Some(cursor), &metadata("muse"))
             .unwrap()
             .events;
@@ -3668,7 +3559,7 @@ mod tests {
                 .map(|event| (event.kind, event.turn_id, event.input_sha256, event.text))
                 .collect::<Vec<_>>()
         };
-        let mut log = crate::muse::fixture::Log {
+        let mut log = crate::harness::muse::fixture::Log {
             path: &path,
             at: 1_792_939_838_000_000,
         };
@@ -3770,7 +3661,7 @@ mod tests {
         fs::write(&path, "").unwrap();
         let metadata = metadata("muse");
         let cursor = project_muse(&path, None, &metadata).unwrap().cursor;
-        let mut log = crate::muse::fixture::Log {
+        let mut log = crate::harness::muse::fixture::Log {
             path: &path,
             at: 1_792_939_838_000_000,
         };
@@ -3782,7 +3673,7 @@ mod tests {
             .find(|event| event.kind == AgentEventKind::ApprovalRequested)
             .and_then(|event| event.approval.clone())
             .unwrap();
-        assert_eq!(approval.kind, crate::muse_prompt::PROMPT_KIND);
+        assert_eq!(approval.kind, crate::harness::muse::prompt::PROMPT_KIND);
         assert_eq!(approval.request_id, "01a17523-2b2f-7991-bbd7-b9cc04e06d7a");
         assert_eq!(approval.turn_id, "r1");
         assert_eq!(approval.command.as_deref(), Some("ls"));
@@ -3808,8 +3699,12 @@ mod tests {
         let start = ProviderCursor::Muse(JsonlCursor {
             offset: 0,
             checkpoint_sha256: checkpoint_sha256(&path, 0).unwrap(),
-            ..initial_jsonl_cursor(&path, "muse", crate::muse::session_id_of(&path).unwrap())
-                .unwrap()
+            ..initial_jsonl_cursor(
+                &path,
+                "muse",
+                crate::harness::muse::session_id_of(&path).unwrap(),
+            )
+            .unwrap()
         });
         let events = project_muse(&path, Some(start), &metadata("muse"))
             .unwrap()

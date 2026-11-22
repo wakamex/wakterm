@@ -1454,7 +1454,7 @@ pub fn derive_runtime_status(runtime: &AgentRuntimeSnapshot) -> AgentStatus {
     }
 }
 
-const CLAUDE_WAITING_PHASE_PREFIX: &str = "waiting for ";
+pub(crate) const CLAUDE_WAITING_PHASE_PREFIX: &str = "waiting for ";
 
 /// Why typed input would not reach the harness's prompt: a dialog or
 /// question has the keyboard.
@@ -1523,7 +1523,7 @@ pub fn input_box_blocked(
             Some(_) => None,
         },
         // Muse queues a message sent during a turn and hands it to the turn.
-        AgentHarness::Muse => match crate::muse::input_box(lines) {
+        AgentHarness::Muse => match crate::harness::muse::input_box(lines) {
             None => Some("Muse's input box is not on screen"),
             Some(text) if !text.is_empty() => Some("the input box holds text the user is typing"),
             Some(_) => None,
@@ -1896,7 +1896,7 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
             runtime.session_path.as_deref(),
             runtime.observer_started_at,
         ),
-        AgentHarness::Muse => observe_muse(
+        AgentHarness::Muse => crate::harness::muse::observe(
             cwd,
             metadata.adopted_pid,
             runtime.session_path.as_deref(),
@@ -1904,7 +1904,7 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
             expected_session
                 .filter(|expected| expected.harness == AgentHarness::Muse)
                 .map(|expected| expected.session_id.clone())
-                .or_else(|| crate::muse::resumed_session(&metadata.launch_cmd))
+                .or_else(|| crate::harness::muse::resumed_session(&metadata.launch_cmd))
                 .as_deref(),
         ),
         AgentHarness::Devin => crate::harness::devin::observe(
@@ -3781,102 +3781,6 @@ fn observe_opencode(
     read_last_opencode_observation(&connection, &db_path, &session_id, updated_after)
 }
 
-/// Observes a Muse session: the one a restore or `muse resume` names, else
-/// the one already observed, else the most recently updated session whose
-/// workspace root is `cwd` since `updated_after`. A permission request Muse
-/// waits on is reported as the agent waiting for a permission decision.
-fn observe_muse(
-    cwd: &str,
-    pid: Option<u32>,
-    preferred_session: Option<&str>,
-    updated_after: Option<DateTime<Utc>>,
-    exact_session: Option<&str>,
-) -> anyhow::Result<Option<HarnessObservation>> {
-    let Some(data_dir) = crate::muse::data_dir_for(pid) else {
-        return Ok(None);
-    };
-    // The session whose lock the process holds is exact; Muse indexes a new
-    // session only some seconds after starting it, so the newest indexed
-    // session can be an earlier one in the same workspace.
-    let live = pid.and_then(|pid| crate::muse::live_session_log(pid, &data_dir));
-    let log = match (live, exact_session) {
-        (Some(live), _) => Some(live),
-        (None, Some(session_id)) => crate::muse::session_log(&data_dir, session_id)?,
-        (None, None) => match preferred_session
-            .map(PathBuf::from)
-            .filter(|path| path.is_file())
-        {
-            Some(path) => Some(path),
-            None => crate::muse::newest_session_log_in(&data_dir, cwd, updated_after)?,
-        },
-    };
-    let Some(log) = log.filter(|log| log.is_file()) else {
-        return Ok(None);
-    };
-    let view = crate::muse::read_turn(&log)?;
-    let session_path = Some(log.to_string_lossy().into_owned());
-    let Some(turn_id) = view.turn_id.clone() else {
-        return Ok(Some(HarnessObservation {
-            session_path,
-            progress_summary: None,
-            harness_mode: None,
-            turn_phase: None,
-            updated_at: view.updated_at,
-            turn_state: AgentTurnState::WaitingOnUser,
-            last_turn_completed_at: None,
-            observed_turn: None,
-        }));
-    };
-    let final_message = view
-        .ended
-        .filter(|completed| *completed)
-        .and(view.reply.clone())
-        .map(|text| text.trim().to_string())
-        .filter(|text| !text.is_empty());
-    let (outcome, turn_state, turn_phase) = match view.ended {
-        Some(true) => (
-            AgentObservedTurnOutcome::Completed,
-            AgentTurnState::WaitingOnUser,
-            "final_answer".to_string(),
-        ),
-        Some(false) => (
-            AgentObservedTurnOutcome::Aborted,
-            AgentTurnState::WaitingOnUser,
-            "aborted".to_string(),
-        ),
-        None if !view.pending_approvals.is_empty() => (
-            AgentObservedTurnOutcome::Running,
-            AgentTurnState::WaitingOnUser,
-            format!("{CLAUDE_WAITING_PHASE_PREFIX}a permission decision"),
-        ),
-        None => (
-            AgentObservedTurnOutcome::Running,
-            AgentTurnState::WaitingOnAgent,
-            "working".to_string(),
-        ),
-    };
-    Ok(Some(HarnessObservation {
-        session_path,
-        progress_summary: final_message.as_deref().map(truncate_summary),
-        harness_mode: None,
-        turn_phase: Some(turn_phase),
-        updated_at: view.updated_at,
-        turn_state,
-        last_turn_completed_at: view.ended_at,
-        observed_turn: Some(AgentObservedTurn {
-            provider_turn_id: turn_id,
-            outcome,
-            started_at: view.started_at,
-            completed_at: view.ended_at,
-            started_cursor: None,
-            latest_cursor: None,
-            primary_user_message_sha256: view.input.as_deref().map(message_sha256),
-            user_message_count: view.inputs,
-            final_message,
-        }),
-    }))
-}
-
 /// Claude names a project's transcript directory after its working
 /// directory, with every character other than an ASCII letter or digit
 /// replaced by `-`.
@@ -4329,7 +4233,7 @@ pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> V
         AgentHarness::Devin => crate::harness::devin::db_path()
             .and_then(|path| path.parent().map(|path| vec![path.to_path_buf()])),
         AgentHarness::Muse => {
-            crate::muse::data_dir_for(None).map(|data| vec![data.join("sessions")])
+            crate::harness::muse::data_dir_for(None).map(|data| vec![data.join("sessions")])
         }
         // Profiles named with a `/` live elsewhere and are read when the
         // observer polls.
@@ -4494,7 +4398,7 @@ pub fn restorable_session_id(
             .and_then(parse_opencode_session_path)
             .map(|(_, session_id)| session_id)
             .filter(|session_id| is_opencode_session_id(session_id))),
-        AgentHarness::Muse => Ok(crate::muse::session_id_of(path)),
+        AgentHarness::Muse => Ok(crate::harness::muse::session_id_of(path)),
         AgentHarness::Endchat => Ok(path.is_dir().then(|| path.to_string_lossy().into_owned())),
         AgentHarness::Devin => Ok(path
             .to_str()
@@ -7765,7 +7669,7 @@ mod test {
                     .and_then(|main| main.parent().map(Path::to_path_buf))
             }),
             ("gemini", gemini_root_for),
-            ("muse", crate::muse::data_dir_for),
+            ("muse", crate::harness::muse::data_dir_for),
             ("opencode", opencode_db_path),
             ("zcode", |_| zcode_db_path()),
         ];
@@ -10883,13 +10787,13 @@ mod test {
             )
             .unwrap();
         set_env_path("WAKTERM_AGENT_MUSE_DIR", temp.path());
-        let mut log = crate::muse::fixture::Log {
+        let mut log = crate::harness::muse::fixture::Log {
             path: &log_path,
             at: 1_792_939_838_000_000,
         };
         log.input("r1", "Run the tests");
         let observe = || {
-            observe_muse("/code/demo", None, None, None, None)
+            crate::harness::muse::observe("/code/demo", None, None, None, None)
                 .unwrap()
                 .unwrap()
         };
@@ -10932,7 +10836,7 @@ mod test {
         log.reply("r1", "All 12 pass.");
         log.end("r1", "completed");
         let done = observe();
-        let exact = observe_muse("/elsewhere", None, None, None, Some(session))
+        let exact = crate::harness::muse::observe("/elsewhere", None, None, None, Some(session))
             .unwrap()
             .unwrap();
         remove_env_var("WAKTERM_AGENT_MUSE_DIR");

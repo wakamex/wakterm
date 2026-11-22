@@ -74,8 +74,6 @@ pub mod localpane;
 pub mod main_thread_blocking;
 pub mod memory_protection;
 pub mod memory_report;
-pub mod muse;
-pub mod muse_prompt;
 mod notification_rate;
 pub mod opencode;
 pub mod pane;

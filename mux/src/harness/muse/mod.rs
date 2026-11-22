@@ -26,6 +26,11 @@
 //! Wrapped records with `children` repeat records written elsewhere and are
 //! skipped.
 
+pub mod prompt;
+
+use crate::agent::AgentMetadata;
+use crate::agent_event::{input_accepted, AgentEventKind, JsonlCursor, PendingEvent};
+
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
@@ -327,6 +332,223 @@ pub(crate) struct TurnView {
     /// Permission requests of the turn without a decision.
     pub pending_approvals: Vec<String>,
     pub updated_at: Option<DateTime<Utc>>,
+}
+
+/// Observes a Muse session: the one a restore or `muse resume` names, else
+/// the one already observed, else the most recently updated session whose
+/// workspace root is `cwd` since `updated_after`. A permission request Muse
+/// waits on is reported as the agent waiting for a permission decision.
+pub(crate) fn observe(
+    cwd: &str,
+    pid: Option<u32>,
+    preferred_session: Option<&str>,
+    updated_after: Option<DateTime<Utc>>,
+    exact_session: Option<&str>,
+) -> anyhow::Result<Option<crate::agent::HarnessObservation>> {
+    let Some(data_dir) = data_dir_for(pid) else {
+        return Ok(None);
+    };
+    // The session whose lock the process holds is exact; Muse indexes a new
+    // session only some seconds after starting it, so the newest indexed
+    // session can be an earlier one in the same workspace.
+    let live = pid.and_then(|pid| live_session_log(pid, &data_dir));
+    let log = match (live, exact_session) {
+        (Some(live), _) => Some(live),
+        (None, Some(session_id)) => session_log(&data_dir, session_id)?,
+        (None, None) => match preferred_session
+            .map(PathBuf::from)
+            .filter(|path| path.is_file())
+        {
+            Some(path) => Some(path),
+            None => newest_session_log_in(&data_dir, cwd, updated_after)?,
+        },
+    };
+    let Some(log) = log.filter(|log| log.is_file()) else {
+        return Ok(None);
+    };
+    let view = read_turn(&log)?;
+    let session_path = Some(log.to_string_lossy().into_owned());
+    let Some(turn_id) = view.turn_id.clone() else {
+        return Ok(Some(crate::agent::HarnessObservation {
+            session_path,
+            progress_summary: None,
+            harness_mode: None,
+            turn_phase: None,
+            updated_at: view.updated_at,
+            turn_state: crate::agent::AgentTurnState::WaitingOnUser,
+            last_turn_completed_at: None,
+            observed_turn: None,
+        }));
+    };
+    let final_message = view
+        .ended
+        .filter(|completed| *completed)
+        .and(view.reply.clone())
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    let (outcome, turn_state, turn_phase) = match view.ended {
+        Some(true) => (
+            crate::agent::AgentObservedTurnOutcome::Completed,
+            crate::agent::AgentTurnState::WaitingOnUser,
+            "final_answer".to_string(),
+        ),
+        Some(false) => (
+            crate::agent::AgentObservedTurnOutcome::Aborted,
+            crate::agent::AgentTurnState::WaitingOnUser,
+            "aborted".to_string(),
+        ),
+        None if !view.pending_approvals.is_empty() => (
+            crate::agent::AgentObservedTurnOutcome::Running,
+            crate::agent::AgentTurnState::WaitingOnUser,
+            format!(
+                "{}a permission decision",
+                crate::agent::CLAUDE_WAITING_PHASE_PREFIX
+            ),
+        ),
+        None => (
+            crate::agent::AgentObservedTurnOutcome::Running,
+            crate::agent::AgentTurnState::WaitingOnAgent,
+            "working".to_string(),
+        ),
+    };
+    Ok(Some(crate::agent::HarnessObservation {
+        session_path,
+        progress_summary: final_message.as_deref().map(crate::agent::truncate_summary),
+        harness_mode: None,
+        turn_phase: Some(turn_phase),
+        updated_at: view.updated_at,
+        turn_state,
+        last_turn_completed_at: view.ended_at,
+        observed_turn: Some(crate::agent::AgentObservedTurn {
+            provider_turn_id: turn_id,
+            outcome,
+            started_at: view.started_at,
+            completed_at: view.ended_at,
+            started_cursor: None,
+            latest_cursor: None,
+            primary_user_message_sha256: view.input.as_deref().map(crate::agent::message_sha256),
+            user_message_count: view.inputs,
+            final_message,
+        }),
+    }))
+}
+
+/// The events one record of a Muse session log adds, with the projection's
+/// state in `cursor`, for the shared incremental reader of session logs.
+pub(crate) fn project_record(
+    record: &Value,
+    record_key: &str,
+    timestamp: DateTime<Utc>,
+    cursor: &mut JsonlCursor,
+    metadata: &AgentMetadata,
+) -> anyhow::Result<Vec<PendingEvent>> {
+    let Some(record) = parse(record) else {
+        return Ok(Vec::new());
+    };
+    let mut tracker = TurnTracker {
+        turn_id: cursor.current_turn_id.clone(),
+        open: cursor.turn_open,
+        steer_runs: std::mem::take(&mut cursor.steer_runs),
+        queued_steers: std::mem::take(&mut cursor.queued_steers),
+    };
+    let open_turn = tracker.open_turn();
+    let step = tracker.step(record);
+    cursor.current_turn_id = tracker.turn_id;
+    cursor.turn_open = tracker.open;
+    cursor.steer_runs = tracker.steer_runs;
+    cursor.queued_steers = tracker.queued_steers;
+    Ok(match step {
+        TurnStep::Steered { text } => vec![input_accepted(
+            format!("{record_key}:input"),
+            timestamp,
+            open_turn,
+            crate::agent::message_sha256(&text),
+            false,
+        )],
+        TurnStep::Started { turn_id, text } => {
+            let sha256 = crate::agent::message_sha256(&text);
+            cursor.last_assistant_text = None;
+            let mut started = PendingEvent::new(
+                format!("{record_key}:started"),
+                AgentEventKind::TurnStarted,
+                timestamp,
+            );
+            started.turn_id = Some(turn_id.clone());
+            started.input_sha256 = Some(sha256.clone());
+            let accepted = input_accepted(
+                format!("{record_key}:input"),
+                timestamp,
+                Some(turn_id.clone()),
+                sha256,
+                false,
+            );
+            let mut state = PendingEvent::new(
+                format!("{record_key}:state"),
+                AgentEventKind::TurnStateChanged,
+                timestamp,
+            );
+            state.turn_id = Some(turn_id);
+            state.turn_state = Some("waiting_on_agent".to_string());
+            vec![started, accepted, state]
+        }
+        TurnStep::ApprovalRequested {
+            action_id,
+            command: Some(command),
+        } => {
+            let turn_id = open_turn.clone().unwrap_or_default();
+            prompt::approval_request(metadata, &turn_id, &action_id, &command, timestamp)
+                .map(|approval| {
+                    let mut event = PendingEvent::new(
+                        format!("{record_key}:approval"),
+                        AgentEventKind::ApprovalRequested,
+                        timestamp,
+                    );
+                    event.turn_id = open_turn.clone();
+                    event.approval = Some(approval);
+                    vec![event]
+                })
+                .unwrap_or_default()
+        }
+        TurnStep::Reply { text } => {
+            let text = text.trim().to_string();
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                cursor.last_assistant_text = Some(text.clone());
+                let mut message = PendingEvent::new(
+                    format!("{record_key}:message"),
+                    AgentEventKind::AssistantMessage,
+                    timestamp,
+                );
+                message.turn_id = open_turn;
+                message.text = Some(text);
+                vec![message]
+            }
+        }
+        TurnStep::Ended { completed } => {
+            let mut final_event = PendingEvent::new(
+                format!("{record_key}:final"),
+                AgentEventKind::TurnFinal,
+                timestamp,
+            );
+            final_event.turn_id = open_turn.clone();
+            final_event.outcome = Some(if completed { "completed" } else { "aborted" }.to_string());
+            final_event.text = completed
+                .then(|| cursor.last_assistant_text.clone())
+                .flatten();
+            let mut state = PendingEvent::new(
+                format!("{record_key}:final-state"),
+                AgentEventKind::TurnStateChanged,
+                timestamp,
+            );
+            state.turn_id = open_turn;
+            state.turn_state = Some("waiting_on_user".to_string());
+            vec![final_event, state]
+        }
+        TurnStep::ApprovalRequested { command: None, .. }
+        | TurnStep::ApprovalDecided { .. }
+        | TurnStep::Other => Vec::new(),
+    })
 }
 
 /// What a record does to the turn it arrives in.

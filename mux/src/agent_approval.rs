@@ -118,7 +118,7 @@ pub enum AgentApprovalWork {
     DevinPrompt(crate::harness::devin::prompt::PromptKeys),
     /// The key that answers Muse's permission prompt, then a wait for Muse
     /// to log the decision.
-    MusePrompt(crate::muse_prompt::PromptKeys),
+    MusePrompt(crate::harness::muse::prompt::PromptKeys),
 }
 
 impl AgentApprovalWork {
@@ -276,7 +276,7 @@ impl Mux {
         if request.kind == crate::harness::devin::prompt::PROMPT_KIND {
             return self.resolve_devin_prompt(request, resolution);
         }
-        if request.kind == crate::muse_prompt::PROMPT_KIND {
+        if request.kind == crate::harness::muse::prompt::PROMPT_KIND {
             return self.resolve_muse_prompt(request, resolution);
         }
         anyhow::ensure!(
@@ -563,7 +563,7 @@ impl Mux {
                 .context("approval target has no exact Muse session")?,
         );
         anyhow::ensure!(
-            crate::muse::approval_pending(&log, &request.item_id)?,
+            crate::harness::muse::approval_pending(&log, &request.item_id)?,
             "approval request is no longer pending"
         );
         let pane = self
@@ -571,14 +571,14 @@ impl Mux {
             .context("approval target pane disappeared")?;
         anyhow::ensure!(!pane.is_dead(), "approval target pane exited");
         anyhow::ensure!(
-            crate::muse_prompt::shows_prompt(
+            crate::harness::muse::prompt::shows_prompt(
                 &crate::claude_menu::screen(&pane),
                 request.command.as_deref().unwrap_or_default()
             ),
             "the pane does not show Muse's prompt for this command"
         );
         Ok(AgentApprovalWork::MusePrompt(
-            crate::muse_prompt::PromptKeys {
+            crate::harness::muse::prompt::PromptKeys {
                 pane,
                 log,
                 request,

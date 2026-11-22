@@ -111,7 +111,7 @@ impl PromptKeys {
         answer(
             &self.choice_id,
             || crate::claude_menu::screen(&self.pane),
-            || crate::muse::approval_pending(&self.log, &self.request.item_id),
+            || crate::harness::muse::approval_pending(&self.log, &self.request.item_id),
             |key| self.pane.key_down(key, KeyModifiers::NONE),
             &command,
         )?;
