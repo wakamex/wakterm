@@ -803,18 +803,7 @@ fn catalog_entry(agent: AgentSnapshot) -> AgentCatalogEntry {
 }
 
 fn harness_name(harness: &AgentHarness) -> &'static str {
-    match harness {
-        AgentHarness::Unknown => "unknown",
-        AgentHarness::Agy => "agy",
-        AgentHarness::Claude => "claude",
-        AgentHarness::Codex => "codex",
-        AgentHarness::Gemini => "gemini",
-        AgentHarness::Opencode => "opencode",
-        AgentHarness::Zcode => "zcode",
-        AgentHarness::Devin => "devin",
-        AgentHarness::Muse => "muse",
-        AgentHarness::Endchat => "endchat",
-    }
+    harness.name()
 }
 
 fn status_name(status: &AgentStatus) -> &'static str {

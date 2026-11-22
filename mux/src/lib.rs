@@ -2100,17 +2100,7 @@ impl Mux {
             pane_id
         );
         anyhow::ensure!(
-            matches!(
-                harness,
-                AgentHarness::Agy
-                    | AgentHarness::Claude
-                    | AgentHarness::Codex
-                    | AgentHarness::Zcode
-                    | AgentHarness::Opencode
-                    | AgentHarness::Devin
-                    | AgentHarness::Muse
-                    | AgentHarness::Endchat
-            ),
+            harness.restorable(),
             "automatic restore is not implemented for {:?}",
             harness
         );
@@ -2152,17 +2142,7 @@ impl Mux {
         }
         let runtime = self.agent_runtime_by_pane.read().get(&pane_id).cloned()?;
         let harness = runtime.harness;
-        if !matches!(
-            harness,
-            AgentHarness::Agy
-                | AgentHarness::Claude
-                | AgentHarness::Codex
-                | AgentHarness::Zcode
-                | AgentHarness::Opencode
-                | AgentHarness::Devin
-                | AgentHarness::Muse
-                | AgentHarness::Endchat
-        ) {
+        if !harness.restorable() {
             return None;
         }
         let session_path = runtime.session_path.as_deref()?;
@@ -2895,18 +2875,7 @@ impl Mux {
     }
 
     fn harness_slug(harness: &crate::agent::AgentHarness) -> &'static str {
-        match harness {
-            crate::agent::AgentHarness::Agy => "agy",
-            crate::agent::AgentHarness::Claude => "claude",
-            crate::agent::AgentHarness::Codex => "codex",
-            crate::agent::AgentHarness::Gemini => "gemini",
-            crate::agent::AgentHarness::Opencode => "opencode",
-            crate::agent::AgentHarness::Zcode => "zcode",
-            crate::agent::AgentHarness::Devin => "devin",
-            crate::agent::AgentHarness::Muse => "muse",
-            crate::agent::AgentHarness::Endchat => "endchat",
-            crate::agent::AgentHarness::Unknown => "agent",
-        }
+        harness.spec().map_or("agent", |spec| spec.name)
     }
 
     fn slugify_agent_name_piece(value: &str) -> String {

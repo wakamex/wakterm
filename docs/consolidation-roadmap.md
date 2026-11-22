@@ -102,7 +102,7 @@ General change, in three steps, each worth doing on its own:
 
 Keep the detection order of the two inference functions when they become one loop, and keep `AgentHarness`'s variant order, which the protocol depends on.
 
-Status: `in progress`. Step 1 is done: stacked icon code points are given on demand, so the icon range no longer limits the number of harnesses, and the stacks draw as before. Steps 2 and 3 are next.
+Status: `in progress`. Step 1 is done: stacked icon code points are given on demand, so the icon range no longer limits the number of harnesses, and the stacks draw as before. Step 2 is done: `HarnessSpec` in `mux/src/agent.rs` holds each harness's name, launch command, programs, wrapper programs, title prefixes, restore kind and whether its turns survive a mux restart, and detection, launch commands, restore checks, the endchat exemptions, and the name tables in admission, the mux and the CLI read it. Step 3 is next, starting with item 2's check.
 
 ## 8. Agent logic reads the host directly
 

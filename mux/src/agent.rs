@@ -77,6 +77,145 @@ pub enum AgentHarness {
     Endchat,
 }
 
+/// How an agent of a harness is restored after a mux restart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HarnessRestore {
+    /// By running the harness with its own option to resume a session.
+    NativeResume,
+    /// Through Codex's app-server, falling back to its native resume.
+    CodexAppServer,
+    /// Not restored.
+    None,
+}
+
+/// What Wakterm knows about a harness as data, so that code needing one of
+/// these facts reads it here instead of keeping its own list of harnesses.
+#[derive(Debug)]
+pub struct HarnessSpec {
+    /// The harness's name in commands, logs, agent names and settings.
+    pub name: &'static str,
+    /// The command that starts it.
+    pub launch_cmd: &'static str,
+    /// The file names of the programs it runs as, lowercase. No two
+    /// harnesses share one, so the order harnesses are tried in does not
+    /// change which one a program belongs to.
+    pub programs: &'static [&'static str],
+    /// Whether any word of a command naming one of its programs makes the
+    /// command this harness's, rather than only the program it runs.
+    pub any_command_word: bool,
+    /// Programs it runs under, whose name a foreground process may show
+    /// instead of its own.
+    pub wrapper_programs: &'static [&'static str],
+    /// Prefixes of the pane titles it sets.
+    pub title_prefixes: &'static [&'static str],
+    pub restore: HarnessRestore,
+    /// Whether its turns run in a process of its own that a mux restart
+    /// leaves running, so a restart interrupts none of them.
+    pub turns_survive_mux_restart: bool,
+}
+
+impl HarnessSpec {
+    const fn new(name: &'static str, programs: &'static [&'static str]) -> Self {
+        Self {
+            name,
+            launch_cmd: name,
+            programs,
+            any_command_word: false,
+            wrapper_programs: &[],
+            title_prefixes: &[],
+            restore: HarnessRestore::NativeResume,
+            turns_survive_mux_restart: false,
+        }
+    }
+}
+
+const AGY: HarnessSpec = HarnessSpec {
+    any_command_word: true,
+    ..HarnessSpec::new("agy", &["agy", "agy.exe"])
+};
+const CLAUDE: HarnessSpec = HarnessSpec::new(
+    "claude",
+    &[
+        "claude",
+        "claude.exe",
+        "claude.cmd",
+        "claude.bat",
+        "claude.js",
+    ],
+);
+const CODEX: HarnessSpec = HarnessSpec {
+    restore: HarnessRestore::CodexAppServer,
+    ..HarnessSpec::new(
+        "codex",
+        &["codex", "codex.exe", "codex.cmd", "codex.bat", "codex.js"],
+    )
+};
+const GEMINI: HarnessSpec = HarnessSpec {
+    wrapper_programs: &["node", "node.exe", "bun", "bun.exe"],
+    title_prefixes: &["\u{25c7} ", "\u{25c6} "],
+    restore: HarnessRestore::None,
+    ..HarnessSpec::new("gemini", &["gemini", "gemini.exe", "gemini.js"])
+};
+const OPENCODE: HarnessSpec = HarnessSpec {
+    title_prefixes: &["oc |"],
+    ..HarnessSpec::new("opencode", &["opencode", "opencode.exe"])
+};
+const ZCODE: HarnessSpec = HarnessSpec::new("zcode", &["zcode", "zcode.cjs"]);
+const DEVIN: HarnessSpec = HarnessSpec::new("devin", &["devin"]);
+const MUSE: HarnessSpec = HarnessSpec::new("muse", &["muse"]);
+const ENDCHAT: HarnessSpec = HarnessSpec {
+    turns_survive_mux_restart: true,
+    ..HarnessSpec::new("endchat", &["endchat"])
+};
+
+impl AgentHarness {
+    /// Every harness Wakterm supports.
+    pub const KNOWN: [AgentHarness; 9] = [
+        AgentHarness::Agy,
+        AgentHarness::Claude,
+        AgentHarness::Codex,
+        AgentHarness::Gemini,
+        AgentHarness::Opencode,
+        AgentHarness::Zcode,
+        AgentHarness::Devin,
+        AgentHarness::Muse,
+        AgentHarness::Endchat,
+    ];
+
+    /// This harness's facts, or None for an unknown program.
+    pub fn spec(&self) -> Option<&'static HarnessSpec> {
+        Some(match self {
+            AgentHarness::Unknown => return None,
+            AgentHarness::Agy => &AGY,
+            AgentHarness::Claude => &CLAUDE,
+            AgentHarness::Codex => &CODEX,
+            AgentHarness::Gemini => &GEMINI,
+            AgentHarness::Opencode => &OPENCODE,
+            AgentHarness::Zcode => &ZCODE,
+            AgentHarness::Devin => &DEVIN,
+            AgentHarness::Muse => &MUSE,
+            AgentHarness::Endchat => &ENDCHAT,
+        })
+    }
+
+    /// This harness's name, or "unknown".
+    pub fn name(&self) -> &'static str {
+        self.spec().map_or("unknown", |spec| spec.name)
+    }
+
+    /// Whether an agent of this harness can be restored after a mux restart.
+    pub fn restorable(&self) -> bool {
+        self.spec()
+            .is_some_and(|spec| spec.restore != HarnessRestore::None)
+    }
+
+    /// Whether this harness's turns survive a mux restart.
+    pub fn turns_survive_mux_restart(&self) -> bool {
+        self.spec()
+            .is_some_and(|spec| spec.turns_survive_mux_restart)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AgentTransport {
     PlainPty,
@@ -307,37 +446,36 @@ pub fn infer_harness(launch_cmd: &str, foreground_process_name: Option<&str>) ->
         candidates.push(name.to_ascii_lowercase());
     }
     for candidate in &candidates {
-        if candidate
-            .split_whitespace()
-            .any(|part| Path::new(part).file_name().and_then(|name| name.to_str()) == Some("agy"))
-        {
-            return AgentHarness::Agy;
+        if let Some(harness) = AgentHarness::KNOWN.iter().find(|harness| {
+            harness.spec().is_some_and(|spec| spec.any_command_word)
+                && candidate.split_whitespace().any(|part| {
+                    Path::new(part)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| is_harness_tui_program(harness, name))
+                })
+        }) {
+            return harness.clone();
         }
         // The program decides, not its arguments, which can name another
         // harness's model, directory or file.
         if let Some(program) = launched_program(candidate) {
-            if let Some(harness) = [
-                AgentHarness::Zcode,
-                AgentHarness::Devin,
-                AgentHarness::Muse,
-                AgentHarness::Endchat,
-                AgentHarness::Claude,
-                AgentHarness::Codex,
-                AgentHarness::Gemini,
-                AgentHarness::Opencode,
-            ]
-            .iter()
-            .find(|harness| is_harness_tui_program(harness, program))
+            if let Some(harness) = AgentHarness::KNOWN
+                .iter()
+                .find(|harness| is_harness_tui_program(harness, program))
             {
                 return harness.clone();
             }
         }
         // Pane titles these harnesses set.
-        if candidate.starts_with("◇ ") || candidate.starts_with("◆ ") {
-            return AgentHarness::Gemini;
-        }
-        if candidate.starts_with("oc |") {
-            return AgentHarness::Opencode;
+        if let Some(harness) = AgentHarness::KNOWN.iter().find(|harness| {
+            harness.spec().is_some_and(|spec| {
+                spec.title_prefixes
+                    .iter()
+                    .any(|prefix| candidate.starts_with(prefix))
+            })
+        }) {
+            return harness.clone();
         }
     }
     AgentHarness::Unknown
@@ -360,36 +498,15 @@ fn launched_program(command: &str) -> Option<&str> {
 }
 
 pub fn default_launch_cmd_for_harness(harness: &AgentHarness) -> Option<&'static str> {
-    match harness {
-        AgentHarness::Agy => Some("agy"),
-        AgentHarness::Claude => Some("claude"),
-        AgentHarness::Codex => Some("codex"),
-        AgentHarness::Gemini => Some("gemini"),
-        AgentHarness::Opencode => Some("opencode"),
-        AgentHarness::Zcode => Some("zcode"),
-        AgentHarness::Devin => Some("devin"),
-        AgentHarness::Muse => Some("muse"),
-        AgentHarness::Endchat => Some("endchat"),
-        AgentHarness::Unknown => None,
-    }
+    harness.spec().map(|spec| spec.launch_cmd)
 }
 
 fn infer_harness_from_process_info(process: &LocalProcessInfo) -> AgentHarness {
-    [
-        AgentHarness::Agy,
-        AgentHarness::Claude,
-        AgentHarness::Codex,
-        AgentHarness::Gemini,
-        AgentHarness::Opencode,
-        AgentHarness::Zcode,
-        AgentHarness::Devin,
-        AgentHarness::Muse,
-        AgentHarness::Endchat,
-    ]
-    .iter()
-    .cloned()
-    .find(|harness| is_harness_tui_process(harness, process))
-    .unwrap_or(AgentHarness::Unknown)
+    AgentHarness::KNOWN
+        .iter()
+        .cloned()
+        .find(|harness| is_harness_tui_process(harness, process))
+        .unwrap_or(AgentHarness::Unknown)
 }
 
 fn format_process_command(process: &LocalProcessInfo) -> Option<String> {
@@ -517,33 +634,13 @@ pub fn detect_harness_process<'a>(
 }
 
 fn is_harness_tui_program(harness: &AgentHarness, value: &str) -> bool {
+    let Some(spec) = harness.spec() else {
+        return false;
+    };
     Path::new(value)
         .file_name()
         .and_then(|name| name.to_str())
-        .map(|name| {
-            let name = name.to_ascii_lowercase();
-            match harness {
-                AgentHarness::Agy => matches!(name.as_str(), "agy" | "agy.exe"),
-                AgentHarness::Claude => matches!(
-                    name.as_str(),
-                    "claude" | "claude.exe" | "claude.cmd" | "claude.bat" | "claude.js"
-                ),
-                AgentHarness::Codex => matches!(
-                    name.as_str(),
-                    "codex" | "codex.exe" | "codex.cmd" | "codex.bat" | "codex.js"
-                ),
-                AgentHarness::Gemini => {
-                    matches!(name.as_str(), "gemini" | "gemini.exe" | "gemini.js")
-                }
-                AgentHarness::Opencode => matches!(name.as_str(), "opencode" | "opencode.exe"),
-                AgentHarness::Zcode => matches!(name.as_str(), "zcode" | "zcode.cjs"),
-                AgentHarness::Devin => name == "devin",
-                AgentHarness::Muse => name == "muse",
-                AgentHarness::Endchat => name == "endchat",
-                _ => false,
-            }
-        })
-        .unwrap_or(false)
+        .is_some_and(|name| spec.programs.contains(&name.to_ascii_lowercase().as_str()))
 }
 
 pub(crate) fn is_harness_tui_process(harness: &AgentHarness, process: &LocalProcessInfo) -> bool {
@@ -1139,7 +1236,7 @@ fn remove_native_resume_selector(harness: &AgentHarness, argv: &mut Vec<String>)
         AgentHarness::Opencode => return normalize_opencode_argv(argv),
         AgentHarness::Devin => normalize_devin_argv(argv),
         AgentHarness::Muse => normalize_muse_argv(argv),
-        _ => return false,
+        AgentHarness::Gemini | AgentHarness::Endchat | AgentHarness::Unknown => return false,
     }
     true
 }
@@ -1188,20 +1285,14 @@ fn harness_process_is_compatible(
         return true;
     }
 
-    match configured_harness {
-        // Gemini launches via a node wrapper, so the foreground process
-        // name is typically just `node` rather than `gemini`.
-        AgentHarness::Gemini => foreground_process_name
-            .and_then(|name| Path::new(name).file_name().and_then(|name| name.to_str()))
-            .map(|name| {
-                matches!(
-                    name.to_ascii_lowercase().as_str(),
-                    "node" | "node.exe" | "bun" | "bun.exe"
-                )
-            })
-            .unwrap_or(false),
-        _ => false,
-    }
+    // A harness that runs under a wrapper, such as Gemini under node, can
+    // show the wrapper's name as its foreground process.
+    let wrappers = configured_harness
+        .spec()
+        .map_or(&[][..], |spec| spec.wrapper_programs);
+    foreground_process_name
+        .and_then(|name| Path::new(name).file_name().and_then(|name| name.to_str()))
+        .is_some_and(|name| wrappers.contains(&name.to_ascii_lowercase().as_str()))
 }
 
 pub(crate) fn registered_harness_process<'a>(
@@ -4359,31 +4450,31 @@ pub(crate) fn agent_observer_artifact_paths(
     harness: &AgentHarness,
     session_path: &str,
 ) -> Vec<PathBuf> {
+    /// A SQLite database and the files it writes beside it.
+    fn sqlite_files(database: &Path) -> Vec<PathBuf> {
+        let path = database.to_string_lossy();
+        ["", "-wal", "-shm", "-journal"]
+            .iter()
+            .map(|suffix| PathBuf::from(format!("{path}{suffix}")))
+            .collect()
+    }
     match harness {
         AgentHarness::Opencode | AgentHarness::Zcode => parse_opencode_session_path(session_path)
-            .map(|(path, _)| {
-                let path = path.to_string_lossy();
-                ["", "-wal", "-shm", "-journal"]
-                    .iter()
-                    .map(|suffix| PathBuf::from(format!("{path}{suffix}")))
-                    .collect()
-            })
+            .map(|(path, _)| sqlite_files(&path))
             .unwrap_or_default(),
         AgentHarness::Devin => crate::devin::parse_session_url(session_path)
-            .map(|(path, _)| {
-                let path = path.to_string_lossy();
-                ["", "-wal", "-shm", "-journal"]
-                    .iter()
-                    .map(|suffix| PathBuf::from(format!("{path}{suffix}")))
-                    .collect()
-            })
+            .map(|(path, _)| sqlite_files(&path))
             .unwrap_or_default(),
         AgentHarness::Endchat => ["state.json", "turns.jsonl"]
             .iter()
             .map(|name| Path::new(session_path).join(name))
             .collect(),
+        AgentHarness::Agy
+        | AgentHarness::Claude
+        | AgentHarness::Codex
+        | AgentHarness::Gemini
+        | AgentHarness::Muse => vec![PathBuf::from(session_path)],
         AgentHarness::Unknown => vec![],
-        _ => vec![PathBuf::from(session_path)],
     }
 }
 
@@ -6050,6 +6141,44 @@ mod test {
     use std::sync::Mutex;
     use tempfile::TempDir;
 
+    #[test]
+    fn the_harness_table_lists_each_harness_once_with_its_own_programs() {
+        // A new harness fails to compile here until it has a place in KNOWN.
+        let position = |harness: &AgentHarness| match harness {
+            AgentHarness::Agy => 0,
+            AgentHarness::Claude => 1,
+            AgentHarness::Codex => 2,
+            AgentHarness::Gemini => 3,
+            AgentHarness::Opencode => 4,
+            AgentHarness::Zcode => 5,
+            AgentHarness::Devin => 6,
+            AgentHarness::Muse => 7,
+            AgentHarness::Endchat => 8,
+            AgentHarness::Unknown => unreachable!(),
+        };
+        let mut names = std::collections::HashSet::new();
+        let mut programs = std::collections::HashMap::new();
+        for (index, harness) in AgentHarness::KNOWN.iter().enumerate() {
+            assert_eq!(position(harness), index);
+            let spec = harness.spec().unwrap();
+            assert!(names.insert(spec.name), "{} is listed twice", spec.name);
+            assert_eq!(harness.name(), spec.name);
+            // No two harnesses share a program, so detection does not
+            // depend on the order harnesses are tried in.
+            for program in spec.programs {
+                assert_eq!(*program, program.to_ascii_lowercase());
+                if let Some(other) = programs.insert(*program, spec.name) {
+                    panic!("{} and {} both run as {}", other, spec.name, program);
+                }
+            }
+            assert_eq!(infer_harness(spec.launch_cmd, None), *harness);
+        }
+        assert_eq!(AgentHarness::Unknown.spec().map(|spec| spec.name), None);
+        assert_eq!(AgentHarness::Unknown.name(), "unknown");
+        assert!(!AgentHarness::Gemini.restorable());
+        assert!(AgentHarness::Endchat.turns_survive_mux_restart());
+    }
+
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Serializes tests that change process environment variables. A test
@@ -7694,32 +7823,9 @@ mod test {
             resolvers.iter().map(|(key, _)| *key).collect(),
             "the harnesses that list wakterm as a reader"
         );
-        // Every harness Wakterm detects has a resolver; a new harness does
-        // not compile here until it has a spec key.
-        let spec_key = |harness: AgentHarness| match harness {
-            AgentHarness::Agy => "agy",
-            AgentHarness::Claude => "claude",
-            AgentHarness::Codex => "codex",
-            AgentHarness::Devin => "devin",
-            AgentHarness::Endchat => "endchat",
-            AgentHarness::Gemini => "gemini",
-            AgentHarness::Muse => "muse",
-            AgentHarness::Opencode => "opencode",
-            AgentHarness::Zcode => "zcode",
-            AgentHarness::Unknown => unreachable!(),
-        };
-        for harness in [
-            AgentHarness::Agy,
-            AgentHarness::Claude,
-            AgentHarness::Codex,
-            AgentHarness::Devin,
-            AgentHarness::Endchat,
-            AgentHarness::Gemini,
-            AgentHarness::Muse,
-            AgentHarness::Opencode,
-            AgentHarness::Zcode,
-        ] {
-            assert!(read_by_wakterm.contains(spec_key(harness)));
+        // Every harness Wakterm supports has a resolver.
+        for harness in AgentHarness::KNOWN {
+            assert!(read_by_wakterm.contains(harness.name()));
         }
 
         let home = home_dir().unwrap();

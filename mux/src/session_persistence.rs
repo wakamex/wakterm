@@ -375,9 +375,7 @@ fn collect_agent_restore_intents(
             if let Some((harness, metadata, session_id)) =
                 mux.agent_restore_intent_for_pane(entry.pane_id)
             {
-                // endchat runs its turns in its own server process, which
-                // a mux restart leaves running.
-                let turn_interrupted = harness != AgentHarness::Endchat
+                let turn_interrupted = !harness.turns_survive_mux_restart()
                     && turn_interrupted(mux, entry.pane_id, &metadata.agent_id);
                 intents.push(SavedAgentRestoreIntent {
                     pane_id: entry.pane_id,
@@ -1094,8 +1092,8 @@ fn first_leaf_entry(node: &PaneNode) -> Option<&crate::tab::PaneEntry> {
 fn restore_agent_intent(pane_id: PaneId, intent: &SavedAgentRestoreIntent) -> anyhow::Result<()> {
     let mux = Mux::get();
     crate::agent_start_gate::bind(intent.pane_id, pane_id);
-    // endchat's turns outlive the mux, whatever an earlier build saved.
-    if intent.turn_interrupted && intent.harness() != AgentHarness::Endchat {
+    // Such a harness's turns outlive the mux, whatever an earlier build saved.
+    if intent.turn_interrupted && !intent.harness().turns_survive_mux_restart() {
         RESTORED_INTERRUPTED_TURNS.lock().unwrap().push((
             intent.metadata.agent_id.clone(),
             intent.metadata.name.clone(),
@@ -1172,18 +1170,7 @@ fn restore_command_for_entry(
 fn resumable_agent(entry: &crate::tab::PaneEntry) -> Option<(&AgentMetadata, AgentHarness)> {
     let metadata = entry.agent_metadata.as_ref()?;
     let harness = crate::agent::infer_harness(&metadata.launch_cmd, None);
-    matches!(
-        harness,
-        AgentHarness::Agy
-            | AgentHarness::Claude
-            | AgentHarness::Codex
-            | AgentHarness::Zcode
-            | AgentHarness::Opencode
-            | AgentHarness::Devin
-            | AgentHarness::Muse
-            | AgentHarness::Endchat
-    )
-    .then_some((metadata, harness))
+    harness.restorable().then_some((metadata, harness))
 }
 
 /// For a pane saved with a harness agent but no restore intent, which names
@@ -1332,16 +1319,10 @@ fn prepare_agent_restore(
         anyhow::bail!("automatic restore cannot reconstruct launch supervisor {supervisor}");
     }
     let harness = intent.harness();
-    if matches!(
-        harness,
-        AgentHarness::Agy
-            | AgentHarness::Claude
-            | AgentHarness::Zcode
-            | AgentHarness::Opencode
-            | AgentHarness::Devin
-            | AgentHarness::Muse
-            | AgentHarness::Endchat
-    ) {
+    if harness
+        .spec()
+        .is_some_and(|spec| spec.restore == crate::agent::HarnessRestore::NativeResume)
+    {
         return Ok(PreparedAgentRestore {
             command: native_resume_command(
                 &harness,

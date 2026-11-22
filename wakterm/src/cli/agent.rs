@@ -232,16 +232,20 @@ impl AgentStartHarness {
     }
 
     fn default_command(self) -> &'static str {
-        match self {
-            Self::Agy => "agy",
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Gemini => "gemini",
-            Self::Opencode => "opencode",
-            Self::Zcode => "zcode",
-            Self::Devin => "devin",
-            Self::Muse => "muse",
-        }
+        self.as_agent_harness()
+            .spec()
+            .expect("every harness agent start offers is known")
+            .launch_cmd
+    }
+
+    /// The harnesses agent start offers, for its error messages.
+    fn names() -> String {
+        let mut names = Self::value_variants()
+            .iter()
+            .map(|harness| harness.as_agent_harness().name())
+            .collect::<Vec<_>>();
+        names.sort();
+        names.join(", ")
     }
 }
 
@@ -344,7 +348,8 @@ impl SpawnAgentCommand {
         let harness = infer_harness(launch_cmd, None);
         anyhow::ensure!(
             !matches!(harness, AgentHarness::Unknown),
-            "agent start requires a recognized harness (currently: agy, claude, codex, devin, gemini, muse, opencode, zcode); if you are using a wrapper command, specify the harness positionally and pass the wrapper via --cmd"
+            "agent start requires a recognized harness (currently: {}); if you are using a wrapper command, specify the harness positionally and pass the wrapper via --cmd",
+            AgentStartHarness::names()
         );
         Ok(harness)
     }
@@ -943,22 +948,13 @@ fn resolve_spawn_agent_name(
         return Ok(name.to_string());
     }
 
-    let base_name = match harness {
-        AgentHarness::Agy => "agy",
-        AgentHarness::Codex => "codex",
-        AgentHarness::Claude => "claude",
-        AgentHarness::Gemini => "gemini",
-        AgentHarness::Opencode => "opencode",
-        AgentHarness::Zcode => "zcode",
-        AgentHarness::Devin => "devin",
-        AgentHarness::Muse => "muse",
-        AgentHarness::Endchat => "endchat",
-        AgentHarness::Unknown => {
-            bail!(
-                "agent start requires a recognized harness (currently: agy, claude, codex, devin, gemini, muse, opencode, zcode)"
-            )
-        }
+    let Some(spec) = harness.spec() else {
+        bail!(
+            "agent start requires a recognized harness (currently: {})",
+            AgentStartHarness::names()
+        )
     };
+    let base_name = spec.name;
 
     Ok(next_available_agent_name(agents, base_name))
 }
@@ -3512,19 +3508,7 @@ fn turn_state_label(state: &AgentTurnState) -> String {
 }
 
 fn harness_label(harness: &AgentHarness) -> String {
-    match harness {
-        AgentHarness::Unknown => "unknown",
-        AgentHarness::Agy => "agy",
-        AgentHarness::Claude => "claude",
-        AgentHarness::Codex => "codex",
-        AgentHarness::Gemini => "gemini",
-        AgentHarness::Opencode => "opencode",
-        AgentHarness::Zcode => "zcode",
-        AgentHarness::Devin => "devin",
-        AgentHarness::Muse => "muse",
-        AgentHarness::Endchat => "endchat",
-    }
-    .to_string()
+    harness.name().to_string()
 }
 
 fn transport_label(transport: &AgentTransport) -> String {
