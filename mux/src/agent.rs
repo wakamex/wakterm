@@ -1508,7 +1508,7 @@ pub fn input_box_blocked(
             ),
             Some(_) => None,
         },
-        AgentHarness::Devin => match crate::devin::input_box(lines) {
+        AgentHarness::Devin => match crate::harness::devin::input_box(lines) {
             None => Some("Devin's input box is not on screen"),
             Some(state) if !state.text.is_empty() => {
                 Some("the input box holds text the user is typing")
@@ -1907,7 +1907,7 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
                 .or_else(|| crate::muse::resumed_session(&metadata.launch_cmd))
                 .as_deref(),
         ),
-        AgentHarness::Devin => observe_devin(
+        AgentHarness::Devin => crate::harness::devin::observe(
             cwd,
             runtime.session_path.as_deref(),
             runtime.observer_started_at,
@@ -2083,16 +2083,18 @@ pub fn pending_observer_detail(
     }
 }
 
+/// What one read of a harness's session found, which the observer applies to
+/// the agent's runtime state.
 #[derive(Debug)]
-struct HarnessObservation {
-    session_path: Option<String>,
-    progress_summary: Option<String>,
-    harness_mode: Option<String>,
-    turn_phase: Option<String>,
-    updated_at: Option<DateTime<Utc>>,
-    turn_state: AgentTurnState,
-    last_turn_completed_at: Option<DateTime<Utc>>,
-    observed_turn: Option<AgentObservedTurn>,
+pub(crate) struct HarnessObservation {
+    pub session_path: Option<String>,
+    pub progress_summary: Option<String>,
+    pub harness_mode: Option<String>,
+    pub turn_phase: Option<String>,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub turn_state: AgentTurnState,
+    pub last_turn_completed_at: Option<DateTime<Utc>>,
+    pub observed_turn: Option<AgentObservedTurn>,
 }
 
 impl HarnessObservation {
@@ -3875,105 +3877,6 @@ fn observe_muse(
     }))
 }
 
-/// Observes a Devin session: the one whose lock the pane's Devin process
-/// holds, else the session a restore expects, else the session named by
-/// `preferred_session`, else the newest session started in `cwd` since
-/// `updated_after`. A session Devin has locked
-/// but written nothing to yet is observed as waiting for the user, so that
-/// events can be read from its first message.
-fn observe_devin(
-    cwd: &str,
-    preferred_session: Option<&str>,
-    updated_after: Option<DateTime<Utc>>,
-    adopted_pid: Option<u32>,
-    expected_session: Option<&str>,
-) -> anyhow::Result<Option<HarnessObservation>> {
-    let Some(db_path) = crate::devin::db_path_for(adopted_pid) else {
-        return Ok(None);
-    };
-    if !db_path.is_file() {
-        return Ok(None);
-    }
-    let connection = crate::devin::open(&db_path)?;
-    let session_id = match adopted_pid
-        .and_then(|pid| crate::devin::session_of_process(&db_path, pid))
-        .or_else(|| expected_session.map(str::to_string))
-    {
-        Some(session_id) => session_id,
-        None => match preferred_session
-            .and_then(crate::devin::parse_session_url)
-            .filter(|(path, _)| *path == db_path)
-        {
-            Some((_, session_id)) => session_id,
-            None => match crate::devin::newest_session_in(&connection, cwd, updated_after)? {
-                Some(session_id) => session_id,
-                None => return Ok(None),
-            },
-        },
-    };
-    let messages = crate::devin::conversation(&connection, &session_id)?;
-    let session_path = Some(crate::devin::session_url(&db_path, &session_id));
-    let Some(turn) = crate::devin::latest_turn(&messages) else {
-        return Ok(Some(HarnessObservation {
-            session_path,
-            progress_summary: None,
-            harness_mode: None,
-            turn_phase: None,
-            updated_at: messages.last().map(|message| message.created_at),
-            turn_state: AgentTurnState::WaitingOnUser,
-            last_turn_completed_at: None,
-            observed_turn: None,
-        }));
-    };
-    let user = &messages[turn.start];
-    let reply = turn.end.map(|end| &messages[end]);
-    let latest = messages.last().unwrap_or(user);
-    let final_message = reply
-        .filter(|reply| reply.ends_turn)
-        .map(|reply| reply.content.trim().to_string())
-        .filter(|text| !text.is_empty());
-    let (outcome, turn_state, completed_at, turn_phase) = match reply {
-        Some(reply) if reply.interrupted => (
-            AgentObservedTurnOutcome::Aborted,
-            AgentTurnState::WaitingOnUser,
-            Some(reply.created_at),
-            "aborted",
-        ),
-        Some(reply) => (
-            AgentObservedTurnOutcome::Completed,
-            AgentTurnState::WaitingOnUser,
-            Some(reply.created_at),
-            "final_answer",
-        ),
-        None => (
-            AgentObservedTurnOutcome::Running,
-            AgentTurnState::WaitingOnAgent,
-            None,
-            "working",
-        ),
-    };
-    Ok(Some(HarnessObservation {
-        session_path,
-        progress_summary: final_message.as_deref().map(truncate_summary),
-        harness_mode: None,
-        turn_phase: Some(turn_phase.to_string()),
-        updated_at: Some(latest.created_at),
-        turn_state,
-        last_turn_completed_at: completed_at,
-        observed_turn: Some(AgentObservedTurn {
-            provider_turn_id: format!("{session_id}:{}", user.node_id),
-            outcome,
-            started_at: Some(user.created_at),
-            completed_at,
-            started_cursor: Some(user.row_id.max(0) as u64),
-            latest_cursor: Some(latest.row_id.max(0) as u64),
-            primary_user_message_sha256: Some(message_sha256(&user.content)),
-            user_message_count: turn.user_messages,
-            final_message,
-        }),
-    }))
-}
-
 /// Claude names a project's transcript directory after its working
 /// directory, with every character other than an ASCII letter or digit
 /// replaced by `-`.
@@ -4423,7 +4326,7 @@ pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> V
         }),
         AgentHarness::Opencode | AgentHarness::Zcode => opencode_schema_db_path(harness, None)
             .and_then(|path| path.parent().map(|path| vec![path.to_path_buf()])),
-        AgentHarness::Devin => crate::devin::db_path()
+        AgentHarness::Devin => crate::harness::devin::db_path()
             .and_then(|path| path.parent().map(|path| vec![path.to_path_buf()])),
         AgentHarness::Muse => {
             crate::muse::data_dir_for(None).map(|data| vec![data.join("sessions")])
@@ -4457,7 +4360,7 @@ pub(crate) fn agent_observer_artifact_paths(
         AgentHarness::Opencode | AgentHarness::Zcode => parse_opencode_session_path(session_path)
             .map(|(path, _)| sqlite_files(&path))
             .unwrap_or_default(),
-        AgentHarness::Devin => crate::devin::parse_session_url(session_path)
+        AgentHarness::Devin => crate::harness::devin::parse_session_url(session_path)
             .map(|(path, _)| sqlite_files(&path))
             .unwrap_or_default(),
         AgentHarness::Endchat => ["state.json", "turns.jsonl"]
@@ -4595,7 +4498,7 @@ pub fn restorable_session_id(
         AgentHarness::Endchat => Ok(path.is_dir().then(|| path.to_string_lossy().into_owned())),
         AgentHarness::Devin => Ok(path
             .to_str()
-            .and_then(crate::devin::parse_session_url)
+            .and_then(crate::harness::devin::parse_session_url)
             .map(|(_, session_id)| session_id)
             .filter(|session_id| is_devin_session_id(session_id))),
         _ => Ok(None),
@@ -6100,7 +6003,7 @@ fn read_last_codex_observation(path: &Path) -> anyhow::Result<HarnessObservation
     })
 }
 
-fn truncate_summary(summary: &str) -> String {
+pub(crate) fn truncate_summary(summary: &str) -> String {
     const MAX_CHARS: usize = 240;
     if summary.chars().count() <= MAX_CHARS {
         return summary.to_string();
@@ -7152,15 +7055,18 @@ mod test {
         let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let db = temp.path().join("sessions.db");
-        let mut fixture =
-            crate::devin::fixture::Fixture::create(&db, "almondine-continent", "/code/concord");
+        let mut fixture = crate::harness::devin::fixture::Fixture::create(
+            &db,
+            "almondine-continent",
+            "/code/concord",
+        );
         set_env_path("WAKTERM_AGENT_DEVIN_DB", &db);
         let observe = || {
-            observe_devin("/code/concord", None, None, None, None)
+            crate::harness::devin::observe("/code/concord", None, None, None, None)
                 .unwrap()
                 .unwrap()
         };
-        let session = crate::devin::session_url(&db, "almondine-continent");
+        let session = crate::harness::devin::session_url(&db, "almondine-continent");
         let projected_turns =
             |cursor| crate::agent_event::devin_turn_ids_for_test(&session, cursor);
 
@@ -7207,11 +7113,14 @@ mod test {
         let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
         let db = temp.path().join("sessions.db");
-        let mut fixture =
-            crate::devin::fixture::Fixture::create(&db, "almondine-continent", "/code/concord");
+        let mut fixture = crate::harness::devin::fixture::Fixture::create(
+            &db,
+            "almondine-continent",
+            "/code/concord",
+        );
         set_env_path("WAKTERM_AGENT_DEVIN_DB", &db);
         let observe = || {
-            observe_devin("/code/concord", None, None, None, None)
+            crate::harness::devin::observe("/code/concord", None, None, None, None)
                 .unwrap()
                 .unwrap()
         };
@@ -7221,7 +7130,7 @@ mod test {
         assert_eq!(empty.turn_state, AgentTurnState::WaitingOnUser);
         assert_eq!(
             empty.session_path.as_deref(),
-            Some(crate::devin::session_url(&db, "almondine-continent").as_str())
+            Some(crate::harness::devin::session_url(&db, "almondine-continent").as_str())
         );
 
         let input = "Run `sleep 15; echo done` and reply done";
@@ -7251,7 +7160,7 @@ mod test {
         fixture.user("u2", "Run `sleep 60; echo done` and reply done");
         fixture.tool_step("a3");
         fixture.interrupt("i1");
-        let interrupted = observe_devin("/code/concord", None, None, None, None)
+        let interrupted = crate::harness::devin::observe("/code/concord", None, None, None, None)
             .unwrap()
             .unwrap();
         remove_env_var("WAKTERM_AGENT_DEVIN_DB");
@@ -7272,10 +7181,10 @@ mod test {
             )
             .unwrap();
         set_env_path("WAKTERM_AGENT_DEVIN_DB", &db);
-        let newest = observe_devin("/code/concord", None, None, None, None)
+        let newest = crate::harness::devin::observe("/code/concord", None, None, None, None)
             .unwrap()
             .unwrap();
-        let expected = observe_devin(
+        let expected = crate::harness::devin::observe(
             "/code/concord",
             None,
             None,
@@ -7287,11 +7196,14 @@ mod test {
         remove_env_var("WAKTERM_AGENT_DEVIN_DB");
         assert_eq!(
             newest.session_path,
-            Some(crate::devin::session_url(&db, "scarce-plow"))
+            Some(crate::harness::devin::session_url(&db, "scarce-plow"))
         );
         assert_eq!(
             expected.session_path,
-            Some(crate::devin::session_url(&db, "almondine-continent"))
+            Some(crate::harness::devin::session_url(
+                &db,
+                "almondine-continent"
+            ))
         );
     }
 
@@ -7847,7 +7759,7 @@ mod test {
             ("agy", |_| agy_root()),
             ("claude", claude_sessions_root_for),
             ("codex", codex_sessions_root_for),
-            ("devin", crate::devin::db_path_for),
+            ("devin", crate::harness::devin::db_path_for),
             ("endchat", |_| {
                 crate::endchat::profile_dir("main", "/")
                     .and_then(|main| main.parent().map(Path::to_path_buf))
@@ -9044,7 +8956,7 @@ mod test {
         let codex_root = codex_sessions_root_for(pid);
         let gemini = gemini_root_for(pid);
         let opencode = opencode_db_path(pid);
-        let devin = crate::devin::db_path_for(pid);
+        let devin = crate::harness::devin::db_path_for(pid);
         harness.kill().unwrap();
         harness.wait().unwrap();
 
@@ -9080,7 +8992,7 @@ mod test {
                 assert!(std::time::Instant::now() < deadline);
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            let db = crate::devin::db_path_for(pid);
+            let db = crate::harness::devin::db_path_for(pid);
             process.kill().unwrap();
             process.wait().unwrap();
             db
@@ -9112,7 +9024,7 @@ mod test {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut found = None;
         while std::time::Instant::now() < deadline {
-            found = crate::devin::db_path_for(pid);
+            found = crate::harness::devin::db_path_for(pid);
             if found.as_deref() == Some(file.as_path()) {
                 break;
             }
@@ -11080,7 +10992,7 @@ mod test {
             ["devin", "--sandbox", "--resume", session]
         );
         assert!(native_resume_command(&AgentHarness::Devin, "devin", "Not A Session").is_err());
-        let url = crate::devin::session_url(Path::new("/tmp/sessions.db"), session);
+        let url = crate::harness::devin::session_url(Path::new("/tmp/sessions.db"), session);
         assert_eq!(
             restorable_session_id(&AgentHarness::Devin, Path::new(&url)).unwrap(),
             Some(session.to_string())

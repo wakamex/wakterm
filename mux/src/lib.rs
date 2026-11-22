@@ -67,10 +67,9 @@ pub mod client;
 pub mod codex_app_server;
 pub mod codex_process_memory;
 pub mod connui;
-pub mod devin;
-pub mod devin_prompt;
 pub mod domain;
 pub mod endchat;
+pub mod harness;
 pub mod localpane;
 pub mod main_thread_blocking;
 pub mod memory_protection;
@@ -247,7 +246,8 @@ pub struct Mux {
     codex_steers: Mutex<HashMap<PaneId, CodexSteer>>,
     /// The Claude menu each pane shows, and when it appeared.
     claude_menus: Mutex<HashMap<PaneId, (claude_menu::ClaudeMenu, DateTime<Utc>)>>,
-    devin_prompts: Mutex<HashMap<PaneId, (devin_prompt::DevinPrompt, DateTime<Utc>)>>,
+    devin_prompts:
+        Mutex<HashMap<PaneId, (crate::harness::devin::prompt::DevinPrompt, DateTime<Utc>)>>,
     /// The Claude question each pane last showed, reported once.
     claude_screen_questions: Mutex<HashMap<PaneId, claude_question_screen::ScreenQuestion>>,
     /// When the mux started freezing idle agents, which counts as their
@@ -777,7 +777,7 @@ enum AgentObserverCommand {
     DevinPrompt {
         metadata: AgentMetadata,
         shown_at: DateTime<Utc>,
-        prompt: devin_prompt::DevinPrompt,
+        prompt: crate::harness::devin::prompt::DevinPrompt,
     },
     ClaudeScreenQuestion {
         metadata: AgentMetadata,
@@ -4122,7 +4122,9 @@ impl Mux {
             self.devin_prompts.lock().remove(&pane_id);
             return;
         };
-        let Some(prompt) = devin_prompt::parse(&devin_prompt::screen(&pane)) else {
+        let Some(prompt) =
+            crate::harness::devin::prompt::parse(&crate::harness::devin::prompt::screen(&pane))
+        else {
             self.devin_prompts.lock().remove(&pane_id);
             return;
         };
@@ -4342,7 +4344,7 @@ impl Mux {
                     agent::agy_input_box(&lines).is_some_and(|state| state.idle)
                         || agent::agy_feedback_survey(&lines)
                 }
-                _ => crate::devin::input_box(&lines)
+                _ => crate::harness::devin::input_box(&lines)
                     .is_some_and(|state| state.text.is_empty() && !state.working),
             }
         })

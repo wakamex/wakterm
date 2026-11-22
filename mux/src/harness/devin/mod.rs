@@ -14,8 +14,13 @@
 //! database, which names the process id of its `devin acp` worker, a child of
 //! the `devin` process in the pane.
 
+pub mod prompt;
+
+use crate::agent_event::{input_accepted, AgentEventKind, PendingEvent};
+use anyhow::Context;
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use url::Url;
@@ -369,6 +374,249 @@ pub fn input_box(lines: &[wakterm_term::Line]) -> Option<InputBox> {
 
 /// A Devin database for tests, with the tables and message shapes Devin
 /// writes.
+/// Where the Devin projection stopped: the session's highest message row it
+/// has read, and the turn its latest user input started. Stored with the
+/// agent's events, so its fields keep their names.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct Cursor {
+    pub source_id: String,
+    pub last_row_id: i64,
+    pub current_turn_id: Option<String>,
+    pub turn_open: bool,
+}
+
+/// Observes a Devin session: the one whose lock the pane's Devin process
+/// holds, else the session a restore expects, else the session named by
+/// `preferred_session`, else the newest session started in `cwd` since
+/// `updated_after`. A session Devin has locked
+/// but written nothing to yet is observed as waiting for the user, so that
+/// events can be read from its first message.
+pub(crate) fn observe(
+    cwd: &str,
+    preferred_session: Option<&str>,
+    updated_after: Option<DateTime<Utc>>,
+    adopted_pid: Option<u32>,
+    expected_session: Option<&str>,
+) -> anyhow::Result<Option<crate::agent::HarnessObservation>> {
+    let Some(db_path) = db_path_for(adopted_pid) else {
+        return Ok(None);
+    };
+    if !db_path.is_file() {
+        return Ok(None);
+    }
+    let connection = open(&db_path)?;
+    let session_id = match adopted_pid
+        .and_then(|pid| session_of_process(&db_path, pid))
+        .or_else(|| expected_session.map(str::to_string))
+    {
+        Some(session_id) => session_id,
+        None => match preferred_session
+            .and_then(parse_session_url)
+            .filter(|(path, _)| *path == db_path)
+        {
+            Some((_, session_id)) => session_id,
+            None => match newest_session_in(&connection, cwd, updated_after)? {
+                Some(session_id) => session_id,
+                None => return Ok(None),
+            },
+        },
+    };
+    let messages = conversation(&connection, &session_id)?;
+    let session_path = Some(session_url(&db_path, &session_id));
+    let Some(turn) = latest_turn(&messages) else {
+        return Ok(Some(crate::agent::HarnessObservation {
+            session_path,
+            progress_summary: None,
+            harness_mode: None,
+            turn_phase: None,
+            updated_at: messages.last().map(|message| message.created_at),
+            turn_state: crate::agent::AgentTurnState::WaitingOnUser,
+            last_turn_completed_at: None,
+            observed_turn: None,
+        }));
+    };
+    let user = &messages[turn.start];
+    let reply = turn.end.map(|end| &messages[end]);
+    let latest = messages.last().unwrap_or(user);
+    let final_message = reply
+        .filter(|reply| reply.ends_turn)
+        .map(|reply| reply.content.trim().to_string())
+        .filter(|text| !text.is_empty());
+    let (outcome, turn_state, completed_at, turn_phase) = match reply {
+        Some(reply) if reply.interrupted => (
+            crate::agent::AgentObservedTurnOutcome::Aborted,
+            crate::agent::AgentTurnState::WaitingOnUser,
+            Some(reply.created_at),
+            "aborted",
+        ),
+        Some(reply) => (
+            crate::agent::AgentObservedTurnOutcome::Completed,
+            crate::agent::AgentTurnState::WaitingOnUser,
+            Some(reply.created_at),
+            "final_answer",
+        ),
+        None => (
+            crate::agent::AgentObservedTurnOutcome::Running,
+            crate::agent::AgentTurnState::WaitingOnAgent,
+            None,
+            "working",
+        ),
+    };
+    Ok(Some(crate::agent::HarnessObservation {
+        session_path,
+        progress_summary: final_message.as_deref().map(crate::agent::truncate_summary),
+        harness_mode: None,
+        turn_phase: Some(turn_phase.to_string()),
+        updated_at: Some(latest.created_at),
+        turn_state,
+        last_turn_completed_at: completed_at,
+        observed_turn: Some(crate::agent::AgentObservedTurn {
+            provider_turn_id: format!("{session_id}:{}", user.node_id),
+            outcome,
+            started_at: Some(user.created_at),
+            completed_at,
+            started_cursor: Some(user.row_id.max(0) as u64),
+            latest_cursor: Some(latest.row_id.max(0) as u64),
+            primary_user_message_sha256: Some(crate::agent::message_sha256(&user.content)),
+            user_message_count: turn.user_messages,
+            final_message,
+        }),
+    }))
+}
+
+/// Projects a Devin session's conversation. Each user input starts a turn,
+/// or, while one runs, steers it; the reply that stops without tool calls
+/// ends it. Messages compaction copied from earlier rows are skipped.
+/// The events in a Devin session since `cursor`, and where they end. A
+/// session read for the first time, or another session than the cursor's,
+/// starts from what it holds now, so its history is not reported again.
+pub(crate) fn project(
+    session_path: &str,
+    cursor: Option<Cursor>,
+) -> anyhow::Result<(Cursor, Vec<PendingEvent>)> {
+    let (db_path, source_id) = parse_session_url(session_path)
+        .with_context(|| format!("{session_path} does not name a Devin session"))?;
+    let connection = open(&db_path)?;
+    let messages = conversation(&connection, &source_id)?;
+    let mut cursor = match cursor {
+        Some(cursor) if cursor.source_id == source_id => cursor,
+        // A session observed for the first time starts from what it holds
+        // now, so its history is not reported again. A session with no
+        // messages yet is read from its first one.
+        _ => {
+            let turn = latest_turn(&messages);
+            return Ok((
+                Cursor {
+                    source_id: source_id.clone(),
+                    last_row_id: messages
+                        .iter()
+                        .map(|message| message.row_id)
+                        .max()
+                        .unwrap_or(0),
+                    current_turn_id: turn
+                        .map(|turn| format!("{source_id}:{}", messages[turn.start].node_id)),
+                    turn_open: turn.is_some_and(|turn| turn.end.is_none()),
+                },
+                Vec::new(),
+            ));
+        }
+    };
+    let seen_through = cursor.last_row_id;
+    let mut events = Vec::new();
+    for message in &messages {
+        if message.row_id <= seen_through {
+            continue;
+        }
+        cursor.last_row_id = cursor.last_row_id.max(message.row_id);
+        if seen_before(&connection, &source_id, message, seen_through)? {
+            continue;
+        }
+        let record_key = format!("devin:{source_id}:{}", message.node_id);
+        let timestamp = message.created_at;
+        let text = message.content.trim();
+        let mut tracker = TurnTracker {
+            open: cursor.turn_open,
+        };
+        let step = tracker.step(message);
+        cursor.turn_open = tracker.open;
+        match (step, cursor.current_turn_id.clone()) {
+            (TurnStep::Steered, Some(turn_id)) => {
+                let sha256 = crate::agent::message_sha256(&message.content);
+                events.push(input_accepted(
+                    format!("{record_key}:input"),
+                    timestamp,
+                    Some(turn_id),
+                    sha256,
+                    false,
+                ));
+            }
+            (TurnStep::Started | TurnStep::Steered, _) => {
+                let sha256 = crate::agent::message_sha256(&message.content);
+                let turn_id = format!("{source_id}:{}", message.node_id);
+                cursor.current_turn_id = Some(turn_id.clone());
+                let mut started = PendingEvent::new(
+                    format!("{record_key}:started"),
+                    AgentEventKind::TurnStarted,
+                    timestamp,
+                );
+                started.turn_id = Some(turn_id.clone());
+                started.input_sha256 = Some(sha256.clone());
+                let accepted = input_accepted(
+                    format!("{record_key}:input"),
+                    timestamp,
+                    Some(turn_id.clone()),
+                    sha256,
+                    false,
+                );
+                let mut state = PendingEvent::new(
+                    format!("{record_key}:state"),
+                    AgentEventKind::TurnStateChanged,
+                    timestamp,
+                );
+                state.turn_id = Some(turn_id);
+                state.turn_state = Some("waiting_on_agent".to_string());
+                events.extend([started, accepted, state]);
+            }
+            (_, None) => {}
+            (step, Some(turn_id)) => {
+                let ended = step == TurnStep::Ended;
+                // An interruption ends the turn without a reply.
+                if !message.interrupted && !text.is_empty() {
+                    let mut assistant = PendingEvent::new(
+                        format!("{record_key}:message"),
+                        AgentEventKind::AssistantMessage,
+                        timestamp,
+                    );
+                    assistant.turn_id = Some(turn_id.clone());
+                    assistant.text = Some(text.to_string());
+                    events.push(assistant);
+                }
+                if ended {
+                    let completed = !message.interrupted;
+                    let mut final_event = PendingEvent::new(
+                        format!("{record_key}:final"),
+                        AgentEventKind::TurnFinal,
+                        timestamp,
+                    );
+                    final_event.turn_id = Some(turn_id.clone());
+                    final_event.outcome =
+                        Some(if completed { "completed" } else { "aborted" }.to_string());
+                    final_event.text = (completed && !text.is_empty()).then(|| text.to_string());
+                    let mut state = PendingEvent::new(
+                        format!("{record_key}:final-state"),
+                        AgentEventKind::TurnStateChanged,
+                        timestamp,
+                    );
+                    state.turn_id = Some(turn_id);
+                    state.turn_state = Some("waiting_on_user".to_string());
+                    events.extend([final_event, state]);
+                }
+            }
+        }
+    }
+    Ok((cursor, events))
+}
+
 /// What a message does to the turn it arrives in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TurnStep {

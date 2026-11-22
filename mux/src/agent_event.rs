@@ -108,7 +108,7 @@ enum ProviderCursor {
     Agy(JsonlCursor),
     Gemini(GeminiCursor),
     Opencode(OpencodeCursor),
-    Devin(DevinCursor),
+    Devin(crate::harness::devin::Cursor),
     Muse(JsonlCursor),
 }
 
@@ -226,31 +226,22 @@ struct OpencodeCursor {
     last_final_message_rowid: i64,
 }
 
-/// Where the Devin projection stopped: the session's highest message row it
-/// has read, and the turn its latest user input started.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct DevinCursor {
-    source_id: String,
-    last_row_id: i64,
-    current_turn_id: Option<String>,
-    turn_open: bool,
-}
-
+/// An event a harness's projector found, before it is stored.
 #[derive(Clone, Debug)]
-struct PendingEvent {
-    source_key: String,
-    kind: AgentEventKind,
-    observed_at: DateTime<Utc>,
-    turn_id: Option<String>,
-    lifecycle: Option<String>,
-    reason: Option<String>,
-    turn_state: Option<String>,
-    text: Option<String>,
-    outcome: Option<String>,
-    recoverable: Option<bool>,
-    detail: Option<String>,
-    approval: Option<AgentApprovalRequest>,
-    input_sha256: Option<String>,
+pub(crate) struct PendingEvent {
+    pub source_key: String,
+    pub kind: AgentEventKind,
+    pub observed_at: DateTime<Utc>,
+    pub turn_id: Option<String>,
+    pub lifecycle: Option<String>,
+    pub reason: Option<String>,
+    pub turn_state: Option<String>,
+    pub text: Option<String>,
+    pub outcome: Option<String>,
+    pub recoverable: Option<bool>,
+    pub detail: Option<String>,
+    pub approval: Option<AgentApprovalRequest>,
+    pub input_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -263,7 +254,7 @@ pub(crate) struct AgentEventRuntimeUpdate {
 }
 
 impl PendingEvent {
-    fn new(
+    pub(crate) fn new(
         source_key: impl Into<String>,
         kind: AgentEventKind,
         observed_at: DateTime<Utc>,
@@ -1116,7 +1107,7 @@ impl AgentEventWriter {
         &mut self,
         metadata: &AgentMetadata,
         shown_at: DateTime<Utc>,
-        prompt: &crate::devin_prompt::DevinPrompt,
+        prompt: &crate::harness::devin::prompt::DevinPrompt,
     ) -> anyhow::Result<()> {
         let _blocking = crate::main_thread_blocking::blocking("writing agent events");
         let Some(incarnation) = incarnation_id(metadata) else {
@@ -1127,7 +1118,7 @@ impl AgentEventWriter {
                 Some(ProviderCursor::Devin(cursor)) => cursor.current_turn_id,
                 _ => None,
             };
-        let Some(approval) = crate::devin_prompt::approval_request(
+        let Some(approval) = crate::harness::devin::prompt::approval_request(
             prompt,
             metadata,
             turn_id.as_deref().unwrap_or_default(),
@@ -1552,7 +1543,7 @@ fn codex_terminal_failure(error: Option<&Value>) -> (&'static str, &'static str)
 
 /// An `input_accepted` event for input the provider recorded. `queued`
 /// marks input waiting in the provider's queue for the running turn.
-fn input_accepted(
+pub(crate) fn input_accepted(
     source_key: String,
     observed_at: DateTime<Utc>,
     turn_id: Option<String>,
@@ -2814,133 +2805,15 @@ fn project_muse(
     })
 }
 
-/// Projects a Devin session's conversation. Each user input starts a turn,
-/// or, while one runs, steers it; the reply that stops without tool calls
-/// ends it. Messages compaction copied from earlier rows are skipped.
 fn project_devin(
     session_path: &str,
     cursor: Option<ProviderCursor>,
 ) -> anyhow::Result<ProjectedEvents> {
-    let (db_path, source_id) = crate::devin::parse_session_url(session_path)
-        .with_context(|| format!("{session_path} does not name a Devin session"))?;
-    let connection = crate::devin::open(&db_path)?;
-    let messages = crate::devin::conversation(&connection, &source_id)?;
-    let mut cursor = match cursor {
-        Some(ProviderCursor::Devin(cursor)) if cursor.source_id == source_id => cursor,
-        // A session observed for the first time starts from what it holds
-        // now, so its history is not reported again. A session with no
-        // messages yet is read from its first one.
-        _ => {
-            let turn = crate::devin::latest_turn(&messages);
-            return Ok(ProjectedEvents {
-                cursor: ProviderCursor::Devin(DevinCursor {
-                    source_id: source_id.clone(),
-                    last_row_id: messages
-                        .iter()
-                        .map(|message| message.row_id)
-                        .max()
-                        .unwrap_or(0),
-                    current_turn_id: turn
-                        .map(|turn| format!("{source_id}:{}", messages[turn.start].node_id)),
-                    turn_open: turn.is_some_and(|turn| turn.end.is_none()),
-                }),
-                events: Vec::new(),
-            });
-        }
+    let cursor = match cursor {
+        Some(ProviderCursor::Devin(cursor)) => Some(cursor),
+        _ => None,
     };
-    let seen_through = cursor.last_row_id;
-    let mut events = Vec::new();
-    for message in &messages {
-        if message.row_id <= seen_through {
-            continue;
-        }
-        cursor.last_row_id = cursor.last_row_id.max(message.row_id);
-        if crate::devin::seen_before(&connection, &source_id, message, seen_through)? {
-            continue;
-        }
-        let record_key = format!("devin:{source_id}:{}", message.node_id);
-        let timestamp = message.created_at;
-        let text = message.content.trim();
-        let mut tracker = crate::devin::TurnTracker {
-            open: cursor.turn_open,
-        };
-        let step = tracker.step(message);
-        cursor.turn_open = tracker.open;
-        match (step, cursor.current_turn_id.clone()) {
-            (crate::devin::TurnStep::Steered, Some(turn_id)) => {
-                let sha256 = crate::agent::message_sha256(&message.content);
-                events.push(input_accepted(
-                    format!("{record_key}:input"),
-                    timestamp,
-                    Some(turn_id),
-                    sha256,
-                    false,
-                ));
-            }
-            (crate::devin::TurnStep::Started | crate::devin::TurnStep::Steered, _) => {
-                let sha256 = crate::agent::message_sha256(&message.content);
-                let turn_id = format!("{source_id}:{}", message.node_id);
-                cursor.current_turn_id = Some(turn_id.clone());
-                let mut started = PendingEvent::new(
-                    format!("{record_key}:started"),
-                    AgentEventKind::TurnStarted,
-                    timestamp,
-                );
-                started.turn_id = Some(turn_id.clone());
-                started.input_sha256 = Some(sha256.clone());
-                let accepted = input_accepted(
-                    format!("{record_key}:input"),
-                    timestamp,
-                    Some(turn_id.clone()),
-                    sha256,
-                    false,
-                );
-                let mut state = PendingEvent::new(
-                    format!("{record_key}:state"),
-                    AgentEventKind::TurnStateChanged,
-                    timestamp,
-                );
-                state.turn_id = Some(turn_id);
-                state.turn_state = Some("waiting_on_agent".to_string());
-                events.extend([started, accepted, state]);
-            }
-            (_, None) => {}
-            (step, Some(turn_id)) => {
-                let ended = step == crate::devin::TurnStep::Ended;
-                // An interruption ends the turn without a reply.
-                if !message.interrupted && !text.is_empty() {
-                    let mut assistant = PendingEvent::new(
-                        format!("{record_key}:message"),
-                        AgentEventKind::AssistantMessage,
-                        timestamp,
-                    );
-                    assistant.turn_id = Some(turn_id.clone());
-                    assistant.text = Some(text.to_string());
-                    events.push(assistant);
-                }
-                if ended {
-                    let completed = !message.interrupted;
-                    let mut final_event = PendingEvent::new(
-                        format!("{record_key}:final"),
-                        AgentEventKind::TurnFinal,
-                        timestamp,
-                    );
-                    final_event.turn_id = Some(turn_id.clone());
-                    final_event.outcome =
-                        Some(if completed { "completed" } else { "aborted" }.to_string());
-                    final_event.text = (completed && !text.is_empty()).then(|| text.to_string());
-                    let mut state = PendingEvent::new(
-                        format!("{record_key}:final-state"),
-                        AgentEventKind::TurnStateChanged,
-                        timestamp,
-                    );
-                    state.turn_id = Some(turn_id);
-                    state.turn_state = Some("waiting_on_user".to_string());
-                    events.extend([final_event, state]);
-                }
-            }
-        }
-    }
+    let (cursor, events) = crate::harness::devin::project(session_path, cursor)?;
     Ok(ProjectedEvents {
         cursor: ProviderCursor::Devin(cursor),
         events,
@@ -3689,9 +3562,12 @@ mod tests {
     fn devin_projection_ends_an_interrupted_turn_as_aborted() {
         let temp = TempDir::new().unwrap();
         let db = temp.path().join("sessions.db");
-        let session = crate::devin::session_url(&db, "almondine-continent");
-        let mut fixture =
-            crate::devin::fixture::Fixture::create(&db, "almondine-continent", "/code/concord");
+        let session = crate::harness::devin::session_url(&db, "almondine-continent");
+        let mut fixture = crate::harness::devin::fixture::Fixture::create(
+            &db,
+            "almondine-continent",
+            "/code/concord",
+        );
         let cursor = project_devin(&session, None).unwrap().cursor;
         let first = fixture.user("u1", "Run `sleep 60; echo done` and reply done");
         fixture.tool_step("a1");
@@ -3736,8 +3612,8 @@ mod tests {
         ) else {
             return;
         };
-        let url = crate::devin::session_url(Path::new(&db), &session);
-        let start = ProviderCursor::Devin(DevinCursor {
+        let url = crate::harness::devin::session_url(Path::new(&db), &session);
+        let start = ProviderCursor::Devin(crate::harness::devin::Cursor {
             source_id: session.clone(),
             last_row_id: 0,
             current_turn_id: None,
@@ -3934,9 +3810,12 @@ mod tests {
     fn devin_projection_reports_input_steers_and_the_final_reply() {
         let temp = TempDir::new().unwrap();
         let db = temp.path().join("sessions.db");
-        let session = crate::devin::session_url(&db, "almondine-continent");
-        let mut fixture =
-            crate::devin::fixture::Fixture::create(&db, "almondine-continent", "/code/concord");
+        let session = crate::harness::devin::session_url(&db, "almondine-continent");
+        let mut fixture = crate::harness::devin::fixture::Fixture::create(
+            &db,
+            "almondine-continent",
+            "/code/concord",
+        );
         // A session observed before its first message is read from it.
         let mut cursor = Some(project_devin(&session, None).unwrap().cursor);
         let mut project = |cursor: &mut Option<ProviderCursor>| {
@@ -5621,14 +5500,17 @@ mod tests {
     fn devin_permission_prompt_is_one_approval_request_in_the_current_turn() {
         let temp = TempDir::new().unwrap();
         let db = temp.path().join("sessions.db");
-        let mut fixture =
-            crate::devin::fixture::Fixture::create(&db, "almondine-continent", "/code/concord");
+        let mut fixture = crate::harness::devin::fixture::Fixture::create(
+            &db,
+            "almondine-continent",
+            "/code/concord",
+        );
         let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
         let metadata = metadata("devin");
         let runtime = runtime(
             &metadata,
             AgentHarness::Devin,
-            crate::devin::session_url(&db, "almondine-continent"),
+            crate::harness::devin::session_url(&db, "almondine-continent"),
         );
         let mut writer = store.writer().unwrap();
         writer.observe_agent(&metadata, &runtime).unwrap();
@@ -5636,7 +5518,7 @@ mod tests {
         writer.observe_agent(&metadata, &runtime).unwrap();
         let after = store.latest_sequence();
 
-        let prompt = crate::devin_prompt::DevinPrompt {
+        let prompt = crate::harness::devin::prompt::DevinPrompt {
             command: Some("mkdir d1".to_string()),
             labels: vec!["Allow".into(), "Bypass mode".into(), "Deny".into()],
             focused: 0,
@@ -5656,7 +5538,7 @@ mod tests {
         let turn = format!("almondine-continent:{input}");
         assert_eq!(events[0].turn_id.as_deref(), Some(turn.as_str()));
         let approval = events[0].approval.clone().unwrap();
-        assert_eq!(approval.kind, crate::devin_prompt::PROMPT_KIND);
+        assert_eq!(approval.kind, crate::harness::devin::prompt::PROMPT_KIND);
         assert_eq!(approval.command.as_deref(), Some("mkdir d1"));
         assert_eq!(
             approval

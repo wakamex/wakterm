@@ -115,7 +115,7 @@ pub enum AgentApprovalWork {
     /// Keys that answer a Claude confirmation menu, with screen checks.
     ClaudeMenu(crate::claude_menu::MenuKeys),
     /// Keys that answer Devin's permission prompt, with screen checks.
-    DevinPrompt(crate::devin_prompt::PromptKeys),
+    DevinPrompt(crate::harness::devin::prompt::PromptKeys),
     /// The key that answers Muse's permission prompt, then a wait for Muse
     /// to log the decision.
     MusePrompt(crate::muse_prompt::PromptKeys),
@@ -273,7 +273,7 @@ impl Mux {
         ) {
             return self.resolve_claude_menu(request, resolution);
         }
-        if request.kind == crate::devin_prompt::PROMPT_KIND {
+        if request.kind == crate::harness::devin::prompt::PROMPT_KIND {
             return self.resolve_devin_prompt(request, resolution);
         }
         if request.kind == crate::muse_prompt::PROMPT_KIND {
@@ -496,14 +496,15 @@ impl Mux {
         let pane = self
             .get_pane(pane_id)
             .context("approval target pane disappeared")?;
-        let shown = crate::devin_prompt::parse(&crate::devin_prompt::screen(&pane))
-            .context("approval request is no longer pending")?;
+        let shown =
+            crate::harness::devin::prompt::parse(&crate::harness::devin::prompt::screen(&pane))
+                .context("approval request is no longer pending")?;
         anyhow::ensure!(
             shown.command == request.command,
             "approval request is no longer pending"
         );
         Ok(AgentApprovalWork::DevinPrompt(
-            crate::devin_prompt::PromptKeys {
+            crate::harness::devin::prompt::PromptKeys {
                 pane,
                 request,
                 choice_id: resolution.choice_id,
