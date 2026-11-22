@@ -16,6 +16,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use wakterm_term::Line;
 
 /// Whether a message starts a turn: input the user sent. Gemini also
 /// records a tool's result as a user message, whose parts are all
@@ -55,6 +56,36 @@ pub(crate) struct Conversation {
     pub session_id: Option<String>,
     pub last_updated: Option<DateTime<Utc>>,
     pub messages: Vec<Value>,
+}
+
+const INPUT_PLACEHOLDER: &str = "Type your message or @path/to/file";
+const CANCEL_HINT: &str = "(esc to cancel, ";
+
+/// Whether Gemini's screen shows it waiting for input: its input box holds
+/// only its placeholder, and the line Gemini shows just above the rule over
+/// the box while it works, with a spinner and how long the turn has run, is absent.
+/// Gemini shows that line both while the model responds and while a tool
+/// runs.
+pub fn idle_on_screen(lines: &[Line]) -> bool {
+    let plain: Vec<String> = lines.iter().map(|line| line.as_str().to_string()).collect();
+    let Some(input) = plain
+        .iter()
+        .rposition(|line| line.contains(INPUT_PLACEHOLDER))
+    else {
+        return false;
+    };
+    // The working line sits just above the rule over the box.
+    let Some(rule) = plain[..input]
+        .iter()
+        .rposition(|line| line.trim_start().starts_with('\u{2500}'))
+    else {
+        return false;
+    };
+    !plain[..rule]
+        .iter()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.contains(CANCEL_HINT))
 }
 
 /// The session ID a chat file records, which `gemini --resume` takes. Both
@@ -691,6 +722,41 @@ mod test {
         assert!(!starts_turn(
             &serde_json::json!({"type": "gemini", "content": "hi"})
         ));
+    }
+
+    #[test]
+    fn the_screen_shows_gemini_idle_without_its_working_line() {
+        let screen = |status: Option<&str>, typed: &str| {
+            let box_line = if typed.is_empty() {
+                format!(" >   {INPUT_PLACEHOLDER}")
+            } else {
+                format!(" > {typed}")
+            };
+            [
+                // History can quote the hint without it meaning anything.
+                Some(" press (esc to cancel, 1s) to stop"),
+                Some("\u{2580}\u{2580}\u{2580}"),
+                status,
+                Some("\u{2500}\u{2500}\u{2500}"),
+                Some(" Shift+Tab to accept edits"),
+                Some("\u{2584}\u{2584}\u{2584}"),
+                Some(box_line.as_str()),
+                Some("\u{2580}\u{2580}\u{2580}"),
+                Some(" workspace (/directory)"),
+            ]
+            .into_iter()
+            .flatten()
+            .map(|text| Line::from_text(text, &Default::default(), 0, None))
+            .collect::<Vec<_>>()
+        };
+        assert!(idle_on_screen(&screen(None, "")));
+        assert!(!idle_on_screen(&screen(
+            Some(" \u{283c} Thinking... (esc to cancel, 5s)"),
+            ""
+        )));
+        // Typed text is not an idle box.
+        assert!(!idle_on_screen(&screen(None, "half a thought")));
+        assert!(!idle_on_screen(&[]));
     }
 
     #[test]

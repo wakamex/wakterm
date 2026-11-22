@@ -4324,8 +4324,8 @@ impl Mux {
         // A harness can stop a turn without recording its end: agy on an
         // error it only shows in the pane, such as a quota or safety-filter
         // block, or a turn a restart interrupted, and Devin when the user
-        // interrupts it while it generates, and OpenCode and Devin when a
-        // restart interrupts them. Its
+        // interrupts it while it generates, and OpenCode, Devin and Gemini
+        // when a restart interrupts them. Its
         // screen then shows it waiting for input, as agy's also does while a
         // turn waits for a background task, which does not stop it.
         let turn_stopped = agent::turn_running(runtime)
@@ -4340,7 +4340,7 @@ impl Mux {
     fn harness_idle_on_screen(&self, harness: &AgentHarness, pane_id: PaneId) -> bool {
         if !matches!(
             harness,
-            AgentHarness::Agy | AgentHarness::Devin | AgentHarness::Opencode
+            AgentHarness::Agy | AgentHarness::Devin | AgentHarness::Gemini | AgentHarness::Opencode
         ) {
             return false;
         }
@@ -4353,6 +4353,7 @@ impl Mux {
                     crate::harness::agy::input_box(&lines).is_some_and(|state| state.idle)
                         || crate::harness::agy::feedback_survey(&lines)
                 }
+                AgentHarness::Gemini => crate::harness::gemini::idle_on_screen(&lines),
                 AgentHarness::Opencode => {
                     crate::harness::opencode::input_box(&lines).is_some_and(|text| text.is_empty())
                         && crate::harness::opencode::working(&lines) == Some(false)
