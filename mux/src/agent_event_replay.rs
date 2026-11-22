@@ -6,9 +6,9 @@
 //! Run with `WAKTERM_REPLAY=agy cargo test -p mux --lib replay_stored_sessions
 //! -- --ignored --nocapture`, with `agy`, `muse`, `gemini`, `opencode` or
 //! `zcode`, and
-//! `WAKTERM_REPLAY_LIMIT=N` to replay only N sessions. The readers judge time
-//! by the clock, so a replayed session is read as a reader would read it now:
-//! a wait of agy's that ran out long ago has run out for both. Devin has no
+//! `WAKTERM_REPLAY_LIMIT=N` to replay only N sessions. agy's readers judge a
+//! background wait by the clock, which the replay sets to each step's time
+//! as it is written. Devin has no
 //! replay: it rewrites a conversation's rows when it rebuilds the chain, so
 //! its database keeps no record of what its readers saw before a rebuild.
 
@@ -207,6 +207,13 @@ fn replay_agy() -> Tally {
         let mut first = true;
         tally.sessions += 1;
         for (index, line) in json_lines(&source).iter().enumerate() {
+            // Read each step when it was written.
+            let written = serde_json::from_str::<Value>(line)
+                .ok()
+                .and_then(|record| crate::harness::agy::record_time(&record));
+            if written.is_some() {
+                crate::harness::agy::TEST_NOW.with(|now| now.set(written));
+            }
             append_line(&path, line);
             let step = project_agy(&path, Some(cursor)).unwrap();
             projected.apply(&step.events);
@@ -374,7 +381,38 @@ fn replay_gemini() -> Tally {
         let mut projected = ProjectedTurn::default();
         let mut first = true;
         tally.sessions += 1;
+        // Gemini records a reply that calls tools as the reply, its metadata
+        // and the reply again with its tool calls, in one synchronous step,
+        // so the replay does not read the chat partway through that step:
+        // where the next record other than metadata updates the last message
+        // written.
+        let parsed = items
+            .iter()
+            .map(|item| serde_json::from_str::<Value>(item).unwrap_or(Value::Null))
+            .collect::<Vec<_>>();
+        fn message(record: &Value) -> Option<&str> {
+            record
+                .get("$set")
+                .is_none()
+                .then(|| record.get("id").and_then(Value::as_str))
+                .flatten()
+        }
+        let mid_step = |count: usize| {
+            let last = parsed[..count]
+                .iter()
+                .rev()
+                .find(|record| record.get("$set").is_none());
+            let next = parsed[count..]
+                .iter()
+                .find(|record| record.get("$set").is_none());
+            jsonl
+                && last.and_then(message).is_some()
+                && last.and_then(message) == next.and_then(message)
+        };
         for count in (if jsonl { seed } else { 0 }) + 1..=items.len() {
+            if mid_step(count) {
+                continue;
+            }
             write_prefix(count);
             let Ok(step) = project_gemini(&path, Some(cursor.clone())) else {
                 continue;

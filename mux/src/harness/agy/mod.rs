@@ -76,7 +76,9 @@ impl TurnTracker {
                 self.waiting_since = None;
                 TurnStep::Other
             }
-            Some("GENERIC") if self.open && status == Some("RUNNING") => {
+            // agy runs a step in the background, as a `GENERIC` or a
+            // `RUN_COMMAND` step, by recording it as running.
+            Some(_) if self.open && status == Some("RUNNING") => {
                 self.pending += 1;
                 TurnStep::Other
             }
@@ -113,6 +115,22 @@ impl TurnTracker {
         }
         expired
     }
+}
+
+/// The time against which readers judge a background wait. A test can set
+/// it for its thread, to read stored steps as they were read when written.
+pub(crate) fn now() -> DateTime<Utc> {
+    #[cfg(test)]
+    if let Some(at) = TEST_NOW.with(std::cell::Cell::get) {
+        return at;
+    }
+    Utc::now()
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_NOW: std::cell::Cell<Option<DateTime<Utc>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// When agy recorded a step.
@@ -468,7 +486,7 @@ pub(crate) fn read_last_observation(path: &Path) -> anyhow::Result<HarnessObserv
     }
     // A turn that waited too long for a background task's notice ended with
     // its interim answer.
-    if tracker.expire(Utc::now()) {
+    if tracker.expire(now()) {
         end = interim;
         last_end_at = interim.and_then(created_at).or(last_end_at);
     }
@@ -639,8 +657,12 @@ pub(crate) fn project_record(
                     .filter(|text| !text.is_empty())
                     .map(str::to_string);
                 let mut events = Vec::new();
+                // A turn whose wait runs out ends with its interim answer, so
+                // its final text is that answer's, as for any other end.
+                if step_kind == TurnStep::Interim {
+                    cursor.last_assistant_text = text.clone();
+                }
                 if let Some(text) = &text {
-                    cursor.last_assistant_text = Some(text.clone());
                     let mut message = PendingEvent::new(
                         format!("{record_key}:message"),
                         AgentEventKind::AssistantMessage,

@@ -6936,6 +6936,10 @@ mod test {
         let waiting = observe(&steps);
         assert_eq!(waiting.turn_state, AgentTurnState::WaitingOnAgent);
         assert_eq!(waiting.observed_turn.unwrap().final_message, None);
+        // A command agy runs in the background is waited for the same way.
+        let mut command = steps.clone();
+        command[2]["type"] = "RUN_COMMAND".into();
+        assert_eq!(observe(&command).turn_state, AgentTurnState::WaitingOnAgent);
         steps.push(step(
             4,
             "SYSTEM_MESSAGE",

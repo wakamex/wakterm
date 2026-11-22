@@ -1774,7 +1774,7 @@ fn latest_jsonl_turn(
         }
     }
     // A wait for a background task's notice that has run out has ended.
-    agy.expire(Utc::now());
+    agy.expire(crate::harness::agy::now());
     Ok((current, prompt_id, agy))
 }
 
@@ -2508,7 +2508,7 @@ fn project_agy(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<Pr
         Ok(mut events) => {
             events.extend(crate::harness::agy::expire_background_wait(
                 &mut cursor,
-                Utc::now(),
+                crate::harness::agy::now(),
             ));
             events
         }
@@ -4282,6 +4282,53 @@ mod tests {
                 (Some("conversation-5:9"), Some("Running it.")),
                 (Some("conversation-5:12"), Some("It finished."))
             ]
+        );
+
+        // A command run in the background is waited for too, and a turn
+        // whose wait runs out after an interim answer without text ends
+        // without a final answer, though an earlier response had text.
+        let after = store.latest_sequence();
+        append(
+            &session,
+            &(record(
+                14,
+                "USER_INPUT",
+                "DONE",
+                0,
+                serde_json::json!({"content": "<USER_REQUEST>\nbuild it\n</USER_REQUEST>"}),
+            ) + &record(
+                15,
+                "PLANNER_RESPONSE",
+                "DONE",
+                0,
+                serde_json::json!({"content": "Building it.", "tool_calls": [{"name": "run_command"}]}),
+            ) + &record(
+                16,
+                "RUN_COMMAND",
+                "RUNNING",
+                0,
+                serde_json::json!({"content": "Tool is running as a background task"}),
+            ) + &record(17, "PLANNER_RESPONSE", "DONE", 0, serde_json::json!({}))),
+        );
+        let finals = |store: &AgentEventStore| {
+            store
+                .read_page(after, 100)
+                .unwrap()
+                .events
+                .into_iter()
+                .filter(|event| event.kind == AgentEventKind::TurnFinal)
+                .map(|event| (event.turn_id, event.text))
+                .collect::<Vec<_>>()
+        };
+        store.observe_agent(&metadata, &runtime).unwrap();
+        assert!(finals(&store).is_empty());
+        crate::harness::agy::TEST_NOW
+            .with(|clock| clock.set(Some(now + chrono::Duration::minutes(31))));
+        store.observe_agent(&metadata, &runtime).unwrap();
+        crate::harness::agy::TEST_NOW.with(|clock| clock.set(None));
+        assert_eq!(
+            finals(&store),
+            [(Some("conversation-5:14".to_string()), None)]
         );
     }
 
