@@ -4,3 +4,4 @@
 
 pub mod devin;
 pub mod muse;
+pub mod opencode;

@@ -107,7 +107,7 @@ enum ProviderCursor {
     Claude(JsonlCursor),
     Agy(JsonlCursor),
     Gemini(GeminiCursor),
-    Opencode(OpencodeCursor),
+    Opencode(crate::harness::opencode::Cursor),
     Devin(crate::harness::devin::Cursor),
     Muse(JsonlCursor),
 }
@@ -214,16 +214,6 @@ struct GeminiCursor {
     current_turn_id: Option<String>,
     #[serde(default)]
     checkpoint_sha256: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct OpencodeCursor {
-    source_id: String,
-    last_message_rowid: i64,
-    last_message_id: Option<String>,
-    last_part_rowid: i64,
-    last_part_id: Option<String>,
-    last_final_message_rowid: i64,
 }
 
 /// An event a harness's projector found, before it is stored.
@@ -1557,7 +1547,7 @@ pub(crate) fn input_accepted(
     event
 }
 
-fn observer_failure(
+pub(crate) fn observer_failure(
     source_key: String,
     observed_at: DateTime<Utc>,
     turn_id: Option<String>,
@@ -1594,7 +1584,7 @@ fn project_provider_events(
     }
 }
 
-fn digest(bytes: &[u8]) -> String {
+pub(crate) fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
@@ -2684,6 +2674,21 @@ fn project_muse(
     })
 }
 
+fn project_opencode(
+    session_path: &str,
+    cursor: Option<ProviderCursor>,
+) -> anyhow::Result<ProjectedEvents> {
+    let cursor = match cursor {
+        Some(ProviderCursor::Opencode(cursor)) => Some(cursor),
+        _ => None,
+    };
+    let (cursor, events) = crate::harness::opencode::project(session_path, cursor)?;
+    Ok(ProjectedEvents {
+        cursor: ProviderCursor::Opencode(cursor),
+        events,
+    })
+}
+
 fn project_devin(
     session_path: &str,
     cursor: Option<ProviderCursor>,
@@ -3036,397 +3041,8 @@ fn extract_text(content: Option<&Value>) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
-fn parse_opencode_session_path(value: &str) -> anyhow::Result<(PathBuf, String)> {
-    let url = url::Url::parse(value)?;
-    anyhow::ensure!(
-        url.scheme() == "opencode",
-        "invalid OpenCode observer session URL"
-    );
-    let values = url
-        .query_pairs()
-        .collect::<std::collections::HashMap<_, _>>();
-    let db = values.get("db").context("OpenCode session URL lacks db")?;
-    let id = values.get("id").context("OpenCode session URL lacks id")?;
-    Ok((PathBuf::from(db.as_ref()), id.to_string()))
-}
-
-/// The text a user typed or pasted into an OpenCode message: its text
-/// parts that OpenCode did not add itself, in order.
-fn opencode_user_text(conn: &Connection, message_id: &str) -> anyhow::Result<Option<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT json_extract(data, '$.text') FROM part
-         WHERE message_id = ?1 AND json_extract(data, '$.type') = 'text'
-           AND COALESCE(json_extract(data, '$.synthetic'), 0) = 0
-         ORDER BY rowid",
-    )?;
-    let parts = stmt
-        .query_map(params![message_id], |row| row.get::<_, Option<String>>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    let text = parts.into_iter().flatten().collect::<Vec<_>>().join("\n");
-    Ok((!text.trim().is_empty()).then_some(text))
-}
-
-fn opencode_has_later_message(
-    conn: &Connection,
-    session_id: &str,
-    rowid: i64,
-) -> anyhow::Result<bool> {
-    Ok(conn
-        .query_row(
-            "SELECT 1 FROM message WHERE session_id = ?1 AND rowid > ?2 LIMIT 1",
-            params![session_id, rowid],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some())
-}
-
-fn project_opencode(
-    session_path: &str,
-    cursor: Option<ProviderCursor>,
-) -> anyhow::Result<ProjectedEvents> {
-    let (db_path, source_id) = parse_opencode_session_path(session_path)?;
-    let conn = Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    conn.busy_timeout(std::time::Duration::from_secs(2))?;
-    let maxima = opencode_maxima(&conn, &source_id)?;
-    let (message_max, part_max, final_message_max) = &maxima;
-    let baseline_identity = digest(
-        format!(
-            "{}\0{}\0{}\0{}\0{}",
-            message_max.0,
-            message_max.1.as_deref().unwrap_or(""),
-            part_max.0,
-            part_max.1.as_deref().unwrap_or(""),
-            final_message_max
-        )
-        .as_bytes(),
-    );
-    let mut cursor = match cursor {
-        Some(ProviderCursor::Opencode(cursor)) if cursor.source_id == source_id => cursor,
-        Some(_) => {
-            let detail =
-                "confirmed OpenCode provider session changed; a new tail baseline was armed";
-            return Ok(ProjectedEvents {
-                cursor: ProviderCursor::Opencode(OpencodeCursor {
-                    source_id: source_id.clone(),
-                    last_message_rowid: message_max.0,
-                    last_message_id: message_max.1.clone(),
-                    last_part_rowid: part_max.0,
-                    last_part_id: part_max.1.clone(),
-                    last_final_message_rowid: *final_message_max,
-                }),
-                events: vec![observer_failure(
-                    format!("opencode:{source_id}:baseline-reset:{baseline_identity}"),
-                    Utc::now(),
-                    None,
-                    detail,
-                )],
-            });
-        }
-        None => {
-            return Ok(ProjectedEvents {
-                cursor: ProviderCursor::Opencode(OpencodeCursor {
-                    source_id,
-                    last_message_rowid: message_max.0,
-                    last_message_id: message_max.1.clone(),
-                    last_part_rowid: part_max.0,
-                    last_part_id: part_max.1.clone(),
-                    last_final_message_rowid: *final_message_max,
-                }),
-                events: Vec::new(),
-            })
-        }
-    };
-    if !opencode_checkpoint_matches(&conn, &source_id, &cursor)? {
-        let detail = "OpenCode provider database was rebuilt; a new tail baseline was armed";
-        return Ok(ProjectedEvents {
-            cursor: ProviderCursor::Opencode(OpencodeCursor {
-                source_id: source_id.clone(),
-                last_message_rowid: message_max.0,
-                last_message_id: message_max.1.clone(),
-                last_part_rowid: part_max.0,
-                last_part_id: part_max.1.clone(),
-                last_final_message_rowid: *final_message_max,
-            }),
-            events: vec![observer_failure(
-                format!("opencode:{source_id}:baseline-reset:{baseline_identity}"),
-                Utc::now(),
-                None,
-                detail,
-            )],
-        });
-    }
-    let mut events = Vec::new();
-    {
-        let mut stmt = conn.prepare(
-            "SELECT rowid, id, time_created, data FROM message
-             WHERE session_id = ?1 AND rowid > ?2 ORDER BY rowid",
-        )?;
-        let rows = stmt.query_map(params![source_id, cursor.last_message_rowid], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })?;
-        for row in rows {
-            let (rowid, message_id, time_created, data) = row?;
-            let message: Value = serde_json::from_str(&data)?;
-            if crate::opencode::starts_turn(&message) {
-                // OpenCode writes a user message's text parts after the
-                // message. Wait for them so the turn carries its input's
-                // hash, unless a later message shows the input has none.
-                let text = opencode_user_text(&conn, &message_id)?;
-                if text.is_none() && !opencode_has_later_message(&conn, &source_id, rowid)? {
-                    break;
-                }
-                let timestamp =
-                    DateTime::from_timestamp_millis(time_created).unwrap_or_else(Utc::now);
-                let mut started = PendingEvent::new(
-                    format!("opencode:{source_id}:{message_id}:started"),
-                    AgentEventKind::TurnStarted,
-                    timestamp,
-                );
-                started.turn_id = Some(message_id.clone());
-                started.input_sha256 = text.as_deref().map(crate::agent::message_sha256);
-                events.push(started);
-                let mut state = PendingEvent::new(
-                    format!("opencode:{source_id}:{message_id}:state"),
-                    AgentEventKind::TurnStateChanged,
-                    timestamp,
-                );
-                state.turn_id = Some(message_id.clone());
-                state.turn_state = Some("waiting_on_agent".to_string());
-                events.push(state);
-            }
-            cursor.last_message_rowid = rowid;
-            cursor.last_message_id = Some(message_id);
-        }
-    }
-    {
-        let mut stmt = conn.prepare(
-            "SELECT p.rowid, p.id, p.time_created, p.data, m.id, m.data
-             FROM part p JOIN message m ON p.message_id = m.id
-             WHERE p.session_id = ?1 AND p.rowid > ?2 ORDER BY p.rowid",
-        )?;
-        let rows = stmt.query_map(params![source_id, cursor.last_part_rowid], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-            ))
-        })?;
-        for row in rows {
-            let (rowid, part_id, time_created, part_data, _message_id, message_data) = row?;
-            let part: Value = serde_json::from_str(&part_data)?;
-            let message: Value = serde_json::from_str(&message_data)?;
-            let assistant_text = message.get("role").and_then(Value::as_str) == Some("assistant")
-                && part.get("type").and_then(Value::as_str) == Some("text");
-            // OpenCode creates a text part when a reply starts and fills it
-            // in as the reply streams, then marks it ended. A part read
-            // before then is read again once it is finished, and so are the
-            // parts after it, which keep their order.
-            if assistant_text
-                && part.pointer("/time/end").is_none()
-                && message.pointer("/time/completed").is_none()
-            {
-                break;
-            }
-            if assistant_text {
-                let turn_id = message.get("parentID").and_then(Value::as_str);
-                let text = part
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|text| !text.is_empty());
-                match (turn_id, text) {
-                    (Some(turn_id), Some(text)) => {
-                        let mut output = PendingEvent::new(
-                            format!("opencode:{source_id}:{part_id}:message"),
-                            AgentEventKind::AssistantMessage,
-                            DateTime::from_timestamp_millis(time_created).unwrap_or_else(Utc::now),
-                        );
-                        output.turn_id = Some(turn_id.to_string());
-                        output.text = Some(text.to_string());
-                        events.push(output);
-                    }
-                    (None, Some(_)) => events.push(observer_failure(
-                        format!("opencode:{source_id}:{part_id}:missing-turn"),
-                        DateTime::from_timestamp_millis(time_created).unwrap_or_else(Utc::now),
-                        None,
-                        "OpenCode assistant message lacks an exact parent provider turn id",
-                    )),
-                    _ => {}
-                }
-            }
-            cursor.last_part_rowid = rowid;
-            cursor.last_part_id = Some(part_id);
-        }
-    }
-    {
-        let mut stmt = conn.prepare(
-            "SELECT m.rowid, m.id, m.time_created, m.data,
-                    (SELECT GROUP_CONCAT(text, char(10)) FROM (
-                         SELECT json_extract(p.data, '$.text') AS text
-                         FROM part p WHERE p.message_id = m.id
-                           AND json_extract(p.data, '$.type') = 'text'
-                         ORDER BY p.rowid
-                     ))
-             FROM message m
-             WHERE m.session_id = ?1 AND m.rowid > ?2
-               AND json_extract(m.data, '$.role') = 'assistant'
-               AND (json_extract(m.data, '$.finish') = 'stop'
-                    OR json_extract(m.data, '$.error') IS NOT NULL)
-             ORDER BY m.rowid",
-        )?;
-        let rows = stmt.query_map(params![source_id, cursor.last_final_message_rowid], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-            ))
-        })?;
-        for row in rows {
-            let (rowid, message_id, time_created, data, text) = row?;
-            let message: Value = serde_json::from_str(&data)?;
-            // The query only narrows the rows to candidates; the rule decides.
-            if crate::opencode::turn_end(&message).is_none() {
-                continue;
-            }
-            let Some(turn_id) = crate::opencode::reply_to(&message) else {
-                events.push(observer_failure(
-                    format!("opencode:{source_id}:{message_id}:final-missing-turn"),
-                    DateTime::from_timestamp_millis(time_created).unwrap_or_else(Utc::now),
-                    None,
-                    "OpenCode completed message lacks an exact parent provider turn id",
-                ));
-                cursor.last_final_message_rowid = rowid;
-                continue;
-            };
-            let timestamp = message
-                .get("time")
-                .and_then(|time| time.get("completed"))
-                .and_then(Value::as_i64)
-                .and_then(DateTime::from_timestamp_millis)
-                .unwrap_or_else(|| {
-                    DateTime::from_timestamp_millis(time_created).unwrap_or_else(Utc::now)
-                });
-            if let Some(error) = message.get("error") {
-                // A provider failure ends the step without a final answer.
-                let detail = error
-                    .pointer("/data/message")
-                    .or_else(|| error.get("message"))
-                    .or_else(|| error.get("name"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("OpenCode reported a provider failure");
-                events.push(observer_failure(
-                    format!("opencode:{source_id}:{message_id}:provider-failure"),
-                    timestamp,
-                    Some(turn_id.to_string()),
-                    detail,
-                ));
-                cursor.last_final_message_rowid = rowid;
-                continue;
-            }
-            let mut final_event = PendingEvent::new(
-                format!("opencode:{source_id}:{message_id}:final"),
-                AgentEventKind::TurnFinal,
-                timestamp,
-            );
-            final_event.turn_id = Some(turn_id.to_string());
-            final_event.outcome = Some("completed".to_string());
-            final_event.text = text
-                .map(|text| text.trim().to_string())
-                .filter(|text| !text.is_empty());
-            events.push(final_event);
-            let mut state = PendingEvent::new(
-                format!("opencode:{source_id}:{message_id}:state"),
-                AgentEventKind::TurnStateChanged,
-                timestamp,
-            );
-            state.turn_id = Some(turn_id.to_string());
-            state.turn_state = Some("waiting_on_user".to_string());
-            events.push(state);
-            cursor.last_final_message_rowid = rowid;
-        }
-    }
-    Ok(ProjectedEvents {
-        cursor: ProviderCursor::Opencode(cursor),
-        events,
-    })
-}
-
 /// A user-role message the harness injected itself, such as ZCode's task
 /// notifications and reminders; it continues the current turn.
-
-fn opencode_maxima(
-    conn: &Connection,
-    session_id: &str,
-) -> anyhow::Result<((i64, Option<String>), (i64, Option<String>), i64)> {
-    let message = conn
-        .query_row(
-            "SELECT rowid, id FROM message WHERE session_id = ?1 ORDER BY rowid DESC LIMIT 1",
-            params![session_id],
-            |row| Ok((row.get(0)?, Some(row.get(1)?))),
-        )
-        .optional()?
-        .unwrap_or((0, None));
-    let part = conn
-        .query_row(
-            "SELECT rowid, id FROM part WHERE session_id = ?1 ORDER BY rowid DESC LIMIT 1",
-            params![session_id],
-            |row| Ok((row.get(0)?, Some(row.get(1)?))),
-        )
-        .optional()?
-        .unwrap_or((0, None));
-    let final_message = conn.query_row(
-        "SELECT COALESCE(MAX(rowid), 0) FROM message
-         WHERE session_id = ?1 AND json_extract(data, '$.role') = 'assistant'
-           AND (json_extract(data, '$.finish') = 'stop'
-                OR json_extract(data, '$.error') IS NOT NULL)",
-        params![session_id],
-        |row| row.get(0),
-    )?;
-    Ok((message, part, final_message))
-}
-
-fn opencode_checkpoint_matches(
-    conn: &Connection,
-    session_id: &str,
-    cursor: &OpencodeCursor,
-) -> anyhow::Result<bool> {
-    let message_matches = if cursor.last_message_rowid == 0 {
-        true
-    } else {
-        conn.query_row(
-            "SELECT id FROM message WHERE session_id = ?1 AND rowid = ?2",
-            params![session_id, cursor.last_message_rowid],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
-        .as_deref()
-            == cursor.last_message_id.as_deref()
-    };
-    let part_matches = if cursor.last_part_rowid == 0 {
-        true
-    } else {
-        conn.query_row(
-            "SELECT id FROM part WHERE session_id = ?1 AND rowid = ?2",
-            params![session_id, cursor.last_part_rowid],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
-        .as_deref()
-            == cursor.last_part_id.as_deref()
-    };
-    Ok(message_matches && part_matches)
-}
 
 #[cfg(test)]
 mod tests {
@@ -3813,7 +3429,7 @@ mod tests {
             )
             .unwrap();
         let session_path = format!("opencode://session?db={}&id={session}", db_path.display());
-        let from_start = ProviderCursor::Opencode(OpencodeCursor {
+        let from_start = ProviderCursor::Opencode(crate::harness::opencode::Cursor {
             source_id: session.clone(),
             last_message_rowid: 0,
             last_message_id: None,

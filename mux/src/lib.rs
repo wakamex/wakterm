@@ -75,7 +75,6 @@ pub mod main_thread_blocking;
 pub mod memory_protection;
 pub mod memory_report;
 mod notification_rate;
-pub mod opencode;
 pub mod pane;
 pub mod renderable;
 pub mod session_persistence;
@@ -4371,7 +4370,9 @@ impl Mux {
             match runtime.harness {
                 AgentHarness::Agy => agent::agy_input_box(&lines)
                     .is_some_and(|state| state.idle && !state.working && state.text.is_empty()),
-                _ => crate::opencode::input_box(&lines).is_some_and(|text| text.is_empty()),
+                _ => {
+                    crate::harness::opencode::input_box(&lines).is_some_and(|text| text.is_empty())
+                }
             }
         })
     }

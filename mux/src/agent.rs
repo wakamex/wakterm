@@ -6,7 +6,7 @@ use anyhow::Context;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use portable_pty::CommandBuilder;
 use procinfo::LocalProcessInfo;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -1481,7 +1481,7 @@ pub fn input_box_blocked(
 ) -> Option<&'static str> {
     match harness {
         // A box not found on screen is not known to hold anything.
-        AgentHarness::Opencode => crate::opencode::input_box(lines)
+        AgentHarness::Opencode => crate::harness::opencode::input_box(lines)
             .filter(|text| !text.is_empty())
             .map(|_| "the input box holds text the user is typing"),
         AgentHarness::Claude => claude_draft(lines)
@@ -1916,7 +1916,7 @@ pub(crate) fn refresh_runtime_from_harness_with_expected_session(
                 .filter(|expected| expected.harness == AgentHarness::Devin)
                 .map(|expected| expected.session_id.as_str()),
         ),
-        AgentHarness::Opencode | AgentHarness::Zcode => observe_opencode(
+        AgentHarness::Opencode | AgentHarness::Zcode => crate::harness::opencode::observe(
             &observing_harness,
             metadata.adopted_pid,
             cwd,
@@ -2068,7 +2068,7 @@ pub fn pending_observer_detail(
                 .ok()
                 .flatten()
         }
-        AgentHarness::Opencode | AgentHarness::Zcode => describe_pending_opencode_observer(
+        AgentHarness::Opencode | AgentHarness::Zcode => crate::harness::opencode::describe_pending(
             &runtime.harness,
             metadata.adopted_pid,
             cwd,
@@ -3732,55 +3732,6 @@ fn observe_gemini(
     )))
 }
 
-fn observe_opencode(
-    harness: &AgentHarness,
-    pid: Option<u32>,
-    cwd: &str,
-    preferred_session: Option<&str>,
-    updated_after: Option<DateTime<Utc>>,
-    exact_session: Option<&str>,
-) -> anyhow::Result<Option<HarnessObservation>> {
-    let _blocking = crate::main_thread_blocking::blocking("reading an OpenCode session database");
-    let Some(db_path) = opencode_schema_db_path(harness, pid) else {
-        return Ok(None);
-    };
-    if !db_path.is_file() {
-        return Ok(None);
-    }
-
-    let connection =
-        Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    connection.busy_timeout(std::time::Duration::from_secs(2))?;
-
-    // A session named on the command line or by restore is exact; the
-    // directory and recency selection below is only a fallback.
-    if let Some(session_id) = exact_session {
-        return read_last_opencode_observation(&connection, &db_path, session_id, None);
-    }
-
-    if let Some(preferred_session) = preferred_session {
-        if let Some((preferred_db_path, preferred_session_id)) =
-            parse_opencode_session_path(preferred_session)
-        {
-            if preferred_db_path == db_path {
-                if let Some(observed) = read_last_opencode_observation(
-                    &connection,
-                    &db_path,
-                    &preferred_session_id,
-                    updated_after,
-                )? {
-                    return Ok(Some(observed));
-                }
-            }
-        }
-    }
-
-    let Some((session_id, _)) = select_opencode_session(&connection, cwd, updated_after)? else {
-        return Ok(None);
-    };
-    read_last_opencode_observation(&connection, &db_path, &session_id, updated_after)
-}
-
 /// Claude names a project's transcript directory after its working
 /// directory, with every character other than an ASCII letter or digit
 /// replaced by `-`.
@@ -3958,39 +3909,6 @@ fn describe_pending_gemini_observer(
     }))
 }
 
-fn describe_pending_opencode_observer(
-    harness: &AgentHarness,
-    pid: Option<u32>,
-    cwd: &str,
-    updated_after: Option<DateTime<Utc>>,
-) -> anyhow::Result<Option<String>> {
-    let _blocking = crate::main_thread_blocking::blocking("reading an OpenCode session database");
-    let Some(db_path) = opencode_schema_db_path(harness, pid) else {
-        return Ok(None);
-    };
-    let name = default_launch_cmd_for_harness(harness).unwrap_or("agent");
-    if !db_path.is_file() {
-        return Ok(Some(format!(
-            "{name} session database has not appeared yet"
-        )));
-    }
-
-    let connection =
-        Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    connection.busy_timeout(std::time::Duration::from_secs(2))?;
-
-    let has_recent_session = select_opencode_session(&connection, cwd, updated_after)?.is_some();
-    let has_session = select_opencode_session(&connection, cwd, None)?.is_some();
-
-    Ok(Some(if has_recent_session {
-        format!("{name} session exists but observer has not attached yet")
-    } else if has_session {
-        format!("{name} session exists but no new turn appeared yet")
-    } else {
-        format!("{name} session has not appeared yet")
-    }))
-}
-
 fn claude_sessions_root() -> Option<PathBuf> {
     claude_sessions_root_for(None)
 }
@@ -4092,36 +4010,11 @@ fn gemini_root_for(pid: Option<u32>) -> Option<PathBuf> {
         })
 }
 
-/// The session database for a harness that uses OpenCode's schema.
-fn opencode_schema_db_path(harness: &AgentHarness, pid: Option<u32>) -> Option<PathBuf> {
-    match harness {
-        AgentHarness::Opencode => opencode_db_path(pid),
-        AgentHarness::Zcode => zcode_db_path(),
-        _ => None,
-    }
-}
-
-fn zcode_db_path() -> Option<PathBuf> {
+pub(crate) fn zcode_db_path() -> Option<PathBuf> {
     std::env::var_os("WAKTERM_AGENT_ZCODE_DB")
         .map(PathBuf::from)
         .or_else(|| {
             home_dir().map(|home| home.join(".zcode").join("cli").join("db").join("db.sqlite"))
-        })
-}
-
-/// Where the OpenCode process `pid` keeps its database: under the data
-/// directory its environment's XDG_DATA_HOME names, else
-/// `~/.local/share`.
-fn opencode_db_path(pid: Option<u32>) -> Option<PathBuf> {
-    std::env::var_os("WAKTERM_AGENT_OPENCODE_DB")
-        .map(PathBuf::from)
-        .or_else(|| {
-            harness_dir(
-                pid,
-                "XDG_DATA_HOME",
-                home_dir().map(|home| home.join(".local").join("share")),
-            )
-            .map(|data| data.join("opencode").join("opencode.db"))
         })
 }
 
@@ -4228,8 +4121,10 @@ pub(crate) fn agent_observer_watch_roots(harness: &AgentHarness, cwd: &str) -> V
                 project_dirs
             }
         }),
-        AgentHarness::Opencode | AgentHarness::Zcode => opencode_schema_db_path(harness, None)
-            .and_then(|path| path.parent().map(|path| vec![path.to_path_buf()])),
+        AgentHarness::Opencode | AgentHarness::Zcode => {
+            crate::harness::opencode::schema_db_path(harness, None)
+                .and_then(|path| path.parent().map(|path| vec![path.to_path_buf()]))
+        }
         AgentHarness::Devin => crate::harness::devin::db_path()
             .and_then(|path| path.parent().map(|path| vec![path.to_path_buf()])),
         AgentHarness::Muse => {
@@ -4261,9 +4156,11 @@ pub(crate) fn agent_observer_artifact_paths(
             .collect()
     }
     match harness {
-        AgentHarness::Opencode | AgentHarness::Zcode => parse_opencode_session_path(session_path)
-            .map(|(path, _)| sqlite_files(&path))
-            .unwrap_or_default(),
+        AgentHarness::Opencode | AgentHarness::Zcode => {
+            crate::harness::opencode::parse_session_path(session_path)
+                .map(|(path, _)| sqlite_files(&path))
+                .unwrap_or_default()
+        }
         AgentHarness::Devin => crate::harness::devin::parse_session_url(session_path)
             .map(|(path, _)| sqlite_files(&path))
             .unwrap_or_default(),
@@ -4390,12 +4287,12 @@ pub fn restorable_session_id(
         AgentHarness::Codex => codex_session_id(path),
         AgentHarness::Zcode => Ok(path
             .to_str()
-            .and_then(parse_opencode_session_path)
+            .and_then(crate::harness::opencode::parse_session_path)
             .map(|(_, session_id)| session_id)
             .filter(|session_id| is_zcode_session_id(session_id))),
         AgentHarness::Opencode => Ok(path
             .to_str()
-            .and_then(parse_opencode_session_path)
+            .and_then(crate::harness::opencode::parse_session_path)
             .map(|(_, session_id)| session_id)
             .filter(|session_id| is_opencode_session_id(session_id))),
         AgentHarness::Muse => Ok(crate::harness::muse::session_id_of(path)),
@@ -4643,11 +4540,11 @@ fn parse_rfc3339_timestamp(ts: &str) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
-fn parse_unix_millis(millis: i64) -> Option<DateTime<Utc>> {
+pub(crate) fn parse_unix_millis(millis: i64) -> Option<DateTime<Utc>> {
     Utc.timestamp_millis_opt(millis).single()
 }
 
-fn cwd_lookup_variants(cwd: &str) -> Vec<String> {
+pub(crate) fn cwd_lookup_variants(cwd: &str) -> Vec<String> {
     let mut candidates = vec![cwd.to_string()];
     if cwd != "/" {
         let trimmed = cwd.trim_end_matches('/');
@@ -4909,213 +4806,6 @@ fn read_last_gemini_observation(path: &Path) -> anyhow::Result<HarnessObservatio
         last_turn_completed_at,
         observed_turn: None,
     })
-}
-
-fn encode_opencode_session_path(db_path: &Path, session_id: &str) -> String {
-    let mut url = Url::parse("opencode://session").expect("static opencode url is valid");
-    url.query_pairs_mut()
-        .append_pair("db", &db_path.to_string_lossy())
-        .append_pair("id", session_id);
-    url.to_string()
-}
-
-fn parse_opencode_session_path(value: &str) -> Option<(PathBuf, String)> {
-    let url = Url::parse(value).ok()?;
-    if url.scheme() != "opencode" {
-        return None;
-    }
-
-    let mut db_path = None;
-    let mut session_id = None;
-    for (key, value) in url.query_pairs() {
-        match key.as_ref() {
-            "db" => db_path = Some(PathBuf::from(value.into_owned())),
-            "id" => session_id = Some(value.into_owned()),
-            _ => {}
-        }
-    }
-    Some((db_path?, session_id?))
-}
-
-fn select_opencode_session(
-    connection: &Connection,
-    cwd: &str,
-    updated_after: Option<DateTime<Utc>>,
-) -> anyhow::Result<Option<(String, i64)>> {
-    let prefer_earliest = updated_after.is_some();
-    let mut selected = None;
-
-    for candidate in cwd_lookup_variants(cwd) {
-        let row = if let Some(cutoff) = updated_after {
-            let cutoff_millis = cutoff.timestamp_millis();
-            let sql = if prefer_earliest {
-                "SELECT id, time_updated FROM session \
-                 WHERE directory = ?1 AND time_updated >= ?2 \
-                 ORDER BY time_updated ASC LIMIT 1"
-            } else {
-                "SELECT id, time_updated FROM session \
-                 WHERE directory = ?1 AND time_updated >= ?2 \
-                 ORDER BY time_updated DESC LIMIT 1"
-            };
-            connection
-                .query_row(sql, params![candidate, cutoff_millis], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-                })
-                .optional()?
-        } else {
-            let sql = if prefer_earliest {
-                "SELECT id, time_updated FROM session \
-                 WHERE directory = ?1 ORDER BY time_updated ASC LIMIT 1"
-            } else {
-                "SELECT id, time_updated FROM session \
-                 WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 1"
-            };
-            connection
-                .query_row(sql, params![candidate], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-                })
-                .optional()?
-        };
-
-        let Some((session_id, updated_millis)) = row else {
-            continue;
-        };
-        match &selected {
-            Some((_, existing_updated_millis))
-                if (prefer_earliest && *existing_updated_millis <= updated_millis)
-                    || (!prefer_earliest && *existing_updated_millis >= updated_millis) => {}
-            _ => selected = Some((session_id, updated_millis)),
-        }
-    }
-
-    Ok(selected)
-}
-
-fn read_last_opencode_observation(
-    connection: &Connection,
-    db_path: &Path,
-    session_id: &str,
-    updated_after: Option<DateTime<Utc>>,
-) -> anyhow::Result<Option<HarnessObservation>> {
-    let Some(updated_millis) = connection
-        .query_row(
-            "SELECT time_updated FROM session WHERE id = ?1",
-            params![session_id],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?
-    else {
-        return Ok(None);
-    };
-
-    if updated_after
-        .map(|cutoff| updated_millis < cutoff.timestamp_millis())
-        .unwrap_or(false)
-    {
-        return Ok(None);
-    }
-
-    // The latest turn, and the message that ended it if one has, by the
-    // rule the event projector follows: a turn is a user message, and ends
-    // with a reply to it that stopped, or a provider failure.
-    let mut latest_end: Option<(String, bool, Option<DateTime<Utc>>)> = None;
-    let mut ends = Vec::new();
-    let mut turn: Option<(String, Option<DateTime<Utc>>)> = None;
-    let mut message_stmt = connection.prepare(
-        "SELECT id, time_created, data \
-         FROM message \
-         WHERE session_id = ?1 \
-         ORDER BY time_created DESC, rowid DESC",
-    )?;
-    let mut message_rows = message_stmt.query(params![session_id])?;
-    while let Some(row) = message_rows.next()? {
-        let message_id = row.get::<_, String>(0)?;
-        let time_created = row.get::<_, i64>(1)?;
-        let message_data = row.get::<_, String>(2)?;
-        let Ok(message) = serde_json::from_str::<Value>(&message_data) else {
-            continue;
-        };
-        if let Some(completed) = crate::opencode::turn_end(&message) {
-            let at = message
-                .pointer("/time/completed")
-                .and_then(Value::as_i64)
-                .and_then(parse_unix_millis)
-                .or_else(|| parse_unix_millis(time_created));
-            let end = (
-                crate::opencode::reply_to(&message)
-                    .unwrap_or_default()
-                    .to_string(),
-                completed,
-                at,
-            );
-            if latest_end.is_none() {
-                latest_end = Some(end.clone());
-            }
-            ends.push(end);
-        } else if crate::opencode::starts_turn(&message) {
-            turn = Some((message_id, parse_unix_millis(time_created)));
-            break;
-        }
-    }
-    let (turn_state, last_turn_completed_at, failed) = match &turn {
-        Some((turn_id, _)) => match ends.iter().find(|(ended, _, _)| ended == turn_id) {
-            Some((_, completed, at)) => (AgentTurnState::WaitingOnUser, *at, !completed),
-            None => (
-                AgentTurnState::WaitingOnAgent,
-                latest_end.as_ref().and_then(|(_, _, at)| *at),
-                false,
-            ),
-        },
-        // Replies with no turn of their own in the session wait on the user.
-        None => match &latest_end {
-            Some((_, completed, at)) => (AgentTurnState::WaitingOnUser, *at, !completed),
-            None => (AgentTurnState::Unknown, None, false),
-        },
-    };
-
-    let mut summary = None;
-    let mut part_stmt = connection.prepare(
-        "SELECT p.data, m.data \
-         FROM part p \
-         JOIN message m ON p.message_id = m.id \
-         WHERE p.session_id = ?1 \
-         ORDER BY p.rowid DESC",
-    )?;
-    let mut part_rows = part_stmt.query(params![session_id])?;
-    while let Some(row) = part_rows.next()? {
-        let part_data = row.get::<_, String>(0)?;
-        let message_data = row.get::<_, String>(1)?;
-        let Ok(part) = serde_json::from_str::<Value>(&part_data) else {
-            continue;
-        };
-        let Ok(message) = serde_json::from_str::<Value>(&message_data) else {
-            continue;
-        };
-        if message.get("role").and_then(Value::as_str) != Some("assistant") {
-            continue;
-        }
-        if part.get("type").and_then(Value::as_str) != Some("text") {
-            continue;
-        }
-        if let Some(text) = part.get("text").and_then(Value::as_str) {
-            let text = text.trim();
-            if !text.is_empty() {
-                summary = Some(truncate_summary(text));
-                break;
-            }
-        }
-    }
-
-    Ok(Some(HarnessObservation {
-        session_path: Some(encode_opencode_session_path(db_path, session_id)),
-        progress_summary: summary,
-        harness_mode: None,
-        turn_phase: failed.then(|| "failed".to_string()),
-        updated_at: parse_unix_millis(updated_millis),
-        turn_state,
-        last_turn_completed_at,
-        observed_turn: None,
-    }))
 }
 
 /// The text of a Claude user record, or None for a record that carries only
@@ -7687,7 +7377,7 @@ mod test {
             }),
             ("gemini", gemini_root_for),
             ("muse", crate::harness::muse::data_dir_for),
-            ("opencode", opencode_db_path),
+            ("opencode", crate::harness::opencode::db_path),
             ("zcode", |_| zcode_db_path()),
         ];
         let read_by_wakterm: std::collections::BTreeSet<&str> = spec
@@ -8876,7 +8566,7 @@ mod test {
         let claude_root = claude_sessions_root_for(pid);
         let codex_root = codex_sessions_root_for(pid);
         let gemini = gemini_root_for(pid);
-        let opencode = opencode_db_path(pid);
+        let opencode = crate::harness::opencode::db_path(pid);
         let devin = crate::harness::devin::db_path_for(pid);
         harness.kill().unwrap();
         harness.wait().unwrap();
@@ -10557,7 +10247,7 @@ mod test {
         };
         set_env_path("WAKTERM_AGENT_OPENCODE_DB", &db_path);
         let observe = || {
-            observe_opencode(
+            crate::harness::opencode::observe(
                 &AgentHarness::Opencode,
                 None,
                 "/tmp/project-k",
@@ -10670,7 +10360,7 @@ mod test {
         drop(connection);
 
         set_env_path("WAKTERM_AGENT_OPENCODE_DB", &db_path);
-        let observed = observe_opencode(
+        let observed = crate::harness::opencode::observe(
             &AgentHarness::Opencode,
             None,
             "/tmp/project-j",
@@ -10693,7 +10383,8 @@ mod test {
             )
         );
         let (session_db_path, session_id) =
-            parse_opencode_session_path(observed.session_path.as_deref().unwrap()).unwrap();
+            crate::harness::opencode::parse_session_path(observed.session_path.as_deref().unwrap())
+                .unwrap();
         assert_eq!(session_db_path, db_path);
         assert_eq!(session_id, "session-1");
     }
@@ -11041,7 +10732,7 @@ mod test {
         drop(connection);
 
         set_env_path("WAKTERM_AGENT_ZCODE_DB", &db_path);
-        let by_directory = observe_opencode(
+        let by_directory = crate::harness::opencode::observe(
             &AgentHarness::Zcode,
             None,
             "/tmp/zcode-project",
@@ -11051,7 +10742,7 @@ mod test {
         )
         .unwrap()
         .unwrap();
-        let resumed = observe_opencode(
+        let resumed = crate::harness::opencode::observe(
             &AgentHarness::Zcode,
             None,
             "/tmp/zcode-project",
@@ -11066,7 +10757,8 @@ mod test {
         assert_eq!(by_directory.progress_summary.as_deref(), Some("newer"));
         assert_eq!(resumed.progress_summary.as_deref(), Some("resumed"));
         let (session_db, session_id) =
-            parse_opencode_session_path(resumed.session_path.as_deref().unwrap()).unwrap();
+            crate::harness::opencode::parse_session_path(resumed.session_path.as_deref().unwrap())
+                .unwrap();
         assert_eq!(session_db, db_path);
         assert_eq!(session_id, "sess_00000000-0000-4000-8000-00000000000a");
     }
@@ -11095,7 +10787,7 @@ mod test {
             .unwrap();
 
         set_env_path("WAKTERM_AGENT_ZCODE_DB", &db_path);
-        let observed = observe_opencode(
+        let observed = crate::harness::opencode::observe(
             &AgentHarness::Zcode,
             None,
             &directory,
