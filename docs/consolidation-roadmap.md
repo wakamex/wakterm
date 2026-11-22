@@ -12,7 +12,7 @@ When a commit advances or settles an item, update its status here in the same co
 
 1. The main-thread blocking check in item 5, because it is small and shows at once whether blocking work still reaches the mux main thread.
 2. The possible regressions R2, R5, R6 and R9, each a short check against the code.
-3. The harness table in item 7, before a tenth harness overflows the tab navigator's icon range.
+3. The harness table in item 7, then its per-harness modules together with item 2.
 4. Items 1, 4 and 6, one at a time, each starting with its check.
 5. Items 2, 3, 8 and 9, and the remaining regressions.
 
@@ -94,11 +94,15 @@ Problem: each harness's matchers, commands, help text, icons and special behavio
 
 Evidence: `3db8d82cb`, `c5e0d343f`, `a5e87898f` and `da16c158c` (the icon range collided with powerline glyphs, missed a harness, and moved again), `ec21d4730`, `1deaa801a` and `fa70c30bd` (lists that missed Devin or ZCode), `8309050f5` and `42426c349` (exemptions for harnesses that survive a mux restart), `4a990a7dc`, `53f36ef5d`, `d90d2151c` and `a87b11b60` (four fixes for a fresh agent with no session until its first input), `c152548c1` and `20d3ec1f5` (argument matching that took OpenCode for Claude, and a misspelled variable).
 
-General change: one harness enum with a table of each harness's capabilities and exhaustive matches without wildcard arms, so a new harness fails to compile wherever a case is missing. Draw a tab's harness icons side by side, one code point per harness.
+General change, in three steps, each worth doing on its own:
 
-Check first: confirm the navigator can draw two or three icon cells for a tab, and count harness name literals outside the parsers.
+1. Icons: a tab's harness icons stay one overlapping glyph three cells wide, but each set of icons gets a code point the first time the GUI shows it, so the range holds only the sets in use, and the harness order and shapes come from `TabHarnessIcon` alone.
+2. One harness table: a `HarnessSpec` row per harness holding its data (program names, title prefixes, wrapper programs, launch and resume style, environment to drop, capabilities such as restorable and session-after-first-input), with `AgentHarness::KNOWN` listing them in detection order, replacing the separate name tables, the copied restore-capability lists and the catch-all `_ =>` arms on `AgentHarness`.
+3. One module per harness, `mux/src/harness/<name>.rs`, moved one harness at a time together with item 2, so each harness has a single session reader. Shared code stays small helpers (process environment lookup, SQLite file lists, argument parsing), not a generic transcript or database framework: the harnesses' session formats share almost nothing. The order runs from simplest to riskiest: endchat, OpenCode and ZCode, Devin, Muse, Gemini, agy, Claude, Codex.
 
-Status: `unverified`
+Keep the detection order of the two inference functions when they become one loop, and keep `AgentHarness`'s variant order, which the protocol depends on.
+
+Status: `in progress`. Step 1 is done: stacked icon code points are given on demand, so the icon range no longer limits the number of harnesses, and the stacks draw as before. Steps 2 and 3 are next.
 
 ## 8. Agent logic reads the host directly
 

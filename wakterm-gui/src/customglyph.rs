@@ -1,4 +1,5 @@
 use crate::glyphcache::{GlyphCache, SizedBlockKey};
+use crate::termwindow::TabHarnessIcon;
 use crate::utilsprites::RenderMetrics;
 use ::window::bitmaps::atlas::Sprite;
 use ::window::color::SrgbaPixel;
@@ -232,7 +233,8 @@ pub enum BlockKey {
     Branches(Branch),
     Spinner(u8),
 
-    HarnessIconStack(u16),
+    /// A set of harness icons, a mask of `TabHarnessIcon::stack_index` bits.
+    HarnessIconStack(u64),
 
     Poly(&'static [Poly]),
 
@@ -256,11 +258,17 @@ pub const HARNESS_ICON_DEVIN: char = '\u{e007}';
 /// terminal text.
 pub const HARNESS_ICON_MUSE: char = '\u{e5e4}';
 pub const HARNESS_ICON_ENDCHAT: char = '\u{e5e5}';
-/// One glyph per set of harness icons, U+E3E5 to U+E5E3, with a bit per
-/// harness, nine in all, added to the base code point.
-pub const HARNESS_ICON_STACK_BASE: u32 = 0xe3e4;
-const HARNESS_ICON_STACK_MASKS: u16 = (1 << 9) - 1;
+/// A tab's harness icons are drawn overlapping in one glyph, three cells
+/// wide. Each set of icons gets a code point in U+E3E5 to U+E5E3 the first
+/// time this process shows it, so the range holds the sets in use rather
+/// than every possible set, and never gives a code point to another set.
+const HARNESS_ICON_STACK_CODE_POINTS: std::ops::RangeInclusive<u32> = 0xe3e5..=0xe5e3;
 pub const HARNESS_ICON_STACK_CELL_WIDTH: usize = 3;
+
+/// The sets of harness icons given code points so far, in their order in
+/// `HARNESS_ICON_STACK_CODE_POINTS`, each a mask of
+/// `TabHarnessIcon::stack_index` bits.
+static HARNESS_ICON_STACKS: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 
 const HARNESS_ICON_OVERLAP: f32 = 0.65;
 
@@ -290,12 +298,40 @@ fn harness_icon_stack_layout(
     }
 }
 
-pub fn harness_icon_stack_glyph(mask: u16) -> Option<char> {
-    if mask == 0 || mask > HARNESS_ICON_STACK_MASKS {
-        None
-    } else {
-        char::from_u32(HARNESS_ICON_STACK_BASE + mask as u32)
+/// The glyph that draws the harness icons in `icons`, giving their set a
+/// code point if it has none yet. None for no icons, or when every code
+/// point is taken.
+pub fn harness_icon_stack_glyph(icons: &[TabHarnessIcon]) -> Option<char> {
+    let mask = icons
+        .iter()
+        .fold(0u64, |mask, icon| mask | 1 << icon.stack_index());
+    if mask == 0 {
+        return None;
     }
+    let mut stacks = HARNESS_ICON_STACKS.lock().unwrap();
+    let index = match stacks.iter().position(|known| *known == mask) {
+        Some(index) => index,
+        None => {
+            stacks.push(mask);
+            stacks.len() - 1
+        }
+    };
+    let code_point = HARNESS_ICON_STACK_CODE_POINTS.start() + index as u32;
+    if !HARNESS_ICON_STACK_CODE_POINTS.contains(&code_point) {
+        log::warn!("no code point is left for another set of tab harness icons");
+        return None;
+    }
+    char::from_u32(code_point)
+}
+
+/// The set of harness icons `code_point` was given, if any.
+fn harness_icon_stack(code_point: u32) -> Option<u64> {
+    let index = code_point.checked_sub(*HARNESS_ICON_STACK_CODE_POINTS.start())?;
+    HARNESS_ICON_STACKS
+        .lock()
+        .unwrap()
+        .get(index as usize)
+        .copied()
 }
 
 pub const TAB_HIDDEN_ICON_POLY: &[Poly] = &[
@@ -2782,11 +2818,8 @@ impl BlockKey {
     pub fn from_char(c: char) -> Option<Self> {
         let c = c as u32;
         Some(match c {
-            x if (HARNESS_ICON_STACK_BASE + 1
-                ..=HARNESS_ICON_STACK_BASE + HARNESS_ICON_STACK_MASKS as u32)
-                .contains(&x) =>
-            {
-                Self::HarnessIconStack((c - HARNESS_ICON_STACK_BASE) as u16)
+            x if HARNESS_ICON_STACK_CODE_POINTS.contains(&x) => {
+                Self::HarnessIconStack(harness_icon_stack(x)?)
             }
             x if x == HARNESS_ICON_AGY as u32 => Self::Poly(HARNESS_ICON_AGY_POLY),
             x if x == HARNESS_ICON_CLAUDE as u32 => Self::Poly(HARNESS_ICON_CLAUDE_POLY),
@@ -7319,22 +7352,12 @@ impl GlyphCache {
                 let icon_metrics = render_metrics.scale_cell_width(
                     layout.icon_size as f64 / render_metrics.cell_size.width as f64,
                 );
-                let icon_polys = [
-                    (1, HARNESS_ICON_CLAUDE_POLY),
-                    (2, HARNESS_ICON_CODEX_POLY),
-                    (4, HARNESS_ICON_GEMINI_POLY),
-                    (8, HARNESS_ICON_OPENCODE_POLY),
-                    (16, HARNESS_ICON_AGY_POLY),
-                    (32, HARNESS_ICON_ZCODE_POLY),
-                    (64, HARNESS_ICON_DEVIN_POLY),
-                    (128, HARNESS_ICON_MUSE_POLY),
-                    (256, HARNESS_ICON_ENDCHAT_POLY),
-                ];
                 let mut icon_index = 0;
-                for (bit, polys) in icon_polys {
-                    if mask & bit == 0 {
+                for icon in TabHarnessIcon::STACK_ORDER {
+                    if mask & 1 << icon.stack_index() == 0 {
                         continue;
                     }
+                    let polys = icon.polys();
                     self.draw_polys_at(
                         &icon_metrics,
                         polys,
@@ -8227,8 +8250,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn harness_icon_stack_glyphs_round_trip_every_combination() {
-        assert_eq!(harness_icon_stack_glyph(0), None);
+    fn harness_icon_sets_keep_their_glyphs() {
         assert_eq!(
             BlockKey::from_char(HARNESS_ICON_AGY),
             Some(BlockKey::Poly(HARNESS_ICON_AGY_POLY))
@@ -8249,16 +8271,33 @@ mod test {
             BlockKey::from_char(HARNESS_ICON_ENDCHAT),
             Some(BlockKey::Poly(HARNESS_ICON_ENDCHAT_POLY))
         );
-        // Every set of the nine harnesses' icons has its own glyph, inside
-        // the range no Nerd Fonts icon uses.
-        assert_eq!(harness_icon_stack_glyph(512), None);
-        for mask in 1..=511 {
-            let glyph = harness_icon_stack_glyph(mask).unwrap();
-            assert_eq!(
-                BlockKey::from_char(glyph),
-                Some(BlockKey::HarnessIconStack(mask))
-            );
+        // Each set of icons keeps its glyph, in the range no Nerd Fonts icon
+        // uses, and a glyph draws the set it was given.
+        assert_eq!(harness_icon_stack_glyph(&[]), None);
+        let pairs = [TabHarnessIcon::Claude, TabHarnessIcon::Endchat];
+        let glyph = harness_icon_stack_glyph(&pairs).unwrap();
+        assert!(HARNESS_ICON_STACK_CODE_POINTS.contains(&(glyph as u32)));
+        let reversed = [TabHarnessIcon::Endchat, TabHarnessIcon::Claude];
+        assert_eq!(harness_icon_stack_glyph(&reversed), Some(glyph));
+        assert_eq!(
+            BlockKey::from_char(glyph),
+            Some(BlockKey::HarnessIconStack(1 << 0 | 1 << 8))
+        );
+        let other = harness_icon_stack_glyph(&[TabHarnessIcon::Codex]).unwrap();
+        assert_ne!(other, glyph);
+        assert_eq!(
+            BlockKey::from_char(other),
+            Some(BlockKey::HarnessIconStack(1 << 1))
+        );
+    }
+
+    #[test]
+    fn the_stack_order_lists_each_harness_icon_at_its_index() {
+        for (index, icon) in TabHarnessIcon::STACK_ORDER.iter().enumerate() {
+            assert_eq!(icon.stack_index() as usize, index, "{:?}", icon);
         }
+        // A mask has a bit for each icon.
+        assert!(TabHarnessIcon::STACK_ORDER.len() <= 64);
     }
 
     #[test]

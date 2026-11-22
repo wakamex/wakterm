@@ -618,20 +618,7 @@ impl NavigatorState {
     }
 
     fn icon_gutter(icons: &[TabHarnessIcon]) -> String {
-        let mask = icons.iter().fold(0, |mask, icon| {
-            mask | match icon {
-                TabHarnessIcon::Agy => 16,
-                TabHarnessIcon::Claude => 1,
-                TabHarnessIcon::Codex => 2,
-                TabHarnessIcon::Gemini => 4,
-                TabHarnessIcon::OpenCode => 8,
-                TabHarnessIcon::ZCode => 32,
-                TabHarnessIcon::Devin => 64,
-                TabHarnessIcon::Muse => 128,
-                TabHarnessIcon::Endchat => 256,
-            }
-        });
-        match harness_icon_stack_glyph(mask) {
+        match harness_icon_stack_glyph(icons) {
             Some(glyph) => format!("{glyph}{}", " ".repeat(ICON_GUTTER_WIDTH - 1)),
             None => " ".repeat(ICON_GUTTER_WIDTH),
         }

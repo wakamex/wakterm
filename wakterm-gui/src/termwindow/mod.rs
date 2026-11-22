@@ -3,9 +3,11 @@ use super::renderstate::*;
 use super::utilsprites::RenderMetrics;
 use crate::colorease::ColorEase;
 use crate::customglyph::{
-    HARNESS_ICON_AGY, HARNESS_ICON_CLAUDE, HARNESS_ICON_CODEX, HARNESS_ICON_DEVIN,
-    HARNESS_ICON_ENDCHAT, HARNESS_ICON_GEMINI, HARNESS_ICON_MUSE, HARNESS_ICON_OPENCODE,
-    HARNESS_ICON_ZCODE,
+    Poly, HARNESS_ICON_AGY, HARNESS_ICON_AGY_POLY, HARNESS_ICON_CLAUDE, HARNESS_ICON_CLAUDE_POLY,
+    HARNESS_ICON_CODEX, HARNESS_ICON_CODEX_POLY, HARNESS_ICON_DEVIN, HARNESS_ICON_DEVIN_POLY,
+    HARNESS_ICON_ENDCHAT, HARNESS_ICON_ENDCHAT_POLY, HARNESS_ICON_GEMINI, HARNESS_ICON_GEMINI_POLY,
+    HARNESS_ICON_MUSE, HARNESS_ICON_MUSE_POLY, HARNESS_ICON_OPENCODE, HARNESS_ICON_OPENCODE_POLY,
+    HARNESS_ICON_ZCODE, HARNESS_ICON_ZCODE_POLY,
 };
 use crate::frontend::{front_end, try_front_end};
 use crate::inputmap::InputMap;
@@ -284,6 +286,49 @@ impl TabHarnessIcon {
             Self::Devin => "devin",
             Self::Muse => "muse",
             Self::Endchat => "endchat",
+        }
+    }
+
+    /// Every harness icon, in the order a tab's stacked icons are drawn.
+    pub const STACK_ORDER: [Self; 9] = [
+        Self::Claude,
+        Self::Codex,
+        Self::Gemini,
+        Self::OpenCode,
+        Self::Agy,
+        Self::ZCode,
+        Self::Devin,
+        Self::Muse,
+        Self::Endchat,
+    ];
+
+    /// This icon's place in `STACK_ORDER`.
+    pub fn stack_index(self) -> u32 {
+        match self {
+            Self::Claude => 0,
+            Self::Codex => 1,
+            Self::Gemini => 2,
+            Self::OpenCode => 3,
+            Self::Agy => 4,
+            Self::ZCode => 5,
+            Self::Devin => 6,
+            Self::Muse => 7,
+            Self::Endchat => 8,
+        }
+    }
+
+    /// The shapes that draw this icon.
+    pub fn polys(self) -> &'static [Poly] {
+        match self {
+            Self::Agy => HARNESS_ICON_AGY_POLY,
+            Self::Claude => HARNESS_ICON_CLAUDE_POLY,
+            Self::Codex => HARNESS_ICON_CODEX_POLY,
+            Self::Gemini => HARNESS_ICON_GEMINI_POLY,
+            Self::OpenCode => HARNESS_ICON_OPENCODE_POLY,
+            Self::ZCode => HARNESS_ICON_ZCODE_POLY,
+            Self::Devin => HARNESS_ICON_DEVIN_POLY,
+            Self::Muse => HARNESS_ICON_MUSE_POLY,
+            Self::Endchat => HARNESS_ICON_ENDCHAT_POLY,
         }
     }
 
