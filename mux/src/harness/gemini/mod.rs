@@ -407,9 +407,11 @@ pub(crate) fn read_last_observation(path: &Path) -> anyhow::Result<HarnessObserv
         }
     }
 
+    // A session with no turn open waits for input, including a new one that
+    // holds only the context Gemini injects when it opens.
     let turn_state = if turn_open {
         AgentTurnState::WaitingOnAgent
-    } else if last_turn_completed_at.is_some() || last_assistant_at.is_some() {
+    } else if !conversation.messages.is_empty() {
         AgentTurnState::WaitingOnUser
     } else {
         AgentTurnState::Unknown
@@ -672,5 +674,28 @@ mod test {
         assert!(!starts_turn(
             &serde_json::json!({"type": "gemini", "content": "hi"})
         ));
+    }
+
+    #[test]
+    fn a_new_session_waits_for_its_first_input() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("session-2026-11-22T17-37-7e93cfe3.jsonl");
+        std::fs::write(
+            &path,
+            [
+                serde_json::json!({"sessionId": "7e93cfe3", "startTime": "2026-11-22T17:37:35.655Z", "kind": "main"}),
+                serde_json::json!({"id": "context", "timestamp": "2026-11-22T17:37:35.656Z", "type": "user",
+                    "content": [{"text": "<session_context>\nThis is the Gemini CLI."}]}),
+                serde_json::json!({"$set": {"lastUpdated": "2026-11-22T17:37:35.658Z"}}),
+            ]
+            .iter()
+            .map(|record| format!("{}\n", record))
+            .collect::<String>(),
+        )
+        .unwrap();
+        assert_eq!(
+            read_last_observation(&path).unwrap().turn_state,
+            AgentTurnState::WaitingOnUser
+        );
     }
 }
