@@ -152,7 +152,6 @@ const CODEX: HarnessSpec = HarnessSpec {
 const GEMINI: HarnessSpec = HarnessSpec {
     wrapper_programs: &["node", "node.exe", "bun", "bun.exe"],
     title_prefixes: &["\u{25c7} ", "\u{25c6} "],
-    restore: HarnessRestore::None,
     ..HarnessSpec::new("gemini", &["gemini", "gemini.exe", "gemini.js"])
 };
 const OPENCODE: HarnessSpec = HarnessSpec {
@@ -1126,6 +1125,45 @@ fn normalize_muse_argv(argv: &mut Vec<String>) {
     }
 }
 
+/// Keep a gemini command's options and drop its session selectors and the
+/// options that run a prompt, which would pick another session or start a
+/// turn on restore. Gemini runs under node, so a command read from its
+/// process starts with node and the path of Gemini's script, both kept.
+fn normalize_gemini_argv(argv: &mut Vec<String>) {
+    const VALUE_OPTIONS: &[&str] = &[
+        "-r",
+        "--resume",
+        "--session-file",
+        "--session-id",
+        "--delete-session",
+        "-p",
+        "--prompt",
+        "-i",
+        "--prompt-interactive",
+    ];
+    let original = std::mem::take(argv);
+    let mut args = original.into_iter().peekable();
+    argv.extend(args.next());
+    if argv
+        .first()
+        .is_some_and(|program| !is_harness_tui_program(&AgentHarness::Gemini, program))
+    {
+        argv.extend(args.next());
+    }
+    while let Some(arg) = args.next() {
+        if VALUE_OPTIONS.contains(&arg.as_str()) {
+            args.next();
+        } else if arg == "--list-sessions"
+            || VALUE_OPTIONS
+                .iter()
+                .any(|option| arg.starts_with(&format!("{option}=")))
+        {
+        } else {
+            argv.push(arg);
+        }
+    }
+}
+
 /// Keep a devin command's options and drop its session selectors, one-shot
 /// prompt options and prompt, which would start a new turn on restore.
 fn normalize_devin_argv(argv: &mut Vec<String>) {
@@ -1235,7 +1273,8 @@ fn remove_native_resume_selector(harness: &AgentHarness, argv: &mut Vec<String>)
         AgentHarness::Opencode => return normalize_opencode_argv(argv),
         AgentHarness::Devin => normalize_devin_argv(argv),
         AgentHarness::Muse => normalize_muse_argv(argv),
-        AgentHarness::Gemini | AgentHarness::Endchat | AgentHarness::Unknown => return false,
+        AgentHarness::Gemini => normalize_gemini_argv(argv),
+        AgentHarness::Endchat | AgentHarness::Unknown => return false,
     }
     true
 }
@@ -3540,7 +3579,7 @@ pub fn native_resume_command(
     }
     if matches!(
         harness,
-        AgentHarness::Agy | AgentHarness::Claude | AgentHarness::Muse
+        AgentHarness::Agy | AgentHarness::Claude | AgentHarness::Gemini | AgentHarness::Muse
     ) {
         anyhow::ensure!(
             is_uuid(session_id.trim()),
@@ -3582,7 +3621,10 @@ pub fn native_resume_command(
         match harness {
             AgentHarness::Agy => "--conversation",
             AgentHarness::Opencode => "--session",
-            AgentHarness::Claude | AgentHarness::Zcode | AgentHarness::Devin => "--resume",
+            AgentHarness::Claude
+            | AgentHarness::Gemini
+            | AgentHarness::Zcode
+            | AgentHarness::Devin => "--resume",
             AgentHarness::Codex | AgentHarness::Muse => "resume",
             _ => unreachable!(),
         }
@@ -3797,6 +3839,9 @@ pub fn restorable_session_id(
             .map(|(_, session_id)| session_id)
             .filter(|session_id| is_opencode_session_id(session_id))),
         AgentHarness::Muse => Ok(crate::harness::muse::session_id_of(path)),
+        AgentHarness::Gemini => {
+            Ok(crate::harness::gemini::session_id_of(path).filter(|id| is_uuid(id)))
+        }
         AgentHarness::Endchat => Ok(path.is_dir().then(|| path.to_string_lossy().into_owned())),
         AgentHarness::Devin => Ok(path
             .to_str()
@@ -4961,7 +5006,7 @@ mod test {
         }
         assert_eq!(AgentHarness::Unknown.spec().map(|spec| spec.name), None);
         assert_eq!(AgentHarness::Unknown.name(), "unknown");
-        assert!(!AgentHarness::Gemini.restorable());
+        assert!(AgentHarness::Gemini.restorable());
         assert!(AgentHarness::Endchat.turns_survive_mux_restart());
     }
 
@@ -10294,6 +10339,73 @@ mod test {
         assert_eq!(
             restorable_session_id(&AgentHarness::Devin, Path::new(&url)).unwrap(),
             Some(session.to_string())
+        );
+    }
+
+    #[test]
+    fn gemini_restore_resumes_the_exact_session_with_the_panes_options() {
+        let session = "7e93cfe3-8b06-44bd-a186-4dce833c7d15";
+        let argv = |launch_cmd: &str| {
+            native_resume_command(&AgentHarness::Gemini, launch_cmd, session)
+                .unwrap()
+                .get_argv()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            argv("gemini --yolo -r latest -m gemini-3-pro -i 'fix it' --list-sessions"),
+            [
+                "gemini",
+                "--yolo",
+                "-m",
+                "gemini-3-pro",
+                "--resume",
+                session
+            ]
+        );
+        // Read from its process, Gemini runs under node.
+        assert_eq!(
+            argv("node /home/u/.local/bin/gemini --resume=3 --session-id=x --approval-mode auto_edit"),
+            [
+                "node",
+                "/home/u/.local/bin/gemini",
+                "--approval-mode",
+                "auto_edit",
+                "--resume",
+                session
+            ]
+        );
+        assert!(native_resume_command(&AgentHarness::Gemini, "gemini", "latest").is_err());
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let jsonl = temp.path().join("session-2026-11-22T17-37-7e93cfe3.jsonl");
+        fs::write(
+            &jsonl,
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({"sessionId": session, "projectHash": "abc", "kind": "main"}),
+                serde_json::json!({"id": "m", "type": "user", "content": "hi"})
+            ),
+        )
+        .unwrap();
+        let json = temp.path().join("session-2025-11-27T19-50-7e93cfe3.json");
+        fs::write(
+            &json,
+            format!("{{\n  \"sessionId\": \"{session}\",\n  \"messages\": []\n}}"),
+        )
+        .unwrap();
+        for path in [&jsonl, &json] {
+            assert_eq!(
+                restorable_session_id(&AgentHarness::Gemini, path).unwrap(),
+                Some(session.to_string())
+            );
+        }
+        let other = temp.path().join("notes.json");
+        fs::write(&other, "{\"sessionId\": \"not-a-uuid\"}").unwrap();
+        assert_eq!(
+            restorable_session_id(&AgentHarness::Gemini, &other).unwrap(),
+            None
         );
     }
 

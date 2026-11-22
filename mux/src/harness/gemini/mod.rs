@@ -57,6 +57,23 @@ pub(crate) struct Conversation {
     pub messages: Vec<Value>,
 }
 
+/// The session ID a chat file records, which `gemini --resume` takes. Both
+/// of Gemini's chat formats begin with it: a JSON chat's first field and a
+/// JSONL chat's first record, so only the file's start is read.
+pub(crate) fn session_id_of(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut start = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(4096)
+        .read_to_end(&mut start)
+        .ok()?;
+    let start = String::from_utf8_lossy(&start);
+    let rest = start.split_once("\"sessionId\"")?.1.trim_start();
+    let value = rest.strip_prefix(':')?.trim_start().strip_prefix('"')?;
+    Some(value.split_once('"')?.0.to_string())
+}
+
 pub(crate) fn observe(
     cwd: &str,
     pid: Option<u32>,
