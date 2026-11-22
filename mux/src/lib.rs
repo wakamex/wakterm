@@ -4328,10 +4328,7 @@ impl Mux {
         // restart interrupts them. Its
         // screen then shows it waiting for input, as agy's also does while a
         // turn waits for a background task, which does not stop it.
-        let turn_stopped = runtime
-            .observed_turn
-            .as_ref()
-            .is_some_and(|turn| turn.outcome == AgentObservedTurnOutcome::Running)
+        let turn_stopped = agent::turn_running(runtime)
             && runtime.turn_phase.as_deref() != Some(crate::harness::agy::BACKGROUND_TASK_PHASE)
             && self.harness_idle_on_screen(&runtime.harness, pane_id);
         agent::AgentScreen {

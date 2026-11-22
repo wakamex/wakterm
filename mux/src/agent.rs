@@ -1596,21 +1596,32 @@ impl AgentScreen {
     }
 }
 
+/// Whether an observation shows a turn running: its observed turn, or, from
+/// an observer that names no turn, such as OpenCode's, its turn state.
+pub fn turn_running(runtime: &AgentRuntimeSnapshot) -> bool {
+    runtime.observed_turn.as_ref().map_or(
+        runtime.turn_state == AgentTurnState::WaitingOnAgent,
+        |turn| turn.outcome == AgentObservedTurnOutcome::Running,
+    )
+}
+
 /// Ends the observed turn as aborted when the harness's screen shows it is no
 /// longer running, though its transcript recorded no end. The turn keeps the
 /// stop time it was first seen with, so later refreshes of the same stopped
-/// turn do not move it.
+/// turn do not move it. Without an observed turn, only the turn state ends.
 pub fn end_turn_stopped_on_screen(
     runtime: &mut AgentRuntimeSnapshot,
     previous: Option<&AgentObservedTurn>,
     now: DateTime<Utc>,
 ) {
-    let Some(turn) = runtime.observed_turn.as_mut() else {
-        return;
-    };
-    if turn.outcome != AgentObservedTurnOutcome::Running {
+    if !turn_running(runtime) {
         return;
     }
+    let Some(turn) = runtime.observed_turn.as_mut() else {
+        runtime.turn_state = AgentTurnState::WaitingOnUser;
+        runtime.turn_phase = Some("aborted".to_string());
+        return;
+    };
     let stopped_at = previous
         .filter(|previous| {
             previous.provider_turn_id == turn.provider_turn_id
@@ -6904,6 +6915,32 @@ mod test {
             done.observed_turn.unwrap().final_message.as_deref(),
             Some("Found 12 dates.")
         );
+    }
+
+    #[test]
+    fn a_screen_stops_a_turn_an_observer_reports_without_naming_it() {
+        let metadata = AgentMetadata {
+            agent_id: "agent-opencode".to_string(),
+            name: "opencode".to_string(),
+            launch_cmd: "opencode".to_string(),
+            declared_cwd: "/tmp".to_string(),
+            adopted_pid: None,
+            adopted_start_time: None,
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+            launch_supervisor: None,
+            codex_app_server: None,
+        };
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.turn_state = AgentTurnState::WaitingOnAgent;
+        assert!(turn_running(&runtime));
+        end_turn_stopped_on_screen(&mut runtime, None, Utc::now());
+        assert_eq!(runtime.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(runtime.turn_phase.as_deref(), Some("aborted"));
+        assert!(!turn_running(&runtime));
     }
 
     #[test]
