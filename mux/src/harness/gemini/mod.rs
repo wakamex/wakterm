@@ -17,10 +17,26 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 
-/// Whether a message starts a turn: input the user sent. Both of Wakterm's
-/// readers of a session follow this and `ends_turn`.
+/// Whether a message starts a turn: input the user sent. Gemini also
+/// records a tool's result as a user message, whose parts are all
+/// `functionResponse`, and opens a session with a user message of injected
+/// context; neither is input. Both of Wakterm's readers of a session follow
+/// this and `ends_turn`.
 pub(crate) fn starts_turn(message: &Value) -> bool {
-    message.get("type").and_then(Value::as_str) == Some("user")
+    if message.get("type").and_then(Value::as_str) != Some("user") {
+        return false;
+    }
+    let texts = match message.get("content") {
+        Some(Value::String(text)) => vec![text.as_str()],
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect(),
+        _ => Vec::new(),
+    };
+    texts
+        .iter()
+        .any(|text| !text.trim_start().starts_with("<session_context>"))
 }
 
 /// Whether a message ends its turn: a reply from Gemini that calls no tools.

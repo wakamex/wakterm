@@ -5396,6 +5396,52 @@ mod tests {
     }
 
     #[test]
+    fn a_gemini_tool_result_continues_the_turn_its_prompt_started() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("gemini-tools.json");
+        fs::write(&session, r#"{"sessionId":"session-tools","messages":[]}"#).unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("gemini-tools");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Gemini,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        // The session's injected context, the prompt, a step that calls a
+        // tool, the tool's result, which Gemini records as a user message,
+        // and the final reply: one turn, the prompt's.
+        fs::write(
+            &session,
+            concat!(
+                r#"{"sessionId":"session-tools","messages":["#,
+                r#"{"id":"context","type":"user","timestamp":"2026-11-22T04:39:04Z","content":[{"text":"<session_context>\nThis is the Gemini CLI."}]},"#,
+                r#"{"id":"prompt","type":"user","timestamp":"2026-11-22T04:39:19Z","content":[{"text":"run sleep"}]},"#,
+                r#"{"id":"step","type":"gemini","timestamp":"2026-11-22T04:39:24Z","content":"","toolCalls":[{"name":"run_shell_command"}]},"#,
+                r#"{"id":"result","type":"user","timestamp":"2026-11-22T04:39:46Z","content":[{"functionResponse":{"id":"run_shell_command"}}]},"#,
+                r#"{"id":"reply","type":"gemini","timestamp":"2026-11-22T04:39:48Z","content":"finished"}"#,
+                "]}"
+            ),
+        )
+        .unwrap();
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let page = store.read_page(after, 100).unwrap();
+        let started = page
+            .events
+            .iter()
+            .filter(|event| event.kind == AgentEventKind::TurnStarted)
+            .count();
+        assert_eq!(started, 1);
+        assert!(event_kinds(&page).contains(&AgentEventKind::TurnFinal));
+        assert!(page
+            .events
+            .iter()
+            .filter(|event| event.turn_id.is_some())
+            .all(|event| event.turn_id.as_deref() == Some("prompt")));
+    }
+
+    #[test]
     fn gemini_provider_error_is_observed_without_guessing_a_final() {
         let temp = TempDir::new().unwrap();
         let session = temp.path().join("gemini-error.json");

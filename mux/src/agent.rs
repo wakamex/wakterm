@@ -9733,16 +9733,25 @@ mod test {
             remove_env_var("WAKTERM_AGENT_GEMINI_DIR");
             observed
         };
+        // The context Gemini injects when a session opens is not input.
+        let context = r#"{"type":"user","timestamp":"2026-03-18T11:59:58Z","content":[{"text":"<session_context>\nThis is the Gemini CLI."}]}"#;
+        write(&[context]);
+        assert_ne!(observe().turn_state, AgentTurnState::WaitingOnAgent);
         let user = r#"{"type":"user","timestamp":"2026-03-18T12:00:00Z","content":[{"text":"run the tests"}]}"#;
         // A reply that calls a tool is a step: the turn goes on.
         let step = r#"{"type":"gemini","timestamp":"2026-03-18T12:00:03Z","content":"Running them","toolCalls":[{"name":"run_shell_command"}]}"#;
-        write(&[user, step]);
+        write(&[context, user, step]);
+        assert_eq!(observe().turn_state, AgentTurnState::WaitingOnAgent);
+        // The tool's result, a user message of function responses, does not
+        // start a turn of its own.
+        let result = r#"{"type":"user","timestamp":"2026-03-18T12:00:07Z","content":[{"functionResponse":{"id":"run_shell_command"}}]}"#;
+        write(&[context, user, step, result]);
         assert_eq!(observe().turn_state, AgentTurnState::WaitingOnAgent);
 
         // A reply without tool calls ends it.
         let reply =
             r#"{"type":"gemini","timestamp":"2026-03-18T12:00:09Z","content":"All tests pass"}"#;
-        write(&[user, step, reply]);
+        write(&[context, user, step, result, reply]);
         let done = observe();
         assert_eq!(done.turn_state, AgentTurnState::WaitingOnUser);
         assert_eq!(
