@@ -306,7 +306,8 @@ impl PtyFd {
                     close_random_fds();
 
                     if let Some(mask) = configured_umask {
-                        libc::umask(mask);
+                        // Only a `mode_t` was ever stored.
+                        libc::umask(mask as libc::mode_t);
                     }
 
                     Ok(())

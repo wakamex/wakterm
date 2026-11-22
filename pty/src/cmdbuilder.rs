@@ -204,8 +204,10 @@ pub struct CommandBuilder {
     args: Vec<OsString>,
     envs: BTreeMap<OsString, EnvEntry>,
     cwd: Option<OsString>,
+    /// Held as a `u32` on every platform, though `mode_t` is narrower on
+    /// some, so that the type crosses the mux protocol with one shape.
     #[cfg(unix)]
-    pub(crate) umask: Option<libc::mode_t>,
+    pub(crate) umask: Option<u32>,
     controlling_tty: bool,
 }
 
@@ -451,7 +453,7 @@ impl CommandBuilder {
 #[cfg(unix)]
 impl CommandBuilder {
     pub fn umask(&mut self, mask: Option<libc::mode_t>) {
-        self.umask = mask;
+        self.umask = mask.map(Into::into);
     }
 
     fn resolve_path(&self) -> Option<&OsStr> {
