@@ -5015,45 +5015,63 @@ fn read_last_opencode_observation(
         return Ok(None);
     }
 
-    let mut last_user_at = None;
-    let mut last_assistant_at = None;
-    let mut failed = false;
+    // The latest turn, and the message that ended it if one has, by the
+    // rule the event projector follows: a turn is a user message, and ends
+    // with a reply to it that stopped, or a provider failure.
+    let mut latest_end: Option<(String, bool, Option<DateTime<Utc>>)> = None;
+    let mut ends = Vec::new();
+    let mut turn: Option<(String, Option<DateTime<Utc>>)> = None;
     let mut message_stmt = connection.prepare(
-        "SELECT time_created, data \
+        "SELECT id, time_created, data \
          FROM message \
          WHERE session_id = ?1 \
          ORDER BY time_created DESC, rowid DESC",
     )?;
     let mut message_rows = message_stmt.query(params![session_id])?;
     while let Some(row) = message_rows.next()? {
-        let time_created = row.get::<_, i64>(0)?;
-        let message_data = row.get::<_, String>(1)?;
+        let message_id = row.get::<_, String>(0)?;
+        let time_created = row.get::<_, i64>(1)?;
+        let message_data = row.get::<_, String>(2)?;
         let Ok(message) = serde_json::from_str::<Value>(&message_data) else {
             continue;
         };
-        let Some(role) = message.get("role").and_then(Value::as_str) else {
-            continue;
-        };
-        let timestamp = parse_unix_millis(time_created);
-        match role {
-            // Notifications and reminders the harness injects continue the
-            // current turn rather than starting one.
-            "user"
-                if last_user_at.is_none()
-                    && !crate::agent_event::opencode_runtime_message(&message) =>
-            {
-                last_user_at = timestamp
+        if let Some(completed) = crate::opencode::turn_end(&message) {
+            let at = message
+                .pointer("/time/completed")
+                .and_then(Value::as_i64)
+                .and_then(parse_unix_millis)
+                .or_else(|| parse_unix_millis(time_created));
+            let end = (
+                crate::opencode::reply_to(&message)
+                    .unwrap_or_default()
+                    .to_string(),
+                completed,
+                at,
+            );
+            if latest_end.is_none() {
+                latest_end = Some(end.clone());
             }
-            "assistant" if last_assistant_at.is_none() => {
-                last_assistant_at = timestamp;
-                failed = message.get("error").is_some();
-            }
-            _ => {}
-        }
-        if last_user_at.is_some() && last_assistant_at.is_some() {
+            ends.push(end);
+        } else if crate::opencode::starts_turn(&message) {
+            turn = Some((message_id, parse_unix_millis(time_created)));
             break;
         }
     }
+    let (turn_state, last_turn_completed_at, failed) = match &turn {
+        Some((turn_id, _)) => match ends.iter().find(|(ended, _, _)| ended == turn_id) {
+            Some((_, completed, at)) => (AgentTurnState::WaitingOnUser, *at, !completed),
+            None => (
+                AgentTurnState::WaitingOnAgent,
+                latest_end.as_ref().and_then(|(_, _, at)| *at),
+                false,
+            ),
+        },
+        // Replies with no turn of their own in the session wait on the user.
+        None => match &latest_end {
+            Some((_, completed, at)) => (AgentTurnState::WaitingOnUser, *at, !completed),
+            None => (AgentTurnState::Unknown, None, false),
+        },
+    };
 
     let mut summary = None;
     let mut part_stmt = connection.prepare(
@@ -5088,7 +5106,6 @@ fn read_last_opencode_observation(
         }
     }
 
-    let (turn_state, last_turn_completed_at) = derive_turn_state(last_user_at, last_assistant_at);
     Ok(Some(HarnessObservation {
         session_path: Some(encode_opencode_session_path(db_path, session_id)),
         progress_summary: summary,
@@ -10518,6 +10535,81 @@ mod test {
     }
 
     #[test]
+    fn an_opencode_turn_runs_through_tool_steps_until_its_reply_stops() {
+        let _env_lock = env_lock();
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("opencode.db");
+        let connection = create_opencode_test_db(&db_path);
+        connection
+            .execute(
+                "INSERT INTO session (id, directory, time_updated) VALUES (?1, ?2, ?3)",
+                params!["session-1", "/tmp/project-k", 1_773_711_609_000_i64],
+            )
+            .unwrap();
+        let message = |id: &str, at: i64, data: &str| {
+            connection
+                .execute(
+                    "INSERT INTO message (id, session_id, time_created, data) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![id, "session-1", at, data],
+                )
+                .unwrap();
+        };
+        set_env_path("WAKTERM_AGENT_OPENCODE_DB", &db_path);
+        let observe = || {
+            observe_opencode(
+                &AgentHarness::Opencode,
+                None,
+                "/tmp/project-k",
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap()
+        };
+
+        message("u1", 1_773_711_600_000, r#"{"role":"user"}"#);
+        // A tool step, and a reply still streaming, are newer than the input
+        // but end nothing: the agent is still working.
+        message(
+            "a1",
+            1_773_711_601_000,
+            r#"{"role":"assistant","finish":"tool-calls","parentID":"u1"}"#,
+        );
+        message(
+            "a2",
+            1_773_711_602_000,
+            r#"{"role":"assistant","parentID":"u1"}"#,
+        );
+        assert_eq!(observe().turn_state, AgentTurnState::WaitingOnAgent);
+
+        // Its reply stopping ends the turn.
+        connection
+            .execute(
+                "UPDATE message SET data = ?1 WHERE id = 'a2'",
+                params![r#"{"role":"assistant","finish":"stop","parentID":"u1"}"#],
+            )
+            .unwrap();
+        let done = observe();
+        assert_eq!(done.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(done.turn_phase, None);
+
+        // A provider failure ends the next turn without an answer.
+        message("u2", 1_773_711_603_000, r#"{"role":"user"}"#);
+        assert_eq!(observe().turn_state, AgentTurnState::WaitingOnAgent);
+        message(
+            "a3",
+            1_773_711_604_000,
+            r#"{"role":"assistant","error":{"name":"APIError"},"parentID":"u2"}"#,
+        );
+        let failed = observe();
+        assert_eq!(failed.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(failed.turn_phase.as_deref(), Some("failed"));
+        remove_env_var("WAKTERM_AGENT_OPENCODE_DB");
+    }
+
+    #[test]
     fn observes_latest_opencode_session_summary() {
         let _env_lock = env_lock();
         let temp = TempDir::new().unwrap();
@@ -10559,7 +10651,7 @@ mod test {
                     "message-assistant",
                     "session-1",
                     1_773_711_603_000_i64,
-                    r#"{"role":"assistant"}"#
+                    r#"{"role":"assistant","finish":"stop","parentID":"message-user"}"#
                 ],
             )
             .unwrap();
@@ -11110,7 +11202,7 @@ mod test {
                     "message-assistant-2",
                     "session-2",
                     1_773_711_605_000_i64,
-                    r#"{"role":"assistant"}"#
+                    r#"{"role":"assistant","finish":"stop","parentID":"message-user-2"}"#
                 ],
             )
             .unwrap();

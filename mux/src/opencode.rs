@@ -15,6 +15,48 @@ const BOTTOM: char = '\u{2579}';
 const SEPARATOR: &str = "\u{b7}";
 const PLACEHOLDERS: [&str; 2] = ["Ask anything\u{2026}", "Run a command\u{2026}"];
 
+/// A notification or reminder OpenCode injects as a user message, which
+/// continues the current turn rather than starting one.
+pub(crate) fn runtime_message(message: &serde_json::Value) -> bool {
+    message
+        .get("synthetic")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        || message
+            .pointer("/semantics/origin")
+            .and_then(serde_json::Value::as_str)
+            == Some("agent_runtime")
+}
+
+/// Whether a message starts a turn: input the user sent. A turn is named
+/// by its user message's ID, which OpenCode's replies give as `parentID`.
+/// Both of Wakterm's readers of a session follow this and `turn_end`.
+pub(crate) fn starts_turn(message: &serde_json::Value) -> bool {
+    message.get("role").and_then(serde_json::Value::as_str) == Some("user")
+        && !runtime_message(message)
+}
+
+/// Whether an assistant message ends its turn, and whether it completed:
+/// a reply that stopped, or a provider failure, which ends it without an
+/// answer. A tool step, or a reply still streaming, ends nothing.
+pub(crate) fn turn_end(message: &serde_json::Value) -> Option<bool> {
+    if message.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
+        return None;
+    }
+    if message.get("error").is_some() {
+        Some(false)
+    } else if message.get("finish").and_then(serde_json::Value::as_str) == Some("stop") {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// The turn an assistant message answers: its user message's ID.
+pub(crate) fn reply_to(message: &serde_json::Value) -> Option<&str> {
+    message.get("parentID").and_then(serde_json::Value::as_str)
+}
+
 /// The background just right of the row's `┃` bar, which is the box's own.
 fn bar_background(line: &Line) -> Option<ColorAttribute> {
     let mut cells = line.visible_cells().skip_while(|cell| cell.str() != BAR);

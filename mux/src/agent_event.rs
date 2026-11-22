@@ -3173,9 +3173,7 @@ fn project_opencode(
         for row in rows {
             let (rowid, message_id, time_created, data) = row?;
             let message: Value = serde_json::from_str(&data)?;
-            if message.get("role").and_then(Value::as_str) == Some("user")
-                && !opencode_runtime_message(&message)
-            {
+            if crate::opencode::starts_turn(&message) {
                 // OpenCode writes a user message's text parts after the
                 // message. Wait for them so the turn carries its input's
                 // hash, unless a later message shows the input has none.
@@ -3297,7 +3295,11 @@ fn project_opencode(
         for row in rows {
             let (rowid, message_id, time_created, data, text) = row?;
             let message: Value = serde_json::from_str(&data)?;
-            let Some(turn_id) = message.get("parentID").and_then(Value::as_str) else {
+            // The query only narrows the rows to candidates; the rule decides.
+            if crate::opencode::turn_end(&message).is_none() {
+                continue;
+            }
+            let Some(turn_id) = crate::opencode::reply_to(&message) else {
                 events.push(observer_failure(
                     format!("opencode:{source_id}:{message_id}:final-missing-turn"),
                     DateTime::from_timestamp_millis(time_created).unwrap_or_else(Utc::now),
@@ -3362,10 +3364,6 @@ fn project_opencode(
 
 /// A user-role message the harness injected itself, such as ZCode's task
 /// notifications and reminders; it continues the current turn.
-pub(crate) fn opencode_runtime_message(message: &Value) -> bool {
-    message.get("synthetic").and_then(Value::as_bool) == Some(true)
-        || message.pointer("/semantics/origin").and_then(Value::as_str) == Some("agent_runtime")
-}
 
 fn opencode_maxima(
     conn: &Connection,
