@@ -1784,12 +1784,23 @@ mod test {
         let changed = recorded["shapes"] != shapes;
         let bumped = recorded_version != Some(CODEC_VERSION as u64);
         if changed && !bumped && recorded_version.is_some() {
+            // The types whose shape differs from the recorded one, or that
+            // only one side has.
+            let empty = serde_json::Map::new();
+            let before = recorded["shapes"].as_object().unwrap_or(&empty);
+            let after = shapes.as_object().unwrap_or(&empty);
+            let differing = before
+                .keys()
+                .chain(after.keys())
+                .filter(|name| before.get(*name) != after.get(*name))
+                .collect::<std::collections::BTreeSet<_>>();
             panic!(
                 "the protocol's types changed but CODEC_VERSION is still {}; \
                  a client and server built on either side of this change would pass the \
                  version check and then misread each other. Bump CODEC_VERSION, then run \
-                 this test with WAKTERM_UPDATE_PROTOCOL_SHAPES=1 to record the new shapes.",
-                CODEC_VERSION
+                 this test with WAKTERM_UPDATE_PROTOCOL_SHAPES=1 to record the new shapes. \
+                 Changed: {:?}",
+                CODEC_VERSION, differing
             );
         }
         if changed || bumped {
