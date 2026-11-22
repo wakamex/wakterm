@@ -2783,7 +2783,7 @@ fn project_gemini(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result
         };
         let record_key = format!("gemini:{source_id}:{message_id}");
         match message.get("type").and_then(Value::as_str) {
-            Some("user") => {
+            _ if crate::harness::gemini::starts_turn(message) => {
                 cursor.current_turn_id = Some(message_id.to_string());
                 let mut started = PendingEvent::new(
                     format!("{record_key}:started"),
@@ -2814,10 +2814,7 @@ fn project_gemini(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result
                     continue;
                 };
                 let text = extract_text(message.get("content"));
-                let has_tool_calls = message
-                    .get("toolCalls")
-                    .and_then(Value::as_array)
-                    .is_some_and(|calls| !calls.is_empty());
+                let has_tool_calls = !crate::harness::gemini::ends_turn(message);
                 if let Some(text) = text.as_ref() {
                     let mut output = PendingEvent::new(
                         format!("{record_key}:message"),

@@ -3,5 +3,6 @@
 //! programs and launch command, are in `crate::agent::HarnessSpec`.
 
 pub mod devin;
+pub mod gemini;
 pub mod muse;
 pub mod opencode;

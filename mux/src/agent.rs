@@ -4774,26 +4774,37 @@ fn read_last_gemini_observation(path: &Path) -> anyhow::Result<HarnessObservatio
     let mut summary = None;
     let mut last_user_at = None;
     let mut last_assistant_at = None;
+    // Whether the latest turn is still open, and when the latest one ended,
+    // by the rule the event projector follows.
+    let mut turn_open = false;
+    let mut last_turn_completed_at = None;
     for message in &conversation.messages {
         let timestamp = message
             .get("timestamp")
             .and_then(Value::as_str)
             .and_then(parse_rfc3339_timestamp);
-        match message.get("type").and_then(Value::as_str) {
-            Some("user") => {
-                last_user_at = timestamp.or(last_user_at);
+        if crate::harness::gemini::starts_turn(message) {
+            last_user_at = timestamp.or(last_user_at);
+            turn_open = true;
+        } else if message.get("type").and_then(Value::as_str) == Some("gemini") {
+            last_assistant_at = timestamp.or(last_assistant_at);
+            if let Some(content) = message.get("content").and_then(extract_message_text) {
+                summary = Some(truncate_summary(&content));
             }
-            Some("gemini") => {
-                last_assistant_at = timestamp.or(last_assistant_at);
-                if let Some(content) = message.get("content").and_then(extract_message_text) {
-                    summary = Some(truncate_summary(&content));
-                }
+            if crate::harness::gemini::ends_turn(message) {
+                turn_open = false;
+                last_turn_completed_at = timestamp.or(last_turn_completed_at);
             }
-            _ => {}
         }
     }
 
-    let (turn_state, last_turn_completed_at) = derive_turn_state(last_user_at, last_assistant_at);
+    let turn_state = if turn_open {
+        AgentTurnState::WaitingOnAgent
+    } else if last_turn_completed_at.is_some() || last_assistant_at.is_some() {
+        AgentTurnState::WaitingOnUser
+    } else {
+        AgentTurnState::Unknown
+    };
     Ok(HarnessObservationDetails {
         progress_summary: summary,
         harness_mode: None,
@@ -10067,6 +10078,54 @@ mod test {
             observed.last_turn_completed_at,
             Some(Utc.with_ymd_and_hms(2026, 3, 17, 12, 0, 3).unwrap())
         );
+    }
+
+    #[test]
+    fn a_gemini_turn_runs_through_tool_calls_until_a_reply_without_them() {
+        let _env_lock = env_lock();
+        let temp = TempDir::new().unwrap();
+        let cwd = "/tmp/project-g";
+        let chats_dir = temp.path().join("tmp").join("project-g").join("chats");
+        fs::create_dir_all(&chats_dir).unwrap();
+        fs::write(
+            temp.path().join("projects.json"),
+            r#"{"projects":{"/tmp/project-g":"project-g"}}"#,
+        )
+        .unwrap();
+        let session = chats_dir.join("session-2026-03-18.json");
+        let write = |messages: &[&str]| {
+            fs::write(
+                &session,
+                format!(
+                    "{{\"lastUpdated\":\"2026-03-18T12:00:09Z\",\"messages\":[{}]}}",
+                    messages.join(",")
+                ),
+            )
+            .unwrap();
+        };
+        let observe = || {
+            set_env_path("WAKTERM_AGENT_GEMINI_DIR", temp.path());
+            let observed = observe_gemini(cwd, None, None, None).unwrap().unwrap();
+            remove_env_var("WAKTERM_AGENT_GEMINI_DIR");
+            observed
+        };
+        let user = r#"{"type":"user","timestamp":"2026-03-18T12:00:00Z","content":[{"text":"run the tests"}]}"#;
+        // A reply that calls a tool is a step: the turn goes on.
+        let step = r#"{"type":"gemini","timestamp":"2026-03-18T12:00:03Z","content":"Running them","toolCalls":[{"name":"run_shell_command"}]}"#;
+        write(&[user, step]);
+        assert_eq!(observe().turn_state, AgentTurnState::WaitingOnAgent);
+
+        // A reply without tool calls ends it.
+        let reply =
+            r#"{"type":"gemini","timestamp":"2026-03-18T12:00:09Z","content":"All tests pass"}"#;
+        write(&[user, step, reply]);
+        let done = observe();
+        assert_eq!(done.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(
+            done.last_turn_completed_at,
+            Some(Utc.with_ymd_and_hms(2026, 3, 18, 12, 0, 9).unwrap())
+        );
+        assert_eq!(done.progress_summary.as_deref(), Some("All tests pass"));
     }
 
     #[test]
