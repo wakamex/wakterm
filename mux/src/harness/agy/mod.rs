@@ -9,7 +9,7 @@ use crate::agent::{
 use crate::agent_event::{
     event_time, input_accepted, observer_failure, AgentEventKind, JsonlCursor, PendingEvent,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,44 +19,99 @@ use std::path::{Path, PathBuf};
 pub(crate) enum TurnStep {
     /// The user's input starts a turn.
     StartedByUser,
-    /// A system notice that arrives while no turn runs, such as a background
-    /// task finishing, wakes agy to work on it: a turn without user input.
+    /// A system notice that arrives while no turn runs wakes agy to work on
+    /// it: a turn without user input.
     StartedBySystem,
-    /// A finished response that calls no tools ends the turn.
+    /// A finished response that calls no tools while a background task the
+    /// turn started still runs: an interim answer, after which agy waits for
+    /// the task's notice and goes on, so the turn stays open.
+    Interim,
+    /// A finished response that calls no tools, with no background task
+    /// pending, ends the turn.
     Ended,
     Other,
 }
 
+/// How long a turn waits, after an interim answer, for the notice of a
+/// background task before it ends with that answer. Of 338 such waits in
+/// 499 agy transcripts, all but one ended within 30 minutes.
+pub(crate) const BACKGROUND_WAIT_LIMIT: Duration = Duration::minutes(30);
+
 /// Whether an agy turn runs, by the one rule both of Wakterm's readers of a
 /// transcript follow: the observer from the latest user input, the event
 /// projector from where its cursor left off. A step whose status is `ERROR`
-/// does not end a turn: agy goes on after it.
-#[derive(Clone, Copy, Debug, Default)]
+/// does not end a turn: agy goes on after it. A tool step agy marks
+/// `RUNNING` runs as a background task, whose end agy learns from a system
+/// notice; until each such task's notice arrives, an answer is interim.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TurnTracker {
     pub open: bool,
+    /// Background tasks of the open turn whose notice has not arrived.
+    pub pending: u32,
+    /// When the open turn's interim answer was given, while it waits for a
+    /// background task's notice.
+    pub waiting_since: Option<DateTime<Utc>>,
 }
 
 impl TurnTracker {
     pub(crate) fn step(&mut self, record: &Value) -> TurnStep {
+        let status = record.get("status").and_then(Value::as_str);
         match record.get("type").and_then(Value::as_str) {
             Some("USER_INPUT") => {
-                self.open = true;
+                *self = TurnTracker {
+                    open: true,
+                    ..TurnTracker::default()
+                };
                 TurnStep::StartedByUser
             }
             Some("SYSTEM_MESSAGE") if !self.open => {
-                self.open = true;
+                *self = TurnTracker {
+                    open: true,
+                    ..TurnTracker::default()
+                };
                 TurnStep::StartedBySystem
             }
+            Some("SYSTEM_MESSAGE") if self.pending > 0 => {
+                self.pending -= 1;
+                self.waiting_since = None;
+                TurnStep::Other
+            }
+            Some("GENERIC") if self.open && status == Some("RUNNING") => {
+                self.pending += 1;
+                TurnStep::Other
+            }
             Some("PLANNER_RESPONSE")
-                if self.open
-                    && record.get("status").and_then(Value::as_str) == Some("DONE")
-                    && !calls_tools(record) =>
+                if self.open && status == Some("DONE") && !calls_tools(record) =>
             {
-                self.open = false;
-                TurnStep::Ended
+                if self.pending > 0 {
+                    self.waiting_since = record
+                        .get("created_at")
+                        .and_then(Value::as_str)
+                        .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+                        .map(|at| at.with_timezone(&Utc))
+                        .or(Some(Utc::now()));
+                    TurnStep::Interim
+                } else {
+                    *self = TurnTracker::default();
+                    TurnStep::Ended
+                }
             }
             _ => TurnStep::Other,
         }
+    }
+
+    /// Ends a turn that has waited past `BACKGROUND_WAIT_LIMIT` since its
+    /// interim answer, returning whether it did. The turn ends with that
+    /// answer; a notice that comes later starts a turn of its own.
+    pub(crate) fn expire(&mut self, now: DateTime<Utc>) -> bool {
+        let expired = self.open
+            && self
+                .waiting_since
+                .is_some_and(|since| now - since > BACKGROUND_WAIT_LIMIT);
+        if expired {
+            *self = TurnTracker::default();
+        }
+        expired
     }
 }
 
@@ -376,23 +431,33 @@ pub(crate) fn read_last_observation(path: &Path) -> anyhow::Result<HarnessObserv
     let mut tracker = TurnTracker::default();
     let mut start: Option<(&Value, bool)> = None;
     let mut end: Option<&Value> = None;
+    let mut interim: Option<&Value> = None;
     let mut last_end_at = previous_turn_end;
     for record in &tail {
         match tracker.step(record) {
             TurnStep::StartedByUser => {
                 start = Some((record, true));
                 end = None;
+                interim = None;
             }
             TurnStep::StartedBySystem => {
                 start = Some((record, false));
                 end = None;
+                interim = None;
             }
+            TurnStep::Interim => interim = Some(record),
             TurnStep::Ended => {
                 end = Some(record);
                 last_end_at = created_at(record).or(last_end_at);
             }
             TurnStep::Other => {}
         }
+    }
+    // A turn that waited too long for a background task's notice ended with
+    // its interim answer.
+    if tracker.expire(Utc::now()) {
+        end = interim;
+        last_end_at = interim.and_then(created_at).or(last_end_at);
     }
     let Some((start, by_user)) = start else {
         return Ok(HarnessObservationDetails {
@@ -491,8 +556,12 @@ pub(crate) fn project_record(
     let record_key = format!("agy:{}:{step}", cursor.source_id);
     let mut tracker = TurnTracker {
         open: cursor.turn_open,
+        pending: cursor.background_pending,
+        waiting_since: cursor.background_waiting_since,
     };
     let step_kind = tracker.step(record);
+    cursor.background_pending = tracker.pending;
+    cursor.background_waiting_since = tracker.waiting_since;
     match step_kind {
         TurnStep::StartedByUser | TurnStep::StartedBySystem => {
             let Some(turn_id) = turn_id(&cursor.source_id, record) else {
@@ -588,4 +657,45 @@ pub(crate) fn project_record(
         }
         _ => Ok(Vec::new()),
     }
+}
+
+/// The events that end an agy turn whose wait for a background task's
+/// notice has run past `BACKGROUND_WAIT_LIMIT`, with its interim answer as
+/// the final one.
+pub(crate) fn expire_background_wait(
+    cursor: &mut JsonlCursor,
+    now: DateTime<Utc>,
+) -> Vec<PendingEvent> {
+    let mut tracker = TurnTracker {
+        open: cursor.turn_open,
+        pending: cursor.background_pending,
+        waiting_since: cursor.background_waiting_since,
+    };
+    let Some(since) = tracker.waiting_since else {
+        return Vec::new();
+    };
+    if !tracker.expire(now) {
+        return Vec::new();
+    }
+    cursor.turn_open = false;
+    cursor.background_pending = 0;
+    cursor.background_waiting_since = None;
+    let Some(turn_id) = cursor.current_turn_id.clone() else {
+        return Vec::new();
+    };
+    let record_key = format!("agy:{}:{turn_id}:background-wait", cursor.source_id);
+    let at = since + BACKGROUND_WAIT_LIMIT;
+    let mut final_event =
+        PendingEvent::new(format!("{record_key}:final"), AgentEventKind::TurnFinal, at);
+    final_event.turn_id = Some(turn_id.clone());
+    final_event.outcome = Some("completed".to_string());
+    final_event.text = cursor.last_assistant_text.clone();
+    let mut state = PendingEvent::new(
+        format!("{record_key}:state"),
+        AgentEventKind::TurnStateChanged,
+        at,
+    );
+    state.turn_id = Some(turn_id);
+    state.turn_state = Some("waiting_on_user".to_string());
+    vec![final_event, state]
 }

@@ -6883,6 +6883,114 @@ mod test {
     }
 
     #[test]
+    fn an_agy_turn_waits_for_its_background_task_unless_the_wait_runs_out() {
+        let temp = TempDir::new().unwrap();
+        let step = |index: u64, kind: &str, status: &str, at: &str, extra: serde_json::Value| {
+            let mut record = serde_json::json!({
+                "step_index": index, "type": kind, "status": status, "created_at": at,
+            });
+            record
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            record
+        };
+        let observe = |steps: &[serde_json::Value]| {
+            let transcript = write_agy_transcript(temp.path(), "conversation-4", steps);
+            crate::harness::agy::read_last_observation(&transcript).unwrap()
+        };
+        // Recent steps: agy runs a command as a background task, answers
+        // while it runs, and goes on when its notice arrives.
+        let now = Utc::now();
+        let at = |seconds: i64| (now - chrono::Duration::seconds(60 - seconds)).to_rfc3339();
+        let mut steps = vec![
+            step(
+                0,
+                "USER_INPUT",
+                "DONE",
+                &at(0),
+                serde_json::json!({"content": "<USER_REQUEST>\nrun it\n</USER_REQUEST>"}),
+            ),
+            step(
+                1,
+                "PLANNER_RESPONSE",
+                "DONE",
+                &at(1),
+                serde_json::json!({"tool_calls": [{"name": "run_command"}]}),
+            ),
+            step(
+                2,
+                "GENERIC",
+                "RUNNING",
+                &at(2),
+                serde_json::json!({"content": "Tool is running as a background task"}),
+            ),
+            step(
+                3,
+                "PLANNER_RESPONSE",
+                "DONE",
+                &at(3),
+                serde_json::json!({"content": "Waiting for the command to finish."}),
+            ),
+        ];
+        let waiting = observe(&steps);
+        assert_eq!(waiting.turn_state, AgentTurnState::WaitingOnAgent);
+        assert_eq!(waiting.observed_turn.unwrap().final_message, None);
+        steps.push(step(
+            4,
+            "SYSTEM_MESSAGE",
+            "DONE",
+            &at(4),
+            serde_json::json!({"content": "The command finished."}),
+        ));
+        steps.push(step(
+            5,
+            "PLANNER_RESPONSE",
+            "DONE",
+            &at(5),
+            serde_json::json!({"content": "finished"}),
+        ));
+        let done = observe(&steps);
+        assert_eq!(done.turn_state, AgentTurnState::WaitingOnUser);
+        let turn = done.observed_turn.unwrap();
+        assert_eq!(turn.provider_turn_id, "conversation-4:0");
+        assert_eq!(turn.final_message.as_deref(), Some("finished"));
+
+        // An interim answer whose task's notice has not come within the
+        // wait limit ends the turn with that answer.
+        let old = |minutes: i64| (now - chrono::Duration::minutes(40 - minutes)).to_rfc3339();
+        let stale = [
+            step(
+                0,
+                "USER_INPUT",
+                "DONE",
+                &old(0),
+                serde_json::json!({"content": "<USER_REQUEST>\nrun it\n</USER_REQUEST>"}),
+            ),
+            step(
+                1,
+                "GENERIC",
+                "RUNNING",
+                &old(0),
+                serde_json::json!({"content": "Tool is running as a background task"}),
+            ),
+            step(
+                2,
+                "PLANNER_RESPONSE",
+                "DONE",
+                &old(1),
+                serde_json::json!({"content": "Started it."}),
+            ),
+        ];
+        let expired = observe(&stale);
+        assert_eq!(expired.turn_state, AgentTurnState::WaitingOnUser);
+        assert_eq!(
+            expired.observed_turn.unwrap().final_message.as_deref(),
+            Some("Started it.")
+        );
+    }
+
+    #[test]
     fn observes_agy_running_and_completed_turns_from_transcript() {
         let temp = TempDir::new().unwrap();
         let transcript = write_agy_transcript(

@@ -165,6 +165,13 @@ pub(crate) struct JsonlCursor {
     /// result, after which Claude still owes the model's reply.
     #[serde(default)]
     owes_reply: bool,
+    /// agy's background tasks in the open turn whose notice has not arrived.
+    #[serde(default)]
+    pub background_pending: u32,
+    /// When the open agy turn's interim answer was given, while it waits
+    /// for a background task's notice.
+    #[serde(default)]
+    pub background_waiting_since: Option<DateTime<Utc>>,
 }
 
 impl JsonlCursor {
@@ -1669,8 +1676,8 @@ fn initial_jsonl_cursor(
     source_id: String,
 ) -> anyhow::Result<JsonlCursor> {
     let offset = complete_jsonl_tail(path)?;
-    let (current_turn_id, current_prompt_id, turn_open) =
-        latest_jsonl_turn(path, provider, &source_id)?;
+    let (current_turn_id, current_prompt_id, agy) = latest_jsonl_turn(path, provider, &source_id)?;
+    let turn_open = agy.open;
     Ok(JsonlCursor {
         source_id,
         offset,
@@ -1688,6 +1695,8 @@ fn initial_jsonl_cursor(
         queued_steers: Vec::new(),
         asked_questions: Vec::new(),
         owes_reply: false,
+        background_pending: agy.pending,
+        background_waiting_since: agy.waiting_since,
     })
 }
 
@@ -1718,12 +1727,17 @@ fn complete_jsonl_tail(path: &Path) -> anyhow::Result<u64> {
 }
 
 /// The latest turn ID in a provider session, with Claude's `promptId` for it,
-/// and for agy whether that turn is still open.
+/// and for agy the state of that turn: whether it is still open and waits
+/// on background tasks.
 fn latest_jsonl_turn(
     path: &Path,
     provider: &str,
     source_id: &str,
-) -> anyhow::Result<(Option<String>, Option<String>, bool)> {
+) -> anyhow::Result<(
+    Option<String>,
+    Option<String>,
+    crate::harness::agy::TurnTracker,
+)> {
     let reader = BufReader::new(fs::File::open(path)?);
     let mut current = None;
     let mut prompt_id = None;
@@ -1759,7 +1773,9 @@ fn latest_jsonl_turn(
             _ => {}
         }
     }
-    Ok((current, prompt_id, agy.open))
+    // A wait for a background task's notice that has run out has ended.
+    agy.expire(Utc::now());
+    Ok((current, prompt_id, agy))
 }
 
 /// When a new session file is armed at its end because the previous file
@@ -2489,7 +2505,13 @@ fn project_agy(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<Pr
     let events = match read_new_jsonl(path, &mut cursor, |offset, record, cursor| {
         crate::harness::agy::project_record(offset, record, cursor)
     }) {
-        Ok(events) => events,
+        Ok(mut events) => {
+            events.extend(crate::harness::agy::expire_background_wait(
+                &mut cursor,
+                Utc::now(),
+            ));
+            events
+        }
         Err(err) if err.to_string().contains("truncated or rewritten") => {
             return reset_jsonl_projection(path, "agy", source_id, None);
         }
@@ -4086,6 +4108,123 @@ mod tests {
                 (Some("conversation-3:4"), None)
             ]
         );
+    }
+
+    #[test]
+    fn agy_projects_one_turn_through_a_background_task_and_ends_a_stale_wait() {
+        let temp = TempDir::new().unwrap();
+        let logs = temp
+            .path()
+            .join("brain")
+            .join("conversation-5")
+            .join(".system_generated")
+            .join("logs");
+        fs::create_dir_all(&logs).unwrap();
+        let now = Utc::now();
+        let record = |step: u64,
+                      kind: &str,
+                      status: &str,
+                      minutes_ago: i64,
+                      fields: serde_json::Value| {
+            let mut record = serde_json::json!({"step_index": step, "type": kind,
+                "status": status, "created_at": (now - chrono::Duration::minutes(minutes_ago)).to_rfc3339()});
+            record
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            record.to_string() + "\n"
+        };
+        let session = logs.join("transcript.jsonl");
+        fs::write(&session, "").unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("agy-background");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Agy,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let after = store.latest_sequence();
+        // A background task the turn waits for, then its notice and the
+        // final answer: one turn, ended by the final answer.
+        append(
+            &session,
+            &(record(
+                1,
+                "USER_INPUT",
+                "DONE",
+                1,
+                serde_json::json!({"content": "<USER_REQUEST>\nrun it\n</USER_REQUEST>"}),
+            ) + &record(
+                2,
+                "GENERIC",
+                "RUNNING",
+                1,
+                serde_json::json!({"content": "background"}),
+            ) + &record(
+                3,
+                "PLANNER_RESPONSE",
+                "DONE",
+                1,
+                serde_json::json!({"content": "Waiting."}),
+            ) + &record(
+                4,
+                "SYSTEM_MESSAGE",
+                "DONE",
+                0,
+                serde_json::json!({"content": "done"}),
+            ) + &record(
+                5,
+                "PLANNER_RESPONSE",
+                "DONE",
+                0,
+                serde_json::json!({"content": "finished"}),
+            )),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let page = store.read_page(after, 100).unwrap();
+        let finals = page
+            .events
+            .iter()
+            .filter(|event| event.kind == AgentEventKind::TurnFinal)
+            .map(|event| (event.turn_id.as_deref(), event.text.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(finals, [(Some("conversation-5:1"), Some("finished"))]);
+
+        // A wait whose notice does not come within the limit ends the turn
+        // with its interim answer.
+        let after = store.latest_sequence();
+        append(
+            &session,
+            &(record(
+                6,
+                "USER_INPUT",
+                "DONE",
+                45,
+                serde_json::json!({"content": "<USER_REQUEST>\nagain\n</USER_REQUEST>"}),
+            ) + &record(
+                7,
+                "GENERIC",
+                "RUNNING",
+                45,
+                serde_json::json!({"content": "background"}),
+            ) + &record(
+                8,
+                "PLANNER_RESPONSE",
+                "DONE",
+                44,
+                serde_json::json!({"content": "Started it."}),
+            )),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let page = store.read_page(after, 100).unwrap();
+        let finals = page
+            .events
+            .iter()
+            .filter(|event| event.kind == AgentEventKind::TurnFinal)
+            .map(|event| (event.turn_id.as_deref(), event.text.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(finals, [(Some("conversation-5:6"), Some("Started it."))]);
     }
 
     #[test]
