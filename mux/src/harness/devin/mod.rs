@@ -471,7 +471,7 @@ pub(crate) fn observe(
         turn_state,
         last_turn_completed_at: completed_at,
         observed_turn: Some(crate::agent::AgentObservedTurn {
-            provider_turn_id: format!("{session_id}:{}", user.node_id),
+            provider_turn_id: turn_id(&session_id, user),
             outcome,
             started_at: Some(user.created_at),
             completed_at,
@@ -513,8 +513,7 @@ pub(crate) fn project(
                         .map(|message| message.row_id)
                         .max()
                         .unwrap_or(0),
-                    current_turn_id: turn
-                        .map(|turn| format!("{source_id}:{}", messages[turn.start].node_id)),
+                    current_turn_id: turn.map(|turn| turn_id(&source_id, &messages[turn.start])),
                     turn_open: turn.is_some_and(|turn| turn.end.is_none()),
                 },
                 Vec::new(),
@@ -552,7 +551,7 @@ pub(crate) fn project(
             }
             (TurnStep::Started | TurnStep::Steered, _) => {
                 let sha256 = crate::agent::message_sha256(&message.content);
-                let turn_id = format!("{source_id}:{}", message.node_id);
+                let turn_id = turn_id(&source_id, message);
                 cursor.current_turn_id = Some(turn_id.clone());
                 let mut started = PendingEvent::new(
                     format!("{record_key}:started"),
@@ -615,6 +614,17 @@ pub(crate) fn project(
         }
     }
     Ok((cursor, events))
+}
+
+/// The ID of the turn a user message starts. Devin can rebuild a session's
+/// chain with copies of earlier messages at new nodes, keeping their
+/// message IDs, so the message ID names the turn the same way before and
+/// after; a message without one is named by its node.
+pub(crate) fn turn_id(session_id: &str, message: &Message) -> String {
+    match &message.message_id {
+        Some(message_id) => format!("{session_id}:{message_id}"),
+        None => format!("{session_id}:{}", message.node_id),
+    }
 }
 
 /// What a message does to the turn it arrives in.

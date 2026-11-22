@@ -3062,10 +3062,10 @@ mod tests {
             "/code/concord",
         );
         let cursor = project_devin(&session, None).unwrap().cursor;
-        let first = fixture.user("u1", "Run `sleep 60; echo done` and reply done");
+        fixture.user("u1", "Run `sleep 60; echo done` and reply done");
         fixture.tool_step("a1");
         fixture.interrupt("i1");
-        let turn = Some(format!("almondine-continent:{first}"));
+        let turn = Some("almondine-continent:u1".to_string());
         let events = project_devin(&session, Some(cursor)).unwrap().events;
         let finals: Vec<_> = events
             .iter()
@@ -3082,14 +3082,14 @@ mod tests {
 
         // Denying a permission ends the turn the same way.
         let cursor = project_devin(&session, None).unwrap().cursor;
-        let second = fixture.user("u2", "Run `mkdir d1`");
+        fixture.user("u2", "Run `mkdir d1`");
         fixture.tool_step("a2");
         fixture.reject("r1");
         let events = project_devin(&session, Some(cursor)).unwrap().events;
         assert!(events
             .iter()
             .any(|event| event.kind == AgentEventKind::TurnFinal
-                && event.turn_id == Some(format!("almondine-continent:{second}"))
+                && event.turn_id.as_deref() == Some("almondine-continent:u2")
                 && event.outcome.as_deref() == Some("aborted")));
     }
 
@@ -3357,8 +3357,8 @@ mod tests {
         };
 
         let input = "Run `sleep 15; echo done` and reply done";
-        let first = fixture.user("u1", input);
-        let turn = Some(format!("almondine-continent:{first}"));
+        fixture.user("u1", input);
+        let turn = Some("almondine-continent:u1".to_string());
         let sha = Some(crate::agent::message_sha256(input));
         assert_eq!(
             project(&mut cursor),
@@ -5042,7 +5042,7 @@ mod tests {
         );
         let mut writer = store.writer().unwrap();
         writer.observe_agent(&metadata, &runtime).unwrap();
-        let input = fixture.user("u1", "Run `mkdir d1`");
+        fixture.user("u1", "Run `mkdir d1`");
         writer.observe_agent(&metadata, &runtime).unwrap();
         let after = store.latest_sequence();
 
@@ -5063,7 +5063,7 @@ mod tests {
         let events = store.read_page(after, 100).unwrap().events;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, AgentEventKind::ApprovalRequested);
-        let turn = format!("almondine-continent:{input}");
+        let turn = "almondine-continent:u1".to_string();
         assert_eq!(events[0].turn_id.as_deref(), Some(turn.as_str()));
         let approval = events[0].approval.clone().unwrap();
         assert_eq!(approval.kind, crate::harness::devin::prompt::PROMPT_KIND);

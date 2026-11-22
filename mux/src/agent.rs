@@ -6686,6 +6686,9 @@ mod test {
         fixture.tool_step("a1");
         let (_, cursor) = projected_turns(None);
         let started = observe().observed_turn.unwrap();
+        // The turn is named by its message's ID, which Devin keeps when it
+        // copies the message into a rebuilt chain, not by its node.
+        assert_eq!(started.provider_turn_id, "almondine-continent:u1");
 
         // The user steers the running turn: it is still the same turn, now
         // with two user messages, to the observer and to the projector.
