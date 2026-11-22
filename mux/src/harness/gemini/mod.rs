@@ -60,12 +60,13 @@ pub(crate) struct Conversation {
 
 const INPUT_PLACEHOLDER: &str = "Type your message or @path/to/file";
 const CANCEL_HINT: &str = "(esc to cancel, ";
+const SHELL_WAITING: &str = "! Shell awaiting input (Tab to focus)";
 
 /// Whether Gemini's screen shows it waiting for input: its input box holds
 /// only its placeholder, and the line Gemini shows just above the rule over
-/// the box while it works, with a spinner and how long the turn has run, is absent.
-/// Gemini shows that line both while the model responds and while a tool
-/// runs.
+/// the box while it works is absent: a spinner with how long the turn has
+/// run while the model responds or a tool starts, or, while a shell command
+/// runs without asking for anything, that the shell awaits input.
 pub fn idle_on_screen(lines: &[Line]) -> bool {
     let plain: Vec<String> = lines.iter().map(|line| line.as_str().to_string()).collect();
     let Some(input) = plain
@@ -85,7 +86,7 @@ pub fn idle_on_screen(lines: &[Line]) -> bool {
         .iter()
         .rev()
         .find(|line| !line.trim().is_empty())
-        .is_some_and(|line| line.contains(CANCEL_HINT))
+        .is_some_and(|line| line.contains(CANCEL_HINT) || line.contains(SHELL_WAITING))
 }
 
 /// The session ID a chat file records, which `gemini --resume` takes. Both
@@ -754,6 +755,7 @@ mod test {
             Some(" \u{283c} Thinking... (esc to cancel, 5s)"),
             ""
         )));
+        assert!(!idle_on_screen(&screen(Some(SHELL_WAITING), "")));
         // Typed text is not an idle box.
         assert!(!idle_on_screen(&screen(None, "half a thought")));
         assert!(!idle_on_screen(&[]));
