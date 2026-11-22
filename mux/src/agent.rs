@@ -3913,7 +3913,7 @@ fn observe_devin(
     };
     let messages = crate::devin::conversation(&connection, &session_id)?;
     let session_path = Some(crate::devin::session_url(&db_path, &session_id));
-    let Some(input) = messages.iter().rposition(|message| message.user_input) else {
+    let Some(turn) = crate::devin::latest_turn(&messages) else {
         return Ok(Some(HarnessObservation {
             session_path,
             progress_summary: None,
@@ -3925,10 +3925,8 @@ fn observe_devin(
             observed_turn: None,
         }));
     };
-    let user = &messages[input];
-    let reply = messages[input + 1..]
-        .iter()
-        .find(|message| message.ends_turn || message.interrupted);
+    let user = &messages[turn.start];
+    let reply = turn.end.map(|end| &messages[end]);
     let latest = messages.last().unwrap_or(user);
     let final_message = reply
         .filter(|reply| reply.ends_turn)
@@ -3970,10 +3968,7 @@ fn observe_devin(
             started_cursor: Some(user.row_id.max(0) as u64),
             latest_cursor: Some(latest.row_id.max(0) as u64),
             primary_user_message_sha256: Some(message_sha256(&user.content)),
-            user_message_count: messages[input..]
-                .iter()
-                .filter(|message| message.user_input)
-                .count() as u32,
+            user_message_count: turn.user_messages,
             final_message,
         }),
     }))
@@ -7150,6 +7145,61 @@ mod test {
         );
         assert_eq!(claude_key_bytes("ctrl+m"), None);
         assert_eq!(claude_key_bytes("s"), None);
+    }
+
+    #[test]
+    fn a_steered_devin_turn_stays_one_turn_for_the_observer_and_the_projector() {
+        let _env_lock = env_lock();
+        let temp = TempDir::new().unwrap();
+        let db = temp.path().join("sessions.db");
+        let mut fixture =
+            crate::devin::fixture::Fixture::create(&db, "almondine-continent", "/code/concord");
+        set_env_path("WAKTERM_AGENT_DEVIN_DB", &db);
+        let observe = || {
+            observe_devin("/code/concord", None, None, None, None)
+                .unwrap()
+                .unwrap()
+        };
+        let session = crate::devin::session_url(&db, "almondine-continent");
+        let projected_turns =
+            |cursor| crate::agent_event::devin_turn_ids_for_test(&session, cursor);
+
+        let first = "Count the files";
+        fixture.user("u1", first);
+        fixture.tool_step("a1");
+        let (_, cursor) = projected_turns(None);
+        let started = observe().observed_turn.unwrap();
+
+        // The user steers the running turn: it is still the same turn, now
+        // with two user messages, to the observer and to the projector.
+        fixture.user("u2", "Only count Rust files");
+        fixture.tool_step("a2");
+        let steered = observe();
+        assert_eq!(steered.turn_state, AgentTurnState::WaitingOnAgent);
+        let turn = steered.observed_turn.unwrap();
+        assert_eq!(turn.provider_turn_id, started.provider_turn_id);
+        assert_eq!(turn.user_message_count, 2);
+        assert_eq!(
+            turn.primary_user_message_sha256,
+            Some(message_sha256(first))
+        );
+        let (projected, cursor) = projected_turns(Some(cursor));
+        assert!(!projected.is_empty());
+        assert!(projected.iter().all(|id| *id == turn.provider_turn_id));
+
+        // Its reply ends that turn, and a later message starts another.
+        fixture.reply("r1", "12");
+        let done = observe().observed_turn.unwrap();
+        assert_eq!(done.provider_turn_id, started.provider_turn_id);
+        assert_eq!(done.outcome, AgentObservedTurnOutcome::Completed);
+        assert_eq!(done.final_message.as_deref(), Some("12"));
+        fixture.user("u3", "Thanks");
+        let next = observe().observed_turn.unwrap();
+        assert_ne!(next.provider_turn_id, started.provider_turn_id);
+        assert_eq!(next.user_message_count, 1);
+        let (projected, _) = projected_turns(Some(cursor));
+        assert_eq!(projected.last(), Some(&next.provider_turn_id));
+        remove_env_var("WAKTERM_AGENT_DEVIN_DB");
     }
 
     #[test]

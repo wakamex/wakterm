@@ -369,6 +369,75 @@ pub fn input_box(lines: &[wakterm_term::Line]) -> Option<InputBox> {
 
 /// A Devin database for tests, with the tables and message shapes Devin
 /// writes.
+/// What a message does to the turn it arrives in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TurnStep {
+    /// A user message with no turn running starts one.
+    Started,
+    /// A user message while a turn runs steers it.
+    Steered,
+    /// A reply that ends the turn, or an interruption, ends the running turn.
+    Ended,
+    /// Anything else belongs to whatever turn runs.
+    Content,
+}
+
+/// Whether a Devin turn runs, by the one rule both of Wakterm's readers of
+/// a session follow, the observer from the start of the conversation and
+/// the event projector from where its cursor left off.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TurnTracker {
+    pub open: bool,
+}
+
+impl TurnTracker {
+    pub(crate) fn step(&mut self, message: &Message) -> TurnStep {
+        if message.user_input {
+            if self.open {
+                TurnStep::Steered
+            } else {
+                self.open = true;
+                TurnStep::Started
+            }
+        } else if self.open && (message.ends_turn || message.interrupted) {
+            self.open = false;
+            TurnStep::Ended
+        } else {
+            TurnStep::Content
+        }
+    }
+}
+
+/// The latest turn in a conversation: the index of the user message that
+/// started it, how many user messages it took, steers included, and the
+/// index of the message that ended it, if one has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LatestTurn {
+    pub start: usize,
+    pub user_messages: u32,
+    pub end: Option<usize>,
+}
+
+pub(crate) fn latest_turn(messages: &[Message]) -> Option<LatestTurn> {
+    let mut tracker = TurnTracker::default();
+    let mut latest = None;
+    for (index, message) in messages.iter().enumerate() {
+        match (tracker.step(message), latest.as_mut()) {
+            (TurnStep::Started, _) => {
+                latest = Some(LatestTurn {
+                    start: index,
+                    user_messages: 1,
+                    end: None,
+                })
+            }
+            (TurnStep::Steered, Some(turn)) => turn.user_messages += 1,
+            (TurnStep::Ended, Some(turn)) => turn.end = Some(index),
+            _ => {}
+        }
+    }
+    latest
+}
+
 #[cfg(test)]
 pub(crate) mod fixture {
     use rusqlite::Connection;
