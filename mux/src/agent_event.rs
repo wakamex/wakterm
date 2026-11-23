@@ -111,6 +111,31 @@ enum ProviderCursor {
     Muse(JsonlCursor),
 }
 
+impl ProviderCursor {
+    /// The session the cursor follows.
+    fn source_id(&self) -> &str {
+        match self {
+            Self::Codex(cursor) | Self::Claude(cursor) | Self::Agy(cursor) | Self::Muse(cursor) => {
+                &cursor.source_id
+            }
+            Self::Gemini(cursor) => &cursor.source_id,
+            Self::Opencode(cursor) => &cursor.source_id,
+            Self::Devin(cursor) => &cursor.source_id,
+        }
+    }
+
+    /// The turn running where the cursor stands, for the harnesses whose
+    /// cursor records whether one runs.
+    fn open_turn(&self) -> Option<&str> {
+        let (turn, open) = match self {
+            Self::Agy(cursor) => (&cursor.current_turn_id, cursor.turn_open),
+            Self::Devin(cursor) => (&cursor.current_turn_id, cursor.turn_open),
+            _ => return None,
+        };
+        turn.as_deref().filter(|_| open)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct JsonlCursor {
     pub source_id: String,
@@ -524,6 +549,10 @@ impl AgentEventStore {
                     AgentHarness::Unknown | AgentHarness::Endchat
                 ),
             ) {
+                let followed = state
+                    .cursor
+                    .as_ref()
+                    .map(|cursor| cursor.source_id().to_string());
                 match project_provider_events(
                     &runtime.harness,
                     session_path,
@@ -531,6 +560,33 @@ impl AgentEventStore {
                     metadata,
                 ) {
                     Ok(mut projected) => {
+                        // A session followed for the first time is read from
+                        // where it stands, so a turn already running there,
+                        // such as the one whose first input created the
+                        // session and the agent's adoption, starts here.
+                        if followed.as_deref() != Some(projected.cursor.source_id()) {
+                            if let Some(turn_id) = projected.cursor.open_turn() {
+                                let key = format!(
+                                    "{}:{}:{turn_id}:running-when-followed",
+                                    runtime.harness.name(),
+                                    projected.cursor.source_id()
+                                );
+                                let mut started = PendingEvent::new(
+                                    format!("{key}:started"),
+                                    AgentEventKind::TurnStarted,
+                                    runtime.observed_at,
+                                );
+                                started.turn_id = Some(turn_id.to_string());
+                                let mut state_event = PendingEvent::new(
+                                    format!("{key}:state"),
+                                    AgentEventKind::TurnStateChanged,
+                                    runtime.observed_at,
+                                );
+                                state_event.turn_id = Some(turn_id.to_string());
+                                state_event.turn_state = Some("waiting_on_agent".to_string());
+                                projected.events.splice(0..0, [started, state_event]);
+                            }
+                        }
                         if let Some(closed) = close_unanswered_claude_turn(
                             &mut projected.cursor,
                             metadata,
@@ -4110,6 +4166,79 @@ mod tests {
             [
                 (Some("conversation-3:1"), Some("Launched.")),
                 (Some("conversation-3:4"), None)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_turn_running_when_a_session_is_first_followed_starts_there() {
+        let temp = TempDir::new().unwrap();
+        let logs = temp
+            .path()
+            .join("brain")
+            .join("conversation-7")
+            .join(".system_generated")
+            .join("logs");
+        fs::create_dir_all(&logs).unwrap();
+        let record = |step: u64, kind: &str, fields: serde_json::Value| {
+            let mut record = serde_json::json!({"step_index": step, "type": kind,
+                "status": "DONE", "created_at": Utc::now().to_rfc3339()});
+            record
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            record.to_string() + "\n"
+        };
+        // agy creates its session with the first input, which then leads to
+        // the agent's adoption, so the input is already there when the store
+        // first follows the session.
+        let session = logs.join("transcript.jsonl");
+        fs::write(
+            &session,
+            record(
+                0,
+                "USER_INPUT",
+                serde_json::json!({"content": "<USER_REQUEST>\nhello\n</USER_REQUEST>"}),
+            ),
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("agy-first");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Agy,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        append(
+            &session,
+            &record(
+                1,
+                "PLANNER_RESPONSE",
+                serde_json::json!({"content": "hello"}),
+            ),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        // Following it again does not start the turn twice.
+        store.observe_agent(&metadata, &runtime).unwrap();
+
+        let turn_events = store
+            .read_page(0, 100)
+            .unwrap()
+            .events
+            .into_iter()
+            .filter(|event| event.turn_id.is_some())
+            .map(|event| (event.kind, event.turn_id.unwrap()))
+            .collect::<Vec<_>>();
+        let turn = "conversation-7:0".to_string();
+        assert_eq!(
+            turn_events,
+            [
+                (AgentEventKind::TurnStarted, turn.clone()),
+                (AgentEventKind::TurnStateChanged, turn.clone()),
+                (AgentEventKind::AssistantMessage, turn.clone()),
+                (AgentEventKind::TurnFinal, turn.clone()),
+                (AgentEventKind::TurnStateChanged, turn),
             ]
         );
     }
