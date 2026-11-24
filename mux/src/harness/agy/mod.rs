@@ -380,7 +380,11 @@ pub(crate) fn session_owned_by_process(
     let canonical_preferred = preferred_session
         .map(Path::new)
         .map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+    let log_root = root.join("log");
+    let canonical_log_root = log_root.canonicalize().unwrap_or(log_root);
     let mut candidates = Vec::new();
+    // The process's own CLI logs, by the descriptor it holds them through.
+    let mut logs = Vec::new();
 
     let Ok(entries) = fs::read_dir(format!("/proc/{process_id}/fd")) else {
         return Ok(None);
@@ -389,6 +393,20 @@ pub(crate) fn session_owned_by_process(
         let Ok(path) = fs::read_link(entry.path()) else {
             continue;
         };
+        // A file removed while open reads as its path with " (deleted)".
+        let named = path
+            .to_str()
+            .and_then(|path| path.strip_suffix(" (deleted)"))
+            .map_or(path.clone(), PathBuf::from);
+        if named.parent() == Some(canonical_log_root.as_path())
+            && named
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("cli-") && name.ends_with(".log"))
+        {
+            logs.push(entry.path());
+            continue;
+        }
         let canonical_path = path.canonicalize().unwrap_or(path);
         if canonical_path.parent() != Some(canonical_presence_root.as_path())
             || canonical_path.extension().and_then(|ext| ext.to_str()) != Some("lock")
@@ -423,7 +441,250 @@ pub(crate) fn session_owned_by_process(
 
     candidates.sort_unstable();
     candidates.dedup();
-    Ok((candidates.len() == 1).then(|| candidates.remove(0)))
+    if !candidates.is_empty() {
+        return Ok((candidates.len() == 1).then(|| candidates.remove(0)));
+    }
+    Ok(conversation_by_log(
+        root,
+        (process_id, process_start_time),
+        &logs,
+        expected_conversation_id,
+    ))
+}
+
+/// The conversation an agy process has open by its own CLI log, for a
+/// process that holds no presence lock: agy does not take a conversation's
+/// lock when it opens one another agy holds, nor once that agy exits. The
+/// conversation is the process's while no other process holds its lock,
+/// so one conversation is never confirmed for two processes at once.
+#[cfg(target_os = "linux")]
+fn conversation_by_log(
+    root: &Path,
+    process: (u32, u64),
+    logs: &[PathBuf],
+    expected_conversation_id: Option<&str>,
+) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    // agy holds its log through more than one descriptor; it must be one
+    // file.
+    let mut files = logs
+        .iter()
+        .filter_map(|log| {
+            let metadata = fs::metadata(log).ok()?;
+            Some(((metadata.dev(), metadata.ino()), log))
+        })
+        .collect::<Vec<_>>();
+    files.sort_by_key(|(file, _)| *file);
+    files.dedup_by_key(|(file, _)| *file);
+    let [(file, log)] = files.as_slice() else {
+        return None;
+    };
+    let conversation_id = conversation_in_process_log(process, log)?;
+    if expected_conversation_id.is_some_and(|expected| expected != conversation_id) {
+        return None;
+    }
+    let transcript = root
+        .join("brain")
+        .join(&conversation_id)
+        .join(".system_generated")
+        .join("logs")
+        .join("transcript.jsonl");
+    if !transcript.is_file() {
+        return None;
+    }
+    let lock = root
+        .join("presence")
+        .join(format!("{conversation_id}.lock"));
+    if lock_holders(&lock)?
+        .iter()
+        .any(|&holder| holder != process.0)
+    {
+        return None;
+    }
+    if another_agy_holds(*file, process.0) {
+        return None;
+    }
+    // The evidence above is the process's only if it has not been replaced.
+    crate::agent::linux_process_started_at(Some(process.0), Some(process.1))?;
+    Some(transcript.canonicalize().unwrap_or(transcript))
+}
+
+/// What a line of agy's CLI log says about the conversation it has open.
+#[derive(Debug, PartialEq, Eq)]
+enum LogLine<'a> {
+    /// agy opened the conversation, or sent a message to it.
+    Open(&'a str),
+    /// agy stopped following the conversation, as when it switches away.
+    Closed(&'a str),
+}
+
+/// Reads a line of agy's CLI log. Only the message itself counts, right
+/// after the glog header (`I1123 20:14:21.321670    5364 file.go:1269] `),
+/// so text agy logs from a conversation cannot pass for one of these.
+fn read_log_line<'a>(line: &'a str) -> Option<LogLine<'a>> {
+    let mut chars = line.chars();
+    if !matches!(chars.next(), Some('I' | 'W' | 'E' | 'F'))
+        || !chars.take(4).all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    let (header, message) = line.split_once("] ")?;
+    let (_, location) = header.rsplit_once(' ')?;
+    let (file, line_number) = location.rsplit_once(':')?;
+    if !file.ends_with(".go") || !line_number.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let id = |rest: &'a str| rest.get(..36).filter(|id| is_uuid(id));
+    for prefix in [
+        "Streaming conversation ",
+        "Sending user message to conversation ",
+        "Forwarding user message to conversation ",
+    ] {
+        if let Some(rest) = message.strip_prefix(prefix) {
+            return id(rest).map(LogLine::Open);
+        }
+    }
+    id(message.strip_prefix("Stream goroutine exited for ")?).map(LogLine::Closed)
+}
+
+/// The conversation a CLI log names as open, given the lines appended
+/// since `open` was last worked out.
+fn conversation_after(mut open: Option<String>, lines: &str) -> Option<String> {
+    for line in lines.lines() {
+        match read_log_line(line) {
+            Some(LogLine::Open(id)) => open = Some(id.to_string()),
+            Some(LogLine::Closed(id)) if open.as_deref() == Some(id) => open = None,
+            _ => {}
+        }
+    }
+    open
+}
+
+/// How far an agy process's CLI log has been read: the log's device and
+/// inode, the offset after its last whole line, and the conversation it
+/// names as open there.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct LogReading {
+    file: (u64, u64),
+    offset: u64,
+    open: Option<String>,
+}
+
+/// The conversation the CLI log `log` names as open, read forward from
+/// `reading`, which it updates; a different file is read from its start.
+#[cfg(target_os = "linux")]
+fn read_log(log: &Path, reading: &mut LogReading) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::os::unix::fs::MetadataExt;
+    let mut file = fs::File::open(log).ok()?;
+    let metadata = file.metadata().ok()?;
+    let identity = (metadata.dev(), metadata.ino());
+    if reading.file != identity || metadata.len() < reading.offset {
+        *reading = LogReading {
+            file: identity,
+            ..LogReading::default()
+        };
+    }
+    if metadata.len() > reading.offset {
+        file.seek(SeekFrom::Start(reading.offset)).ok()?;
+        let mut new = Vec::new();
+        file.take(metadata.len() - reading.offset)
+            .read_to_end(&mut new)
+            .ok()?;
+        // Only whole lines; one still being written is read next time.
+        let whole = new
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |at| at + 1);
+        reading.open =
+            conversation_after(reading.open.take(), &String::from_utf8_lossy(&new[..whole]));
+        reading.offset += whole as u64;
+    }
+    reading.open.clone()
+}
+
+/// The conversation an agy process's own CLI log names as open. The log is
+/// read through the process's file descriptor, so a log renamed or removed
+/// while agy writes it still reads, and each process's log is read once,
+/// forward from where the previous call stopped.
+#[cfg(target_os = "linux")]
+fn conversation_in_process_log(process: (u32, u64), fd: &Path) -> Option<String> {
+    use std::collections::HashMap;
+    static READINGS: parking_lot::Mutex<Option<HashMap<(u32, u64), LogReading>>> =
+        parking_lot::Mutex::new(None);
+    let mut readings = READINGS.lock();
+    let readings = readings.get_or_insert_with(HashMap::new);
+    // Forget exited processes' readings now and then rather than track them.
+    if readings.len() > 256 && !readings.contains_key(&process) {
+        readings.clear();
+    }
+    read_log(fd, readings.entry(process).or_default())
+}
+
+/// The processes that hold a lock on `path`, as the kernel lists them in
+/// `/proc/locks`. A lock file that does not exist is held by none.
+#[cfg(target_os = "linux")]
+fn lock_holders(path: &Path) -> Option<Vec<u32>> {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(metadata) = fs::metadata(path) else {
+        return Some(Vec::new());
+    };
+    let id = format!(
+        "{:02x}:{:02x}:{}",
+        libc::major(metadata.dev()),
+        libc::minor(metadata.dev()),
+        metadata.ino()
+    );
+    Some(lock_holders_in(
+        &fs::read_to_string("/proc/locks").ok()?,
+        &id,
+    ))
+}
+
+/// The processes holding a lock on the file `id` (`major:minor:inode`, the
+/// device numbers in hex), in the text of `/proc/locks`, leaving out those
+/// only waiting for one. A flock belongs to an open file, which a child can
+/// inherit, so the PID listed may have exited while the lock is still held.
+fn lock_holders_in(locks: &str, id: &str) -> Vec<u32> {
+    locks
+        .lines()
+        .filter_map(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            // "N: FLOCK ADVISORY WRITE PID MAJ:MIN:INODE START END"; a
+            // waiter's line has "->" after the number.
+            (fields.get(1) != Some(&"->") && fields.get(5) == Some(&id))
+                .then(|| fields.get(4)?.parse().ok())
+                .flatten()
+        })
+        .collect()
+}
+
+/// Whether an agy process other than `process_id` holds the file `target`
+/// open, as when two agy started in the same second share one CLI log.
+#[cfg(target_os = "linux")]
+fn another_agy_holds(target: (u64, u64), process_id: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(processes) = fs::read_dir("/proc") else {
+        return true;
+    };
+    processes.flatten().any(|process| {
+        let Some(pid) = process
+            .file_name()
+            .to_str()
+            .and_then(|pid| pid.parse::<u32>().ok())
+        else {
+            return false;
+        };
+        pid != process_id
+            && fs::read_to_string(process.path().join("comm"))
+                .is_ok_and(|comm| comm.trim() == "agy")
+            && fs::read_dir(process.path().join("fd")).is_ok_and(|fds| {
+                fds.flatten().any(|fd| {
+                    fs::metadata(fd.path())
+                        .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == target)
+                })
+            })
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -792,6 +1053,87 @@ pub(crate) fn expire_background_wait(
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn a_cli_log_line_names_the_conversation_agy_has_open() {
+        // Lines copied from a real agy log.
+        let id = "d26d1785-33b2-42c3-a5af-573811ffdb54";
+        for line in [
+            "I1123 20:14:21.321670    5364 conversation_manager.go:1269] Streaming conversation d26d1785-33b2-42c3-a5af-573811ffdb54",
+            "I1123 20:21:16.990171    5942 server.go:1883] Sending user message to conversation d26d1785-33b2-42c3-a5af-573811ffdb54 (items=1, media=0)",
+            "I1123 20:21:16.990149    5942 conversation_manager.go:1067] Forwarding user message to conversation d26d1785-33b2-42c3-a5af-573811ffdb54 (items=1, media=0)",
+        ] {
+            assert_eq!(read_log_line(line), Some(LogLine::Open(id)));
+        }
+        assert_eq!(
+            read_log_line("I1123 15:32:56.887762     992 server.go:1351] Stream goroutine exited for d26d1785-33b2-42c3-a5af-573811ffdb54, sending completion signal"),
+            Some(LogLine::Closed(id))
+        );
+        // The picker's previews, other messages, and the words inside a
+        // message rather than starting it name none.
+        for line in [
+            "I1123 20:14:11.338509    2796 server.go:3528] GetConversationDetail: found conversation 60f79cde-5f81-4836-b221-8e466f3194d0 (active=false)",
+            "I1123 20:14:21.334214    5364 server.go:1287] Starting conversation update stream for d26d1785-33b2-42c3-a5af-573811ffdb54",
+            "I1123 20:14:21.321670    5364 x.go:1] Streaming conversation not-a-uuid",
+            "I1123 20:14:21.321670    5364 tool.go:1] output: Streaming conversation d26d1785-33b2-42c3-a5af-573811ffdb54",
+            "Streaming conversation d26d1785-33b2-42c3-a5af-573811ffdb54",
+        ] {
+            assert_eq!(read_log_line(line), None);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_cli_log_is_read_forward_and_follows_switches() {
+        use std::io::Write;
+        let temp = tempfile::TempDir::new().unwrap();
+        let log = temp.path().join("cli-20261123_201407.log");
+        let write = |text: &str| {
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log)
+                .unwrap()
+                .write_all(text.as_bytes())
+                .unwrap()
+        };
+        let line = |message: &str| format!("I1123 15:32:56.889645   38270 a.go:1] {message}\n");
+        let first = "b8735124-0d8d-479e-bd07-0698c2a24034";
+        let second = "d26d1785-33b2-42c3-a5af-573811ffdb54";
+        let mut reading = LogReading::default();
+        write(&line("starting"));
+        assert_eq!(read_log(&log, &mut reading), None);
+        write(&line(&format!("Streaming conversation {first}")));
+        assert_eq!(read_log(&log, &mut reading).as_deref(), Some(first));
+        // Later lines that name nothing keep it.
+        write(&line("quota refreshed"));
+        assert_eq!(read_log(&log, &mut reading).as_deref(), Some(first));
+        // A switch closes one conversation and opens the next, as agy logs it.
+        write(&line(&format!(
+            "Stream goroutine exited for {first}, sending completion signal"
+        )));
+        assert_eq!(read_log(&log, &mut reading), None);
+        // A line still being written is read once it ends.
+        write(&line(&format!("Streaming conversation {second}")).replace('\n', ""));
+        assert_eq!(read_log(&log, &mut reading), None);
+        write("\n");
+        assert_eq!(read_log(&log, &mut reading).as_deref(), Some(second));
+        // A different file, such as a new log at the same path, is read
+        // from its start.
+        fs::remove_file(&log).unwrap();
+        write(&line("starting"));
+        assert_eq!(read_log(&log, &mut reading), None);
+    }
+
+    #[test]
+    fn a_lock_is_held_by_the_processes_proc_locks_lists_for_its_file() {
+        let locks = "1: POSIX  ADVISORY  WRITE 1364851 00:81:60721973 0 0
+118: FLOCK  ADVISORY  WRITE 3002010 103:04:56770875 0 EOF
+118: -> FLOCK  ADVISORY  WRITE 3002999 103:04:56770875 0 EOF
+";
+        assert_eq!(lock_holders_in(locks, "103:04:56770875"), [3002010]);
+        assert!(lock_holders_in(locks, "103:04:56771826").is_empty());
+    }
 
     #[test]
     fn a_wait_from_before_the_process_started_is_no_longer_a_wait() {

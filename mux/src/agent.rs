@@ -1635,6 +1635,19 @@ impl AgentScreen {
     }
 }
 
+/// Whether a live agent among `registered` already follows the session of
+/// `runtime`.
+pub fn session_followed_by_another(
+    registered: &[AgentRuntimeSnapshot],
+    runtime: &AgentRuntimeSnapshot,
+) -> bool {
+    runtime.session_path.as_ref().is_some_and(|session| {
+        registered
+            .iter()
+            .any(|other| other.alive && other.session_path.as_ref() == Some(session))
+    })
+}
+
 /// Whether an observation shows a turn running: its observed turn, or, from
 /// an observer that names no turn, such as OpenCode's, its turn state.
 pub fn turn_running(runtime: &AgentRuntimeSnapshot) -> bool {
@@ -6960,6 +6973,52 @@ mod test {
             done.observed_turn.unwrap().final_message.as_deref(),
             Some("Found 12 dates.")
         );
+    }
+
+    #[test]
+    fn a_session_another_live_agent_follows_is_not_free() {
+        let metadata = AgentMetadata {
+            agent_id: "agent-agy".to_string(),
+            name: "agy".to_string(),
+            launch_cmd: "agy".to_string(),
+            declared_cwd: "/tmp".to_string(),
+            adopted_pid: None,
+            adopted_start_time: None,
+            created_at: Utc::now(),
+            repo_root: None,
+            worktree: None,
+            branch: None,
+            managed_checkout: false,
+            launch_supervisor: None,
+            codex_app_server: None,
+        };
+        let with_session = |session: Option<&str>, alive: bool| {
+            let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+            runtime.session_path = session.map(str::to_string);
+            runtime.alive = alive;
+            runtime
+        };
+        let candidate = with_session(Some("/brain/d26d1785/transcript.jsonl"), true);
+        assert!(session_followed_by_another(
+            &[
+                with_session(Some("/brain/other/transcript.jsonl"), true),
+                with_session(Some("/brain/d26d1785/transcript.jsonl"), true),
+            ],
+            &candidate
+        ));
+        // One that exited, or follows another session, leaves it free.
+        assert!(!session_followed_by_another(
+            &[
+                with_session(Some("/brain/d26d1785/transcript.jsonl"), false),
+                with_session(Some("/brain/other/transcript.jsonl"), true),
+                with_session(None, true),
+            ],
+            &candidate
+        ));
+        assert!(!session_followed_by_another(
+            &[with_session(None, true)],
+            &with_session(None, true)
+        ));
     }
 
     #[test]

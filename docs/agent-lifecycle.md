@@ -100,7 +100,9 @@ per-conversation presence lock, then observes that conversation's persistent
 transcript. Wakterm does not select an Agy conversation by modification time or
 working directory alone.
 
-A restorable Agy pane persists the conversation UUID confirmed by that lock.
+Agy takes a conversation's lock when it opens it, but not when another Agy holds that lock, and not after that Agy exits, so an Agy that resumes a conversation another one has open holds no lock. For such a process, the conversation is the one its own CLI log, the file under `log/` that it alone holds open, names as open: agy logs `Streaming conversation <id>` when it opens a conversation, `... user message to conversation <id>` when it sends one a message, and `Stream goroutine exited for <id>` when it stops following one. Only those messages count, right after the log line's header. The conversation is confirmed for the process only while no other process holds its lock, as `/proc/locks` lists, and while no other Agy holds the same log. Until the lock's holder exits, the second Agy stays unconfirmed; then it is confirmed and adopted like any other. Automatic adoption also leaves a pane detected while another live registered agent follows the session it confirms, so one session is never followed as two agents.
+
+A restorable Agy pane persists the conversation UUID confirmed by its lock or its log.
 Restoration invokes the current Agy launcher with `--conversation <uuid>` and
 rebinds the Wakterm agent identity only after the new process incarnation owns
 the presence lock for the same UUID.

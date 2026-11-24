@@ -3596,6 +3596,23 @@ impl Mux {
         {
             return None;
         }
+        // A session belongs to one agent: a second process with the session
+        // a live registered agent follows is left detected until that agent
+        // ends, rather than projecting one session as two agents.
+        let registered = self
+            .agent_runtime_by_pane
+            .read()
+            .iter()
+            .filter(|(pane_id, _)| **pane_id != candidate.pane_id)
+            .map(|(pane_id, runtime)| (*pane_id, runtime.clone()))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter(|(pane_id, _)| self.get_agent_metadata_for_pane(*pane_id).is_some())
+            .map(|(_, runtime)| runtime)
+            .collect::<Vec<_>>();
+        if agent::session_followed_by_another(&registered, &runtime) {
+            return None;
+        }
 
         let tab_id = self
             .resolve_pane_id(candidate.pane_id)
