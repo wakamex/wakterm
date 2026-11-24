@@ -7,7 +7,8 @@ use crate::agent::{
     truncate_summary, AgentTurnState, HarnessObservation, HarnessObservationDetails,
 };
 use crate::agent_event::{
-    digest, event_time, extract_text, observer_failure, AgentEventKind, PendingEvent,
+    digest, event_time, extract_text, input_accepted, observer_failure, AgentEventKind,
+    AgentInputRole, PendingEvent,
 };
 use anyhow::Context;
 use chrono::{DateTime, Utc};
@@ -24,8 +25,15 @@ use wakterm_term::Line;
 /// context; neither is input, and neither is a message whose text is empty. Both of Wakterm's readers of a session follow
 /// this and `ends_turn`.
 pub(crate) fn starts_turn(message: &Value) -> bool {
+    user_input(message).is_some()
+}
+
+/// The text a user message carries as input: its text parts other than
+/// empty ones and the context Gemini injects, joined by newlines. None for
+/// any other message.
+pub(crate) fn user_input(message: &Value) -> Option<String> {
     if message.get("type").and_then(Value::as_str) != Some("user") {
-        return false;
+        return None;
     }
     let texts = match message.get("content") {
         Some(Value::String(text)) => vec![text.as_str()],
@@ -35,10 +43,12 @@ pub(crate) fn starts_turn(message: &Value) -> bool {
             .collect(),
         _ => Vec::new(),
     };
-    texts.iter().any(|text| {
-        let text = text.trim();
-        !text.is_empty() && !text.starts_with("<session_context>")
-    })
+    let input = texts
+        .into_iter()
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && !text.starts_with("<session_context>"))
+        .collect::<Vec<_>>();
+    (!input.is_empty()).then(|| input.join("\n"))
 }
 
 /// Whether a message ends its turn: a reply from Gemini that calls no tools.
@@ -559,7 +569,19 @@ pub(crate) fn project(
                     timestamp,
                 );
                 started.turn_id = Some(message_id.to_string());
+                let input_sha256 =
+                    user_input(message).map(|text| crate::agent::message_sha256(&text));
+                started.input_sha256 = input_sha256.clone();
                 events.push(started);
+                if let Some(input_sha256) = input_sha256 {
+                    events.push(input_accepted(
+                        format!("{record_key}:input"),
+                        timestamp,
+                        Some(message_id.to_string()),
+                        input_sha256,
+                        AgentInputRole::Start,
+                    ));
+                }
                 let mut state = PendingEvent::new(
                     format!("{record_key}:state"),
                     AgentEventKind::TurnStateChanged,

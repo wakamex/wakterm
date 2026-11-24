@@ -11,7 +11,9 @@ use crate::agent::{
     cwd_lookup_variants, default_launch_cmd_for_harness, harness_dir, home_dir, parse_unix_millis,
     truncate_summary, zcode_db_path, AgentHarness, AgentTurnState, HarnessObservation,
 };
-use crate::agent_event::{digest, observer_failure, AgentEventKind, PendingEvent};
+use crate::agent_event::{
+    digest, input_accepted, observer_failure, AgentEventKind, AgentInputRole, PendingEvent,
+};
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -597,7 +599,17 @@ pub(crate) fn project(
                 );
                 started.turn_id = Some(message_id.clone());
                 started.input_sha256 = text.as_deref().map(crate::agent::message_sha256);
+                let accepted = started.input_sha256.clone().map(|input_sha256| {
+                    input_accepted(
+                        format!("opencode:{source_id}:{message_id}:input"),
+                        timestamp,
+                        Some(message_id.clone()),
+                        input_sha256,
+                        AgentInputRole::Start,
+                    )
+                });
                 events.push(started);
+                events.extend(accepted);
                 let mut state = PendingEvent::new(
                     format!("opencode:{source_id}:{message_id}:state"),
                     AgentEventKind::TurnStateChanged,

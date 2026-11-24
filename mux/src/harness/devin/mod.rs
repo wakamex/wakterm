@@ -16,7 +16,7 @@
 
 pub mod prompt;
 
-use crate::agent_event::{input_accepted, AgentEventKind, PendingEvent};
+use crate::agent_event::{input_accepted, AgentEventKind, AgentInputRole, PendingEvent};
 use anyhow::Context;
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension};
@@ -546,7 +546,7 @@ pub(crate) fn project(
                     timestamp,
                     Some(turn_id),
                     sha256,
-                    false,
+                    AgentInputRole::Steer,
                 ));
             }
             (TurnStep::Started | TurnStep::Steered, _) => {
@@ -565,7 +565,7 @@ pub(crate) fn project(
                     timestamp,
                     Some(turn_id.clone()),
                     sha256,
-                    false,
+                    AgentInputRole::Start,
                 );
                 let mut state = PendingEvent::new(
                     format!("{record_key}:state"),

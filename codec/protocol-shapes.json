@@ -1,5 +1,5 @@
 {
-  "codec_version": 74,
+  "codec_version": 75,
   "shapes": {
     "AcknowledgeAgentAttention": {
       "STRUCT": [
@@ -447,6 +447,18 @@
           "input_sha256": {
             "OPTION": "STR"
           }
+        },
+        {
+          "request_id": {
+            "OPTION": "STR"
+          }
+        },
+        {
+          "input_role": {
+            "OPTION": {
+              "TYPENAME": "AgentInputRole"
+            }
+          }
         }
       ]
     },
@@ -548,6 +560,13 @@
         },
         "9": {
           "Endchat": "UNIT"
+        }
+      }
+    },
+    "AgentInputRole": {
+      "ENUM": {
+        "4294967293": {
+          "start": "UNIT"
         }
       }
     },

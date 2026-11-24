@@ -35,6 +35,7 @@ impl AgentApiCapabilities {
                 "approval_control.v1".to_string(),
                 "question_form_answers.v1".to_string(),
                 "input_accepted_events.v1".to_string(),
+                "input_request_ids.v1".to_string(),
                 "claude_refusal_menu.v1".to_string(),
                 "claude_refusal_menu.discard_draft.v1".to_string(),
                 "claude_menu.v1".to_string(),

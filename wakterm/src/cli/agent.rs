@@ -3840,6 +3840,8 @@ mod test {
             detail: None,
             approval: None,
             input_sha256: Some(sha256.to_string()),
+            request_id: None,
+            input_role: None,
         };
         let page = |events: Vec<AgentEvent>| AgentEventPage {
             schema: mux::agent_event::AGENT_EVENT_SCHEMA.to_string(),
@@ -3936,6 +3938,8 @@ mod test {
             detail: None,
             approval: None,
             input_sha256: None,
+            request_id: None,
+            input_role: None,
         };
         let page =
             |requested_after_sequence, latest_sequence, events: Vec<AgentEvent>| AgentEventPage {

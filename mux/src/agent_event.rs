@@ -46,6 +46,18 @@ pub enum AgentEventKind {
     InputAccepted,
 }
 
+/// What an input did to the agent's turn.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentInputRole {
+    /// It started the turn.
+    Start,
+    /// It joined the running turn.
+    Steer,
+    /// The provider queued it during the running turn.
+    Queued,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentEvent {
     pub sequence: u64,
@@ -68,6 +80,13 @@ pub struct AgentEvent {
     /// trimmed, when the provider records it.
     #[serde(default)]
     pub input_sha256: Option<String>,
+    /// On `input_accepted`, the request that sent the input through
+    /// Wakterm, when exactly one pending request matches it.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    /// On `input_accepted`, what the input did to the turn.
+    #[serde(default)]
+    pub input_role: Option<AgentInputRole>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -253,6 +272,7 @@ pub(crate) struct PendingEvent {
     pub detail: Option<String>,
     pub approval: Option<AgentApprovalRequest>,
     pub input_sha256: Option<String>,
+    pub input_role: Option<AgentInputRole>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -284,6 +304,7 @@ impl PendingEvent {
             detail: None,
             approval: None,
             input_sha256: None,
+            input_role: None,
         }
     }
 }
@@ -668,6 +689,41 @@ impl AgentEventStore {
         Ok(runtime_update)
     }
 
+    /// Records that the input with `input_sha256` is about to be written to
+    /// the agent incarnation for `request_id`, so that the `input_accepted`
+    /// its provider records for it names the request. Call it before writing
+    /// the input, and `forget_pending_input` if writing it fails.
+    pub fn register_pending_input(
+        &self,
+        request_id: &str,
+        agent_id: &str,
+        incarnation_id: &str,
+        input_sha256: &str,
+    ) -> anyhow::Result<()> {
+        self.connect()?.execute(
+            "INSERT OR REPLACE INTO agent_pending_input_v1
+             (request_id, agent_id, incarnation_id, input_sha256, registered_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                request_id,
+                agent_id,
+                incarnation_id,
+                input_sha256,
+                Utc::now().timestamp()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets a pending input that was never written.
+    pub fn forget_pending_input(&self, request_id: &str) -> anyhow::Result<()> {
+        self.connect()?.execute(
+            "DELETE FROM agent_pending_input_v1 WHERE request_id = ?1",
+            params![request_id],
+        )?;
+        Ok(())
+    }
+
     pub fn record_unavailable(
         &self,
         metadata: &AgentMetadata,
@@ -926,6 +982,13 @@ fn setup_event_store(conn: &Connection) -> rusqlite::Result<()> {
          CREATE TABLE IF NOT EXISTS agent_event_meta_v1 (
              key TEXT PRIMARY KEY,
              value INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS agent_pending_input_v1 (
+             request_id TEXT PRIMARY KEY,
+             agent_id TEXT NOT NULL,
+             incarnation_id TEXT NOT NULL,
+             input_sha256 TEXT NOT NULL,
+             registered_at INTEGER NOT NULL
          );",
     )
 }
@@ -1289,15 +1352,24 @@ impl AgentEventStore {
                 if text.trim().is_empty() {
                     return Ok(());
                 }
+                let turn_id = params
+                    .get("turnId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                // The turn's first input started it; Codex records it after
+                // the turn's start, and any later one steers it.
+                let role = match turn_id.as_deref() {
+                    Some(turn_id) if turn_has_input(conn, &metadata.agent_id, turn_id)? => {
+                        AgentInputRole::Steer
+                    }
+                    _ => AgentInputRole::Start,
+                };
                 pending.push(input_accepted(
                     format!("codex-app-server:{}:{item_id}:input", session.thread_id),
                     observed_at,
-                    params
-                        .get("turnId")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
+                    turn_id,
                     crate::agent::message_sha256(&text),
-                    false,
+                    role,
                 ));
             }
             "item/completed" => {
@@ -1463,6 +1535,65 @@ fn save_projection(
     Ok(())
 }
 
+/// How long a request's input may take to be recorded before it can no
+/// longer be told from later input.
+const PENDING_INPUT_LIMIT: chrono::Duration = chrono::Duration::hours(1);
+
+/// The request whose input the agent incarnation just recorded: the one
+/// pending request with this input's hash. Several pending requests with
+/// equal input cannot be told apart, so none is named and all are retired;
+/// naming the oldest could send one chat's reply to another. Pending input
+/// of another incarnation of the agent, or older than `PENDING_INPUT_LIMIT`,
+/// is dropped first: it can no longer be this input.
+fn bind_pending_input(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    incarnation_id: &str,
+    input_sha256: &str,
+) -> anyhow::Result<Option<String>> {
+    tx.execute(
+        "DELETE FROM agent_pending_input_v1
+         WHERE agent_id = ?1 AND (incarnation_id != ?2 OR registered_at < ?3)",
+        params![
+            agent_id,
+            incarnation_id,
+            (Utc::now() - PENDING_INPUT_LIMIT).timestamp()
+        ],
+    )?;
+    let matching = tx
+        .prepare(
+            "SELECT request_id FROM agent_pending_input_v1
+             WHERE agent_id = ?1 AND incarnation_id = ?2 AND input_sha256 = ?3",
+        )?
+        .query_map(params![agent_id, incarnation_id, input_sha256], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    tx.execute(
+        "DELETE FROM agent_pending_input_v1
+         WHERE agent_id = ?1 AND incarnation_id = ?2 AND input_sha256 = ?3",
+        params![agent_id, incarnation_id, input_sha256],
+    )?;
+    Ok(match matching.as_slice() {
+        [request_id] => Some(request_id.clone()),
+        _ => None,
+    })
+}
+
+/// Whether an input was already recorded for the agent's turn, among its
+/// recent events.
+fn turn_has_input(conn: &Connection, agent_id: &str, turn_id: &str) -> anyhow::Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_event_v1
+         WHERE sequence > (SELECT COALESCE(MAX(sequence), 0) - 5000 FROM agent_event_v1)
+           AND json_extract(record_json, '$.kind') = 'input_accepted'
+           AND json_extract(record_json, '$.agent_id') = ?1
+           AND json_extract(record_json, '$.turn_id') = ?2)",
+        params![agent_id, turn_id],
+        |row| row.get(0),
+    )?)
+}
+
 fn insert_event(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -1488,6 +1619,8 @@ fn insert_event(
         detail: pending.detail,
         approval: pending.approval,
         input_sha256: pending.input_sha256,
+        request_id: None,
+        input_role: pending.input_role,
     };
     let inserted = tx.execute(
         "INSERT OR IGNORE INTO agent_event_v1(event_key, record_json) VALUES (?1, ?2)",
@@ -1495,6 +1628,11 @@ fn insert_event(
     )?;
     if inserted == 1 {
         event.sequence = tx.last_insert_rowid() as u64;
+        if event.kind == AgentEventKind::InputAccepted {
+            if let Some(sha256) = event.input_sha256.as_deref() {
+                event.request_id = bind_pending_input(tx, agent_id, incarnation_id, sha256)?;
+            }
+        }
         tx.execute(
             "UPDATE agent_event_v1 SET record_json = ?2 WHERE sequence = ?1",
             params![event.sequence, serde_json::to_string(&event)?],
@@ -1590,12 +1728,13 @@ pub(crate) fn input_accepted(
     observed_at: DateTime<Utc>,
     turn_id: Option<String>,
     input_sha256: String,
-    queued: bool,
+    role: AgentInputRole,
 ) -> PendingEvent {
     let mut event = PendingEvent::new(source_key, AgentEventKind::InputAccepted, observed_at);
     event.turn_id = turn_id;
     event.input_sha256 = Some(input_sha256);
-    event.reason = queued.then(|| "queued".to_string());
+    event.reason = (role == AgentInputRole::Queued).then(|| "queued".to_string());
+    event.input_role = Some(role);
     event
 }
 
@@ -2088,20 +2227,23 @@ fn project_codex(path: &Path, cursor: Option<ProviderCursor>) -> anyhow::Result<
                     if let Some(message) = crate::agent::codex_response_message_text(payload) {
                         let sha256 = crate::agent::message_sha256(&message);
                         // The turn's first input starts it; later input steers it.
-                        let input_turn = match cursor.pending_turn_start.take() {
+                        let (input_turn, role) = match cursor.pending_turn_start.take() {
                             Some(pending) => {
                                 let turn_id = pending.turn_id.clone();
                                 events.extend(pending.events(Some(sha256.clone())));
-                                Some(turn_id)
+                                (Some(turn_id), AgentInputRole::Start)
                             }
-                            None => turn_id.clone().or_else(|| cursor.current_turn_id.clone()),
+                            None => (
+                                turn_id.clone().or_else(|| cursor.current_turn_id.clone()),
+                                AgentInputRole::Steer,
+                            ),
                         };
                         events.push(input_accepted(
                             format!("{record_key}:input"),
                             timestamp,
                             input_turn,
                             sha256,
-                            false,
+                            role,
                         ));
                     }
                 }
@@ -2256,7 +2398,7 @@ fn project_claude(
                     timestamp,
                     Some(turn_id.clone()),
                     sha256,
-                    false,
+                    AgentInputRole::Start,
                 );
                 if command.is_some() {
                     accepted.reason = Some("command".to_string());
@@ -2306,7 +2448,7 @@ fn project_claude(
                 timestamp,
                 cursor.current_turn_id.clone().filter(|_| cursor.turn_open),
                 crate::agent::message_sha256(crate::agent::unwrap_claude_paste(content)),
-                true,
+                AgentInputRole::Queued,
             )]);
         }
         if record.get("type").and_then(Value::as_str) == Some("system")
@@ -4171,6 +4313,76 @@ mod tests {
     }
 
     #[test]
+    fn an_input_names_the_one_pending_request_it_matches() {
+        let temp = TempDir::new().unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("bound");
+        let incarnation = incarnation_id(&metadata).unwrap();
+        let mut writer = store.writer().unwrap();
+        let record = |writer: &mut AgentEventWriter, key: &str, text: &str| {
+            let tx = writer.conn.transaction().unwrap();
+            insert_event(
+                &tx,
+                &metadata.agent_id,
+                &incarnation,
+                input_accepted(
+                    key.to_string(),
+                    Utc::now(),
+                    Some("turn".to_string()),
+                    crate::agent::message_sha256(text),
+                    AgentInputRole::Start,
+                ),
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        };
+        let sha = |text: &str| crate::agent::message_sha256(text);
+        store
+            .register_pending_input("request-a", &metadata.agent_id, &incarnation, &sha("alpha"))
+            .unwrap();
+        store
+            .register_pending_input("request-b", &metadata.agent_id, &incarnation, &sha("beta"))
+            .unwrap();
+        // A request of an earlier incarnation can no longer be this input.
+        store
+            .register_pending_input("request-old", &metadata.agent_id, "earlier", &sha("gamma"))
+            .unwrap();
+        // Two requests with equal input cannot be told apart.
+        store
+            .register_pending_input("request-c1", &metadata.agent_id, &incarnation, &sha("same"))
+            .unwrap();
+        store
+            .register_pending_input("request-c2", &metadata.agent_id, &incarnation, &sha("same"))
+            .unwrap();
+        record(&mut writer, "input-beta", "beta");
+        record(&mut writer, "input-gamma", "gamma");
+        record(&mut writer, "input-same", "same");
+        record(&mut writer, "input-alpha", "alpha");
+        // Input typed by hand that matches nothing names nothing, and a
+        // request is named once.
+        record(&mut writer, "input-alpha-again", "alpha");
+
+        let named = store
+            .read_page(0, 100)
+            .unwrap()
+            .events
+            .into_iter()
+            .map(|event| (event.input_role, event.request_id))
+            .collect::<Vec<_>>();
+        let start = Some(AgentInputRole::Start);
+        assert_eq!(
+            named,
+            [
+                (start, Some("request-b".to_string())),
+                (start, None),
+                (start, None),
+                (start, Some("request-a".to_string())),
+                (start, None),
+            ]
+        );
+    }
+
+    #[test]
     fn a_turn_running_when_a_session_is_first_followed_starts_there() {
         let temp = TempDir::new().unwrap();
         let logs = temp
@@ -5791,6 +6003,21 @@ mod tests {
             .iter()
             .filter(|event| event.turn_id.is_some())
             .all(|event| event.turn_id.as_deref() == Some("prompt")));
+        // The prompt is the turn's one input: not the injected context, and
+        // not the tool's result.
+        let inputs = page
+            .events
+            .iter()
+            .filter(|event| event.kind == AgentEventKind::InputAccepted)
+            .map(|event| (event.input_role, event.input_sha256.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            inputs,
+            [(
+                Some(AgentInputRole::Start),
+                Some(crate::agent::message_sha256("run sleep"))
+            )]
+        );
     }
 
     #[test]
@@ -6058,6 +6285,22 @@ mod tests {
             started[0].input_sha256.as_deref(),
             Some(crate::agent::message_sha256("summarize the logs").as_str())
         );
+        let inputs = store
+            .read_page(after, 100)
+            .unwrap()
+            .events
+            .into_iter()
+            .filter(|event| event.kind == AgentEventKind::InputAccepted)
+            .map(|event| (event.turn_id, event.input_role, event.input_sha256))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            inputs,
+            [(
+                Some("turn-hash".to_string()),
+                Some(AgentInputRole::Start),
+                Some(crate::agent::message_sha256("summarize the logs"))
+            )]
+        );
     }
 
     #[test]
@@ -6287,6 +6530,15 @@ mod tests {
                 "item": {"type": "userMessage", "id": id,
                     "content": [{"type": "text", "text": text, "text_elements": []}]}}})
         };
+        // An admission sent the first message.
+        store
+            .register_pending_input(
+                "request-fix",
+                &metadata.agent_id,
+                &incarnation_id(&metadata).unwrap(),
+                &crate::agent::message_sha256("fix the build"),
+            )
+            .unwrap();
         let mut writer = store.writer().unwrap();
         for message in [
             user_message("item-1", "fix the build"),
@@ -6307,18 +6559,30 @@ mod tests {
             .events
             .into_iter()
             .filter(|event| event.kind == AgentEventKind::InputAccepted)
-            .map(|event| (event.input_sha256.unwrap(), event.turn_id))
+            .map(|event| {
+                (
+                    event.input_sha256.unwrap(),
+                    event.turn_id,
+                    event.input_role,
+                    event.request_id,
+                )
+            })
             .collect::<Vec<_>>();
+        // The turn's first message started it; the next one steered it.
         assert_eq!(
             accepted,
             vec![
                 (
                     crate::agent::message_sha256("fix the build"),
-                    Some("turn-1".to_string())
+                    Some("turn-1".to_string()),
+                    Some(AgentInputRole::Start),
+                    Some("request-fix".to_string())
                 ),
                 (
                     crate::agent::message_sha256("also run the tests"),
-                    Some("turn-1".to_string())
+                    Some("turn-1".to_string()),
+                    Some(AgentInputRole::Steer),
+                    None
                 ),
             ]
         );

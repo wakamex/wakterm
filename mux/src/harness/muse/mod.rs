@@ -29,7 +29,9 @@
 pub mod prompt;
 
 use crate::agent::AgentMetadata;
-use crate::agent_event::{input_accepted, AgentEventKind, JsonlCursor, PendingEvent};
+use crate::agent_event::{
+    input_accepted, AgentEventKind, AgentInputRole, JsonlCursor, PendingEvent,
+};
 
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OptionalExtension};
@@ -463,7 +465,7 @@ pub(crate) fn project_record(
             timestamp,
             open_turn,
             crate::agent::message_sha256(&text),
-            false,
+            AgentInputRole::Steer,
         )],
         TurnStep::Started { turn_id, text } => {
             let sha256 = crate::agent::message_sha256(&text);
@@ -480,7 +482,7 @@ pub(crate) fn project_record(
                 timestamp,
                 Some(turn_id.clone()),
                 sha256,
-                false,
+                AgentInputRole::Start,
             );
             let mut state = PendingEvent::new(
                 format!("{record_key}:state"),

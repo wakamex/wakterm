@@ -7,7 +7,8 @@ use crate::agent::{
     HarnessObservation, HarnessObservationDetails,
 };
 use crate::agent_event::{
-    event_time, input_accepted, observer_failure, AgentEventKind, JsonlCursor, PendingEvent,
+    event_time, input_accepted, observer_failure, AgentEventKind, AgentInputRole, JsonlCursor,
+    PendingEvent,
 };
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
@@ -936,7 +937,7 @@ pub(crate) fn project_record(
                         timestamp,
                         Some(turn_id.clone()),
                         sha256,
-                        false,
+                        AgentInputRole::Start,
                     )
                 });
                 let mut state = PendingEvent::new(

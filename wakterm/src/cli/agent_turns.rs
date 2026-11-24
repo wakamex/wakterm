@@ -543,6 +543,8 @@ mod test {
             detail: None,
             approval: None,
             input_sha256: None,
+            request_id: None,
+            input_role: None,
         }
     }
 

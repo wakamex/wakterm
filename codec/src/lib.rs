@@ -531,7 +531,7 @@ macro_rules! pdu {
 /// The overall version of the codec.
 /// This must be bumped when backwards incompatible changes
 /// are made to the types and protocol.
-pub const CODEC_VERSION: usize = 74;
+pub const CODEC_VERSION: usize = 75;
 
 /// Maximum size of a single PDU in bytes (64 MiB).
 /// Rejects PDUs with a length field larger than this before allocating,
@@ -2313,6 +2313,8 @@ mod test {
             detail: None,
             approval: Some(approval),
             input_sha256: None,
+            request_id: None,
+            input_role: None,
         };
         let resolution = |answers| AgentApprovalResolutionRequest {
             request_id: "approval-1".to_string(),
@@ -2377,6 +2379,8 @@ mod test {
                             detail: None,
                             approval: None,
                             input_sha256: None,
+                            request_id: None,
+                            input_role: None,
                         },
                         mux::agent_event::AgentEvent {
                             sequence: 13,
@@ -2395,6 +2399,8 @@ mod test {
                             detail: None,
                             approval: None,
                             input_sha256: Some("abc123".to_string()),
+                            request_id: Some("request-1".to_string()),
+                            input_role: Some(mux::agent_event::AgentInputRole::Steer),
                         },
                         approval_event(14, approval(vec![question.clone()])),
                         approval_event(15, approval(vec![])),
@@ -2415,6 +2421,8 @@ mod test {
                             detail: None,
                             approval: None,
                             input_sha256: Some("def456".to_string()),
+                            request_id: None,
+                            input_role: Some(mux::agent_event::AgentInputRole::Queued),
                         },
                     ],
                     recovery: None,

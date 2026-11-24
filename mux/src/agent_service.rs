@@ -289,8 +289,23 @@ impl<'a> AgentService<'a> {
         self.mux.validate_agent_admission(candidate)
     }
 
+    /// Writes an admitted prompt to its agent. The prompt is first recorded
+    /// as pending input for its request, so that the `input_accepted` the
+    /// provider records for it names the request.
     pub fn write_admitted_prompt(&self, candidate: &AgentAdmissionCandidate) -> anyhow::Result<()> {
-        self.mux.write_admitted_prompt(candidate)
+        let request = &candidate.request;
+        let store = self.event_store();
+        store.register_pending_input(
+            &request.request_id,
+            &request.agent_id,
+            &request.incarnation_id,
+            &crate::agent::message_sha256(&request.prompt),
+        )?;
+        let written = self.mux.write_admitted_prompt(candidate);
+        if written.is_err() {
+            let _ = store.forget_pending_input(&request.request_id);
+        }
+        written
     }
 
     pub fn submit_admitted_prompt(
