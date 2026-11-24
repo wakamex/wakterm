@@ -276,6 +276,9 @@ pub struct Mux {
 const BUFSIZE: usize = 1024 * 1024;
 const AGENT_HARNESS_REFRESH_THROTTLE: Duration = Duration::from_millis(250);
 const AGENT_ARTIFACT_HINT_DEBOUNCE: Duration = Duration::from_millis(25);
+/// How often agents' confirmed session files are checked for writes the
+/// OS watcher did not report.
+const AGENT_ARTIFACT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const AGENT_ARTIFACT_DIRTY_PATH_LIMIT: usize = 1024;
 const AGENT_DETECTED_FULL_SCAN_THROTTLE: Duration = Duration::from_secs(2);
 
@@ -383,6 +386,75 @@ impl PendingAgentArtifactEvents {
     }
 }
 
+/// A session file's size and modification time, or None when it cannot be
+/// read.
+type ArtifactStamp = Option<(u64, std::time::SystemTime)>;
+
+/// Checks agents' confirmed session files every `AGENT_ARTIFACT_POLL_INTERVAL`
+/// and handles a changed one as the OS watcher's report of it would be. The
+/// watcher's reports are hints: it can lose them, as when the kernel's
+/// event queue overflows, and a refresh can read a file just before its
+/// harness writes the records that end a turn, with no later report to
+/// read them. The poll bounds how long such records wait. It runs until the
+/// returned sender is dropped, and stats the files off the main thread.
+fn spawn_agent_artifact_poll() -> mpsc::Sender<()> {
+    let (stop, stopped) = mpsc::channel::<()>();
+    thread::Builder::new()
+        .name("agent-artifact-poll".to_string())
+        .spawn(move || {
+            let mut seen = HashMap::new();
+            while let Err(RecvTimeoutError::Timeout) =
+                stopped.recv_timeout(AGENT_ARTIFACT_POLL_INTERVAL)
+            {
+                let Some(paths) = Mux::try_get()
+                    .map(|mux| mux.agent_artifact_watcher.lock().confirmed_artifact_paths())
+                else {
+                    continue;
+                };
+                let stamps = paths
+                    .into_iter()
+                    .map(|path| {
+                        let stamp = std::fs::metadata(&path)
+                            .ok()
+                            .and_then(|metadata| Some((metadata.len(), metadata.modified().ok()?)));
+                        (path, stamp)
+                    })
+                    .collect();
+                let changed = changed_artifacts(&mut seen, stamps);
+                if changed.is_empty() {
+                    continue;
+                }
+                promise::spawn::spawn_into_main_thread(async move {
+                    if let Some(mux) = Mux::try_get() {
+                        mux.handle_agent_artifact_batch(changed, false);
+                    }
+                })
+                .detach();
+            }
+        })
+        .expect("failed to start the agent artifact poll thread");
+    stop
+}
+
+/// The paths whose stamp differs from the one `seen` holds for them, which
+/// it then holds instead. A path seen for the first time has not changed,
+/// and one no longer given is forgotten.
+fn changed_artifacts(
+    seen: &mut HashMap<PathBuf, ArtifactStamp>,
+    current: Vec<(PathBuf, ArtifactStamp)>,
+) -> Vec<PathBuf> {
+    let mut changed = Vec::new();
+    let mut next = HashMap::with_capacity(current.len());
+    for (path, stamp) in current {
+        if seen.get(&path).is_some_and(|previous| *previous != stamp) {
+            changed.push(path.clone());
+        }
+        next.insert(path, stamp);
+    }
+    *seen = next;
+    changed
+}
+
 /// A request to the OS watcher's thread.
 enum ArtifactWatchOp {
     Watch(PathBuf),
@@ -451,6 +523,8 @@ impl ArtifactWatches {
 
 struct AgentArtifactWatcherState {
     watcher: Option<ArtifactWatches>,
+    /// Ends the poll of confirmed artifacts when this state is dropped.
+    _poll: mpsc::Sender<()>,
     roots_by_pane: HashMap<PaneId, Vec<PathBuf>>,
     panes_by_root: HashMap<PathBuf, HashSet<PaneId>>,
     discovery_panes_by_root: HashMap<PathBuf, HashSet<PaneId>>,
@@ -518,6 +592,7 @@ impl AgentArtifactWatcherState {
 
         Self {
             watcher,
+            _poll: spawn_agent_artifact_poll(),
             roots_by_pane: HashMap::new(),
             panes_by_root: HashMap::new(),
             discovery_panes_by_root: HashMap::new(),
@@ -706,6 +781,11 @@ impl AgentArtifactWatcherState {
         let mut panes = matched.into_iter().collect::<Vec<_>>();
         panes.sort_unstable();
         panes
+    }
+
+    /// The session files confirmed for agents, which the poll checks.
+    fn confirmed_artifact_paths(&self) -> Vec<PathBuf> {
+        self.panes_by_artifact_path.keys().cloned().collect()
     }
 
     fn all_watched_panes(&self) -> Vec<PaneId> {
@@ -8009,6 +8089,7 @@ mod test {
     ) -> AgentArtifactWatcherState {
         AgentArtifactWatcherState {
             watcher: None,
+            _poll: mpsc::channel().0,
             roots_by_pane: pane_ids
                 .iter()
                 .map(|pane_id| (*pane_id, vec![root.to_path_buf()]))
@@ -9184,6 +9265,55 @@ mod test {
                 .tick_timeout(deadline - now)
                 .expect("run queued main-thread work");
         }
+    }
+
+    #[test]
+    fn the_artifact_poll_reports_files_changed_since_it_last_looked() {
+        let at = |seconds: u64| std::time::UNIX_EPOCH + Duration::from_secs(seconds);
+        let path = |name: &str| PathBuf::from(format!("/sessions/{name}.jsonl"));
+        let mut seen = HashMap::new();
+        // The first look only records what it sees.
+        assert!(changed_artifacts(
+            &mut seen,
+            vec![
+                (path("a"), Some((10, at(1)))),
+                (path("b"), Some((20, at(1))))
+            ]
+        )
+        .is_empty());
+        // A file that grew, or was rewritten to the same size, changed; one
+        // left alone did not.
+        assert_eq!(
+            changed_artifacts(
+                &mut seen,
+                vec![
+                    (path("a"), Some((15, at(2)))),
+                    (path("b"), Some((20, at(1))))
+                ]
+            ),
+            [path("a")]
+        );
+        assert_eq!(
+            changed_artifacts(
+                &mut seen,
+                vec![
+                    (path("a"), Some((15, at(3)))),
+                    (path("b"), Some((20, at(1))))
+                ]
+            ),
+            [path("a")]
+        );
+        // One that cannot be read changed too; one no longer given is
+        // forgotten, so it counts as new when it returns.
+        assert_eq!(
+            changed_artifacts(&mut seen, vec![(path("a"), None)]),
+            [path("a")]
+        );
+        assert!(changed_artifacts(
+            &mut seen,
+            vec![(path("a"), None), (path("b"), Some((25, at(4))))]
+        )
+        .is_empty());
     }
 
     #[test]
