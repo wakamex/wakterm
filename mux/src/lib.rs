@@ -266,6 +266,8 @@ pub struct Mux {
     main_thread_id: std::thread::ThreadId,
     agent_observer_tx: Sender<AgentObserverCommand>,
     agent_observer_timer_tx: Sender<PaneId>,
+    /// Keeps `spawn_agent_artifact_poll`'s thread running.
+    _agent_artifact_poll: Sender<()>,
     codex_app_server: codex_app_server::CodexAppServer,
     /// Durable logical pane identity exported as `WAKTERM_PANE_TOKEN`.
     /// Unlike the numeric pane ID, it survives session restore.
@@ -276,9 +278,13 @@ pub struct Mux {
 const BUFSIZE: usize = 1024 * 1024;
 const AGENT_HARNESS_REFRESH_THROTTLE: Duration = Duration::from_millis(250);
 const AGENT_ARTIFACT_HINT_DEBOUNCE: Duration = Duration::from_millis(25);
-/// How often agents' confirmed session files are checked for writes the
-/// OS watcher did not report.
+/// How often agents' session files are checked for writes their observer
+/// has not read. Unit tests drive refreshes themselves and check their
+/// order, so the poll never fires in them.
+#[cfg(not(test))]
 const AGENT_ARTIFACT_POLL_INTERVAL: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const AGENT_ARTIFACT_POLL_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const AGENT_ARTIFACT_DIRTY_PATH_LIMIT: usize = 1024;
 const AGENT_DETECTED_FULL_SCAN_THROTTLE: Duration = Duration::from_secs(2);
 
@@ -371,12 +377,18 @@ impl PendingAgentArtifactEvents {
         }
         for path in paths {
             if self.paths.len() >= AGENT_ARTIFACT_DIRTY_PATH_LIMIT && !self.paths.contains(&path) {
-                self.paths.clear();
-                self.refresh_all = true;
+                self.rescan();
                 return;
             }
             self.paths.insert(path);
         }
+    }
+
+    /// Changes may have been lost, as when the kernel's event queue
+    /// overflowed, so every watched pane is refreshed.
+    fn rescan(&mut self) {
+        self.paths.clear();
+        self.refresh_all = true;
     }
 
     fn take(&mut self) -> (Vec<PathBuf>, bool) {
@@ -390,105 +402,63 @@ impl PendingAgentArtifactEvents {
 /// read.
 type ArtifactStamp = Option<(u64, std::time::SystemTime)>;
 
-/// Checks agents' confirmed session files every `AGENT_ARTIFACT_POLL_INTERVAL`
-/// and handles a changed one as the OS watcher's report of it would be. The
-/// watcher's reports are hints: it can lose them, as when the kernel's
-/// event queue overflows, and a refresh can read a file just before its
-/// harness writes the records that end a turn, with no later report to
-/// read them. The poll bounds how long such records wait. It runs until the
-/// returned sender is dropped, and stats the files off the main thread.
-fn spawn_agent_artifact_poll() -> mpsc::Sender<()> {
-    let (stop, stopped) = mpsc::channel::<()>();
-    thread::Builder::new()
-        .name("agent-artifact-poll".to_string())
-        .spawn(move || {
-            let mut seen = HashMap::new();
-            while let Err(RecvTimeoutError::Timeout) =
-                stopped.recv_timeout(AGENT_ARTIFACT_POLL_INTERVAL)
-            {
-                let Some(paths) = Mux::try_get()
-                    .map(|mux| mux.agent_artifact_watcher.lock().confirmed_artifact_paths())
-                else {
-                    continue;
-                };
-                let stamps = paths
-                    .into_iter()
-                    .map(|path| {
-                        let stamp = std::fs::metadata(&path)
-                            .ok()
-                            .and_then(|metadata| Some((metadata.len(), metadata.modified().ok()?)));
-                        (path, stamp)
-                    })
-                    .collect();
-                let changed = changed_artifacts(&mut seen, stamps);
-                if changed.is_empty() {
-                    continue;
-                }
-                promise::spawn::spawn_into_main_thread(async move {
-                    if let Some(mux) = Mux::try_get() {
-                        mux.handle_agent_artifact_batch(changed, false);
-                    }
-                })
-                .detach();
-            }
+/// The stamps of `paths`, in order.
+fn artifact_stamps(paths: Vec<PathBuf>) -> Vec<(PathBuf, ArtifactStamp)> {
+    paths
+        .into_iter()
+        .map(|path| {
+            let stamp = std::fs::metadata(&path)
+                .ok()
+                .and_then(|metadata| Some((metadata.len(), metadata.modified().ok()?)));
+            (path, stamp)
         })
-        .expect("failed to start the agent artifact poll thread");
-    stop
+        .collect()
 }
 
-/// The paths whose stamp differs from the one `seen` holds for them, which
-/// it then holds instead. A path seen for the first time has not changed,
-/// and one no longer given is forgotten.
-fn changed_artifacts(
-    seen: &mut HashMap<PathBuf, ArtifactStamp>,
-    current: Vec<(PathBuf, ArtifactStamp)>,
-) -> Vec<PathBuf> {
-    let mut changed = Vec::new();
-    let mut next = HashMap::with_capacity(current.len());
-    for (path, stamp) in current {
-        if seen.get(&path).is_some_and(|previous| *previous != stamp) {
-            changed.push(path.clone());
-        }
-        next.insert(path, stamp);
-    }
-    *seen = next;
-    changed
+/// Whether an agent's session files hold something its observer has not
+/// read: their stamps differ from those taken before its last successful
+/// observation, or it has had none.
+fn artifacts_unread(
+    observed: Option<&[(PathBuf, ArtifactStamp)]>,
+    current: &[(PathBuf, ArtifactStamp)],
+) -> bool {
+    observed.map_or(true, |observed| observed != current)
 }
 
-/// A request to the OS watcher's thread.
+/// A request to an OS watcher's thread.
 enum ArtifactWatchOp {
-    Watch(PathBuf),
+    Watch(PathBuf, RecursiveMode),
     Unwatch(PathBuf),
     #[cfg(test)]
     Flush(mpsc::Sender<()>),
 }
 
-/// The OS file watcher, driven from a thread of its own. Watching a root
-/// recursively walks its whole tree, such as years of Codex session
-/// directories, and the watcher answers each request only after its own
-/// thread has handled it; the main thread that asks must not wait for it.
-/// Requests are applied in the order they are sent.
+/// An OS file watcher, driven from a thread of its own. Watching a root
+/// recursively walks its whole tree, such as years of agy conversations,
+/// and the watcher answers each request only after its own thread has
+/// handled it; the main thread that asks must not wait for it. Requests
+/// are applied in the order they are sent.
 struct ArtifactWatches {
     ops: mpsc::Sender<ArtifactWatchOp>,
 }
 
 impl ArtifactWatches {
-    fn spawn(mut watcher: RecommendedWatcher) -> Self {
+    fn spawn(mut watcher: RecommendedWatcher, name: &str) -> Self {
         let (ops, requests) = mpsc::channel::<ArtifactWatchOp>();
         thread::Builder::new()
-            .name("agent-artifact-watches".to_string())
+            .name(name.to_string())
             .spawn(move || {
                 while let Ok(op) = requests.recv() {
                     match op {
-                        ArtifactWatchOp::Watch(root) => {
-                            if let Err(err) = watcher.watch(&root, RecursiveMode::Recursive) {
-                                log::debug!("unable to watch agent artifact root {root:?}: {err}");
+                        ArtifactWatchOp::Watch(root, mode) => {
+                            if let Err(err) = watcher.watch(&root, mode) {
+                                log::debug!("unable to watch agent artifact path {root:?}: {err}");
                             }
                         }
                         ArtifactWatchOp::Unwatch(root) => {
                             if let Err(err) = watcher.unwatch(&root) {
                                 log::debug!(
-                                    "unable to unwatch agent artifact root {root:?}: {err}"
+                                    "unable to unwatch agent artifact path {root:?}: {err}"
                                 );
                             }
                         }
@@ -503,8 +473,10 @@ impl ArtifactWatches {
         Self { ops }
     }
 
-    fn watch(&self, root: &Path) {
-        let _ = self.ops.send(ArtifactWatchOp::Watch(root.to_path_buf()));
+    fn watch(&self, root: &Path, mode: RecursiveMode) {
+        let _ = self
+            .ops
+            .send(ArtifactWatchOp::Watch(root.to_path_buf(), mode));
     }
 
     fn unwatch(&self, root: &Path) {
@@ -521,15 +493,29 @@ impl ArtifactWatches {
     }
 }
 
+/// Watches agents' session files for changes, which hint that a pane's
+/// observer should read them. An agent whose session is confirmed has the
+/// directory of each of its session files watched, alone, by a watcher of
+/// its own; an agent still to be confirmed has its harness's roots watched
+/// recursively to discover its session. The two use separate kernel
+/// queues, so the many writes under the discovery roots, such as all of
+/// agy's conversations, can neither delay nor overflow the reports for
+/// confirmed sessions, and a discovery root is watched only while a pane
+/// needs it.
 struct AgentArtifactWatcherState {
-    watcher: Option<ArtifactWatches>,
-    /// Ends the poll of confirmed artifacts when this state is dropped.
-    _poll: mpsc::Sender<()>,
+    /// Recursive watches of the discovery roots.
+    discovery: Option<ArtifactWatches>,
+    /// Watches of the directories holding confirmed session files.
+    confirmed: Option<ArtifactWatches>,
     roots_by_pane: HashMap<PaneId, Vec<PathBuf>>,
-    panes_by_root: HashMap<PathBuf, HashSet<PaneId>>,
+    /// The panes still to be confirmed under each root; a root is watched
+    /// while it has any.
     discovery_panes_by_root: HashMap<PathBuf, HashSet<PaneId>>,
     artifact_paths_by_pane: HashMap<PaneId, Vec<PathBuf>>,
     panes_by_artifact_path: HashMap<PathBuf, HashSet<PaneId>>,
+    /// The panes with a confirmed session file in each directory; a
+    /// directory is watched while it has any.
+    panes_by_artifact_dir: HashMap<PathBuf, HashSet<PaneId>>,
 }
 
 fn normalize_agent_artifact_path(path: &Path) -> PathBuf {
@@ -563,41 +549,51 @@ impl AgentArtifactWatcherState {
             }
         });
 
-        let callback_pending_events = Arc::clone(&pending_events);
-        let watcher =
-            notify::recommended_watcher(
-                move |result: notify::Result<notify::Event>| match result {
-                    Ok(event) => match event.kind {
-                        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
-                            if !event.paths.is_empty() {
-                                callback_pending_events.lock().record(event.paths);
-                                let _ = event_tx.try_send(());
-                            }
+        let start = |name: &str| {
+            let pending_events = Arc::clone(&pending_events);
+            let event_tx = event_tx.clone();
+            let watcher =
+                notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+                    match result {
+                        Ok(event) if event.need_rescan() => {
+                            log::warn!(
+                                "the agent artifact watcher lost changes, as when the kernel's \
+                                 event queue overflows; refreshing every watched agent"
+                            );
+                            pending_events.lock().rescan();
                         }
-                        _ => {}
-                    },
-                    Err(err) => {
-                        log::warn!("agent artifact watcher error: {err}");
+                        Ok(event) => match event.kind {
+                            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+                                if !event.paths.is_empty() =>
+                            {
+                                pending_events.lock().record(event.paths)
+                            }
+                            _ => return,
+                        },
+                        Err(err) => {
+                            log::warn!("agent artifact watcher error: {err}");
+                            pending_events.lock().rescan();
+                        }
                     }
-                },
-            );
-
-        let watcher = match watcher {
-            Ok(watcher) => Some(ArtifactWatches::spawn(watcher)),
-            Err(err) => {
-                log::warn!("unable to start agent artifact watcher: {err}");
-                None
+                    let _ = event_tx.try_send(());
+                });
+            match watcher {
+                Ok(watcher) => Some(ArtifactWatches::spawn(watcher, name)),
+                Err(err) => {
+                    log::warn!("unable to start agent artifact watcher: {err}");
+                    None
+                }
             }
         };
 
         Self {
-            watcher,
-            _poll: spawn_agent_artifact_poll(),
+            discovery: start("agent-artifact-discovery"),
+            confirmed: start("agent-artifact-sessions"),
             roots_by_pane: HashMap::new(),
-            panes_by_root: HashMap::new(),
             discovery_panes_by_root: HashMap::new(),
             artifact_paths_by_pane: HashMap::new(),
             panes_by_artifact_path: HashMap::new(),
+            panes_by_artifact_dir: HashMap::new(),
         }
     }
 
@@ -612,41 +608,9 @@ impl AgentArtifactWatcherState {
             .into_iter()
             .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
             .collect::<Vec<_>>();
-
-        // Watching the same roots again would drop them and walk their trees
-        // once more; only the confirmed artifact may have changed.
-        if !roots.is_empty() && self.roots_by_pane.get(&pane_id) == Some(&roots) {
-            self.set_confirmed_artifact(pane_id, harness, session_path);
-            return;
-        }
-        self.unwatch_pane(pane_id);
-        if roots.is_empty() || self.watcher.is_none() {
-            return;
-        }
-
-        let mut watched_roots = vec![];
-        for root in roots {
-            let first_watcher_for_root = !self.panes_by_root.contains_key(&root);
-            if first_watcher_for_root {
-                let Some(watcher) = self.watcher.as_ref() else {
-                    return;
-                };
-                watcher.watch(&root);
-            }
-
-            self.panes_by_root
-                .entry(root.clone())
-                .or_default()
-                .insert(pane_id);
-            self.discovery_panes_by_root
-                .entry(root.clone())
-                .or_default()
-                .insert(pane_id);
-            watched_roots.push(root);
-        }
-
-        if !watched_roots.is_empty() {
-            self.roots_by_pane.insert(pane_id, watched_roots);
+        if self.roots_by_pane.get(&pane_id) != Some(&roots) {
+            self.leave_discovery(pane_id);
+            self.roots_by_pane.insert(pane_id, roots);
         }
         self.set_confirmed_artifact(pane_id, harness, session_path);
     }
@@ -657,104 +621,130 @@ impl AgentArtifactWatcherState {
         harness: &AgentHarness,
         session_path: Option<&str>,
     ) {
-        self.remove_confirmed_artifact(pane_id);
-        let Some(session_path) = session_path else {
+        let paths = session_path
+            .map(|session_path| {
+                agent_observer_artifact_paths(harness, session_path)
+                    .into_iter()
+                    .map(|path| normalize_agent_artifact_path(&path))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if self.artifact_paths_by_pane.get(&pane_id) == Some(&paths) {
             return;
-        };
-        let paths = agent_observer_artifact_paths(harness, session_path)
-            .into_iter()
-            .map(|path| normalize_agent_artifact_path(&path))
-            .collect::<Vec<_>>();
+        }
+        self.remove_confirmed_artifact(pane_id);
+        if paths.is_empty() {
+            self.enter_discovery(pane_id);
+            return;
+        }
         for path in &paths {
             self.panes_by_artifact_path
                 .entry(path.clone())
                 .or_default()
                 .insert(pane_id);
-        }
-        if !paths.is_empty() {
-            let roots = self
-                .roots_by_pane
-                .get(&pane_id)
-                .cloned()
-                .unwrap_or_default();
-            for root in roots {
-                let remove_root = self
-                    .discovery_panes_by_root
-                    .get_mut(&root)
-                    .map(|panes| {
-                        panes.remove(&pane_id);
-                        panes.is_empty()
-                    })
-                    .unwrap_or(false);
-                if remove_root {
-                    self.discovery_panes_by_root.remove(&root);
+            if let Some(dir) = path.parent() {
+                let panes = self
+                    .panes_by_artifact_dir
+                    .entry(dir.to_path_buf())
+                    .or_default();
+                if panes.is_empty() {
+                    if let Some(watcher) = self.confirmed.as_ref() {
+                        watcher.watch(dir, RecursiveMode::NonRecursive);
+                    }
                 }
+                panes.insert(pane_id);
             }
-            self.artifact_paths_by_pane.insert(pane_id, paths);
         }
+        self.artifact_paths_by_pane.insert(pane_id, paths);
+        self.leave_discovery(pane_id);
     }
 
     fn remove_confirmed_artifact(&mut self, pane_id: PaneId) {
-        if let Some(paths) = self.artifact_paths_by_pane.remove(&pane_id) {
-            for path in paths {
-                if let Some(panes) = self.panes_by_artifact_path.get_mut(&path) {
+        let Some(paths) = self.artifact_paths_by_pane.remove(&pane_id) else {
+            return;
+        };
+        for path in paths {
+            if let Some(panes) = self.panes_by_artifact_path.get_mut(&path) {
+                panes.remove(&pane_id);
+                if panes.is_empty() {
+                    self.panes_by_artifact_path.remove(&path);
+                }
+            }
+            let Some(dir) = path.parent() else {
+                continue;
+            };
+            let now_unwatched = self
+                .panes_by_artifact_dir
+                .get_mut(dir)
+                .is_some_and(|panes| {
                     panes.remove(&pane_id);
-                    if panes.is_empty() {
-                        self.panes_by_artifact_path.remove(&path);
-                    }
+                    panes.is_empty()
+                });
+            if now_unwatched {
+                self.panes_by_artifact_dir.remove(dir);
+                if let Some(watcher) = self.confirmed.as_ref() {
+                    watcher.unwatch(dir);
                 }
             }
         }
-        for root in self.roots_by_pane.get(&pane_id).into_iter().flatten() {
-            self.discovery_panes_by_root
+    }
+
+    /// Watches the pane's roots to discover its session.
+    fn enter_discovery(&mut self, pane_id: PaneId) {
+        for root in self
+            .roots_by_pane
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_default()
+        {
+            let panes = self
+                .discovery_panes_by_root
                 .entry(root.clone())
-                .or_default()
-                .insert(pane_id);
+                .or_default();
+            if panes.is_empty() {
+                if let Some(watcher) = self.discovery.as_ref() {
+                    watcher.watch(&root, RecursiveMode::Recursive);
+                }
+            }
+            panes.insert(pane_id);
+        }
+    }
+
+    /// Stops watching the pane's roots for its sake.
+    fn leave_discovery(&mut self, pane_id: PaneId) {
+        for root in self
+            .roots_by_pane
+            .get(&pane_id)
+            .cloned()
+            .unwrap_or_default()
+        {
+            let now_unwatched = self
+                .discovery_panes_by_root
+                .get_mut(&root)
+                .is_some_and(|panes| panes.remove(&pane_id) && panes.is_empty());
+            if !now_unwatched {
+                continue;
+            }
+            self.discovery_panes_by_root.remove(&root);
+            if let Some(watcher) = self.discovery.as_ref() {
+                watcher.unwatch(&root);
+                // The OS keeps one watch per directory, so removing a
+                // recursive root also removes the watches of every root
+                // nested with it, such as a Claude project directory inside
+                // the projects directory. Register those again.
+                for other in self.discovery_panes_by_root.keys() {
+                    if other.starts_with(&root) || root.starts_with(other) {
+                        watcher.watch(other, RecursiveMode::Recursive);
+                    }
+                }
+            }
         }
     }
 
     fn unwatch_pane(&mut self, pane_id: PaneId) {
         self.remove_confirmed_artifact(pane_id);
-        let Some(roots) = self.roots_by_pane.remove(&pane_id) else {
-            return;
-        };
-
-        for root in roots {
-            let remove_discovery_root = self
-                .discovery_panes_by_root
-                .get_mut(&root)
-                .map(|panes| {
-                    panes.remove(&pane_id);
-                    panes.is_empty()
-                })
-                .unwrap_or(false);
-            if remove_discovery_root {
-                self.discovery_panes_by_root.remove(&root);
-            }
-            let remove_root = self
-                .panes_by_root
-                .get_mut(&root)
-                .map(|panes| {
-                    panes.remove(&pane_id);
-                    panes.is_empty()
-                })
-                .unwrap_or(false);
-            if remove_root {
-                self.panes_by_root.remove(&root);
-                if let Some(watcher) = self.watcher.as_ref() {
-                    watcher.unwatch(&root);
-                    // The OS keeps one watch per directory, so removing a
-                    // recursive root also removes the watches of every root
-                    // nested with it, such as a Claude project directory
-                    // inside the projects directory. Register those again.
-                    for other in self.panes_by_root.keys() {
-                        if other.starts_with(&root) || root.starts_with(other) {
-                            watcher.watch(other);
-                        }
-                    }
-                }
-            }
-        }
+        self.leave_discovery(pane_id);
+        self.roots_by_pane.remove(&pane_id);
     }
 
     fn matching_panes(&self, event_paths: &[PathBuf]) -> Vec<PaneId> {
@@ -781,11 +771,6 @@ impl AgentArtifactWatcherState {
         let mut panes = matched.into_iter().collect::<Vec<_>>();
         panes.sort_unstable();
         panes
-    }
-
-    /// The session files confirmed for agents, which the poll checks.
-    fn confirmed_artifact_paths(&self) -> Vec<PathBuf> {
-        self.panes_by_artifact_path.keys().cloned().collect()
     }
 
     fn all_watched_panes(&self) -> Vec<PaneId> {
@@ -877,6 +862,10 @@ struct AgentObserverUpdate {
     queue_delay: Duration,
     refresh_elapsed: Duration,
     schedule_trailing_refresh: bool,
+    /// The stamps of the session files the observation read, taken before
+    /// it read them; None when its session changed during it, or its events
+    /// could not be saved, so what it read does not count as read.
+    observed_stamps: Option<Vec<(PathBuf, ArtifactStamp)>>,
 }
 
 #[derive(Default)]
@@ -886,6 +875,9 @@ struct AgentObserverState {
     pending_request: Option<AgentObserverRequest>,
     last_requested_at: Option<DateTime<Utc>>,
     trailing_refresh_scheduled: bool,
+    /// The stamps of the pane's session files as its last successful
+    /// observation read them; see `spawn_agent_artifact_poll`.
+    observed_stamps: Option<Vec<(PathBuf, ArtifactStamp)>>,
 }
 
 /// This function applies parsed actions to the pane and notifies any
@@ -1245,6 +1237,60 @@ fn spawn_agent_observer_worker(event_store: AgentEventStore) -> Sender<AgentObse
     tx
 }
 
+/// Checks every `AGENT_ARTIFACT_POLL_INTERVAL` whether an agent's session
+/// files hold something its observer has not read, and refreshes the agent
+/// if so. The OS watchers' reports are hints: a report can be lost, as when
+/// a kernel event queue overflows; a refresh can read a file just before
+/// its harness writes the records that end a turn; and an observation
+/// whose events could not be saved has read nothing. Each of these leaves
+/// the files' stamps different from those its last successful observation
+/// took, so the poll bounds how long such records wait, and refreshes no
+/// agent whose files were read as they are. It stats the files off the
+/// main thread, and runs until the returned sender is dropped with the mux.
+fn spawn_agent_artifact_poll(mux_instance_id: usize) -> Sender<()> {
+    let (stop, stopped) = mpsc::channel::<()>();
+    let spawned = thread::Builder::new()
+        .name("agent-artifact-poll".to_string())
+        .spawn(move || {
+            while let Err(RecvTimeoutError::Timeout) =
+                stopped.recv_timeout(AGENT_ARTIFACT_POLL_INTERVAL)
+            {
+                let Some(followed) = Mux::try_get()
+                    .filter(|mux| mux.instance_id == mux_instance_id)
+                    .map(|mux| mux.followed_agent_artifacts())
+                else {
+                    continue;
+                };
+                let unread = followed
+                    .into_iter()
+                    .filter(|(_, paths, observed)| {
+                        artifacts_unread(observed.as_deref(), &artifact_stamps(paths.clone()))
+                    })
+                    .map(|(pane_id, _, _)| pane_id)
+                    .collect::<Vec<_>>();
+                if unread.is_empty() {
+                    continue;
+                }
+                promise::spawn::spawn_into_main_thread(async move {
+                    let Some(mux) = Mux::try_get() else {
+                        return;
+                    };
+                    if mux.instance_id != mux_instance_id {
+                        return;
+                    }
+                    for pane_id in unread {
+                        mux.refresh_agent_pane_for_artifacts(pane_id);
+                    }
+                })
+                .detach();
+            }
+        });
+    if let Err(err) = spawned {
+        log::warn!("unable to start the agent artifact poll: {err}");
+    }
+    stop
+}
+
 fn spawn_agent_observer_timer(mux_instance_id: usize) -> Sender<PaneId> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -1424,6 +1470,12 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                 counter!("mux.agent_observer.refresh.rate").increment(1);
                 let started = Instant::now();
                 let mut runtime = request.runtime;
+                // Stamped before reading, so a write during the read shows as
+                // unread afterwards.
+                let session_before = runtime.session_path.clone();
+                let stamps_before = session_before.as_deref().map(|session| {
+                    artifact_stamps(agent_observer_artifact_paths(&runtime.harness, session))
+                });
                 refresh_runtime_from_harness_with_expected_session(
                     &mut runtime,
                     &request.metadata,
@@ -1448,6 +1500,8 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                 histogram!("mux.agent_observer.refresh.latency").record(refresh_elapsed);
                 histogram!("mux.agent_observer.refresh.queue_delay").record(queue_delay);
 
+                let observed_stamps = stamps_before
+                    .filter(|_| !writer_failed && runtime.session_path == session_before);
                 let update = AgentObserverUpdate {
                     pane_id: request.pane_id,
                     generation: request.generation,
@@ -1459,6 +1513,7 @@ fn run_agent_observer_worker(rx: Receiver<AgentObserverCommand>, event_store: Ag
                     queue_delay,
                     refresh_elapsed,
                     schedule_trailing_refresh: request.schedule_trailing_refresh,
+                    observed_stamps,
                 };
 
                 promise::spawn::spawn_into_main_thread(async move {
@@ -1706,6 +1761,7 @@ impl Mux {
 
         let instance_id = MUX_INSTANCE_ID.fetch_add(1, Ordering::Relaxed);
         let agent_observer_timer_tx = spawn_agent_observer_timer(instance_id);
+        let _agent_artifact_poll = spawn_agent_artifact_poll(instance_id);
         Self {
             instance_id,
             tabs: RwLock::new(HashMap::new()),
@@ -1762,6 +1818,7 @@ impl Mux {
             main_thread_id: std::thread::current().id(),
             agent_observer_tx,
             agent_observer_timer_tx,
+            _agent_artifact_poll,
             codex_app_server: codex_app_server::CodexAppServer::new(instance_id),
             pane_tokens: RwLock::new(HashMap::new()),
             agent,
@@ -3545,17 +3602,62 @@ impl Mux {
             }
         };
         for pane_id in pane_ids {
-            if self.get_agent_metadata_for_pane(pane_id).is_some() {
-                self.refresh_agent_runtime_for_pane_with_update(
-                    pane_id,
-                    false,
-                    AgentRefreshPolicy::Throttled,
-                    |_| {},
-                );
-            } else {
-                self.refresh_detected_agent_runtime_for_pane(pane_id);
-            }
+            self.refresh_agent_pane_for_artifacts(pane_id);
         }
+    }
+
+    /// Refreshes an agent pane whose session files changed.
+    fn refresh_agent_pane_for_artifacts(&self, pane_id: PaneId) {
+        if self.get_agent_metadata_for_pane(pane_id).is_some() {
+            self.refresh_agent_runtime_for_pane_with_update(
+                pane_id,
+                false,
+                AgentRefreshPolicy::Throttled,
+                |_| {},
+            );
+        } else {
+            self.refresh_detected_agent_runtime_for_pane(pane_id);
+        }
+    }
+
+    /// Each live agent pane with a session, its session files, and their
+    /// stamps as its last successful observation read them. Managed Codex
+    /// panes are left out: their events come from Codex's app-server.
+    fn followed_agent_artifacts(
+        &self,
+    ) -> Vec<(PaneId, Vec<PathBuf>, Option<Vec<(PathBuf, ArtifactStamp)>>)> {
+        let sessions = self
+            .agent_runtime_by_pane
+            .read()
+            .iter()
+            .filter(|(_, runtime)| runtime.alive)
+            .filter_map(|(pane_id, runtime)| {
+                let session = runtime.session_path.as_deref()?;
+                Some((
+                    *pane_id,
+                    agent_observer_artifact_paths(&runtime.harness, session),
+                ))
+            })
+            .filter(|(_, paths)| !paths.is_empty())
+            .collect::<Vec<_>>();
+        let sessions = sessions
+            .into_iter()
+            .filter(|(pane_id, _)| {
+                !self
+                    .get_agent_metadata_for_pane(*pane_id)
+                    .is_some_and(|metadata| metadata.codex_app_server.is_some())
+            })
+            .collect::<Vec<_>>();
+        let states = self.agent_observer_state_by_pane.read();
+        sessions
+            .into_iter()
+            .map(|(pane_id, paths)| {
+                let observed = states
+                    .get(&pane_id)
+                    .and_then(|state| state.observed_stamps.clone());
+                (pane_id, paths, observed)
+            })
+            .collect()
     }
 
     fn record_detected_agent_output(&self, pane_id: PaneId) {
@@ -3938,6 +4040,9 @@ impl Mux {
 
             if observer_state.inflight_generation == Some(update.generation) {
                 observer_state.inflight_generation = None;
+            }
+            if update.process == current_process && update.observed_stamps.is_some() {
+                observer_state.observed_stamps = update.observed_stamps.clone();
             }
 
             // Observations of a pane complete in request order, so the newest
@@ -8088,22 +8193,19 @@ mod test {
         pane_ids: &[PaneId],
     ) -> AgentArtifactWatcherState {
         AgentArtifactWatcherState {
-            watcher: None,
-            _poll: mpsc::channel().0,
+            discovery: None,
+            confirmed: None,
             roots_by_pane: pane_ids
                 .iter()
                 .map(|pane_id| (*pane_id, vec![root.to_path_buf()]))
                 .collect(),
-            panes_by_root: HashMap::from([(
-                root.to_path_buf(),
-                pane_ids.iter().copied().collect(),
-            )]),
             discovery_panes_by_root: HashMap::from([(
                 root.to_path_buf(),
                 pane_ids.iter().copied().collect(),
             )]),
             artifact_paths_by_pane: HashMap::new(),
             panes_by_artifact_path: HashMap::new(),
+            panes_by_artifact_dir: HashMap::new(),
         }
     }
 
@@ -8183,6 +8285,25 @@ mod test {
         );
     }
 
+    /// An artifact watcher whose OS watchers report to `tx`, or None where
+    /// the platform has none.
+    fn artifact_watcher_reporting_to(
+        tx: mpsc::Sender<notify::Result<notify::Event>>,
+    ) -> Option<AgentArtifactWatcherState> {
+        let start = || {
+            let tx = tx.clone();
+            notify::recommended_watcher(move |event| {
+                let _ = tx.send(event);
+            })
+            .ok()
+            .map(|watcher| ArtifactWatches::spawn(watcher, "test"))
+        };
+        let mut watcher = AgentArtifactWatcherState::new();
+        watcher.discovery = Some(start()?);
+        watcher.confirmed = Some(start()?);
+        Some(watcher)
+    }
+
     #[test]
     fn removing_a_root_keeps_nested_roots_watched() {
         let temp = TempDir::new().unwrap();
@@ -8190,33 +8311,21 @@ mod test {
         let inner = outer.join("project");
         std::fs::create_dir_all(&inner).unwrap();
         let (tx, rx) = mpsc::channel();
-        let mut watcher = AgentArtifactWatcherState::new();
-        let Ok(os_watcher) = notify::recommended_watcher(move |event| {
-            let _ = tx.send(event);
-        }) else {
+        let Some(mut watcher) = artifact_watcher_reporting_to(tx) else {
             return;
         };
-        watcher.watcher = Some(ArtifactWatches::spawn(os_watcher));
         fn watch(watcher: &mut AgentArtifactWatcherState, pane_id: PaneId, root: &Path) {
-            if !watcher.panes_by_root.contains_key(root) {
-                let watches = watcher.watcher.as_ref().unwrap();
-                watches.watch(root);
-                watches.flush();
-            }
             watcher
                 .roots_by_pane
                 .insert(pane_id, vec![root.to_path_buf()]);
-            watcher
-                .panes_by_root
-                .entry(root.to_path_buf())
-                .or_default()
-                .insert(pane_id);
+            watcher.enter_discovery(pane_id);
+            watcher.discovery.as_ref().unwrap().flush();
         }
         let (pane_inner, pane_outer) = (alloc_pane_id(), alloc_pane_id());
         watch(&mut watcher, pane_inner, &inner);
         watch(&mut watcher, pane_outer, &outer);
         let sees_write = |watcher: &AgentArtifactWatcherState, dir: &Path| {
-            watcher.watcher.as_ref().unwrap().flush();
+            watcher.discovery.as_ref().unwrap().flush();
             while rx.try_recv().is_ok() {}
             std::fs::write(dir.join("session.jsonl"), "{}\n").unwrap();
             rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok()
@@ -8234,31 +8343,71 @@ mod test {
 
     #[test]
     fn final_pane_removes_shared_artifact_watch() {
-        let temp = TempDir::new().unwrap();
-        let root = temp.path().canonicalize().unwrap();
+        let root = PathBuf::from("/tmp/wakterm-artifact-shared-root");
         let pane_a = alloc_pane_id();
         let pane_b = alloc_pane_id();
-        let mut watcher = AgentArtifactWatcherState::new();
-        let Some(watches) = watcher.watcher.as_ref() else {
-            return;
-        };
-        watches.watch(&root);
-        watcher.roots_by_pane.insert(pane_a, vec![root.clone()]);
-        watcher.roots_by_pane.insert(pane_b, vec![root.clone()]);
-        watcher
-            .panes_by_root
-            .insert(root.clone(), HashSet::from([pane_a, pane_b]));
+        let mut watcher = artifact_watcher_for_routing_test(&root, &[]);
+        watcher.discovery_panes_by_root.clear();
+        for pane_id in [pane_a, pane_b] {
+            watcher.roots_by_pane.insert(pane_id, vec![root.clone()]);
+            watcher.enter_discovery(pane_id);
+        }
 
         watcher.unwatch_pane(pane_a);
         assert_eq!(
-            watcher.panes_by_root.get(&root),
+            watcher.discovery_panes_by_root.get(&root),
             Some(&HashSet::from([pane_b]))
         );
 
         watcher.unwatch_pane(pane_b);
-        assert!(!watcher.panes_by_root.contains_key(&root));
         assert!(watcher.discovery_panes_by_root.is_empty());
         assert!(watcher.roots_by_pane.is_empty());
+    }
+
+    #[test]
+    fn a_confirmed_session_is_watched_alone_and_leaves_discovery() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let sessions = root.join("project");
+        let elsewhere = root.join("other-project");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let session = sessions.join("session.jsonl");
+        std::fs::write(&session, "").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let Some(mut watcher) = artifact_watcher_reporting_to(tx) else {
+            return;
+        };
+        let pane_id = alloc_pane_id();
+        watcher.roots_by_pane.insert(pane_id, vec![root.clone()]);
+        watcher.enter_discovery(pane_id);
+        assert!(watcher.discovery_panes_by_root.contains_key(&root));
+
+        // Once its session is confirmed, the pane needs no discovery, so
+        // the root is no longer watched, and the session's directory is.
+        watcher.set_confirmed_artifact(pane_id, &AgentHarness::Claude, session.to_str());
+        assert!(watcher.discovery_panes_by_root.is_empty());
+        assert_eq!(
+            watcher.panes_by_artifact_dir.get(&sessions),
+            Some(&HashSet::from([pane_id]))
+        );
+        let reports = |path: &Path| {
+            watcher.discovery.as_ref().unwrap().flush();
+            watcher.confirmed.as_ref().unwrap().flush();
+            while rx.try_recv().is_ok() {}
+            std::fs::write(path, "{}\n").unwrap();
+            rx.recv_timeout(std::time::Duration::from_millis(500))
+                .ok()
+                .and_then(Result::ok)
+                .is_some_and(|event| event.paths.iter().any(|reported| reported == path))
+        };
+        assert!(reports(&session));
+        assert!(!reports(&elsewhere.join("session.jsonl")));
+
+        // A session no longer confirmed sends the pane back to discovery.
+        watcher.set_confirmed_artifact(pane_id, &AgentHarness::Claude, None);
+        assert!(watcher.panes_by_artifact_dir.is_empty());
+        assert!(watcher.discovery_panes_by_root.contains_key(&root));
     }
 
     #[test]
@@ -9268,52 +9417,20 @@ mod test {
     }
 
     #[test]
-    fn the_artifact_poll_reports_files_changed_since_it_last_looked() {
+    fn session_files_are_unread_until_an_observation_stamped_them_as_they_are() {
         let at = |seconds: u64| std::time::UNIX_EPOCH + Duration::from_secs(seconds);
-        let path = |name: &str| PathBuf::from(format!("/sessions/{name}.jsonl"));
-        let mut seen = HashMap::new();
-        // The first look only records what it sees.
-        assert!(changed_artifacts(
-            &mut seen,
-            vec![
-                (path("a"), Some((10, at(1)))),
-                (path("b"), Some((20, at(1))))
-            ]
-        )
-        .is_empty());
-        // A file that grew, or was rewritten to the same size, changed; one
-        // left alone did not.
-        assert_eq!(
-            changed_artifacts(
-                &mut seen,
-                vec![
-                    (path("a"), Some((15, at(2)))),
-                    (path("b"), Some((20, at(1))))
-                ]
-            ),
-            [path("a")]
-        );
-        assert_eq!(
-            changed_artifacts(
-                &mut seen,
-                vec![
-                    (path("a"), Some((15, at(3)))),
-                    (path("b"), Some((20, at(1))))
-                ]
-            ),
-            [path("a")]
-        );
-        // One that cannot be read changed too; one no longer given is
-        // forgotten, so it counts as new when it returns.
-        assert_eq!(
-            changed_artifacts(&mut seen, vec![(path("a"), None)]),
-            [path("a")]
-        );
-        assert!(changed_artifacts(
-            &mut seen,
-            vec![(path("a"), None), (path("b"), Some((25, at(4))))]
-        )
-        .is_empty());
+        let path = PathBuf::from("/sessions/a.jsonl");
+        let stamped = vec![(path.clone(), Some((10, at(1))))];
+        // An agent never observed has not read them.
+        assert!(artifacts_unread(None, &stamped));
+        // Observed as they are, nothing is unread.
+        assert!(!artifacts_unread(Some(&stamped), &stamped));
+        // A write since, or a file that cannot be read now, is unread.
+        assert!(artifacts_unread(
+            Some(&stamped),
+            &[(path.clone(), Some((15, at(2))))]
+        ));
+        assert!(artifacts_unread(Some(&stamped), &[(path, None)]));
     }
 
     #[test]
@@ -10416,6 +10533,7 @@ mod test {
                 queue_delay: Duration::ZERO,
                 refresh_elapsed: Duration::ZERO,
                 schedule_trailing_refresh: false,
+                observed_stamps: None,
             });
             mux.agent_runtime_by_pane.read()[&pane_id].clone()
         };
@@ -10523,6 +10641,7 @@ mod test {
                 queue_delay: Duration::ZERO,
                 refresh_elapsed: Duration::ZERO,
                 schedule_trailing_refresh: false,
+                observed_stamps: None,
             });
             mux.agent_runtime_by_pane.read()[&pane_id].clone()
         };
@@ -10765,6 +10884,7 @@ mod test {
                 queue_delay: Duration::ZERO,
                 refresh_elapsed: Duration::ZERO,
                 schedule_trailing_refresh: false,
+                observed_stamps: None,
             });
             mux.agent_runtime_by_pane.read()[&pane_id].clone()
         };
@@ -10853,6 +10973,7 @@ mod test {
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
             schedule_trailing_refresh: false,
+            observed_stamps: None,
         });
 
         assert_eq!(*title_changes.lock(), 1);
@@ -11075,7 +11196,11 @@ mod test {
         Mux::set_mux(&mux);
         let _guard = TestMuxGuard;
         // Isolate the outstanding timer: no later filesystem hint may rescue it.
-        mux.agent_artifact_watcher.lock().watcher.take();
+        {
+            let mut watcher = mux.agent_artifact_watcher.lock();
+            watcher.discovery.take();
+            watcher.confirmed.take();
+        }
         let size = TerminalSize {
             rows: 24,
             cols: 80,
@@ -11857,6 +11982,7 @@ mod test {
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
             schedule_trailing_refresh: false,
+            observed_stamps: None,
         };
 
         mux.apply_agent_observer_update(update);
@@ -11878,6 +12004,7 @@ mod test {
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
             schedule_trailing_refresh: false,
+            observed_stamps: None,
         });
 
         assert!(mux.get_agent_metadata_for_pane(pane_id).is_some());
@@ -11964,6 +12091,7 @@ mod test {
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
             schedule_trailing_refresh: false,
+            observed_stamps: None,
         });
 
         assert!(mux.get_agent_metadata_for_pane(pane_id).is_none());
@@ -12015,6 +12143,7 @@ mod test {
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
             schedule_trailing_refresh: false,
+            observed_stamps: None,
         });
 
         assert!(mux.get_agent_metadata_for_pane(pane_id).is_none());
@@ -12660,6 +12789,7 @@ mod test {
                 queue_delay: Duration::ZERO,
                 refresh_elapsed: Duration::ZERO,
                 schedule_trailing_refresh: false,
+                observed_stamps: None,
             });
 
             let metadata = mux
@@ -13711,6 +13841,7 @@ mod test {
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
             schedule_trailing_refresh: false,
+            observed_stamps: None,
         });
         assert_eq!(
             mux.agent_runtime_by_pane.read()[&pane_id]
@@ -13740,6 +13871,7 @@ mod test {
                 queue_delay: Duration::ZERO,
                 refresh_elapsed: Duration::ZERO,
                 schedule_trailing_refresh: false,
+                observed_stamps: None,
             });
             assert_eq!(
                 mux.agent_runtime_by_pane.read()[&pane_id].last_progress_at,
@@ -13759,6 +13891,7 @@ mod test {
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
             schedule_trailing_refresh: false,
+            observed_stamps: None,
         });
         assert_eq!(
             mux.agent_runtime_by_pane.read()[&pane_id]
@@ -13907,6 +14040,7 @@ mod test {
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
             schedule_trailing_refresh: false,
+            observed_stamps: None,
         });
 
         let catalog_agent = mux
@@ -16380,6 +16514,7 @@ mod test {
             queue_delay: Duration::ZERO,
             refresh_elapsed: Duration::ZERO,
             schedule_trailing_refresh: false,
+            observed_stamps: None,
         });
 
         let runtime = mux.agent_runtime_by_pane.read()[&pane_id].clone();

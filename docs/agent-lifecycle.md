@@ -145,7 +145,7 @@ hints to refresh the exact pane and confirmed provider session through the
 observer worker. This keeps durable agent events current even when no client is
 listing agents or submitting prompts. Event reads remain side-effect free.
 
-The operating system's watcher can lose a change, as when its event queue overflows, and a refresh can read a session file just before the harness writes the records that end a turn. Every two seconds Wakterm therefore checks each agent's confirmed session files for a change in size or modification time and handles a changed one as a reported change, so a turn's end reaches the events within seconds of being written.
+An agent whose session is confirmed has the directories of its session files watched, each alone, by a watcher with its own kernel event queue; the recursive watches of a harness's roots, such as all of agy's conversations, exist only while some pane there still has its session to discover, so their many writes cannot delay or overflow the reports for confirmed sessions. A watcher that reports lost changes, as on a queue overflow, refreshes every watched agent. Every two seconds Wakterm also compares each agent's session files with the size and modification time they had when its last successful observation read them, and refreshes an agent whose files have changed since. That covers a lost report, a refresh that read a file just before the harness wrote the records ending a turn, and an observation whose events could not be saved, so a turn's end reaches the events within seconds of being written.
 
 Unnamed tabs whose active pane contains an adopted or app-server agent use that
 agent's leaf folder name as an automatic display title. The title follows the
