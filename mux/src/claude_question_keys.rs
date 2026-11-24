@@ -5,8 +5,10 @@
 //! option and moves on, or toggles a multi-select option; the digit after the
 //! options focuses the "Type something." box, whose text Enter records. Tab
 //! moves to the next question, and after the last one a review lists every
-//! answered question as its text followed by a `→ <answer>` line, then asks
-//! "Ready to submit your answers?", which Enter confirms. A form of one
+//! answered question as its text followed by a `→ <answer>` line, then offers
+//! "1. Submit answers" and "2. Cancel" with the pointer on the first, which
+//! Enter confirms; older Claude Code versions ask "Ready to submit your
+//! answers?" above that list. A form of one
 //! single-select question has no review: picking its answer submits it.
 //! "Chat about this" sits below the last list item, and Escape cancels.
 
@@ -28,6 +30,7 @@ const MATCH_PREFIX: usize = 30;
 
 const REVIEW_TITLE: &str = "Review your answers";
 const REVIEW_PROMPT: &str = "Ready to submit your answers?";
+const SUBMIT_OPTION: &str = "Submit answers";
 const UNANSWERED_WARNING: &str = "You have not answered all questions";
 const CHAT_LABEL: &str = "Chat about this";
 const POINTER: char = '❯';
@@ -193,8 +196,10 @@ pub(crate) fn chat_focused(lines: &[String]) -> bool {
         .any(|line| line.contains(CHAT_LABEL) && line.contains(POINTER))
 }
 
-/// Checks that the review lists exactly the intended answers, in question
-/// order, and warns about unanswered questions exactly when some are.
+/// Checks that the review lists exactly the intended answers to these
+/// questions, in question order, warns about unanswered questions exactly
+/// when some are, and has the pointer on "Submit answers", which Enter then
+/// picks.
 pub(crate) fn check_review(
     lines: &[String],
     questions: &[AgentApprovalQuestion],
@@ -204,21 +209,33 @@ pub(crate) fn check_review(
         .iter()
         .rposition(|line| line.contains(REVIEW_TITLE))
         .context("the review is not on screen")?;
+    // The answers end at the submit prompt of older versions, or at the
+    // submit option.
     let end = lines[start..]
         .iter()
-        .position(|line| line.contains(REVIEW_PROMPT))
+        .position(|line| line.contains(REVIEW_PROMPT) || line.contains(SUBMIT_OPTION))
         .map(|offset| start + offset)
         .context("the review's submit prompt is not on screen")?;
     let review = &lines[start..end];
+    anyhow::ensure!(
+        lines[end..]
+            .iter()
+            .any(|line| line.contains(SUBMIT_OPTION) && line.contains(POINTER)),
+        "the pointer is not on \"{SUBMIT_OPTION}\""
+    );
 
     // Each answer is a `→` line, continued by wrapped lines up to the next
-    // question's text or answer.
+    // question, shown as `●` and in newer versions behind a `│` bar.
     let mut shown = vec![];
+    let mut in_answer = false;
     for line in review {
         let trimmed = line.trim_start();
         if let Some(answer) = trimmed.strip_prefix(ANSWER_ARROW) {
             shown.push(normalize(answer));
-        } else if let Some(last) = shown.last_mut() {
+            in_answer = true;
+        } else if trimmed.starts_with('●') || trimmed.starts_with('│') {
+            in_answer = false;
+        } else if let (true, Some(last)) = (in_answer, shown.last_mut()) {
             if !trimmed.is_empty() {
                 last.push(' ');
                 last.push_str(&normalize(trimmed));
@@ -228,6 +245,15 @@ pub(crate) fn check_review(
 
     let mut answered = answers.to_vec();
     answered.sort_by_key(|answer| answer.question);
+    for answer in &answered {
+        let question = &questions[answer.question as usize];
+        anyhow::ensure!(
+            screen_has(review, &question.question),
+            "the review does not show question {} {:?}",
+            answer.question,
+            prefix(&question.question)
+        );
+    }
     anyhow::ensure!(
         shown.len() == answered.len(),
         "the review lists {} answers instead of {}",
@@ -294,6 +320,25 @@ fn await_screen(
     }
 }
 
+/// Where to start the planned steps: at the review, when it already lists
+/// exactly these answers, as after an earlier attempt stopped there, and
+/// otherwise at the beginning.
+fn resume_point(
+    lines: &[String],
+    questions: &[AgentApprovalQuestion],
+    action: &FormAction,
+    steps: &[Step],
+) -> usize {
+    let FormAction::Submit(answers) = action else {
+        return 0;
+    };
+    steps
+        .iter()
+        .position(|step| *step == Step::AwaitReview)
+        .filter(|_| check_review(lines, questions, answers).is_ok())
+        .unwrap_or(0)
+}
+
 /// Presses the planned keys, stopping without submitting at the first
 /// screen that does not show what the plan expects.
 pub(crate) fn run(
@@ -306,6 +351,7 @@ pub(crate) fn run(
         FormAction::Submit(answers) => answers.as_slice(),
         _ => &[],
     };
+    let steps = &steps[resume_point(&screen(pane), questions, action, steps)..];
     for step in steps {
         match step {
             Step::Key(key) => {
@@ -532,6 +578,72 @@ mod test {
             answer(2, &["option_1"], None),
         ];
         assert!(check_review(&screen, &questions, &all).is_err());
+    }
+
+    #[test]
+    fn the_review_without_a_submit_prompt_is_checked_and_a_retry_resumes_there() {
+        // Claude Code 2.1.331's review, copied from a pane: no "Ready to
+        // submit your answers?" line, and questions behind a `│` bar.
+        let mut tencent = question(
+            0,
+            "models.dev switched every Tencent TokenHub model today from the China yuan list",
+            false,
+        );
+        tencent.options[0].label = "International USD".to_string();
+        let mut volcengine = question(
+            1,
+            "Volcengine's Doubao Seed 2.0 Lite and Mini now have audio prices",
+            false,
+        );
+        volcengine.options[0].label = "Price modality tiers".to_string();
+        let questions = [tencent, volcengine];
+        let answers = vec![
+            answer(0, &["option_1"], None),
+            answer(1, &["option_1"], None),
+        ];
+        let screen = lines(
+            "←  ☒ Tencent  ☒ Volcengine  ✔ Submit  →\n\
+             Review your answers\n\
+             \x20│ ● models.dev switched every Tencent TokenHub model today from the China yuan list (converted) to Tencent's\n\
+             \x20│   track the global endpoint, but Tencent's international page blocks fetches and headless browsers, so I ca\n\
+             \x20  → International USD (Recommended)\n\
+             \x20│ ● Volcengine's Doubao Seed 2.0 Lite and Mini now have audio prices with long-context tiers, which model-pri\n\
+             \x20│   should I unblock it?\n\
+             \x20  → Price modality tiers (Recommended)\n\
+             ❯ 1. Submit answers\n\
+             \x20 2. Cancel",
+        );
+        check_review(&screen, &questions, &answers).unwrap();
+
+        // Enter must not pick Cancel, and another form's review is not this
+        // one's.
+        let on_cancel = screen
+            .join("\n")
+            .replace("❯ 1. Submit answers", "  1. Submit answers")
+            .replace("  2. Cancel", "❯ 2. Cancel");
+        assert!(check_review(&lines(&on_cancel), &questions, &answers).is_err());
+        let other_form = screen
+            .join("\n")
+            .replace("models.dev switched", "pricing moved");
+        assert!(check_review(&lines(&other_form), &questions, &answers).is_err());
+
+        // A retry after a stop at this review starts at the review, and one
+        // from any other screen starts at the first question.
+        let action = FormAction::Submit(answers.clone());
+        let steps = plan(&questions, &action).unwrap();
+        let review = steps
+            .iter()
+            .position(|step| *step == Step::AwaitReview)
+            .unwrap();
+        assert_eq!(resume_point(&screen, &questions, &action, &steps), review);
+        assert_eq!(
+            &steps[review..],
+            [Step::AwaitReview, Step::Key(KeyCode::Enter)]
+        );
+        assert_eq!(
+            resume_point(&lines(&on_cancel), &questions, &action, &steps),
+            0
+        );
     }
 
     #[test]
