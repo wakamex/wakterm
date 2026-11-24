@@ -3622,7 +3622,11 @@ impl Mux {
 
     /// Each live agent pane with a session, its session files, and their
     /// stamps as its last successful observation read them. Managed Codex
-    /// panes are left out: their events come from Codex's app-server.
+    /// panes are left out: their events come from Codex's app-server. So
+    /// is a pane with an observation already running, queued or scheduled,
+    /// which will read its files anyway; asking again would only add work,
+    /// as for every agent at once while a restart's observations are still
+    /// queued.
     fn followed_agent_artifacts(
         &self,
     ) -> Vec<(PaneId, Vec<PathBuf>, Option<Vec<(PathBuf, ArtifactStamp)>>)> {
@@ -3651,11 +3655,17 @@ impl Mux {
         let states = self.agent_observer_state_by_pane.read();
         sessions
             .into_iter()
-            .map(|(pane_id, paths)| {
-                let observed = states
-                    .get(&pane_id)
-                    .and_then(|state| state.observed_stamps.clone());
-                (pane_id, paths, observed)
+            .filter_map(|(pane_id, paths)| {
+                let state = states.get(&pane_id);
+                if state.is_some_and(|state| {
+                    state.inflight_generation.is_some()
+                        || state.pending_request.is_some()
+                        || state.trailing_refresh_scheduled
+                }) {
+                    return None;
+                }
+                let observed = state.and_then(|state| state.observed_stamps.clone());
+                Some((pane_id, paths, observed))
             })
             .collect()
     }
@@ -9414,6 +9424,41 @@ mod test {
                 .tick_timeout(deadline - now)
                 .expect("run queued main-thread work");
         }
+    }
+
+    #[test]
+    fn the_poll_leaves_out_panes_whose_observation_is_already_coming() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let metadata = sample_agent_metadata("polled");
+        let (idle, observing) = (alloc_pane_id(), alloc_pane_id());
+        for pane_id in [idle, observing] {
+            let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+            runtime.harness = AgentHarness::Claude;
+            runtime.alive = true;
+            runtime.session_path = Some(format!("/sessions/{pane_id}.jsonl"));
+            mux.agent_runtime_by_pane.write().insert(pane_id, runtime);
+        }
+        mux.agent_observer_state_by_pane.write().insert(
+            observing,
+            AgentObserverState {
+                inflight_generation: Some(1),
+                ..AgentObserverState::default()
+            },
+        );
+
+        let followed = mux.followed_agent_artifacts();
+        assert_eq!(
+            followed
+                .iter()
+                .map(|(pane_id, _, observed)| (*pane_id, observed.is_none()))
+                .collect::<Vec<_>>(),
+            [(idle, true)]
+        );
     }
 
     #[test]
