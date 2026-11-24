@@ -812,13 +812,50 @@ impl Tab {
     }
 
     pub fn codec_pane_tree(&self) -> PaneNode {
-        self.inner.lock().codec_pane_tree()
+        let Some((window_id, workspace)) = self.window_and_workspace() else {
+            return PaneNode::Empty;
+        };
+        let mut inner = self.inner.lock();
+        let active_pane_id = inner.get_active_pane().map(|pane| pane.pane_id());
+        inner.codec_pane_tree_with_active_pane_id(window_id, &workspace, active_pane_id)
     }
 
     pub fn codec_pane_tree_with_active_pane_id(&self, active_pane_id: Option<PaneId>) -> PaneNode {
+        let Some((window_id, workspace)) = self.window_and_workspace() else {
+            return PaneNode::Empty;
+        };
         self.inner
             .lock()
-            .codec_pane_tree_with_active_pane_id(active_pane_id)
+            .codec_pane_tree_with_active_pane_id(window_id, &workspace, active_pane_id)
+    }
+
+    /// The window holding this tab, and the window's workspace. Look them up
+    /// without the tab's lock held: the mux's window table is locked to
+    /// prune dead tabs, which then locks each tab, so taking the two locks
+    /// in the other order can deadlock.
+    fn window_and_workspace(&self) -> Option<(WindowId, String)> {
+        let mux = Mux::get();
+        let Some(window_id) = mux.window_containing_tab(self.tab_id) else {
+            log::error!("no window contains tab {}", self.tab_id);
+            return None;
+        };
+        let Some(workspace) = mux
+            .get_window(window_id)
+            .map(|window| window.get_workspace().to_string())
+        else {
+            log::error!("window id {} doesn't have a window!?", window_id);
+            return None;
+        };
+        Some((window_id, workspace))
+    }
+
+    /// Asks the window holding this tab to repaint. Call it without the
+    /// tab's lock held, for the reason given in `window_and_workspace`.
+    fn invalidate_window(&self) {
+        let mux = Mux::get();
+        if let Some(window_id) = mux.window_containing_tab(self.tab_id) {
+            mux.notify(MuxNotification::WindowInvalidated(window_id));
+        }
     }
 
     /// Returns a count of how many panes are in this tab
@@ -954,13 +991,15 @@ impl Tab {
     pub fn activate_pane_direction(&self, direction: PaneDirection) {
         self.inner
             .lock()
-            .activate_pane_direction_impl(direction, NotifyMux::Yes)
+            .activate_pane_direction_impl(direction, NotifyMux::Yes);
+        self.invalidate_window();
     }
 
     pub fn activate_pane_direction_no_notify(&self, direction: PaneDirection) {
         self.inner
             .lock()
-            .activate_pane_direction_impl(direction, NotifyMux::No)
+            .activate_pane_direction_impl(direction, NotifyMux::No);
+        self.invalidate_window();
     }
 
     /// Returns an adjacent pane in the specified direction.
@@ -1183,33 +1222,13 @@ impl TabInner {
         assert!(self.pane.is_some());
     }
 
-    fn codec_pane_tree(&mut self) -> PaneNode {
-        let active_pane_id = self.get_active_pane().map(|pane| pane.pane_id());
-        self.codec_pane_tree_with_active_pane_id(active_pane_id)
-    }
-
-    fn codec_pane_tree_with_active_pane_id(&mut self, active_pane_id: Option<PaneId>) -> PaneNode {
-        let mux = Mux::get();
+    fn codec_pane_tree_with_active_pane_id(
+        &mut self,
+        window_id: WindowId,
+        workspace: &str,
+        active_pane_id: Option<PaneId>,
+    ) -> PaneNode {
         let tab_id = self.id;
-        let window_id = match mux.window_containing_tab(tab_id) {
-            Some(w) => w,
-            None => {
-                log::error!("no window contains tab {}", tab_id);
-                return PaneNode::Empty;
-            }
-        };
-
-        let workspace = match mux
-            .get_window(window_id)
-            .map(|w| w.get_workspace().to_string())
-        {
-            Some(ws) => ws,
-            None => {
-                log::error!("window id {} doesn't have a window!?", window_id);
-                return PaneNode::Empty;
-            }
-        };
-
         let zoomed = self.zoomed.as_ref();
         if let Some(root) = self.pane.as_ref() {
             pane_tree(
@@ -1218,7 +1237,7 @@ impl TabInner {
                 window_id,
                 active_pane_id,
                 zoomed,
-                &workspace,
+                workspace,
                 0,
                 0,
             )
@@ -1855,10 +1874,6 @@ impl TabInner {
         }
         if let Some(panel_idx) = self.get_pane_direction(direction, false) {
             self.set_active_idx_impl(panel_idx, notify);
-        }
-        let mux = Mux::get();
-        if let Some(window_id) = mux.window_containing_tab(self.id) {
-            mux.notify(MuxNotification::WindowInvalidated(window_id));
         }
     }
 

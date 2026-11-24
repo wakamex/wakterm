@@ -9187,6 +9187,47 @@ mod test {
     }
 
     #[test]
+    fn a_tab_is_not_locked_while_it_waits_for_the_window_table() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        tab.assign_pane(&FakePane::new(41, size, domain.id));
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+
+        // Pruning dead tabs holds the window table while it locks each tab.
+        // A session save building a tab's pane tree meanwhile must wait for
+        // the table without holding that tab's lock, or the two deadlock.
+        let windows = mux.windows.write();
+        let saving = {
+            let tab = Arc::clone(&tab);
+            std::thread::spawn(move || tab.codec_pane_tree())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            tab.count_panes().is_some(),
+            "the tab stayed locked while waiting for the window table"
+        );
+        drop(windows);
+        assert!(!matches!(
+            saving.join().unwrap(),
+            crate::tab::PaneNode::Empty
+        ));
+    }
+
+    #[test]
     fn agent_metadata_is_listed_and_cleared_when_pane_is_removed() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
