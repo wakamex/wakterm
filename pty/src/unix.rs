@@ -161,28 +161,30 @@ fn tty_name(fd: RawFd) -> Option<PathBuf> {
     }
 }
 
-/// On Big Sur, Cocoa leaks various file descriptors to child processes,
-/// so we need to make a pass through the open descriptors beyond just the
-/// stdio descriptors and close them all out.
-/// This is approximately equivalent to the darwin `posix_spawnattr_setflags`
-/// option POSIX_SPAWN_CLOEXEC_DEFAULT which is used as a bit of a cheat
-/// on macOS.
-/// On Linux, gnome/mutter leak shell extension fds to wakterm too, so we
-/// also need to make an effort to clean up the mess.
-///
-/// This function enumerates the open filedescriptors in the current process
-/// and then will forcibly call close(2) on each open fd that is numbered
-/// 3 or higher, effectively closing all descriptors except for the stdio
-/// streams.
-///
-/// The implementation of this function relies on `/dev/fd` being available
-/// to provide the list of open fds.  Any errors in enumerating or closing
-/// the fds are silently ignored.
+/// Makes every descriptor above stderr close on exec, so the program a
+/// child runs inherits only stdin, stdout and stderr. They are closed by the
+/// exec itself, not before it: a descriptor the child still needs until
+/// then, such as the standard library's pipe that reports a failed exec to
+/// the parent, stays open. Called between fork and exec; on Linux it is one
+/// system call, with no allocation.
 pub fn close_random_fds() {
+    #[cfg(target_os = "linux")]
+    {
+        let marked = unsafe {
+            libc::syscall(
+                libc::SYS_close_range,
+                3 as libc::c_uint,
+                libc::c_uint::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            )
+        };
+        if marked == 0 {
+            return;
+        }
+    }
     // FreeBSD, macOS and presumably other BSDish systems have /dev/fd as
-    // a directory listing the current fd numbers for the process.
-    //
-    // On Linux, /dev/fd is a symlink to /proc/self/fd
+    // a directory listing the current fd numbers for the process; on Linux
+    // it is a symlink to /proc/self/fd.
     if let Ok(dir) = std::fs::read_dir("/dev/fd") {
         let mut fds = vec![];
         for entry in dir {
@@ -199,7 +201,10 @@ pub fn close_random_fds() {
         }
         for fd in fds {
             unsafe {
-                libc::close(fd);
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags != -1 {
+                    libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+                }
             }
         }
     }
@@ -441,5 +446,28 @@ impl Write for UnixMasterWriter {
     }
     fn flush(&mut self) -> Result<(), io::Error> {
         self.fd.flush()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{native_pty_system, CommandBuilder, PtySize};
+
+    #[test]
+    fn spawning_a_program_that_cannot_run_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        // A script whose interpreter does not exist, so exec itself fails;
+        // glibc would retry a file in no known format as a shell script.
+        let program =
+            std::env::temp_dir().join(format!("wakterm-pty-not-a-program-{}", std::process::id()));
+        std::fs::write(&program, "#!/nonexistent/wakterm-test-interpreter\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let pair = native_pty_system().openpty(PtySize::default()).unwrap();
+        let spawned = pair.slave.spawn_command(CommandBuilder::new(&program));
+        std::fs::remove_file(&program).unwrap();
+        assert!(
+            spawned.is_err(),
+            "spawning a program exec cannot run succeeded"
+        );
     }
 }
