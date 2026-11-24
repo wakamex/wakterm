@@ -1688,6 +1688,19 @@ pub fn end_turn_stopped_on_screen(
     runtime.last_turn_completed_at = Some(stopped_at);
 }
 
+/// Whether input Wakterm recorded at `input_at` came after the end of the
+/// latest turn, so it still waits for an answer. A harness that records
+/// times to the whole second, as agy does, gives a turn it ended within a
+/// second of its input an end that reads earlier than the input, so such
+/// an end is compared to the second.
+fn input_after_turn_end(input_at: DateTime<Utc>, completed_at: DateTime<Utc>) -> bool {
+    if completed_at.timestamp_subsec_nanos() == 0 {
+        input_at.timestamp() > completed_at.timestamp()
+    } else {
+        input_at > completed_at
+    }
+}
+
 fn derive_effective_turn_state(runtime: &AgentRuntimeSnapshot) -> AgentTurnState {
     if !runtime.alive {
         return AgentTurnState::Unknown;
@@ -1709,8 +1722,7 @@ fn derive_effective_turn_state(runtime: &AgentRuntimeSnapshot) -> AgentTurnState
     if let Some(completed_at) = runtime.last_turn_completed_at {
         if runtime
             .last_input_at
-            .map(|input_at| input_at > completed_at)
-            .unwrap_or(false)
+            .is_some_and(|input_at| input_after_turn_end(input_at, completed_at))
         {
             return AgentTurnState::WaitingOnAgent;
         }
@@ -6973,6 +6985,34 @@ mod test {
             done.observed_turn.unwrap().final_message.as_deref(),
             Some("Found 12 dates.")
         );
+    }
+
+    #[test]
+    fn input_answered_in_the_second_a_whole_second_turn_end_records_is_answered() {
+        let at = |text: &str| {
+            DateTime::parse_from_rfc3339(text)
+                .unwrap()
+                .with_timezone(&Utc)
+        };
+        // agy recorded the turn's end to the second, in the second Wakterm
+        // sent the input that started it.
+        assert!(!input_after_turn_end(
+            at("2026-11-24T07:13:29.145216485Z"),
+            at("2026-11-24T07:13:29Z")
+        ));
+        assert!(input_after_turn_end(
+            at("2026-11-24T07:13:30.001Z"),
+            at("2026-11-24T07:13:29Z")
+        ));
+        // Ends recorded with finer precision are compared exactly.
+        assert!(input_after_turn_end(
+            at("2026-11-24T07:13:29.145Z"),
+            at("2026-11-24T07:13:29.100Z")
+        ));
+        assert!(!input_after_turn_end(
+            at("2026-11-24T07:13:29.145Z"),
+            at("2026-11-24T07:13:29.200Z")
+        ));
     }
 
     #[test]
