@@ -541,6 +541,7 @@ impl AgentEventStore {
         } else {
             "unavailable"
         };
+        let mut exited = None;
         if state.lifecycle.as_deref() != Some(lifecycle) {
             state.lifecycle_generation += 1;
             let mut event = PendingEvent::new(
@@ -552,15 +553,19 @@ impl AgentEventStore {
                 runtime.observed_at,
             );
             event.lifecycle = Some(lifecycle.to_string());
-            if !runtime.alive {
+            if runtime.alive {
+                pending.push((current_incarnation.clone(), event));
+            } else {
                 event.reason = Some("process_exited".to_string());
+                exited = Some(event);
             }
-            pending.push((current_incarnation.clone(), event));
             state.lifecycle = Some(lifecycle.to_string());
         }
 
         let mut runtime_update = None;
-        if runtime.alive {
+        // A process that just exited is read once more, so a turn end it
+        // wrote before exiting is reported ahead of the exit.
+        if runtime.alive || exited.is_some() {
             // endchat's turns are followed through its profile's state,
             // without a projection of its message log yet.
             if let (Some(session_path), false) = (
@@ -643,6 +648,10 @@ impl AgentEventStore {
                     }
                 }
             }
+        }
+        if let Some(exited) = exited {
+            runtime_update = None;
+            pending.push((current_incarnation.clone(), exited));
         }
 
         if let Some(detail) = runtime.observer_error.as_deref() {
@@ -745,13 +754,12 @@ impl AgentEventStore {
         observed_at: DateTime<Utc>,
         reason: &str,
     ) -> anyhow::Result<()> {
-        let Some(incarnation) = incarnation_id(metadata) else {
-            return Ok(());
-        };
         let tx = conn.transaction()?;
         let mut state = load_projection(&tx, &metadata.agent_id)?.unwrap_or_default();
-        if state.incarnation_id == incarnation && state.lifecycle.as_deref() != Some("unavailable")
-        {
+        // The incarnation the store last observed, which may predate one the
+        // metadata names but that was never observed.
+        let incarnation = state.incarnation_id.clone();
+        if !incarnation.is_empty() && state.lifecycle.as_deref() != Some("unavailable") {
             state.lifecycle_generation += 1;
             let mut event = PendingEvent::new(
                 format!(
@@ -982,6 +990,13 @@ fn setup_event_store(conn: &Connection) -> rusqlite::Result<()> {
          CREATE TABLE IF NOT EXISTS agent_event_meta_v1 (
              key TEXT PRIMARY KEY,
              value INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS agent_turn_v1 (
+             agent_id TEXT NOT NULL,
+             turn_id TEXT NOT NULL,
+             incarnation_id TEXT NOT NULL,
+             closed_sequence INTEGER,
+             PRIMARY KEY (agent_id, turn_id)
          );
          CREATE TABLE IF NOT EXISTS agent_pending_input_v1 (
              request_id TEXT PRIMARY KEY,
@@ -1594,12 +1609,142 @@ fn turn_has_input(conn: &Connection, agent_id: &str, turn_id: &str) -> anyhow::R
     )?)
 }
 
+/// Inserts an event, keeping every turn to exactly one end: a turn still
+/// open when its agent incarnation becomes unavailable ends there, and a
+/// later start or end for a turn that has ended is dropped.
 fn insert_event(
     tx: &Transaction<'_>,
     agent_id: &str,
     incarnation_id: &str,
     pending: PendingEvent,
 ) -> anyhow::Result<()> {
+    let turn_id = pending.turn_id.clone();
+    match (&pending.kind, turn_id.as_deref()) {
+        (AgentEventKind::AgentLifecycle, _)
+            if pending.lifecycle.as_deref() == Some("unavailable") =>
+        {
+            end_open_turns(tx, agent_id, incarnation_id, &pending)?;
+        }
+        // A provider can report a turn's end twice, and a later process that
+        // follows the same session can report a turn cut off with its
+        // predecessor as open again or as ended.
+        (AgentEventKind::TurnStarted | AgentEventKind::TurnFinal, Some(turn_id)) => {
+            if turn_closed(tx, agent_id, turn_id)? {
+                return Ok(());
+            }
+        }
+        _ => {}
+    }
+    let kind = pending.kind.clone();
+    let Some(sequence) = write_event(tx, agent_id, incarnation_id, pending)? else {
+        return Ok(());
+    };
+    match (kind, turn_id) {
+        (AgentEventKind::TurnStarted, Some(turn_id)) => {
+            tx.execute(
+                "INSERT OR IGNORE INTO agent_turn_v1 (agent_id, turn_id, incarnation_id)
+                 VALUES (?1, ?2, ?3)",
+                params![agent_id, turn_id, incarnation_id],
+            )?;
+        }
+        (AgentEventKind::TurnFinal, Some(turn_id)) => {
+            close_turn(tx, agent_id, incarnation_id, &turn_id, sequence)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// How many ended turns are remembered per agent, to drop a repeated end.
+const ENDED_TURNS_KEPT: usize = 100;
+
+/// Records that the turn ended with the event at `sequence`, forgetting the agent's oldest
+/// ended turns beyond `ENDED_TURNS_KEPT`. Open turns are kept until they end.
+fn close_turn(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    incarnation_id: &str,
+    turn_id: &str,
+    sequence: u64,
+) -> anyhow::Result<()> {
+    tx.execute(
+        "INSERT INTO agent_turn_v1 (agent_id, turn_id, incarnation_id, closed_sequence)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (agent_id, turn_id) DO UPDATE SET closed_sequence = ?4",
+        params![agent_id, turn_id, incarnation_id, sequence],
+    )?;
+    tx.execute(
+        "DELETE FROM agent_turn_v1 WHERE agent_id = ?1 AND closed_sequence < (
+             SELECT closed_sequence FROM agent_turn_v1
+             WHERE agent_id = ?1 AND closed_sequence IS NOT NULL
+             ORDER BY closed_sequence DESC LIMIT 1 OFFSET ?2)",
+        params![agent_id, ENDED_TURNS_KEPT - 1],
+    )?;
+    Ok(())
+}
+
+/// Ends the turns still open in an agent incarnation that is becoming
+/// unavailable, whether its process exited, another process replaced it,
+/// the mux restarted, or it stopped being registered: an aborted
+/// `turn_final` with reason `ended_with_agent` and a detail saying why.
+fn end_open_turns(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    incarnation_id: &str,
+    unavailable: &PendingEvent,
+) -> anyhow::Result<()> {
+    let open = tx
+        .prepare(
+            "SELECT turn_id FROM agent_turn_v1
+             WHERE agent_id = ?1 AND incarnation_id = ?2 AND closed_sequence IS NULL",
+        )?
+        .query_map(params![agent_id, incarnation_id], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for turn_id in open {
+        let mut event = PendingEvent::new(
+            format!("turn:{turn_id}:ended-with-agent"),
+            AgentEventKind::TurnFinal,
+            unavailable.observed_at,
+        );
+        event.turn_id = Some(turn_id.clone());
+        event.outcome = Some("aborted".to_string());
+        event.reason = Some("ended_with_agent".to_string());
+        event.detail = Some(
+            match unavailable.reason.as_deref() {
+                Some("mux_restarted") => "Wakterm's mux server restarted.",
+                Some("process_exited") => "The agent's process exited.",
+                Some("incarnation_replaced") => "Another process took over the agent.",
+                Some("metadata_cleared") => "The agent stopped being registered.",
+                _ => "The agent became unavailable.",
+            }
+            .to_string(),
+        );
+        let sequence = write_event(tx, agent_id, incarnation_id, event)?.unwrap_or_default();
+        close_turn(tx, agent_id, incarnation_id, &turn_id, sequence)?;
+    }
+    Ok(())
+}
+
+/// Whether the agent's turn has ended.
+fn turn_closed(tx: &Transaction<'_>, agent_id: &str, turn_id: &str) -> anyhow::Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_turn_v1
+         WHERE agent_id = ?1 AND turn_id = ?2 AND closed_sequence IS NOT NULL)",
+        params![agent_id, turn_id],
+        |row| row.get(0),
+    )?)
+}
+
+/// Writes an event unless one with its key was written before, returning
+/// its sequence when it was written.
+fn write_event(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    incarnation_id: &str,
+    pending: PendingEvent,
+) -> anyhow::Result<Option<u64>> {
     let event_key = format!("{agent_id}\0{incarnation_id}\0{}", pending.source_key);
     let event_id = format!("{:x}", Sha256::digest(event_key.as_bytes()));
     let mut event = AgentEvent {
@@ -1638,7 +1783,7 @@ fn insert_event(
             params![event.sequence, serde_json::to_string(&event)?],
         )?;
     }
-    Ok(())
+    Ok((inserted == 1).then_some(event.sequence))
 }
 
 fn apply_retention(tx: &Transaction<'_>, retention_limit: usize) -> anyhow::Result<()> {
@@ -6505,6 +6650,212 @@ mod tests {
         assert_eq!(page.events[0].kind, AgentEventKind::AgentLifecycle);
         assert_eq!(page.events[0].lifecycle.as_deref(), Some("unavailable"));
         assert_eq!(page.events[0].reason.as_deref(), Some("metadata_cleared"));
+    }
+
+    fn managed_codex_agent(thread: &str) -> (AgentMetadata, AgentRuntimeSnapshot) {
+        let mut metadata = metadata("codex");
+        metadata.agent_id = format!("agent-{thread}");
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: thread.to_string(),
+            session_id: format!("session-{thread}"),
+            executable: "codex".to_string(),
+            version: "test".to_string(),
+            tui_args: vec![],
+        });
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.alive = true;
+        runtime.harness = AgentHarness::Codex;
+        runtime.transport = AgentTransport::CodexAppServerTui;
+        (metadata, runtime)
+    }
+
+    fn codex_turn(method: &str, thread: &str, turn: &str) -> serde_json::Value {
+        serde_json::json!({"method": method, "params": {
+            "threadId": thread,
+            "turn": {"id": turn, "status": "completed", "items": [
+                {"type": "agentMessage", "id": "answer", "text": "done"}]}}})
+    }
+
+    fn turn_ends(store: &AgentEventStore) -> Vec<(String, String, Option<String>, Option<String>)> {
+        store
+            .read_page(0, 1000)
+            .unwrap()
+            .events
+            .into_iter()
+            .filter(|event| event.kind == AgentEventKind::TurnFinal)
+            .map(|event| {
+                (
+                    event.turn_id.unwrap(),
+                    event.outcome.unwrap(),
+                    event.reason,
+                    event.detail,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_turn_cut_off_by_a_mux_restart_ends_once() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("events.sqlite3");
+        let store = AgentEventStore::new(path.clone());
+        store.start_runtime_epoch().unwrap();
+        let (metadata, runtime) = managed_codex_agent("thread-cut");
+        let mut writer = store.writer().unwrap();
+        writer.observe_agent(&metadata, &runtime).unwrap();
+        for message in [
+            codex_turn("turn/started", "thread-cut", "turn-done"),
+            codex_turn("turn/completed", "thread-cut", "turn-done"),
+            codex_turn("turn/started", "thread-cut", "turn-cut"),
+        ] {
+            writer
+                .observe_codex_app_server_notification(&metadata, &runtime, &message)
+                .unwrap();
+        }
+        drop(writer);
+
+        let restarted = AgentEventStore::new(path);
+        restarted.start_runtime_epoch().unwrap();
+        let ended = vec![
+            ("turn-done".to_string(), "completed".to_string(), None, None),
+            (
+                "turn-cut".to_string(),
+                "aborted".to_string(),
+                Some("ended_with_agent".to_string()),
+                Some("Wakterm's mux server restarted.".to_string()),
+            ),
+        ];
+        assert_eq!(turn_ends(&restarted), ended);
+        // The end comes just before the lifecycle event that caused it.
+        let page = restarted.read_page(0, 1000).unwrap();
+        let last = &page.events[page.events.len() - 2..];
+        assert_eq!(last[0].turn_id.as_deref(), Some("turn-cut"));
+        assert_eq!(last[1].reason.as_deref(), Some("mux_restarted"));
+
+        // A new process following the same session reports the turn open
+        // again and then its end; neither reaches consumers.
+        let mut resumed = metadata.clone();
+        resumed.codex_app_server.as_mut().unwrap().session_id = "session-resumed".into();
+        assert_ne!(incarnation_id(&resumed), incarnation_id(&metadata));
+        let mut writer = restarted.writer().unwrap();
+        writer.observe_agent(&resumed, &runtime).unwrap();
+        for message in [
+            codex_turn("turn/started", "thread-cut", "turn-cut"),
+            codex_turn("turn/completed", "thread-cut", "turn-cut"),
+        ] {
+            writer
+                .observe_codex_app_server_notification(&resumed, &runtime, &message)
+                .unwrap();
+        }
+        assert_eq!(turn_ends(&restarted), ended);
+        let starts = restarted
+            .read_page(0, 1000)
+            .unwrap()
+            .events
+            .iter()
+            .filter(|event| event.kind == AgentEventKind::TurnStarted)
+            .count();
+        assert_eq!(starts, 2);
+    }
+
+    #[test]
+    fn a_turn_end_written_before_the_process_exits_is_its_only_end() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("codex.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-codex\"}}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("codex");
+        let mut runtime = runtime(
+            &metadata,
+            AgentHarness::Codex,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        let started = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}\n";
+        let complete = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\",\"last_agent_message\":\"done\"}}\n";
+        append(&session, started);
+        store.observe_agent(&metadata, &runtime).unwrap();
+        append(&session, complete);
+        runtime.alive = false;
+        store.observe_agent(&metadata, &runtime).unwrap();
+        // The provider reporting the end again adds nothing.
+        append(&session, complete);
+        runtime.alive = true;
+        store.observe_agent(&metadata, &runtime).unwrap();
+
+        assert_eq!(
+            turn_ends(&store),
+            vec![("turn-1".to_string(), "completed".to_string(), None, None)]
+        );
+        let page = store.read_page(0, 100).unwrap();
+        let exit = page
+            .events
+            .iter()
+            .position(|event| event.reason.as_deref() == Some("process_exited"))
+            .unwrap();
+        let end = page
+            .events
+            .iter()
+            .position(|event| event.kind == AgentEventKind::TurnFinal)
+            .unwrap();
+        assert!(end < exit);
+    }
+
+    #[test]
+    fn a_turn_ends_when_its_process_exits_or_its_pane_closes() {
+        let temp = TempDir::new().unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        store.start_runtime_epoch().unwrap();
+        let (metadata, mut runtime) = managed_codex_agent("thread-exit");
+        let (closed, closed_runtime) = managed_codex_agent("thread-closed");
+        let mut writer = store.writer().unwrap();
+        writer.observe_agent(&metadata, &runtime).unwrap();
+        writer.observe_agent(&closed, &closed_runtime).unwrap();
+        writer
+            .observe_codex_app_server_notification(
+                &metadata,
+                &runtime,
+                &codex_turn("turn/started", "thread-exit", "turn-exit"),
+            )
+            .unwrap();
+        writer
+            .observe_codex_app_server_notification(
+                &closed,
+                &closed_runtime,
+                &codex_turn("turn/started", "thread-closed", "turn-closed"),
+            )
+            .unwrap();
+
+        runtime.alive = false;
+        writer.observe_agent(&metadata, &runtime).unwrap();
+        writer
+            .record_unavailable(&closed, Utc::now(), "metadata_cleared")
+            .unwrap();
+        // Observing the dead process again adds nothing.
+        writer.observe_agent(&metadata, &runtime).unwrap();
+
+        let reason = Some("ended_with_agent".to_string());
+        assert_eq!(
+            turn_ends(&store),
+            vec![
+                (
+                    "turn-exit".to_string(),
+                    "aborted".to_string(),
+                    reason.clone(),
+                    Some("The agent's process exited.".to_string())
+                ),
+                (
+                    "turn-closed".to_string(),
+                    "aborted".to_string(),
+                    reason,
+                    Some("The agent stopped being registered.".to_string())
+                ),
+            ]
+        );
     }
 
     #[test]

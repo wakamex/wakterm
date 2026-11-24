@@ -190,6 +190,12 @@ Consumers may present an aborted terminal event's nonempty `detail` as a failure
 
 This uses existing Agent API v1 fields and requires no new event kind or capability. Events already committed without failure detail remain unchanged; the new normalization applies to newly recorded completions. Return-request receipts are a separate stream and retain their existing generic aborted detail.
 
+## A turn ends exactly once
+
+Every turn reported by `turn_started` gets one `turn_final`. When an agent becomes unavailable while a turn is open, because its process exited, another process took over the agent, the mux restarted, or the agent stopped being registered, as when its pane closed, the turn ends with `turn_final` `outcome: "aborted"`, `reason: "ended_with_agent"`, no `text`, and a `detail` saying why, such as "Wakterm's mux server restarted.". It comes just before the `agent_lifecycle` `unavailable` event, whose `reason` names the cause in machine-readable form, such as `mux_restarted`. A process that has just exited is read once more first, so a turn end it wrote before exiting is reported as written. A later start or end that a provider reports for a turn that has already ended, such as a repeated end or one read by the process that resumed the session, is not recorded.
+
+The turn the agent works in after a restart is a new turn. Wakterm's own message asking it to continue starts it, so that turn's `input_accepted` carries Wakterm's request ID.
+
 ## Session continuity and event delivery
 
 Ordinary event mirroring follows the live pane when its managed Codex TUI starts, resumes, or forks to another provider thread. The stable Wakterm agent ID and pane route continue to receive assistant output, while the exact provider thread and derived incarnation change in the catalog and event provenance. Consumers do not need to replace an event cursor or rediscover the route. Exact prompt admission and return-final correlation still require the current catalog incarnation and provider turn.
@@ -200,7 +206,7 @@ For an already-bound observed Codex request, a newer live turn does not invalida
 
 Codex, Claude, and agy JSONL records larger than 4 MiB, and complete lines that are not valid JSON, such as a write cut short by a full disk, produce one `observer_failure` describing the skipped byte range. Observation resumes at the next complete record, with cached turn identity and assistant text cleared to prevent attribution across the gap. For Claude, a later tool result that carries the earlier turn's `promptId` shows that the turn continued, and its later records are attributed to it again; one with a different `promptId` means a new turn began inside the skipped record, and the turn stays unknown until the next prompt. An incomplete oversized record waits for its terminating newline. Later records with sufficient turn identity continue to produce events; content inside the skipped record is unavailable through the event stream.
 
-agy events come from the conversation's full step log, `transcript_full.jsonl`, whose fields agy does not truncate. Each user input starts a turn named `<conversation>:<step>`. A completed planner response with text is an `assistant_message`, and one that calls no tools also ends the turn with `turn_final` `outcome: "completed"`. agy records no interruption, so a turn it leaves without such a response, such as one stopped during a tool step, has no `turn_final`.
+agy events come from the conversation's full step log, `transcript_full.jsonl`, whose fields agy does not truncate. Each user input starts a turn named `<conversation>:<step>`. A completed planner response with text is an `assistant_message`, and one that calls no tools also ends the turn with `turn_final` `outcome: "completed"`. agy records no interruption, so a turn it leaves without such a response, such as one stopped during a tool step, ends only when the agent becomes unavailable.
 
 Gemini observation accepts both legacy JSON conversation snapshots and the
 current append-only JSONL format. Duplicate JSONL records update the same
