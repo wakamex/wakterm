@@ -8401,18 +8401,36 @@ mod test {
             watcher.panes_by_artifact_dir.get(&sessions),
             Some(&HashSet::from([pane_id]))
         );
-        let reports = |path: &Path| {
+        // Whether a write to `path` is reported within `wait`. Watchers can
+        // batch events and report other paths first, as macOS's does, so
+        // every event in the window is looked at.
+        let reports = |path: &Path, wait: std::time::Duration| {
             watcher.discovery.as_ref().unwrap().flush();
             watcher.confirmed.as_ref().unwrap().flush();
             while rx.try_recv().is_ok() {}
             std::fs::write(path, "{}\n").unwrap();
-            rx.recv_timeout(std::time::Duration::from_millis(500))
-                .ok()
-                .and_then(Result::ok)
-                .is_some_and(|event| event.paths.iter().any(|reported| reported == path))
+            let reported = |event: &notify::Event| {
+                event.paths.iter().any(|reported| {
+                    reported == path
+                        || reported.canonicalize().ok().as_deref()
+                            == path.canonicalize().ok().as_deref()
+                })
+            };
+            let deadline = std::time::Instant::now() + wait;
+            while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+                match rx.recv_timeout(left) {
+                    Ok(Ok(event)) if reported(&event) => return true,
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+            false
         };
-        assert!(reports(&session));
-        assert!(!reports(&elsewhere.join("session.jsonl")));
+        assert!(reports(&session, std::time::Duration::from_secs(5)));
+        assert!(!reports(
+            &elsewhere.join("session.jsonl"),
+            std::time::Duration::from_millis(1500)
+        ));
 
         // A session no longer confirmed sends the pane back to discovery.
         watcher.set_confirmed_artifact(pane_id, &AgentHarness::Claude, None);
