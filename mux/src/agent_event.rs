@@ -165,6 +165,14 @@ pub(crate) struct JsonlCursor {
     /// Whether the current Claude turn has started without a final reply.
     #[serde(default)]
     pub turn_open: bool,
+    /// Whether the current Claude turn ran a local command, such as
+    /// `/model`, which Claude answers without a reply.
+    #[serde(default)]
+    turn_local_command: bool,
+    /// Whether Claude's safety classifier stopped a response in the current
+    /// turn, which Claude continues on another model or leaves to the user.
+    #[serde(default)]
+    turn_refused: bool,
     /// A Codex turn whose start waits for its first user input, so that
     /// `turn_started` can carry the input's hash.
     #[serde(default)]
@@ -529,8 +537,17 @@ impl AgentEventStore {
             // reading where the previous incarnation stopped. Input written
             // before this observation would otherwise fall behind the new
             // tail baseline. The projector rebaselines a different session.
+            // The previous incarnation's turn ended with it, so input to the
+            // new process starts a turn rather than steering that one.
+            let mut cursor = state.cursor.take();
+            if let Some(ProviderCursor::Claude(cursor)) = cursor.as_mut() {
+                cursor.turn_open = false;
+                cursor.turn_error = None;
+                cursor.turn_local_command = false;
+                cursor.turn_refused = false;
+            }
             state = ProjectionState {
-                cursor: state.cursor.take(),
+                cursor,
                 ..ProjectionState::default()
             };
         }
@@ -1976,38 +1993,18 @@ fn close_unanswered_claude_turn(
     // which it may write many minutes later. A turn whose transcript ends
     // at a tool call or its result is still owed that reply, unless Claude
     // recorded a provider error that stopped it.
-    if cursor.owes_reply && cursor.turn_error.is_none() {
+    if cursor.owes_reply && cursor.turn_error.is_none() && !cursor.turn_refused {
         return None;
     }
     let turn_id = cursor.current_turn_id.clone()?;
-    cursor.turn_open = false;
     let key = format!("claude:{}:{turn_id}:no-reply", cursor.source_id);
-    let mut final_event = PendingEvent::new(
-        format!("{key}:final"),
-        AgentEventKind::TurnFinal,
+    Some(end_claude_turn(
+        cursor,
+        &key,
         runtime.observed_at,
-    );
-    final_event.turn_id = Some(turn_id.clone());
-    final_event.outcome = Some("aborted".to_string());
-    // A provider error, such as an expired login, is why Claude stopped.
-    match cursor.turn_error.take() {
-        Some(error) => {
-            final_event.reason = Some("provider_error".to_string());
-            final_event.detail = Some(error);
-        }
-        None => {
-            final_event.reason = Some("no_reply".to_string());
-            final_event.detail = Some("Claude went idle without replying.".to_string());
-        }
-    }
-    let mut state = PendingEvent::new(
-        format!("{key}:state"),
-        AgentEventKind::TurnStateChanged,
-        runtime.observed_at,
-    );
-    state.turn_id = Some(turn_id);
-    state.turn_state = Some("waiting_on_user".to_string());
-    Some(vec![final_event, state])
+        false,
+        "Claude went idle without replying.",
+    ))
 }
 
 fn initial_jsonl_cursor(
@@ -2029,6 +2026,8 @@ fn initial_jsonl_cursor(
         current_prompt_id,
         turn_before_gap: None,
         turn_error: None,
+        turn_local_command: false,
+        turn_refused: false,
         armed_at: None,
         last_record_at: None,
         steer_runs: Vec::new(),
@@ -2081,6 +2080,8 @@ fn latest_jsonl_turn(
     let reader = BufReader::new(fs::File::open(path)?);
     let mut current = None;
     let mut prompt_id = None;
+    let mut claude_open = false;
+    let mut claude_stopped = false;
     let mut agy = crate::harness::agy::TurnTracker::default();
     for line in reader.lines() {
         let record: Value = match serde_json::from_str(&line?) {
@@ -2093,16 +2094,40 @@ fn latest_jsonl_turn(
                     current = Some(turn_id.to_string());
                 }
             }
-            "claude" if claude_human_user(&record) => {
-                current = record
-                    .get("uuid")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                prompt_id = record
-                    .get("promptId")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-            }
+            "claude" => match claude_user_record(&record, claude_open, claude_stopped) {
+                ClaudeUserRecord::StartsTurn => {
+                    claude_open = true;
+                    claude_stopped = false;
+                    current = record
+                        .get("uuid")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    prompt_id = record
+                        .get("promptId")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                }
+                ClaudeUserRecord::Interrupts => claude_open = false,
+                ClaudeUserRecord::Steers => {}
+                ClaudeUserRecord::Continues => {
+                    if claude_reply_ends_turn(&record) {
+                        claude_open = false;
+                    }
+                    // A local command's output, a provider error Claude
+                    // reports as its reply, or a refusal stops the turn
+                    // without one.
+                    if claude_local_command_output(&record)
+                        || record.pointer("/message/model").and_then(Value::as_str)
+                            == Some("<synthetic>")
+                        || record
+                            .pointer("/message/stop_reason")
+                            .and_then(Value::as_str)
+                            == Some("refusal")
+                    {
+                        claude_stopped = true;
+                    }
+                }
+            },
             "agy" => match agy.step(&record) {
                 crate::harness::agy::TurnStep::StartedByUser
                 | crate::harness::agy::TurnStep::StartedBySystem => {
@@ -2462,6 +2487,152 @@ fn claude_human_user(record: &Value) -> bool {
     })
 }
 
+/// What a Claude user record does to the turns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClaudeUserRecord {
+    StartsTurn,
+    /// Input Claude takes into the running turn.
+    Steers,
+    /// The user interrupted the running turn.
+    Interrupts,
+    /// A tool result, a local command's output, or a note Claude adds to
+    /// the running turn.
+    Continues,
+}
+
+/// Whether a Claude record is a local command's output, which Claude
+/// records instead of replying.
+fn claude_local_command_output(record: &Value) -> bool {
+    match record.get("type").and_then(Value::as_str) {
+        Some("system") => record.get("subtype").and_then(Value::as_str) == Some("local_command"),
+        Some("user") => crate::agent::claude_user_text(record).is_some_and(|text| {
+            text.starts_with("<local-command-stdout>") || text.starts_with("<local-command-stderr>")
+        }),
+        _ => false,
+    }
+}
+
+/// The turn rule for a Claude user record, given whether a turn is open and
+/// whether that turn has stopped without a reply, after a provider error or
+/// a local command.
+///
+/// Claude runs one turn at a time. Input it records while a turn runs,
+/// whether before its first reply or between tool calls, is answered in
+/// that turn, so it steers it; input after a turn stopped starts the next.
+/// Claude adds notes of its own as user records marked `isMeta`, such as a
+/// skill's instructions or a note about an image a tool read; these belong
+/// to the running turn. With no turn running, a note that wakes Claude, such
+/// as another session's message or a scheduled task, starts one, except the
+/// caveat Claude records with a local command, which the command follows.
+fn claude_user_record(record: &Value, turn_open: bool, turn_stopped: bool) -> ClaudeUserRecord {
+    if !claude_human_user(record) || claude_local_command_output(record) {
+        return ClaudeUserRecord::Continues;
+    }
+    let text = crate::agent::claude_user_text(record).unwrap_or_default();
+    if record.get("isMeta").and_then(Value::as_bool) == Some(true) {
+        return if turn_open || text.starts_with("<local-command-caveat>") {
+            ClaudeUserRecord::Continues
+        } else {
+            ClaudeUserRecord::StartsTurn
+        };
+    }
+    if text.starts_with("[Request interrupted by user") {
+        return ClaudeUserRecord::Interrupts;
+    }
+    if turn_open && !turn_stopped {
+        return ClaudeUserRecord::Steers;
+    }
+    ClaudeUserRecord::StartsTurn
+}
+
+/// The `input_accepted` event for input a Claude user record holds. Claude's
+/// own notes, such as the caveat it records with a local command, are not
+/// input. A slash command is input as its command and arguments, not as the
+/// tags Claude wraps it in.
+fn claude_input_accepted(
+    record: &Value,
+    record_key: &str,
+    at: DateTime<Utc>,
+    turn_id: &str,
+    role: AgentInputRole,
+) -> Option<PendingEvent> {
+    let text = crate::agent::claude_user_text(record)
+        .filter(|_| record.get("isMeta").and_then(Value::as_bool) != Some(true))?;
+    let command = crate::agent::claude_command_text(&text);
+    let sha256 = crate::agent::message_sha256(
+        command
+            .as_deref()
+            .unwrap_or_else(|| crate::agent::unwrap_claude_paste(&text)),
+    );
+    let mut accepted = input_accepted(
+        format!("{record_key}:input"),
+        at,
+        Some(turn_id.to_string()),
+        sha256,
+        role,
+    );
+    if command.is_some() {
+        accepted.reason = Some("command".to_string());
+    }
+    Some(accepted)
+}
+
+/// Whether a Claude assistant record is a reply that ends its turn.
+fn claude_reply_ends_turn(record: &Value) -> bool {
+    record.get("type").and_then(Value::as_str) == Some("assistant")
+        && record
+            .pointer("/message/stop_reason")
+            .and_then(Value::as_str)
+            == Some("end_turn")
+        && record.pointer("/message/model").and_then(Value::as_str) != Some("<synthetic>")
+        && extract_text(record.pointer("/message/content"))
+            .is_some_and(|text| !text.trim().is_empty())
+}
+
+/// Ends the open Claude turn as aborted: an interruption, or a turn Claude
+/// left without a reply, for the provider error or safety classifier that
+/// stopped it when there was one.
+fn end_claude_turn(
+    cursor: &mut JsonlCursor,
+    key: &str,
+    at: DateTime<Utc>,
+    interrupted: bool,
+    unanswered_detail: &str,
+) -> Vec<PendingEvent> {
+    let Some(turn_id) = cursor.current_turn_id.clone().filter(|_| cursor.turn_open) else {
+        return Vec::new();
+    };
+    cursor.turn_open = false;
+    cursor.turn_local_command = false;
+    let refused = std::mem::take(&mut cursor.turn_refused);
+    let mut final_event = PendingEvent::new(format!("{key}:final"), AgentEventKind::TurnFinal, at);
+    final_event.turn_id = Some(turn_id.clone());
+    final_event.outcome = Some("aborted".to_string());
+    match (interrupted, cursor.turn_error.take()) {
+        (true, _) => {
+            final_event.reason = Some("interrupted".to_string());
+            final_event.text = cursor.last_assistant_text.clone();
+        }
+        (false, None) if refused => {
+            final_event.reason = Some("policy_blocked".to_string());
+            final_event.detail =
+                Some("Claude's safety classifier stopped the response.".to_string());
+        }
+        (false, Some(error)) => {
+            final_event.reason = Some("provider_error".to_string());
+            final_event.detail = Some(error);
+        }
+        (false, None) => {
+            final_event.reason = Some("no_reply".to_string());
+            final_event.detail = Some(unanswered_detail.to_string());
+        }
+    }
+    let mut state = PendingEvent::new(format!("{key}:state"), AgentEventKind::TurnStateChanged, at);
+    state.turn_id = Some(turn_id);
+    state.turn_state = Some("waiting_on_user".to_string());
+    vec![final_event, state]
+}
+
 fn project_claude(
     path: &Path,
     cursor: Option<ProviderCursor>,
@@ -2494,7 +2665,43 @@ fn project_claude(
             .map(str::to_string)
             .unwrap_or_else(|| format!("offset-{offset}"));
         let record_key = format!("claude:{}:{uuid}", cursor.source_id);
-        if claude_human_user(record) {
+        if claude_local_command_output(record) {
+            cursor.turn_local_command = true;
+        }
+        let user_record = claude_user_record(
+            record,
+            cursor.turn_open,
+            cursor.turn_error.is_some() || cursor.turn_local_command || cursor.turn_refused,
+        );
+        if user_record == ClaudeUserRecord::Interrupts {
+            return Ok(end_claude_turn(cursor, &record_key, timestamp, true, ""));
+        }
+        if user_record == ClaudeUserRecord::Steers {
+            return Ok(cursor
+                .current_turn_id
+                .as_deref()
+                .and_then(|turn_id| {
+                    claude_input_accepted(
+                        record,
+                        &record_key,
+                        timestamp,
+                        turn_id,
+                        AgentInputRole::Steer,
+                    )
+                })
+                .into_iter()
+                .collect());
+        }
+        if user_record == ClaudeUserRecord::StartsTurn {
+            // A turn still open here stopped without a reply, after a
+            // provider error, such as an expired login, or a local command.
+            let ended = end_claude_turn(
+                cursor,
+                &record_key,
+                timestamp,
+                false,
+                "Claude did not reply before the next input.",
+            );
             let Some(turn_id) = record
                 .get("uuid")
                 .and_then(Value::as_str)
@@ -2514,6 +2721,8 @@ fn project_claude(
                 .map(str::to_string);
             cursor.turn_before_gap = None;
             cursor.turn_error = None;
+            cursor.turn_local_command = false;
+            cursor.turn_refused = false;
             cursor.last_assistant_text = None;
             cursor.asked_questions.clear();
             cursor.owes_reply = false;
@@ -2524,32 +2733,16 @@ fn project_claude(
                 timestamp,
             );
             started.turn_id = Some(turn_id.clone());
-            // Claude's own notes, such as the caveat it records with a local
-            // command, are not input. A slash command is input as its
-            // command and arguments, not as the tags Claude wraps it in.
-            let text = crate::agent::claude_user_text(record)
-                .filter(|_| record.get("isMeta").and_then(Value::as_bool) != Some(true));
-            let command = text.as_deref().and_then(crate::agent::claude_command_text);
-            started.input_sha256 = match (&command, &text) {
-                (Some(command), _) => Some(crate::agent::message_sha256(command)),
-                (None, Some(text)) => Some(crate::agent::message_sha256(
-                    crate::agent::unwrap_claude_paste(text),
-                )),
-                (None, None) => None,
-            };
-            let accepted = started.input_sha256.clone().map(|sha256| {
-                let mut accepted = input_accepted(
-                    format!("{record_key}:input"),
-                    timestamp,
-                    Some(turn_id.clone()),
-                    sha256,
-                    AgentInputRole::Start,
-                );
-                if command.is_some() {
-                    accepted.reason = Some("command".to_string());
-                }
-                accepted
-            });
+            let accepted = claude_input_accepted(
+                record,
+                &record_key,
+                timestamp,
+                &turn_id,
+                AgentInputRole::Start,
+            );
+            started.input_sha256 = accepted
+                .as_ref()
+                .and_then(|accepted| accepted.input_sha256.clone());
             let mut state = PendingEvent::new(
                 format!("{record_key}:state"),
                 AgentEventKind::TurnStateChanged,
@@ -2557,10 +2750,11 @@ fn project_claude(
             );
             state.turn_id = Some(turn_id);
             state.turn_state = Some("waiting_on_agent".to_string());
-            return Ok(vec![Some(started), accepted, Some(state)]
-                .into_iter()
-                .flatten()
-                .collect());
+            let mut events = ended;
+            events.push(started);
+            events.extend(accepted);
+            events.push(state);
+            return Ok(events);
         }
         // After a skipped record, the first tool result that names a prompt
         // shows whether the earlier turn continued or a new one started.
@@ -2649,6 +2843,13 @@ fn project_claude(
         }
         if record.get("type").and_then(Value::as_str) != Some("assistant") {
             return Ok(Vec::new());
+        }
+        if record
+            .pointer("/message/stop_reason")
+            .and_then(Value::as_str)
+            == Some("refusal")
+        {
+            cursor.turn_refused = true;
         }
         if record
             .get("message")
@@ -6756,6 +6957,369 @@ mod tests {
             .filter(|event| event.kind == AgentEventKind::TurnStarted)
             .count();
         assert_eq!(starts, 2);
+    }
+
+    /// Projects Claude transcript records, returning each turn's start and
+    /// end as `(turn, "started")` or `(turn, outcome:reason)`.
+    fn claude_turns(records: &[serde_json::Value]) -> Vec<(String, String)> {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"mode\",\"sessionId\":\"session-claude\"}\n",
+        )
+        .unwrap();
+        let store = AgentEventStore::new(temp.path().join("events.sqlite3"));
+        let metadata = metadata("claude");
+        let runtime = runtime(
+            &metadata,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &runtime).unwrap();
+        for record in records {
+            append(&session, &format!("{record}\n"));
+            store.observe_agent(&metadata, &runtime).unwrap();
+        }
+        store
+            .read_page(0, 1000)
+            .unwrap()
+            .events
+            .into_iter()
+            .filter_map(|event| {
+                let turn = event.turn_id.clone()?;
+                match event.kind {
+                    AgentEventKind::TurnStarted => Some((turn, "started".to_string())),
+                    AgentEventKind::TurnFinal => Some((
+                        turn,
+                        format!(
+                            "{}:{}",
+                            event.outcome.unwrap(),
+                            event.reason.unwrap_or_default()
+                        ),
+                    )),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    fn claude_user(uuid: &str, content: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"type": "user", "uuid": uuid, "sessionId": "session-claude",
+            "timestamp": "2026-11-24T10:00:00Z", "message": {"role": "user", "content": content}})
+    }
+
+    fn claude_note(uuid: &str, text: &str) -> serde_json::Value {
+        let mut record = claude_user(uuid, serde_json::json!([{"type": "text", "text": text}]));
+        record["isMeta"] = true.into();
+        record
+    }
+
+    fn claude_reply(
+        uuid: &str,
+        stop_reason: &str,
+        content: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({"type": "assistant", "uuid": uuid, "sessionId": "session-claude",
+            "timestamp": "2026-11-24T10:00:01Z", "message": {"role": "assistant",
+            "model": "claude-test", "stop_reason": stop_reason, "content": content}})
+    }
+
+    fn claude_tool_call(uuid: &str) -> serde_json::Value {
+        claude_reply(
+            uuid,
+            "tool_use",
+            serde_json::json!([{"type": "tool_use", "id": format!("tool-{uuid}"), "name": "Skill", "input": {}}]),
+        )
+    }
+
+    fn claude_tool_result(uuid: &str, call: &str) -> serde_json::Value {
+        claude_user(
+            uuid,
+            serde_json::json!([{"type": "tool_result", "tool_use_id": format!("tool-{call}"), "content": "ok"}]),
+        )
+    }
+
+    fn claude_answer(uuid: &str) -> serde_json::Value {
+        claude_reply(
+            uuid,
+            "end_turn",
+            serde_json::json!([{"type": "text", "text": "done"}]),
+        )
+    }
+
+    fn turn(id: &str, what: &str) -> (String, String) {
+        (id.to_string(), what.to_string())
+    }
+
+    #[test]
+    fn a_note_claude_adds_to_a_running_turn_continues_it() {
+        // What Claude records when a turn loads a skill through a tool.
+        let turns = claude_turns(&[
+            claude_user("ask", serde_json::json!("review this")),
+            claude_tool_call("call"),
+            claude_tool_result("result", "call"),
+            claude_note("skill", "Base directory for this skill: /skills/review"),
+            claude_tool_call("call-2"),
+            claude_tool_result("result-2", "call-2"),
+            claude_answer("answer"),
+        ]);
+        assert_eq!(
+            turns,
+            vec![turn("ask", "started"), turn("ask", "completed:")]
+        );
+    }
+
+    #[test]
+    fn a_note_that_wakes_claude_between_turns_starts_one() {
+        let turns = claude_turns(&[
+            claude_user("ask", serde_json::json!("hello")),
+            claude_answer("answer"),
+            claude_note("message", "Another Claude session sent a message: hi"),
+            claude_answer("answer-2"),
+            claude_note(
+                "caveat",
+                "<local-command-caveat>The command below was run directly in Claude Code.</local-command-caveat>",
+            ),
+            claude_user(
+                "clear",
+                serde_json::json!("<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>"),
+            ),
+        ]);
+        assert_eq!(
+            turns,
+            vec![
+                turn("ask", "started"),
+                turn("ask", "completed:"),
+                turn("message", "started"),
+                turn("message", "completed:"),
+                turn("clear", "started"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_interruption_ends_the_claude_turn_it_stops() {
+        let turns = claude_turns(&[
+            claude_user("ask", serde_json::json!("wait three minutes")),
+            claude_tool_call("call"),
+            claude_tool_result("result", "call"),
+            claude_user(
+                "stop",
+                serde_json::json!([{"type": "text", "text": "[Request interrupted by user]"}]),
+            ),
+            claude_user("next", serde_json::json!("never mind")),
+            claude_answer("answer"),
+        ]);
+        assert_eq!(
+            turns,
+            vec![
+                turn("ask", "started"),
+                turn("ask", "aborted:interrupted"),
+                turn("next", "started"),
+                turn("next", "completed:"),
+            ]
+        );
+    }
+
+    #[test]
+    fn input_right_after_a_claude_provider_error_ends_the_stopped_turn() {
+        let mut expired = claude_reply(
+            "expired",
+            "stop_sequence",
+            serde_json::json!([{"type": "text", "text": "Login expired · Please run /login"}]),
+        );
+        expired["message"]["model"] = "<synthetic>".into();
+        expired["isApiErrorMessage"] = true.into();
+        let turns = claude_turns(&[
+            claude_user("ask", serde_json::json!("check the deploy")),
+            expired,
+            claude_user("again", serde_json::json!("check the deploy")),
+        ]);
+        assert_eq!(
+            turns,
+            vec![
+                turn("ask", "started"),
+                turn("ask", "aborted:provider_error"),
+                turn("again", "started"),
+            ]
+        );
+    }
+
+    #[test]
+    fn input_claude_takes_while_a_turn_runs_steers_it() {
+        let turns = claude_turns(&[
+            claude_user("ask", serde_json::json!("look at the logs")),
+            claude_user("more", serde_json::json!("the mux ones")),
+            claude_tool_call("call"),
+            claude_tool_result("result", "call"),
+            claude_user("again", serde_json::json!("and the journal")),
+            claude_answer("answer"),
+        ]);
+        assert_eq!(
+            turns,
+            vec![turn("ask", "started"), turn("ask", "completed:")]
+        );
+    }
+
+    #[test]
+    fn input_after_a_local_command_ends_the_command_turn() {
+        let turns = claude_turns(&[
+            claude_user(
+                "model",
+                serde_json::json!("<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>opus</command-args>"),
+            ),
+            claude_user(
+                "output",
+                serde_json::json!("<local-command-stdout>Set model to Opus</local-command-stdout>"),
+            ),
+            claude_user("ask", serde_json::json!("what model are you")),
+        ]);
+        assert_eq!(
+            turns,
+            vec![
+                turn("model", "started"),
+                turn("model", "aborted:no_reply"),
+                turn("ask", "started"),
+            ]
+        );
+    }
+
+    #[test]
+    fn input_to_a_resumed_claude_process_starts_a_turn() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude.jsonl");
+        fs::write(
+            &session,
+            "{\"type\":\"mode\",\"sessionId\":\"session-claude\"}\n",
+        )
+        .unwrap();
+        let path = temp.path().join("events.sqlite3");
+        let store = AgentEventStore::new(path.clone());
+        store.start_runtime_epoch().unwrap();
+        let metadata = metadata("claude");
+        let first_runtime = runtime(
+            &metadata,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
+        );
+        store.observe_agent(&metadata, &first_runtime).unwrap();
+        append(
+            &session,
+            &format!("{}\n", claude_user("ask", serde_json::json!("work"))),
+        );
+        store.observe_agent(&metadata, &first_runtime).unwrap();
+
+        let restarted = AgentEventStore::new(path);
+        restarted.start_runtime_epoch().unwrap();
+        let mut resumed = metadata.clone();
+        resumed.adopted_pid = Some(43);
+        let resumed_runtime = runtime(
+            &resumed,
+            AgentHarness::Claude,
+            session.to_string_lossy().into(),
+        );
+        restarted.observe_agent(&resumed, &resumed_runtime).unwrap();
+        append(
+            &session,
+            &[
+                claude_user("resume", serde_json::json!("Continue where you left off.")),
+                claude_answer("answer"),
+            ]
+            .map(|record| format!("{record}\n"))
+            .concat(),
+        );
+        restarted.observe_agent(&resumed, &resumed_runtime).unwrap();
+
+        let turns = restarted
+            .read_page(0, 1000)
+            .unwrap()
+            .events
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    AgentEventKind::TurnStarted | AgentEventKind::TurnFinal
+                )
+            })
+            .map(|event| (event.turn_id.unwrap(), event.outcome, event.reason))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            turns,
+            vec![
+                ("ask".to_string(), None, None),
+                (
+                    "ask".to_string(),
+                    Some("aborted".to_string()),
+                    Some("ended_with_agent".to_string())
+                ),
+                ("resume".to_string(), None, None),
+                ("resume".to_string(), Some("completed".to_string()), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn input_after_a_refusal_ends_the_refused_turn() {
+        let refused = || {
+            claude_reply(
+                "refused",
+                "refusal",
+                serde_json::json!([{"type": "thinking", "thinking": ""}]),
+            )
+        };
+        let note = claude_note(
+            "note",
+            "Your response above was stopped by a safety classifier.",
+        );
+        // Claude leaves the turn to the user, who writes again.
+        let left = claude_turns(&[
+            claude_user("ask", serde_json::json!("summarize the thread")),
+            refused(),
+            note.clone(),
+            claude_user("again", serde_json::json!("what model are you?")),
+        ]);
+        assert_eq!(
+            left,
+            vec![
+                turn("ask", "started"),
+                turn("ask", "aborted:policy_blocked"),
+                turn("again", "started"),
+            ]
+        );
+        // Claude continues the turn on another model.
+        let continued = claude_turns(&[
+            claude_user("ask", serde_json::json!("summarize the thread")),
+            refused(),
+            note,
+            claude_answer("answer"),
+        ]);
+        assert_eq!(
+            continued,
+            vec![turn("ask", "started"), turn("ask", "completed:")]
+        );
+    }
+
+    #[test]
+    fn a_claude_session_followed_mid_turn_names_the_turn_its_prompt_started() {
+        let temp = TempDir::new().unwrap();
+        let session = temp.path().join("claude.jsonl");
+        let records = [
+            claude_user("ask", serde_json::json!("review this")),
+            claude_tool_call("call"),
+            claude_tool_result("result", "call"),
+            claude_note("skill", "Base directory for this skill: /skills/review"),
+        ];
+        fs::write(
+            &session,
+            records
+                .iter()
+                .map(|record| format!("{record}\n"))
+                .collect::<String>(),
+        )
+        .unwrap();
+        let (current, _, _) = latest_jsonl_turn(&session, "claude", "source").unwrap();
+        assert_eq!(current.as_deref(), Some("ask"));
     }
 
     #[test]
