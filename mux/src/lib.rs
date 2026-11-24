@@ -14391,6 +14391,22 @@ mod test {
             },
             "confirmed detected session",
         );
+        // Adoption waits for an observation of the pane still running or
+        // queued; let those the setup's writes started finish first.
+        wait_for_main_thread_work(
+            &executor,
+            || {
+                mux.agent_observer_state_by_pane
+                    .read()
+                    .get(&pane_id)
+                    .is_none_or(|state| {
+                        state.inflight_generation.is_none()
+                            && state.pending_request.is_none()
+                            && !state.trailing_refresh_scheduled
+                    })
+            },
+            "observations of the confirmed session",
+        );
 
         let preserved_session = mux
             .agent_runtime_by_pane
