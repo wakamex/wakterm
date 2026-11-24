@@ -16300,6 +16300,77 @@ mod test {
     }
 
     #[test]
+    fn app_server_notifications_change_a_runtime_only_on_the_main_thread() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane: Arc<dyn Pane> = FakePane::new_title_only(57, size, domain.id, "managed", "/tmp");
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        let mut metadata = sample_agent_metadata("managed");
+        metadata.adopted_pid = None;
+        metadata.adopted_start_time = None;
+        metadata.codex_app_server = Some(crate::agent::CodexAppServerSession {
+            thread_id: "thread-managed".to_string(),
+            session_id: "session-managed".to_string(),
+            executable: "codex".to_string(),
+            version: "codex-cli test".to_string(),
+            tui_args: vec![],
+        });
+        let mut runtime = AgentRuntimeSnapshot::new(&metadata);
+        runtime.harness = AgentHarness::Codex;
+        runtime.transport = crate::agent::AgentTransport::CodexAppServerTui;
+        runtime.alive = true;
+        mux.install_agent_metadata_runtime_without_process_identity(pane_id, metadata, runtime)
+            .unwrap();
+        mux.apply_codex_app_server_notification(&serde_json::json!({
+            "method": "turn/started",
+            "params": {"threadId": "thread-managed", "turn": {"id": "turn-managed"}}
+        }));
+        let turn_state = || {
+            mux.agent_runtime_by_pane.read()[&pane_id]
+                .turn_state
+                .clone()
+        };
+        assert_eq!(turn_state(), crate::agent::AgentTurnState::WaitingOnAgent);
+
+        // The connection reads on a thread of its own.
+        std::thread::spawn(|| {
+            crate::codex_app_server::apply_notification_on_main_thread(serde_json::json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-managed",
+                    "turn": {"id": "turn-managed", "status": "completed", "items": []}
+                }
+            }));
+        })
+        .join()
+        .unwrap();
+        // Nothing changed off the main thread, where a refresh could have
+        // written over it.
+        assert_eq!(turn_state(), crate::agent::AgentTurnState::WaitingOnAgent);
+        wait_for_main_thread_work(
+            &executor,
+            || turn_state() == crate::agent::AgentTurnState::WaitingOnUser,
+            "the turn's completion",
+        );
+    }
+
+    #[test]
     fn concurrent_return_final_admission_and_watch_preserve_submission_and_correlation() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let executor = promise::spawn::SimpleExecutor::new();

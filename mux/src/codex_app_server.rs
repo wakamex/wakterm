@@ -334,10 +334,24 @@ impl Connection {
             }
             return;
         }
+        apply_notification_on_main_thread(message);
+    }
+}
+
+/// Applies a notification from the app-server connection on the main
+/// thread. It changes agents' runtimes, which main-thread code also reads,
+/// updates and writes back, as a pane's output does; changed on this
+/// connection's own thread, a turn's completion could land between such a
+/// read and write and be written over, leaving the agent busy with no turn
+/// running. On the main thread notifications also keep their order with
+/// those the TUI proxy delivers there.
+pub(crate) fn apply_notification_on_main_thread(message: Value) {
+    promise::spawn::spawn_into_main_thread(async move {
         if let Some(mux) = Mux::try_get() {
             mux.apply_codex_app_server_notification(&message);
         }
-    }
+    })
+    .detach();
 }
 
 pub struct CodexAppServer {
@@ -1850,6 +1864,8 @@ mod test {
 
     #[test]
     fn response_dispatch_uses_exact_request_id() {
+        // Notifications go to the main thread.
+        let _executor = promise::spawn::SimpleExecutor::new();
         let (writer, _peer) = UnixStream::pair().unwrap();
         let connection = Connection {
             writer: Mutex::new(writer),
