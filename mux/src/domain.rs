@@ -641,7 +641,7 @@ impl Domain for LocalDomain {
             },
             self.name
         );
-        let child_result = pair.slave.spawn_command(cmd);
+        let child_result = crate::spawn_cost::measure(|| pair.slave.spawn_command(cmd));
         let mut writer = WriterWrapper::new(pair.master.take_writer()?);
 
         let mut terminal = wakterm_term::Terminal::new(

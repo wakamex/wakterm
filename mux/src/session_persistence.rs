@@ -752,6 +752,7 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
         .map(|intent| intent.metadata.declared_cwd.clone())
         .collect::<Vec<_>>();
     let restore_started = Instant::now();
+    crate::spawn_cost::take();
     crate::startup_output::begin();
     // Agents start a few at a time: those whose turn was interrupted, then
     // those in tabs that were showing, then those in parked tabs.
@@ -844,6 +845,7 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
         .count();
     crate::startup_output::expect(restored_panes.len());
     crate::agent_start_gate::seal();
+    let (spawns, spawn_time, spawn_faults) = crate::spawn_cost::take();
     tab_times.sort_by(|a, b| b.0.cmp(&a.0));
     let slowest = tab_times
         .iter()
@@ -853,7 +855,8 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
         .join(", ");
     log::info!(
         "startup: restored {total_tabs} tabs with {} panes, {agents} of them agents, in {:.1} s: \
-         {} ms recording Claude folder trust, {:.1} s starting tabs; slowest {slowest}",
+         {} ms recording Claude folder trust, {:.1} s starting tabs, of which {:.1} s spawning \
+         {spawns} processes ({:.0} ms and {} minor page faults each); slowest {slowest}",
         restored_panes.len(),
         restore_started.elapsed().as_secs_f64(),
         trust_took.as_millis(),
@@ -862,6 +865,9 @@ pub async fn restore_session(domain: &Arc<dyn crate::domain::Domain>) -> anyhow:
             .map(|(took, _)| *took)
             .sum::<Duration>()
             .as_secs_f64(),
+        spawn_time.as_secs_f64(),
+        spawn_time.as_secs_f64() * 1000.0 / spawns.max(1) as f64,
+        spawn_faults / spawns.max(1),
     );
 
     // Clear the session file after successful restore

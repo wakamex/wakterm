@@ -79,6 +79,7 @@ pub mod pane;
 pub mod renderable;
 pub mod session_persistence;
 pub mod shell_integration;
+pub mod spawn_cost;
 pub mod ssh;
 pub mod ssh_agent;
 pub mod startup_output;
