@@ -1,0 +1,47 @@
+# What Claude Code records about its turns
+
+Wakterm follows interactive Claude Code sessions through two records that Claude Code writes itself: the session transcript, a JSON Lines file under `~/.claude/projects/`, and [hooks](https://code.claude.com/docs/en/hooks), commands Claude Code runs on events, configured in its settings. This page lists what each records about a turn's start, the input taken into it, waits on the user and its end, as observed with Claude Code 2.1.332 running with `--dangerously-skip-permissions`, the way Wakterm starts Claude agents. Each fact below was seen in a session whose project settings registered a hook that appended every event to a journal, next to that session's transcript.
+
+## Turn boundaries in the transcript
+
+Every record of a turn carries the turn's `promptId`: the user record that starts it, tool results, interruption markers and the local command records of that turn. Assistant records do not.
+
+| Moment | Transcript records |
+| --- | --- |
+| A prompt starts a turn | A user record with a new `promptId`. |
+| A notice starts a turn, such as a background task finishing | `queue-operation` `enqueue` and `dequeue`, then a user record with a new `promptId` whose text begins `<task-notification>` and names the task and the tool call that started it. |
+| Input sent while the turn runs is taken into it | `queue-operation` `enqueue` when it arrives; after the next tool result, `queue-operation` `remove` and an `attachment` record of type `queued_command` holding the input's text, written before the next model request. No user record is written for it. |
+| Input sent while the turn runs waits for the next turn | `queue-operation` `enqueue` when it arrives; after the turn's `turn_duration`, `queue-operation` `dequeue` and a user record with a new `promptId`. |
+| The turn ends | `system` `turn_duration`, after a `system` `stop_hook_summary` when hooks are configured. |
+| The user interrupts | A tool result saying the user did not want to proceed, when a tool was running, then a user record whose text is `[Request interrupted by user for tool use]` or `[Request interrupted by user]`, with the turn's `promptId`. No `turn_duration` follows. |
+| `/compact` | The `<local-command-caveat>` note, the `<command-name>/compact</command-name>` record, `system` `compact_boundary`, the summary as a user record marked `isCompactSummary`, and the command's `<local-command-stdout>`. No `turn_duration`: a local command is not a model turn. |
+| `/clear` | The command's records in a new transcript file, with `system` `local_command`. |
+
+Records are not always written in timestamp order; an attachment can be written after a later user record, so a reader follows the order of the file.
+
+## Hook events
+
+Every hook event carries `session_id`, `prompt_id`, `transcript_path` and `hook_event_name`.
+
+| Event | When it fired in the session |
+| --- | --- |
+| `UserPromptSubmit` | When a prompt or a notice arrived, including input sent while a turn ran, at the moment it was queued, with the running turn's `prompt_id`. Input that then waited for the next turn did not fire it again when that turn started under its own `prompt_id`, so this event does not say which turn an input joins. |
+| `PermissionRequest` | When a question form (`AskUserQuestion`) was shown, with `tool_name`, even with permission checks skipped. The transcript held no record of the question until it was answered. |
+| `Notification` | 6 seconds after the question form, with `notification_type` `permission_prompt`; also when Claude went idle. |
+| `Stop` | Once at each turn's end, with the turn's `prompt_id`, `last_assistant_message` holding the final reply, and `background_tasks` listing tasks still running, each with its ID, type, status and description. It did not fire on an interruption. |
+| `SubagentStop` | After most turns' `Stop`, for an internal agent with an empty `agent_type`; it is not a turn of the session. |
+| `PreCompact`, `PostCompact` | Around `/compact`, with trigger `manual`, together with `SessionStart` with source `compact`. |
+| `SessionEnd`, `SessionStart` | For `/clear`: `SessionEnd` with reason `clear`, then `SessionStart` with source `clear`, a new `session_id` and the new `transcript_path`. |
+
+Hooks from the user's own settings run alongside a project's, and a `UserPromptSubmit` hook's output is added to Claude's context, so a recording hook must print nothing.
+
+## What only one of the two records
+
+- Which turn an input joins: only the transcript, through `remove` with a `queued_command` attachment, or `dequeue` with a new `promptId`.
+- An interruption: only the transcript's marker.
+- A question form waiting for its answer: only the `PermissionRequest` hook, since the transcript writes the question with its answer.
+- A turn's final reply at the moment it ends: `Stop`'s `last_assistant_message`; the hooks documentation notes the transcript is written asynchronously and may lag.
+- Background tasks still running when a turn ends: `Stop`'s `background_tasks`.
+- A new transcript file after `/clear`: `SessionStart` names it.
+
+Not yet observed: a resumed or forked session, compaction during a turn, a subagent's turn, a turn ended by an API error (`StopFailure`), and a refusal.
