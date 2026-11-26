@@ -1722,12 +1722,7 @@ impl TermWindow {
                 self.invalidate_fancy_tab_bar();
                 self.invalidate_modal();
 
-                let mux = Mux::get();
-                if let Some(window) = mux.get_window(self.mux_window_id) {
-                    for tab in window.iter() {
-                        tab.resize(self.terminal_size);
-                    }
-                };
+                self.resize_shown_tab();
                 self.update_title();
                 window.invalidate();
             }
@@ -4009,6 +4004,16 @@ impl TermWindow {
                 window.rows
             );
             tab.resize(window);
+        }
+    }
+
+    /// Sizes the shown tab to the window. The window's other tabs are sized
+    /// when they are shown, by `fit_newly_shown_tab`, so that a resize or a
+    /// font size change rewraps one tab's panes rather than every tab's.
+    fn resize_shown_tab(&mut self) {
+        if let Some(tab) = self.get_active_mux_tab() {
+            tab.resize(self.terminal_size);
+            self.last_shown_tab = Some(tab.tab_id());
         }
     }
 

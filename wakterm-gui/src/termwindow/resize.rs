@@ -2,7 +2,6 @@ use crate::resize_increment_calculator::ResizeIncrementCalculator;
 use crate::utilsprites::RenderMetrics;
 use ::window::{Dimensions, ResizeIncrement, Window, WindowOps, WindowState};
 use config::{ConfigHandle, DimensionContext};
-use mux::Mux;
 use std::rc::Rc;
 use wakterm_font::FontConfiguration;
 use wakterm_term::TerminalSize;
@@ -319,12 +318,7 @@ impl super::TermWindow {
 
         self.terminal_size = size;
 
-        let mux = Mux::get();
-        if let Some(window) = mux.get_window(self.mux_window_id) {
-            for tab in window.iter() {
-                tab.resize(size);
-            }
-        };
+        self.resize_shown_tab();
         self.resize_overlays();
         self.invalidate_fancy_tab_bar();
         self.update_title();
