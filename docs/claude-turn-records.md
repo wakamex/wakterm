@@ -61,4 +61,15 @@ Interactive transcripts from six days (Claude Code 2.1.28x to 2.1.332), with eac
 
 Not yet explained: 145 prompts that got no reply before a later prompt that is neither a sibling nor a child of it, 58 that got none before a child prompt, and 67 turns with replies but no end before the next prompt and no restart nearby. Most come from releases before 2.1.330.
 
+## Rules in Claude Code's source
+
+A reading of the Claude Code 2.1.332 source gives the rules behind these records:
+
+- `turn_duration` is written only for a turn that queried the model, was not aborted, and ended completed or waiting on background work. A turn ended by an interruption, an API error or another failure, or by the process exiting, gets none, and neither does a local command. While subagents, team tasks or detached tool calls still run, it is deferred until they finish, so it can be written after the next prompt, or never if the process exits first. A turn's end is therefore read from `turn_duration`, an interruption marker, an API error (an assistant record marked `isApiErrorMessage` with a `system` `api_error` record) or the process ending, and `turn_duration` is attributed to its turn through `parentUuid`, never by position.
+- A new `promptId` is made for input that is not a tool result (a typed prompt, queued input that starts a turn, a task notification), for a prompt command such as a skill, for a local command, and for a session resumed with a permission request left open, which is why a tool result written after a resume carries a new one. Tool results and every other record written during a turn, including an automatic compaction summary, keep the turn's. `turnPromptId` is written only on the record that opens a turn.
+- `queue-operation` `remove` reasons are `absorbed_mid_turn`, `delivered_to_agent`, `delivered_as_tool_result`, `stored_at_idle`, `carried_to_background`, `not_carried_to_background`, `written_at_exit`, `dropped_by_hook` and `cleared_on_cancel`; `popAll` and `popOne` mark queued input pulled back into the input box.
+- No hook fires when a queued input starts a turn; the transcript's `dequeue` and the user record with a new `promptId` are the only record of it. `UserPromptSubmit` runs when input is submitted.
+- `Stop` fires once at the end of each turn, with `stop_hook_active` set when a blocking stop hook made the turn continue, and `StopFailure` instead after an API error. `PermissionRequest` fires whenever a tool's permission decision is to ask, which tools that need the person, such as `AskUserQuestion`, keep even with permission checks skipped. Hooks passed with `--settings` load on every launch, including `claude --resume`; `disableAllHooks`, and `allowManagedHooksOnly` in managed settings, silence them.
+- `turnOrigin` takes `human`, `sdk`, `scheduled`, `task_notification`, `auto_continuation` (for automatic resumes after sleep, quit, a remote restart or a usage limit, and for CI monitoring), `peer`, `host_synthetic`, `system` and `unknown`.
+
 Not yet observed live: a forked session, a subagent's turn, a turn ended by an API error (`StopFailure`), and a refusal.
