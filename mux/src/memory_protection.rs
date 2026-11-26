@@ -1,4 +1,4 @@
-//! Keeps the mux server's own memory out of swap.
+//! Keeps the mux server's own memory out of swap and shielded from reclaim.
 //!
 //! The server and every program it starts share the systemd service's
 //! cgroup, so under memory pressure the kernel pages out the server's
@@ -7,9 +7,17 @@
 //! cgroup, the server moves itself into a child cgroup that may not swap,
 //! and every program it starts afterwards joins a sibling cgroup that may.
 //!
+//! Without a protection of its own, the server's pages are reclaimed as
+//! readily as any other program's, so a batch job filling the host's memory
+//! turns the server's page touches into reclaim and disk waits, and every
+//! client's input waits behind them. The server claims `SERVER_MEMORY_LOW`
+//! of the protection its service is given (`MemoryLow=` in the unit) for
+//! itself, since under recursive memory protection a share nobody claims is
+//! divided by usage, which hands most of it to the panes.
+//!
 //! ```text
 //! wakterm-mux-server.service/   memory controller enabled for its children
-//!     wakterm-server/           the server; memory.swap.max = 0
+//!     wakterm-server/           the server; memory.swap.max = 0, memory.low
 //!     wakterm-panes/            panes, helpers, and frozen agents' cgroups
 //! ```
 
@@ -63,6 +71,9 @@ mod imp {
     use std::path::{Path, PathBuf};
 
     pub(super) const SERVER: &str = "wakterm-server";
+    /// The memory the server keeps from reclaim: its heap and scrollback
+    /// with room to grow, matching the unit's `MemoryLow=`.
+    const SERVER_MEMORY_LOW: &str = "2G";
     pub(super) const PANES: &str = "wakterm-panes";
 
     fn own_cgroup() -> anyhow::Result<PathBuf> {
@@ -112,11 +123,15 @@ mod imp {
             .with_context(|| format!("enabling memory control under {}", unit.display()))?;
         fs::write(server.join("memory.swap.max"), "0")
             .with_context(|| format!("keeping {} out of swap", server.display()))?;
+        fs::write(server.join("memory.low"), SERVER_MEMORY_LOW)
+            .with_context(|| format!("shielding {} from reclaim", server.display()))?;
         portable_pty::unix::set_child_cgroup(&panes.join("cgroup.procs"));
         let _ = PANES_CGROUP.set(panes);
         log::info!(
-            "the mux server runs in {} without swap; programs it starts join {}",
+            "the mux server runs in {} without swap, with {} shielded from reclaim; \
+             programs it starts join {}",
             server.display(),
+            SERVER_MEMORY_LOW,
             PANES
         );
         Ok(())

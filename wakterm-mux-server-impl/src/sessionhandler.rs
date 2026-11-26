@@ -1540,87 +1540,9 @@ impl SessionHandler {
                             let result = (move || -> anyhow::Result<Pdu> {
                                 let mux = Mux::get();
                                 let _identity = mux.with_identity(client_id);
-                                let tab = mux
-                                    .get_tab(tab_id)
-                                    .ok_or_else(|| anyhow!("no such tab {}", tab_id))?;
-                                // The request must size exactly the tab's panes, each
-                                // once, before any of them changes; the client
-                                // reconciles from the server when it is refused.
-                                let tab_pane_ids = tab
-                                    .iter_panes_ignoring_zoom()
-                                    .iter()
-                                    .map(|pane| pane.pane.pane_id())
-                                    .collect::<HashSet<_>>();
-                                // A client resizes a zoomed tab by its zoomed pane alone,
-                                // and the tab sizes that pane and keeps the others' layout
-                                // for when it unzooms.
-                                if let (Some(zoomed), [(pane_id, size)]) =
-                                    (tab.get_zoomed_pane(), pane_sizes.as_slice())
-                                {
-                                    if zoomed.pane_id() == *pane_id {
-                                        validate_resize_tab(
-                                            tab_id,
-                                            &std::iter::once(*pane_id).collect(),
-                                            &pane_sizes,
-                                        )?;
-                                        let dims = zoomed.get_dimensions();
-                                        let unchanged = (
-                                            dims.cols,
-                                            dims.viewport_rows,
-                                            dims.pixel_width,
-                                            dims.pixel_height,
-                                            dims.dpi,
-                                        ) == (
-                                            size.cols,
-                                            size.rows,
-                                            size.pixel_width,
-                                            size.pixel_height,
-                                            size.dpi,
-                                        );
-                                        tab.resize(*size);
-                                        if !unchanged {
-                                            mux.notify_tab_resized(tab_id);
-                                        }
-                                        return Ok(Pdu::UnitResponse(UnitResponse {}));
-                                    }
-                                }
-                                validate_resize_tab(tab_id, &tab_pane_ids, &pane_sizes)?;
-                                let panes = pane_sizes
-                                    .iter()
-                                    .map(|(pane_id, size)| {
-                                        mux.get_pane(*pane_id)
-                                            .map(|pane| (pane, *size))
-                                            .ok_or_else(|| anyhow!("pane {pane_id} is gone"))
-                                    })
-                                    .collect::<anyhow::Result<Vec<_>>>()?;
-                                // Apply all pane sizes, then rebuild once. A request
-                                // that changes no pane's size changes nothing to
-                                // tell the other clients about.
-                                let changed = panes.iter().any(|(pane, size)| {
-                                    let dims = pane.get_dimensions();
-                                    (
-                                        dims.cols,
-                                        dims.viewport_rows,
-                                        dims.pixel_width,
-                                        dims.pixel_height,
-                                        dims.dpi,
-                                    ) != (
-                                        size.cols,
-                                        size.rows,
-                                        size.pixel_width,
-                                        size.pixel_height,
-                                        size.dpi,
-                                    )
-                                });
-                                for (pane, size) in panes {
-                                    pane.resize(size)?;
-                                }
-                                if !changed {
-                                    return Ok(Pdu::UnitResponse(UnitResponse {}));
-                                }
-                                tab.rebuild_splits_sizes_from_contained_panes();
-                                tab.log_runtime_invariant_errors("server.resize_tab");
-                                mux.notify_tab_resized(tab_id);
+                                // The client reconciles from the server when the
+                                // resize is refused.
+                                mux.resize_tab_for_client(tab_id, pane_sizes)?;
                                 Ok(Pdu::UnitResponse(UnitResponse {}))
                             })();
                             if let Err(err) = &result {
@@ -2718,34 +2640,6 @@ const CLAUDE_END_KEY_PATIENCE: std::time::Duration = std::time::Duration::from_s
 /// Checks that a ResizeTab request sizes each of the tab's panes exactly
 /// once, with no empty size, so that it can be refused before any pane
 /// changes.
-fn validate_resize_tab(
-    tab_id: mux::tab::TabId,
-    tab_pane_ids: &HashSet<mux::pane::PaneId>,
-    pane_sizes: &[(mux::pane::PaneId, wakterm_term::TerminalSize)],
-) -> anyhow::Result<()> {
-    let requested = pane_sizes
-        .iter()
-        .map(|(pane_id, _)| *pane_id)
-        .collect::<HashSet<_>>();
-    if requested.len() != pane_sizes.len() || &requested != tab_pane_ids {
-        anyhow::bail!(
-            "resize_tab must size each pane of tab {tab_id} once: got {:?}, tab has {:?}",
-            pane_sizes.iter().map(|(id, _)| id).collect::<Vec<_>>(),
-            tab_pane_ids
-        );
-    }
-    let fits = |value: usize| (1..=usize::from(u16::MAX)).contains(&value);
-    if let Some((pane_id, size)) = pane_sizes.iter().find(|(_, size)| {
-        !fits(size.rows)
-            || !fits(size.cols)
-            || size.pixel_width > usize::from(u16::MAX)
-            || size.pixel_height > usize::from(u16::MAX)
-    }) {
-        anyhow::bail!("resize_tab gave pane {pane_id} a size a terminal cannot take: {size:?}");
-    }
-    Ok(())
-}
-
 /// A request handler that holds its thread this long is logged with its
 /// line, since most run on the main thread, which then waits for it.
 const SLOW_HANDLER: Duration = Duration::from_millis(200);
@@ -3076,15 +2970,23 @@ mod test {
             dpi: 96,
         };
         let tab: HashSet<mux::pane::PaneId> = [1, 2].iter().copied().collect();
-        assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24)), (2, size(40, 24))]).is_ok());
+        assert!(mux::validate_resize_tab(7, &tab, &[(1, size(80, 24)), (2, size(40, 24))]).is_ok());
         // A missing, repeated, unknown or empty-sized pane is refused.
-        assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24))]).is_err());
-        assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24)), (1, size(40, 24))]).is_err());
-        assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24)), (3, size(40, 24))]).is_err());
-        assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24)), (2, size(0, 24))]).is_err());
+        assert!(mux::validate_resize_tab(7, &tab, &[(1, size(80, 24))]).is_err());
+        assert!(
+            mux::validate_resize_tab(7, &tab, &[(1, size(80, 24)), (1, size(40, 24))]).is_err()
+        );
+        assert!(
+            mux::validate_resize_tab(7, &tab, &[(1, size(80, 24)), (3, size(40, 24))]).is_err()
+        );
+        assert!(mux::validate_resize_tab(7, &tab, &[(1, size(80, 24)), (2, size(0, 24))]).is_err());
         // So is one too large for a terminal's 16-bit size fields.
-        assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24)), (2, size(70_000, 24))]).is_err());
-        assert!(validate_resize_tab(7, &tab, &[(1, size(80, 24)), (2, size(7_000, 24))]).is_err());
+        assert!(
+            mux::validate_resize_tab(7, &tab, &[(1, size(80, 24)), (2, size(70_000, 24))]).is_err()
+        );
+        assert!(
+            mux::validate_resize_tab(7, &tab, &[(1, size(80, 24)), (2, size(7_000, 24))]).is_err()
+        );
     }
 
     use super::*;
@@ -4013,6 +3915,71 @@ mod test {
         assert_eq!(observed[0].3.as_ref(), Some(&client_a));
         assert!(observed[1].2.is_empty());
         assert_eq!(observed[1].3.as_ref(), Some(&client_b));
+    }
+
+    #[test]
+    fn a_tab_no_client_shows_takes_its_newest_size_when_one_shows_it() {
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = SimpleExecutor::new();
+        let mux = test_mux();
+        Mux::set_mux(&mux);
+        let _guard = MuxGuard;
+        let layout = build_test_layout(&mux);
+        let (client_a, view_a, _handler_a) = register_test_client(&mux, "hidden-resize-a");
+        let (client_b, view_b, _handler_b) = register_test_client(&mux, "hidden-resize-b");
+        for view in [&view_a, &view_b] {
+            mux.set_active_tab_for_client_view(view.as_ref(), layout.window_id, layout.left_tab_id)
+                .unwrap();
+        }
+        let resized = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&resized);
+        mux.subscribe(move |notification| {
+            if let MuxNotification::TabResized { tab_id, origin } = notification {
+                seen.lock().unwrap().push((tab_id, origin));
+            }
+            true
+        });
+        let pane_cols = |pane_id| mux.get_pane(pane_id).unwrap().get_dimensions().cols;
+        let resize = |client: &Arc<ClientId>, tab_id, pane_id, cols| {
+            let _identity = mux.with_identity(Some(client.clone()));
+            mux.resize_tab_for_client(tab_id, vec![(pane_id, size(cols, 40))])
+        };
+
+        // Client A resizes its window: the tab both clients show resizes at
+        // once, the hidden one waits, keeping only the newest size.
+        resize(&client_a, layout.left_tab_id, layout.left_pane_id, 100).unwrap();
+        resize(&client_a, layout.right_tab_id, layout.right_pane_id, 90).unwrap();
+        resize(&client_a, layout.right_tab_id, layout.right_pane_id, 100).unwrap();
+        assert_eq!(pane_cols(layout.left_pane_id), 100);
+        assert_eq!(pane_cols(layout.right_pane_id), 120);
+        // A malformed resize of a hidden tab is still refused at once.
+        assert!(resize(&client_a, layout.right_tab_id, layout.left_pane_id, 80).is_err());
+
+        // Client B shows the tab: it takes client A's newest size, and only
+        // client A, which asked for it, is spared the notifications.
+        let before_shown = resized.lock().unwrap().len();
+        mux.set_active_tab_for_client_view(view_b.as_ref(), layout.window_id, layout.right_tab_id)
+            .unwrap();
+        assert_eq!(pane_cols(layout.right_pane_id), 100);
+        let notified = resized.lock().unwrap().clone();
+        assert!(notified[..before_shown]
+            .iter()
+            .all(|(tab_id, _)| *tab_id == layout.left_tab_id));
+        assert!(!notified[before_shown..].is_empty());
+        assert!(notified
+            .iter()
+            .all(|(_, origin)| origin.as_ref() == Some(&client_a)));
+
+        // A resize of a tab a client shows applies at once, from either.
+        resize(&client_b, layout.right_tab_id, layout.right_pane_id, 110).unwrap();
+        assert_eq!(pane_cols(layout.right_pane_id), 110);
+
+        // With no connected client known to show the window, a resize
+        // applies at once.
+        mux.unregister_client(&client_a);
+        mux.unregister_client(&client_b);
+        resize(&client_a, layout.left_tab_id, layout.left_pane_id, 70).unwrap();
+        assert_eq!(pane_cols(layout.left_pane_id), 70);
     }
 
     struct TestLayout {

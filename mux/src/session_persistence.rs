@@ -90,7 +90,11 @@ pub struct SavedSession {
 }
 
 const SESSION_VERSION: u32 = 5;
-const AUTO_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
+/// How long the mux must go without a saved-state change before an event
+/// save. A save reads the whole mux, so during a burst of changes, such as a
+/// window resize resizing many tabs, it waits for the burst to end; the
+/// periodic save still runs during a burst that outlasts its interval.
+const AUTO_SAVE_DEBOUNCE: Duration = Duration::from_secs(3);
 const AUTO_SAVE_INTERVAL: Duration = Duration::from_secs(60);
 
 static AUTO_SAVE_TX: OnceLock<SyncSender<()>> = OnceLock::new();

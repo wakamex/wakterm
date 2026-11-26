@@ -9,6 +9,12 @@ EnvironmentFile=-%h/.config/wakterm-mux-server.env
 ExecStart=__WAKTERM_MUX_SERVER_BIN__
 KillMode=mixed
 OOMPolicy=continue
+# The mux moves itself into a child cgroup kept out of swap, and freezes idle
+# agents in child cgroups of its own.
+Delegate=yes
+# Shields the mux server's memory from reclaim while other programs press on
+# the host's memory; the server claims this share for itself, not its panes.
+MemoryLow=2G
 Restart=on-failure
 RestartSec=2
 

@@ -262,6 +262,9 @@ pub struct Mux {
     banner: RwLock<Option<String>>,
     clients: RwLock<HashMap<ClientId, ClientInfo>>,
     client_views: RwLock<HashMap<ClientViewId, ClientViewState>>,
+    /// The newest size a client asked for each tab that no client showed,
+    /// applied when a client shows it.
+    hidden_tab_resizes: Mutex<HashMap<TabId, HiddenTabResize>>,
     identity: RwLock<Option<Arc<ClientId>>>,
     num_panes_by_workspace: RwLock<HashMap<String, usize>>,
     main_thread_id: std::thread::ThreadId,
@@ -1814,6 +1817,7 @@ impl Mux {
             banner: RwLock::new(None),
             clients: RwLock::new(HashMap::new()),
             client_views: RwLock::new(HashMap::new()),
+            hidden_tab_resizes: Mutex::new(HashMap::new()),
             identity: RwLock::new(None),
             num_panes_by_workspace: RwLock::new(HashMap::new()),
             main_thread_id: std::thread::current().id(),
@@ -6504,6 +6508,7 @@ impl Mux {
         window_state.set_active_tab(tab_id);
         Self::seed_view_state_for_tab(window_state, &tab);
         drop(client_views);
+        self.apply_shown_tab_resizes();
 
         if notify {
             self.notify(MuxNotification::WindowInvalidated(window_id));
@@ -6573,6 +6578,7 @@ impl Mux {
         window_state.set_active_pane(tab_id, pane_id);
         Self::seed_view_state_for_tab(window_state, &tab);
         drop(client_views);
+        self.apply_shown_tab_resizes();
 
         if notify {
             self.notify(MuxNotification::WindowInvalidated(window_id));
@@ -6634,6 +6640,7 @@ impl Mux {
         info.active_workspace.replace(workspace);
         info.focused_pane_id = focused_pane_id;
         self.clients.write().insert(client_key, info);
+        self.apply_shown_tab_resizes();
     }
 
     pub fn iter_clients(&self) -> Vec<ClientInfo> {
@@ -7389,6 +7396,153 @@ impl Mux {
                 }
             }
         }
+        self.hidden_tab_resizes.lock().remove(&removed_tab_id);
+        self.apply_shown_tab_resizes();
+    }
+
+    /// Resizes a tab's panes to the sizes a client asked for, each pane of
+    /// the tab once, or, for a zoomed tab, its zoomed pane alone. A tab that
+    /// connected clients show other tabs in place of keeps its size until
+    /// one shows it: rewrapping its panes' scrollback would hold up every
+    /// client for a tab nobody sees, as resizing a window resizes all its
+    /// tabs. Its newest requested size is applied then.
+    pub fn resize_tab_for_client(
+        &self,
+        tab_id: TabId,
+        pane_sizes: Vec<(PaneId, TerminalSize)>,
+    ) -> anyhow::Result<()> {
+        let tab = self
+            .get_tab(tab_id)
+            .ok_or_else(|| anyhow!("no such tab {}", tab_id))?;
+        validate_tab_resize(&tab, &pane_sizes)?;
+        let origin = self.active_identity();
+        if self.tab_is_hidden(tab_id) {
+            self.hidden_tab_resizes
+                .lock()
+                .insert(tab_id, HiddenTabResize { pane_sizes, origin });
+            return Ok(());
+        }
+        self.hidden_tab_resizes.lock().remove(&tab_id);
+        self.apply_tab_resize(&tab, &pane_sizes, origin)
+    }
+
+    /// Whether connected clients show the tab's window with another tab in
+    /// front and none of them shows this tab.
+    fn tab_is_hidden(&self, tab_id: TabId) -> bool {
+        let Some(window_id) = self.window_containing_tab(tab_id) else {
+            return false;
+        };
+        let views = self
+            .clients
+            .read()
+            .values()
+            .map(|client| client.view_id.clone())
+            .collect::<Vec<_>>();
+        let client_views = self.client_views.read();
+        let shown = views
+            .iter()
+            .filter_map(|view_id| client_views.get(view_id.as_ref())?.windows.get(&window_id))
+            .filter_map(|window| window.active_tab_id)
+            .collect::<Vec<_>>();
+        !shown.is_empty() && !shown.contains(&tab_id)
+    }
+
+    /// Applies the deferred resizes of tabs a client now shows. A tab whose
+    /// panes changed meanwhile keeps its size; the client that shows it
+    /// sizes it again.
+    fn apply_shown_tab_resizes(&self) {
+        let shown = {
+            let mut resizes = self.hidden_tab_resizes.lock();
+            if resizes.is_empty() {
+                return;
+            }
+            let tab_ids = resizes.keys().copied().collect::<Vec<_>>();
+            tab_ids
+                .into_iter()
+                .filter(|tab_id| !self.tab_is_hidden(*tab_id))
+                .filter_map(|tab_id| Some((tab_id, resizes.remove(&tab_id)?)))
+                .collect::<Vec<_>>()
+        };
+        for (tab_id, resize) in shown {
+            let Some(tab) = self.get_tab(tab_id) else {
+                continue;
+            };
+            let result = validate_tab_resize(&tab, &resize.pane_sizes)
+                .and_then(|()| self.apply_tab_resize(&tab, &resize.pane_sizes, resize.origin));
+            if let Err(err) = result {
+                log::info!("dropped the deferred resize of tab {tab_id} as it was shown: {err:#}");
+            }
+        }
+    }
+
+    fn apply_tab_resize(
+        &self,
+        tab: &Arc<Tab>,
+        pane_sizes: &[(PaneId, TerminalSize)],
+        origin: Option<Arc<ClientId>>,
+    ) -> anyhow::Result<()> {
+        // Applied as the client that asked for it, which already has the
+        // size, so that the notifications skip only that client.
+        let _identity = self.with_identity(origin.clone());
+        let cells = |size: &TerminalSize| {
+            (
+                size.cols,
+                size.rows,
+                size.pixel_width,
+                size.pixel_height,
+                size.dpi,
+            )
+        };
+        let dims_cells = |pane: &Arc<dyn Pane>| {
+            let dims = pane.get_dimensions();
+            (
+                dims.cols,
+                dims.viewport_rows,
+                dims.pixel_width,
+                dims.pixel_height,
+                dims.dpi,
+            )
+        };
+        // A client resizes a zoomed tab by its zoomed pane alone, and the tab
+        // sizes that pane and keeps the others' layout for when it unzooms.
+        if let (Some(zoomed), [(pane_id, size)]) = (tab.get_zoomed_pane(), pane_sizes) {
+            if zoomed.pane_id() == *pane_id {
+                let changed = dims_cells(&zoomed) != cells(size);
+                tab.resize(*size);
+                if changed {
+                    self.notify(MuxNotification::TabResized {
+                        tab_id: tab.tab_id(),
+                        origin,
+                    });
+                }
+                return Ok(());
+            }
+        }
+        let panes = pane_sizes
+            .iter()
+            .map(|(pane_id, size)| {
+                self.get_pane(*pane_id)
+                    .map(|pane| (pane, *size))
+                    .ok_or_else(|| anyhow!("pane {pane_id} is gone"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        // Apply all pane sizes, then rebuild once. A request that changes no
+        // pane's size changes nothing to tell the other clients about.
+        let changed = panes
+            .iter()
+            .any(|(pane, size)| dims_cells(pane) != cells(size));
+        for (pane, size) in panes {
+            pane.resize(size)?;
+        }
+        if changed {
+            tab.rebuild_splits_sizes_from_contained_panes();
+            tab.log_runtime_invariant_errors("server.resize_tab");
+            self.notify(MuxNotification::TabResized {
+                tab_id: tab.tab_id(),
+                origin,
+            });
+        }
+        Ok(())
     }
 
     pub fn window_containing_tab(&self, tab_id: TabId) -> Option<WindowId> {
@@ -7888,6 +8042,58 @@ impl wakterm_term::DownloadHandler for MuxDownloader {
             });
         }
     }
+}
+
+/// A tab resize deferred until a client shows the tab, with the client
+/// that asked for it, which already has the size.
+struct HiddenTabResize {
+    pane_sizes: Vec<(PaneId, TerminalSize)>,
+    origin: Option<Arc<ClientId>>,
+}
+
+/// Checks a resize of `tab` before any pane changes; see
+/// `validate_resize_tab`. A zoomed tab may be sized by its zoomed pane alone.
+fn validate_tab_resize(tab: &Tab, pane_sizes: &[(PaneId, TerminalSize)]) -> anyhow::Result<()> {
+    let zoomed = tab.get_zoomed_pane().map(|pane| pane.pane_id());
+    let tab_pane_ids = match (zoomed, pane_sizes) {
+        (Some(zoomed), [(pane_id, _)]) if zoomed == *pane_id => std::iter::once(zoomed).collect(),
+        _ => tab
+            .iter_panes_ignoring_zoom()
+            .iter()
+            .map(|pane| pane.pane.pane_id())
+            .collect::<HashSet<_>>(),
+    };
+    validate_resize_tab(tab.tab_id(), &tab_pane_ids, pane_sizes)
+}
+
+/// Checks that a resize sizes exactly the panes `tab_pane_ids`, each once,
+/// each to a size a terminal can take.
+pub fn validate_resize_tab(
+    tab_id: TabId,
+    tab_pane_ids: &HashSet<PaneId>,
+    pane_sizes: &[(PaneId, TerminalSize)],
+) -> anyhow::Result<()> {
+    let requested = pane_sizes
+        .iter()
+        .map(|(pane_id, _)| *pane_id)
+        .collect::<HashSet<_>>();
+    if requested.len() != pane_sizes.len() || &requested != tab_pane_ids {
+        anyhow::bail!(
+            "resize_tab must size each pane of tab {tab_id} once: got {:?}, tab has {:?}",
+            pane_sizes.iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            tab_pane_ids
+        );
+    }
+    let fits = |value: usize| (1..=usize::from(u16::MAX)).contains(&value);
+    if let Some((pane_id, size)) = pane_sizes.iter().find(|(_, size)| {
+        !fits(size.rows)
+            || !fits(size.cols)
+            || size.pixel_width > usize::from(u16::MAX)
+            || size.pixel_height > usize::from(u16::MAX)
+    }) {
+        anyhow::bail!("resize_tab gave pane {pane_id} a size a terminal cannot take: {size:?}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

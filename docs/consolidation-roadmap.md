@@ -10,7 +10,7 @@ When a commit advances or settles an item, update its status here in the same co
 
 ## Order of work
 
-1. The main-thread blocking check in item 5, because it is small and shows at once whether blocking work still reaches the mux main thread.
+1. Item 5's steps in order, since main-thread stalls reach every client.
 2. The possible regressions R2, R5, R6 and R9, each a short check against the code.
 3. The harness table in item 7, then its per-harness modules together with item 2.
 4. Items 1, 4 and 6, one at a time, each starting with its check.
@@ -66,17 +66,25 @@ Check first: after `30ca3f1ab` is deployed, read the server's refused-resize log
 
 Status: `unverified`
 
-## 5. Blocking work and lock-order deadlocks on the mux main thread
+## 5. One main thread serializes every client, agent and background job
 
-Problem: blocking reads and lock inversions on the mux main thread were found one outage at a time and moved or fixed individually.
+Problem: the mux server applies every client request, agent operation and periodic job on one main thread, so any slow step there, from a scrollback rewrap or a session save to a page fault under host memory pressure, makes every client's keystrokes and rendering wait behind it. Blocking reads and lock inversions were found one outage at a time and moved or fixed individually.
 
-Evidence: `1a9b10dbb`, `455f3cb9d`, `2ff8f7c9d` and `7c9f73db4` (lock-order inversions and re-entry, one hanging `SetClientId` for up to 50 minutes), `6a8d65d24`, `72667323a`, `dcb2d8bd3`, `1055be667`, `ad42b4ccc` and `87ded88ba` (main-thread stalls from `/proc` scans, the `.claude.json` lock and the file watcher). `ad42b4ccc` still reads a pane's process tree from `/proc` on the main thread.
+Evidence: `1a9b10dbb`, `455f3cb9d`, `2ff8f7c9d` and `7c9f73db4` (lock-order inversions and re-entry, one hanging `SetClientId` for up to 50 minutes), `6a8d65d24`, `72667323a`, `dcb2d8bd3`, `1055be667`, `ad42b4ccc` and `87ded88ba` (main-thread stalls from `/proc` scans, the `.claude.json` lock and the file watcher), and startup restore spending 7 of its 10 seconds spawning processes on the main thread. On 2026-11-26 two font size steps and a window resize made the GUI send 242 tab resizes in about 15 seconds, each rewrapping a tab's scrollback, and 7 session saves of about a second each followed; with the host at 28 of 31 GB of memory and 68 GB of swap in use, the main thread waited in reclaim and block-layer throttling, and the user's window answered keystrokes up to 7 seconds late for about a minute. The rewraps themselves cost 2 to 20 ms of processor time each; the rest was waiting.
 
-General change: mark the mux main thread and assert, in debug and test builds, that blocking helpers (`/proc` reads, file locks, SQLite, watcher control, process spawns) do not run on it. Merge state that is always changed together, such as agent metadata and runtime, under one lock, and check lock order in debug builds.
+End state: three planes. Each pane is an actor that owns its terminal on a small pool of interactive threads, with a queue for input, rendering of what clients see and visible resizes ahead of a queue for agent screen reads and prompt delivery, so that one pane's flood of output or a slow agent read cannot delay another pane. Windows, tabs, split layouts, client views and agent status are an immutable snapshot replaced whole by one coordinator that does no input or output, so listings and session saves read it without locks. Sockets, disk, `/proc`, SQLite, transcript reading, process spawning and saves run on a separate pool. The authoritative server with mirroring clients, the protocol and its codec guard, the terminal emulation and PTY-backed panes stay as they are.
 
-Check first: add the main-thread assertion to those helpers and run the tests and some live restore and client traffic. No hits means the one-by-one moves caught everything; hits show what remains.
+Steps, each gated on a measurement:
 
-Status: `in progress`. The measuring half is built: `mux/src/main_thread_blocking.rs` times the `/proc` reads, the OpenCode database reads, the agent event writer, the reminder, request and admission databases, and the Claude folder trust lock, and logs any of them that holds the main thread for 5 ms or more, with its call site, at most once a minute per site. A debug assertion was not used because tests run on the mux's own thread, so it would flag tests rather than the server. Next: read the warnings after a deploy, move what they name off the main thread, then decide on the lock-order checker.
+1. Stop doing work for tabs nobody sees and protect the server's memory: the GUI resizes only the tab it shows, the server keeps the newest size requested for a tab connected clients show another tab in place of and applies it when one shows it, session saves wait for 3 seconds without changes, and the server claims 2 GB of memory protection (`MemoryLow=` on the service and `memory.low` on its `wakterm-server` cgroup). Gate: a window resize with about 100 tabs, under host memory pressure, answers keystrokes and render requests within 50 ms in 99 cases out of 100.
+2. The layout snapshot: listings, the agent catalog, request routing and session saves read it instead of locking the mux. Gate: the save's "reading the mux" share falls from up to 1,940 ms to under 5 ms, and concurrent saves, resizes and client attaches show no lock-order inversion under stress.
+3. Pane actors and the background pool, replacing the per-request hop to the main thread one request type at a time; the mux crate is shared by the GUI and the server, so each move covers both. Gate: with one pane's output flooding and the disk stalled for 2 seconds, another visible pane answers keystrokes and renders within 10 ms in 99 cases out of 100.
+
+Deferred until measured: rewrapping only the visible rows on resize, since processor time was a small part of the slow resizes; and spilling hidden scrollback to disk, since the server's 1 GB was not the host's memory pressure. A default memory limit for agent jobs, which caused that pressure, belongs to `agent-job`, not Wakterm.
+
+Stop: moving one call at a time off the main thread, and the lock-order checker, since step 2 removes the locks it would check. `mux/src/main_thread_blocking.rs` and the slow-request logs stay until step 3 lands, as the gates are measured with them.
+
+Status: `in progress`. Step 1 is built, except that its gate has not been measured live.
 
 ## 6. Freezing idle agents fights prompt delivery
 
