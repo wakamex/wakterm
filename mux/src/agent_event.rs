@@ -2081,7 +2081,6 @@ fn latest_jsonl_turn(
     let mut current = None;
     let mut prompt_id = None;
     let mut claude_open = false;
-    let mut claude_stopped = false;
     let mut agy = crate::harness::agy::TurnTracker::default();
     for line in reader.lines() {
         let record: Value = match serde_json::from_str(&line?) {
@@ -2094,10 +2093,9 @@ fn latest_jsonl_turn(
                     current = Some(turn_id.to_string());
                 }
             }
-            "claude" => match claude_user_record(&record, claude_open, claude_stopped) {
+            "claude" => match claude_user_record(&record, claude_open) {
                 ClaudeUserRecord::StartsTurn => {
                     claude_open = true;
-                    claude_stopped = false;
                     current = record
                         .get("uuid")
                         .and_then(Value::as_str)
@@ -2108,23 +2106,9 @@ fn latest_jsonl_turn(
                         .map(str::to_string);
                 }
                 ClaudeUserRecord::Interrupts => claude_open = false,
-                ClaudeUserRecord::Steers => {}
                 ClaudeUserRecord::Continues => {
                     if claude_reply_ends_turn(&record) {
                         claude_open = false;
-                    }
-                    // A local command's output, a provider error Claude
-                    // reports as its reply, or a refusal stops the turn
-                    // without one.
-                    if claude_local_command_output(&record)
-                        || record.pointer("/message/model").and_then(Value::as_str)
-                            == Some("<synthetic>")
-                        || record
-                            .pointer("/message/stop_reason")
-                            .and_then(Value::as_str)
-                            == Some("refusal")
-                    {
-                        claude_stopped = true;
                     }
                 }
             },
@@ -2491,8 +2475,6 @@ fn claude_human_user(record: &Value) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ClaudeUserRecord {
     StartsTurn,
-    /// Input Claude takes into the running turn.
-    Steers,
     /// The user interrupted the running turn.
     Interrupts,
     /// A tool result, a local command's output, or a note Claude adds to
@@ -2512,19 +2494,13 @@ fn claude_local_command_output(record: &Value) -> bool {
     }
 }
 
-/// The turn rule for a Claude user record, given whether a turn is open and
-/// whether that turn has stopped without a reply, after a provider error or
-/// a local command.
-///
-/// Claude runs one turn at a time. Input it records while a turn runs,
-/// whether before its first reply or between tool calls, is answered in
-/// that turn, so it steers it; input after a turn stopped starts the next.
-/// Claude adds notes of its own as user records marked `isMeta`, such as a
+/// The turn rule for a Claude user record, given whether a turn is open.
+/// Input starts a turn. Claude adds notes of its own as user records marked `isMeta`, such as a
 /// skill's instructions or a note about an image a tool read; these belong
 /// to the running turn. With no turn running, a note that wakes Claude, such
 /// as another session's message or a scheduled task, starts one, except the
 /// caveat Claude records with a local command, which the command follows.
-fn claude_user_record(record: &Value, turn_open: bool, turn_stopped: bool) -> ClaudeUserRecord {
+fn claude_user_record(record: &Value, turn_open: bool) -> ClaudeUserRecord {
     if !claude_human_user(record) || claude_local_command_output(record) {
         return ClaudeUserRecord::Continues;
     }
@@ -2538,9 +2514,6 @@ fn claude_user_record(record: &Value, turn_open: bool, turn_stopped: bool) -> Cl
     }
     if text.starts_with("[Request interrupted by user") {
         return ClaudeUserRecord::Interrupts;
-    }
-    if turn_open && !turn_stopped {
-        return ClaudeUserRecord::Steers;
     }
     ClaudeUserRecord::StartsTurn
 }
@@ -2668,40 +2641,29 @@ fn project_claude(
         if claude_local_command_output(record) {
             cursor.turn_local_command = true;
         }
-        let user_record = claude_user_record(
-            record,
-            cursor.turn_open,
-            cursor.turn_error.is_some() || cursor.turn_local_command || cursor.turn_refused,
-        );
+        let user_record = claude_user_record(record, cursor.turn_open);
         if user_record == ClaudeUserRecord::Interrupts {
             return Ok(end_claude_turn(cursor, &record_key, timestamp, true, ""));
         }
-        if user_record == ClaudeUserRecord::Steers {
-            return Ok(cursor
-                .current_turn_id
-                .as_deref()
-                .and_then(|turn_id| {
-                    claude_input_accepted(
-                        record,
-                        &record_key,
-                        timestamp,
-                        turn_id,
-                        AgentInputRole::Steer,
-                    )
-                })
-                .into_iter()
-                .collect());
-        }
         if user_record == ClaudeUserRecord::StartsTurn {
-            // A turn still open here stopped without a reply, after a
-            // provider error, such as an expired login, or a local command.
-            let ended = end_claude_turn(
-                cursor,
-                &record_key,
-                timestamp,
-                false,
-                "Claude did not reply before the next input.",
-            );
+            // An open turn that stopped without a reply, after a provider
+            // error such as an expired login, a local command or a refusal,
+            // ends here. Input while a turn runs otherwise starts a turn of
+            // its own, since the transcript records no boundary that tells a
+            // steer into the running turn from the next turn's input.
+            let stopped =
+                cursor.turn_error.is_some() || cursor.turn_local_command || cursor.turn_refused;
+            let ended = if stopped {
+                end_claude_turn(
+                    cursor,
+                    &record_key,
+                    timestamp,
+                    false,
+                    "Claude did not reply before the next input.",
+                )
+            } else {
+                Vec::new()
+            };
             let Some(turn_id) = record
                 .get("uuid")
                 .and_then(Value::as_str)
@@ -7147,18 +7109,23 @@ mod tests {
     }
 
     #[test]
-    fn input_claude_takes_while_a_turn_runs_steers_it() {
+    fn input_while_a_claude_turn_runs_starts_a_turn_without_ending_the_first() {
+        // The transcript does not say whether Claude takes such input into
+        // the running turn, so neither a steer nor an end is guessed.
         let turns = claude_turns(&[
             claude_user("ask", serde_json::json!("look at the logs")),
-            claude_user("more", serde_json::json!("the mux ones")),
             claude_tool_call("call"),
             claude_tool_result("result", "call"),
-            claude_user("again", serde_json::json!("and the journal")),
+            claude_user("more", serde_json::json!("the mux ones")),
             claude_answer("answer"),
         ]);
         assert_eq!(
             turns,
-            vec![turn("ask", "started"), turn("ask", "completed:")]
+            vec![
+                turn("ask", "started"),
+                turn("more", "started"),
+                turn("more", "completed:")
+            ]
         );
     }
 
