@@ -44,4 +44,21 @@ Hooks from the user's own settings run alongside a project's, and a `UserPromptS
 - Background tasks still running when a turn ends: `Stop`'s `background_tasks`.
 - A new transcript file after `/clear`: `SessionStart` names it.
 
-Not yet observed: a resumed or forked session, compaction during a turn, a subagent's turn, a turn ended by an API error (`StopFailure`), and a refusal.
+## Fields that name a turn's cause and an input's fate
+
+From Claude Code 2.1.330, a user record that starts a turn also carries `turnPromptId`, equal to its `promptId` in all 2,136 records seen, `turnOrigin` (`human`, `task_notification`, `peer` for another session's message, `scheduled`, `auto_continuation` or `system`), `promptSource` (`typed`, `queued`, `system` or `suggestion_accepted`) and `turnPosition` (`promptIndex` and `turnIndex`). A `queue-operation` `remove` carries a `reason`: `absorbed_mid_turn` (2,868 seen) for input taken into the running turn, or `delivered_to_agent` (45).
+
+## Turns across a restart, a resume and compaction
+
+Interactive transcripts from six days (Claude Code 2.1.28x to 2.1.332), with each `turn_duration` attributed to a turn by following `parentUuid` to the nearest record that has a `promptId`:
+
+- 24,407 turns started by a prompt end exactly once, by `turn_duration` or an interruption marker.
+- No `promptId` appears in more than one file. A resumed Claude Code process goes on writing the same file under new `promptId`s.
+- A process killed during a tool call leaves its turn without an end; the resumed process writes that tool's result under a new `promptId`. Each of three such changes examined fell within a minute of a mux restart, as did 89 of 156 turns that had replies but no end before the next prompt.
+- Automatic compaction during a turn keeps the turn's `promptId` (133 of 200 automatic compactions); in the other 67 the next record is a new prompt.
+- A local command typed while no turn runs opens a `promptId` of its own, holding the caveat, the command and its output, which never gets a `turn_duration` (34 seen).
+- A prompt typed again before Claude replies to the first is a sibling of it, with the same `parentUuid`, which abandons the first (26 seen).
+
+Not yet explained: 145 prompts that got no reply before a later prompt that is neither a sibling nor a child of it, 58 that got none before a child prompt, and 67 turns with replies but no end before the next prompt and no restart nearby. Most come from releases before 2.1.330.
+
+Not yet observed live: a forked session, a subagent's turn, a turn ended by an API error (`StopFailure`), and a refusal.
