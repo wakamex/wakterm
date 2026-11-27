@@ -2528,6 +2528,28 @@ pub(crate) async fn admit_agent_prompt(
                 }
             }
         }
+        Err(err) if err.is::<mux::agent_admission::PromptNotWritten>() => {
+            // A check just before writing found the pane changed, such as
+            // input that arrived while a frozen agent woke: nothing was
+            // written, so the sender may deliver the prompt again.
+            let receipt = err
+                .downcast::<mux::agent_admission::PromptNotWritten>()
+                .expect("checked above")
+                .0;
+            if let Err(err) =
+                release_unwritten_claim(&request, request_store, admission_store).await
+            {
+                return Ok(AgentAdmissionReceipt::rejected(
+                    &request,
+                    AgentAdmissionStatus::InternalFailure,
+                    format!(
+                        "prompt was not written, but its admission claim could not be \
+                         released: {err:#}"
+                    ),
+                ));
+            }
+            Ok(receipt)
+        }
         Err(err) => {
             let detail = format!("prompt delivery may have been partial: {err:#}");
             if let Some(nested) = return_request {

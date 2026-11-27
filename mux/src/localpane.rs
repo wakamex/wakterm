@@ -469,7 +469,7 @@ impl Pane for LocalPane {
     fn mouse_event(&self, event: MouseEvent) -> Result<(), Error> {
         Mux::get().record_input_for_current_identity();
         if mouse_event_reaches_program(&self.terminal.lock(), &event) {
-            Mux::get().record_agent_input_generation(self.pane_id, "mouse");
+            Mux::get().record_agent_mouse_input(self.pane_id, &event);
         }
         self.terminal.lock().mouse_event(event)
     }

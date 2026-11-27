@@ -4288,6 +4288,35 @@ impl Mux {
 
     /// Counts input that reached an agent pane's program, naming its kind,
     /// such as "keyboard" or "mouse", for diagnostics.
+    /// Counts mouse input that reaches an agent's program as input that
+    /// interrupts a prompt being delivered, unless it cannot change what the
+    /// prompt submits: moving the pointer with no button held changes no
+    /// program's input, and no mouse input changes Claude's. Claude scrolls
+    /// its conversation with the wheel and moves its cursor on a click, while
+    /// a prompt is written whole into its empty input box and Enter submits
+    /// the box wherever the cursor is. A frozen agent is woken either way,
+    /// since the event reaches its program.
+    pub(crate) fn record_agent_mouse_input(
+        &self,
+        pane_id: PaneId,
+        event: &wakterm_term::input::MouseEvent,
+    ) {
+        use wakterm_term::input::{MouseButton, MouseEventKind};
+        let hover = event.kind == MouseEventKind::Move && event.button == MouseButton::None;
+        let claude = self
+            .agent_runtime_by_pane
+            .read()
+            .get(&pane_id)
+            .is_some_and(|runtime| runtime.harness == AgentHarness::Claude);
+        if hover || claude {
+            if self.get_agent_metadata_for_pane(pane_id).is_some() {
+                self.thaw_agent_pane(pane_id);
+            }
+            return;
+        }
+        self.record_agent_input_generation(pane_id, "mouse");
+    }
+
     pub(crate) fn record_agent_input_generation(&self, pane_id: PaneId, kind: &'static str) {
         if self.get_agent_metadata_for_pane(pane_id).is_none() {
             return;
@@ -10379,6 +10408,65 @@ mod test {
     }
 
     #[test]
+    fn mouse_input_interrupts_a_delivery_only_where_it_can_change_the_input() {
+        use wakterm_term::input::{MouseButton, MouseEvent, MouseEventKind};
+        let _test_lock = TEST_MUX_LOCK.lock();
+        let _executor = promise::spawn::SimpleExecutor::new();
+        let domain = Arc::new(FakeDomain::new());
+        let mux = Arc::new(Mux::new(Some(Arc::clone(&domain) as Arc<dyn Domain>)));
+        Mux::set_mux(&mux);
+        let _guard = TestMuxGuard;
+        let size = TerminalSize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 800,
+            pixel_height: 480,
+            dpi: 96,
+        };
+        let window_id = *mux.new_empty_window(Some(DEFAULT_WORKSPACE.to_string()), None);
+        let tab = Arc::new(Tab::new(&size));
+        let pane = FakePane::new(41, size, domain.id);
+        let pane_id = pane.pane_id();
+        tab.assign_pane(&pane);
+        mux.add_tab_and_active_pane(&tab).unwrap();
+        mux.add_tab_to_window(&tab, window_id).unwrap();
+        mux.set_agent_metadata(pane_id, sample_agent_metadata("tracker"))
+            .unwrap();
+        mux.notify(MuxNotification::PaneOutput(pane_id));
+        let event = |kind, button| MouseEvent {
+            kind,
+            x: 3,
+            y: 2,
+            x_pixel_offset: 0,
+            y_pixel_offset: 0,
+            button,
+            modifiers: KeyModifiers::NONE,
+        };
+        let hover = event(MouseEventKind::Move, MouseButton::None);
+        let click = event(MouseEventKind::Press, MouseButton::Left);
+        let wheel = event(MouseEventKind::Press, MouseButton::WheelUp(1));
+        let generation = || mux.agent_input_generation(pane_id);
+
+        // Moving the pointer changes no program's input.
+        mux.record_agent_mouse_input(pane_id, &hover);
+        assert_eq!(generation(), 0);
+        // A click or the wheel may change another program's input.
+        mux.record_agent_mouse_input(pane_id, &click);
+        mux.record_agent_mouse_input(pane_id, &wheel);
+        assert_eq!(generation(), 2);
+        // No mouse input changes what a prompt submits to Claude.
+        mux.agent_runtime_by_pane
+            .write()
+            .get_mut(&pane_id)
+            .unwrap()
+            .harness = crate::agent::AgentHarness::Claude;
+        for event in [&hover, &click, &wheel] {
+            mux.record_agent_mouse_input(pane_id, event);
+        }
+        assert_eq!(generation(), 2);
+    }
+
+    #[test]
     fn agent_runtime_tracks_prompt_submission_and_output_activity() {
         let _test_lock = TEST_MUX_LOCK.lock();
         let _executor = promise::spawn::SimpleExecutor::new();
@@ -13763,17 +13851,38 @@ mod test {
             );
         }
         // Capture at idle, then replace the child while leaving the supervisor alive.
+        let capture = |request: crate::agent_admission::AgentPromptAdmissionRequest| match mux
+            .capture_agent_admission(request)
+        {
+            AgentAdmissionCapture::Candidate(candidate) => candidate.refresh(),
+            AgentAdmissionCapture::Rejected(receipt) => panic!("{:?}", receipt),
+        };
+        let interrupted = capture(request.clone());
         let candidate = match mux.capture_agent_admission(request) {
             AgentAdmissionCapture::Candidate(candidate) => candidate.refresh(),
             AgentAdmissionCapture::Rejected(receipt) => panic!("{:?}", receipt),
         };
+        let refusal = |candidate: &crate::agent_admission::AgentAdmissionCandidate| {
+            let err = mux.write_admitted_prompt(candidate).unwrap_err();
+            err.downcast_ref::<crate::agent_admission::PromptNotWritten>()
+                .unwrap_or_else(|| panic!("a refusal that may follow a write: {err:#}"))
+                .0
+                .status
+                .clone()
+        };
+        // Input that reaches the agent after admission was captured, such
+        // as mouse input while a frozen agent wakes, refuses the prompt
+        // before any of it is written.
+        mux.record_agent_input_generation(pane_id, "mouse");
+        assert_eq!(refusal(&interrupted), AgentAdmissionStatus::Busy);
+        let candidate = capture(candidate.request.clone());
         harness.start_time += 1;
         mux.panes.write().insert(pane_id, make_pane(Some(harness)));
         assert_eq!(
             mux.validate_agent_admission(&candidate).unwrap().status,
             AgentAdmissionStatus::StaleIncarnation
         );
-        assert!(mux.write_admitted_prompt(&candidate).is_err());
+        assert_eq!(refusal(&candidate), AgentAdmissionStatus::StaleIncarnation);
         mux.record_agent_output(pane_id);
         assert!(mux.get_agent_metadata_for_pane(pane_id).is_none());
         assert!(!mux

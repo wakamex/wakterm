@@ -104,6 +104,24 @@ pub enum AgentAdmissionStatus {
     Indeterminate,
 }
 
+/// An admitted prompt that was refused before any of it was written, with
+/// the refusal to report.
+#[derive(Debug)]
+pub struct PromptNotWritten(pub AgentAdmissionReceipt);
+
+impl std::fmt::Display for PromptNotWritten {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the prompt was not written: {:?}: {}",
+            self.0.status,
+            self.0.detail.as_deref().unwrap_or("")
+        )
+    }
+}
+
+impl std::error::Error for PromptNotWritten {}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentAdmissionReceipt {
     pub schema: String,
@@ -520,24 +538,35 @@ impl Mux {
         None
     }
 
+    /// Writes an admitted prompt into its pane after checking the admission
+    /// again. A check that fails returns `PromptNotWritten`, since nothing
+    /// has been written then; any other error may follow a partial write.
     pub(crate) fn write_admitted_prompt(
         &self,
         candidate: &AgentAdmissionCandidate,
     ) -> anyhow::Result<()> {
+        let not_written = |status, detail: String| {
+            anyhow::Error::new(PromptNotWritten(AgentAdmissionReceipt::rejected(
+                &candidate.request,
+                status,
+                detail,
+            )))
+        };
         if let Some(receipt) = self.validate_agent_admission(candidate) {
-            anyhow::bail!(
-                "prompt admission changed before input: {:?}: {:?}",
-                receipt.status,
-                receipt.detail
-            );
+            return Err(anyhow::Error::new(PromptNotWritten(receipt)));
         }
-        anyhow::ensure!(
-            self.agent_input_box(candidate.pane_id) == crate::AgentInputBox::Ready,
-            "the input box holds a draft that was not set aside"
-        );
-        let pane = self
-            .get_pane(candidate.pane_id)
-            .with_context(|| format!("target pane {} disappeared", candidate.pane_id))?;
+        if self.agent_input_box(candidate.pane_id) != crate::AgentInputBox::Ready {
+            return Err(not_written(
+                AgentAdmissionStatus::Busy,
+                "the input box holds a draft that was not set aside".to_string(),
+            ));
+        }
+        let Some(pane) = self.get_pane(candidate.pane_id) else {
+            return Err(not_written(
+                AgentAdmissionStatus::Unavailable,
+                format!("target pane {} disappeared", candidate.pane_id),
+            ));
+        };
         pane.send_prompt(&candidate.request.prompt, candidate.request.paste)?;
         self.record_agent_prompt_submission(candidate.pane_id);
         Ok(())
