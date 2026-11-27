@@ -6287,12 +6287,16 @@ mod test {
 
     #[test]
     fn a_claude_restore_drops_wakterms_hook_settings_and_keeps_the_users() {
-        let ours = crate::claude_hooks::settings_path();
+        // The path can hold spaces or backslashes, as on macOS and Windows,
+        // which a saved launch command quotes.
+        let ours = crate::claude_hooks::settings_path()
+            .to_string_lossy()
+            .into_owned();
         let launch_cmd = format!(
             "claude --dangerously-skip-permissions --settings {} --settings mine.json \
-             --resume 2ca1579e-76d6-4407-9642-a5619bead1b3 --settings={}",
-            ours.display(),
-            ours.display()
+             --resume 2ca1579e-76d6-4407-9642-a5619bead1b3 {}",
+            shell_words::quote(&ours),
+            shell_words::quote(&format!("--settings={ours}"))
         );
         let command = native_resume_command(
             &AgentHarness::Claude,
