@@ -772,6 +772,18 @@ fn init_config(opts: &Opt) -> anyhow::Result<ConfigHandle> {
 }
 
 fn run() -> anyhow::Result<()> {
+    // `wakterm record-claude-hook` is the recorder Claude runs from the hook
+    // settings Wakterm passes it (mux/src/claude_hooks.rs), not a command for
+    // people, so it is not part of the command line's help or completions.
+    // A recorder that fails must not fail Claude's hook, so it prints nothing
+    // and succeeds whatever happens.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "record-claude-hook")
+    {
+        let _ = mux::claude_hooks::record_from_stdin();
+        return Ok(());
+    }
     env_bootstrap::bootstrap();
 
     let saver = UmaskSaver::new();

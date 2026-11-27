@@ -33,6 +33,8 @@ Every hook event carries `session_id`, `prompt_id`, `transcript_path` and `hook_
 | `PreCompact`, `PostCompact` | Around `/compact`, with trigger `manual`, together with `SessionStart` with source `compact`. |
 | `SessionEnd`, `SessionStart` | For `/clear`: `SessionEnd` with reason `clear`, then `SessionStart` with source `clear`, a new `session_id` and the new `transcript_path`. |
 
+A hook that fails, such as one whose command is missing or exits with status 1, does not block the turn: Claude records a `hook_non_blocking_error` attachment, lists the error in `stop_hook_summary`'s `hookErrors` with `preventedContinuation` false, and shows "Stop hook failed" after the turn, which then ends as usual. A hook that runs past its timeout is cancelled (`hook_cancelled`) and delays the turn's end by the timeout. Neither stops a question form from appearing or decides it. A non-empty `hookErrors` therefore does not mean a stop was blocked; the "Stop hook feedback" record does. Hooks passed with `--settings` run under `claude --resume`, where `SessionStart` has source `resume`.
+
 Hooks from the user's own settings run alongside a project's, and a `UserPromptSubmit` hook's output is added to Claude's context, so a recording hook must print nothing.
 
 ## What only one of the two records

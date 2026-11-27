@@ -907,6 +907,22 @@ fn normalize_claude_argv(argv: &mut Vec<String>) {
             index += 1;
             continue;
         }
+        // Wakterm's hook settings are passed again at each restore.
+        if argument == "--settings"
+            && original
+                .get(index + 1)
+                .is_some_and(|value| crate::claude_hooks::is_settings_path(value))
+        {
+            index += 2;
+            continue;
+        }
+        if argument
+            .strip_prefix("--settings=")
+            .is_some_and(crate::claude_hooks::is_settings_path)
+        {
+            index += 1;
+            continue;
+        }
         if matches!(
             argument.as_str(),
             "-r" | "--resume" | "--session-id" | "--teleport"
@@ -3656,6 +3672,12 @@ pub fn native_resume_command(
         .to_string(),
     );
     argv.push(session_id.trim().to_string());
+    if harness == &AgentHarness::Claude {
+        if let Some(settings) = crate::claude_hooks::installed_settings() {
+            argv.push("--settings".to_string());
+            argv.push(settings.to_string_lossy().into_owned());
+        }
+    }
     let mut command = CommandBuilder::from_argv(argv.into_iter().map(OsString::from).collect());
     if harness == &AgentHarness::Claude {
         command.env_remove("CLAUDECODE");
@@ -6261,6 +6283,41 @@ mod test {
             shell_words::split(&metadata.launch_cmd).unwrap()
         );
         assert!(native_resume_command(&AgentHarness::Endchat, "endchat serve main", "x").is_err());
+    }
+
+    #[test]
+    fn a_claude_restore_drops_wakterms_hook_settings_and_keeps_the_users() {
+        let ours = crate::claude_hooks::settings_path();
+        let launch_cmd = format!(
+            "claude --dangerously-skip-permissions --settings {} --settings mine.json \
+             --resume 2ca1579e-76d6-4407-9642-a5619bead1b3 --settings={}",
+            ours.display(),
+            ours.display()
+        );
+        let command = native_resume_command(
+            &AgentHarness::Claude,
+            &launch_cmd,
+            "4f9a1c2e-0d3b-4c5a-9e8f-7a6b5c4d3e2f",
+        )
+        .unwrap();
+        let argv = command
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        // This process installed no settings, so a restore passes none of
+        // Wakterm's; the user's own settings stay.
+        assert_eq!(
+            argv,
+            [
+                "claude",
+                "--dangerously-skip-permissions",
+                "--settings",
+                "mine.json",
+                "--resume",
+                "4f9a1c2e-0d3b-4c5a-9e8f-7a6b5c4d3e2f"
+            ]
+        );
     }
 
     #[test]

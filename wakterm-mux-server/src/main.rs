@@ -427,6 +427,17 @@ fn run() -> anyhow::Result<()> {
     if let Err(err) = mux::memory_protection::protect_server() {
         log::warn!("the mux server's memory stays swappable: {err:#}");
     }
+    // Before any Claude is restored, so that each one records its turns'
+    // hook events.
+    match std::env::current_exe()
+        .and_then(|exe| mux::claude_hooks::install(&exe).map_err(std::io::Error::other))
+    {
+        Ok(path) => log::info!(
+            "Claude agents record their hook events with {}",
+            path.display()
+        ),
+        Err(err) => log::warn!("Claude agents start without the hook journal: {err:#}"),
+    }
 
     let activity = Activity::new();
 
