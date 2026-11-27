@@ -4314,7 +4314,16 @@ impl Mux {
             }
             return;
         }
-        self.record_agent_input_generation(pane_id, "mouse");
+        // Named in the refusal of an interrupted delivery.
+        let kind = match (event.kind, event.button) {
+            (_, MouseButton::WheelUp(_))
+            | (_, MouseButton::WheelDown(_))
+            | (_, MouseButton::WheelLeft(_))
+            | (_, MouseButton::WheelRight(_)) => "mouse wheel",
+            (MouseEventKind::Move, _) => "mouse drag",
+            _ => "mouse click",
+        };
+        self.record_agent_input_generation(pane_id, kind);
     }
 
     pub(crate) fn record_agent_input_generation(&self, pane_id: PaneId, kind: &'static str) {
@@ -10452,7 +10461,9 @@ mod test {
         assert_eq!(generation(), 0);
         // A click or the wheel may change another program's input.
         mux.record_agent_mouse_input(pane_id, &click);
+        assert_eq!(mux.agent_last_input_kind(pane_id), "mouse click");
         mux.record_agent_mouse_input(pane_id, &wheel);
+        assert_eq!(mux.agent_last_input_kind(pane_id), "mouse wheel");
         assert_eq!(generation(), 2);
         // No mouse input changes what a prompt submits to Claude.
         mux.agent_runtime_by_pane
